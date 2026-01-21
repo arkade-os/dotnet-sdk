@@ -22,6 +22,6 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\NArk\NArk.csproj" />
+      <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
     </ItemGroup>
 </Project>

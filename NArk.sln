@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NArk", "NArk\NArk.csproj", "{825FEEB3-C04B-494B-921A-E3BC0CBC9653}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NArk.Core", "NArk.Core\NArk.Core.csproj", "{825FEEB3-C04B-494B-921A-E3BC0CBC9653}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NArk.Tests", "NArk.Tests\NArk.Tests.csproj", "{0C9B1385-67F8-4DC5-9608-5896AC75749C}"
 EndProject

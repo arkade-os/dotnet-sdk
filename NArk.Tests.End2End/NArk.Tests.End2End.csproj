@@ -37,7 +37,7 @@
       <ProjectReference Include="..\NArk.Safety.AsyncKeyedLock\NArk.Safety.AsyncKeyedLock.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
       <ProjectReference Include="..\NArk.Transport.GrpcClient\NArk.Transport.GrpcClient.csproj" />
-      <ProjectReference Include="..\NArk\NArk.csproj" />
+      <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
     </ItemGroup>
 
 </Project>

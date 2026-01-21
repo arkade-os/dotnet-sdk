@@ -1,5 +1,6 @@
 using Ark.V1;
 using NArk.Abstractions.Intents;
+using NArk.Core;
 
 namespace NArk.Transport.GrpcClient;
 

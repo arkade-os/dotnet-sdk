@@ -2,12 +2,12 @@ using Aspire.Hosting;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Intents;
 using NArk.Blockchain.NBXplorer;
-using NArk.Fees;
-using NArk.Models.Options;
-using NArk.Services;
+using NArk.Core.Fees;
+using NArk.Core.Models.Options;
+using NArk.Core.Services;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
-using NArk.Transformers;
+using NArk.Core.Transformers;
 using NBitcoin;
 
 namespace NArk.Tests.End2End;

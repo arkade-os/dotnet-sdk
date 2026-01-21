@@ -9,9 +9,9 @@ using NArk.Abstractions.Safety;
 
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
-using NArk.Contracts;
-using NArk.Helpers;
-using NArk.Services;
+using NArk.Core.Contracts;
+using NArk.Core.Helpers;
+using NArk.Core.Services;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
@@ -19,7 +19,7 @@ using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Helpers;
 using NArk.Swaps.Models;
-using NArk.Transport;
+using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Secp256k1;
 

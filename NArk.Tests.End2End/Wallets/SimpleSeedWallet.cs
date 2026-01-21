@@ -1,8 +1,8 @@
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
-using NArk.Contracts;
+using NArk.Core.Contracts;
 using NArk.Swaps.Helpers;
-using NArk.Transport;
+using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;

@@ -4,9 +4,9 @@ using CliWrap;
 using CliWrap.Buffered;
 using Microsoft.Extensions.Options;
 using NArk.Blockchain.NBXplorer;
-using NArk.Fees;
-using NArk.Models.Options;
-using NArk.Services;
+using NArk.Core.Fees;
+using NArk.Core.Models.Options;
+using NArk.Core.Services;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Models;
@@ -15,9 +15,9 @@ using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
-using NArk.Transformers;
+using NArk.Core.Transformers;
 using NBitcoin;
-using DefaultCoinSelector = NArk.CoinSelector.DefaultCoinSelector;
+using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 
 namespace NArk.Tests.End2End;
 

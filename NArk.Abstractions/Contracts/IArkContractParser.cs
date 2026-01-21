@@ -1,7 +1,6 @@
-﻿using NArk.Abstractions.Contracts;
-using NBitcoin;
+﻿using NBitcoin;
 
-namespace NArk.Contracts;
+namespace NArk.Abstractions.Contracts;
 
 public interface IArkContractParser
 {

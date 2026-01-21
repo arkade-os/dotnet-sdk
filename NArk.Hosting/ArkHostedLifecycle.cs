@@ -1,5 +1,5 @@
 using Microsoft.Extensions.Hosting;
-using NArk.Services;
+using NArk.Core.Services;
 
 namespace NArk.Hosting;
 

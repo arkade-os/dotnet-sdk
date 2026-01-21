@@ -1,5 +1,6 @@
 using Ark.V1;
 using Grpc.Net.Client;
+using NArk.Core.Transport;
 
 namespace NArk.Transport.GrpcClient;
 

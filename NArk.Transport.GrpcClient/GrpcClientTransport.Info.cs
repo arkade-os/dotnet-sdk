@@ -1,5 +1,6 @@
 using Ark.V1;
-using NArk.Scripts;
+using NArk.Core;
+using NArk.Core.Scripts;
 using NArk.Transport.GrpcClient.Extensions;
 using NBitcoin;
 
