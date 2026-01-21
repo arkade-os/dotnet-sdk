@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <WarningsAsErrors>nullable</WarningsAsErrors>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\NArk\NArk.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="BTCPayServer.Lightning.Common" Version="1.5.2" />
+      <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
+    </ItemGroup>
+</Project>

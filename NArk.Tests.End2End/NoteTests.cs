@@ -1,0 +1,97 @@
+using Aspire.Hosting;
+using Microsoft.Extensions.Hosting;
+using NArk.Abstractions.Intents;
+using NArk.Blockchain.NBXplorer;
+using NArk.Contracts;
+using NArk.Hosting;
+using NArk.Models.Options;
+using NArk.Safety.AsyncKeyedLock;
+using NArk.Services;
+using NArk.Tests.End2End.TestPersistance;
+using NBitcoin;
+
+namespace NArk.Tests.End2End;
+
+public class NoteTests
+{
+    private DistributedApplication _app;
+
+    [OneTimeSetUp]
+    public async Task StartDependencies()
+    {
+        var builder = await DistributedApplicationTestingBuilder
+            .CreateAsync<Projects.NArk_AppHost>(
+                args: ["--noswap"],
+                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
+            );
+
+        // Start dependencies
+        _app = await builder.BuildAsync();
+        await _app.StartAsync(CancellationToken.None);
+        await _app.ResourceNotifications.WaitForResourceHealthyAsync("ark", CancellationToken.None);
+    }
+
+    [OneTimeTearDown]
+    public async Task StopDependencies()
+    {
+        await _app.StopAsync();
+        await _app.DisposeAsync();
+    }
+
+    [Test]
+    public async Task CanCompleteBatchWithOnlyOneNote()
+    {
+        var arkHost =
+            Host.CreateDefaultBuilder([])
+            .AddArk()
+            .OnCustomGrpcArk(_app.GetEndpoint("ark", "arkd").ToString())
+            .WithSafetyService<AsyncSafetyService>()
+            .WithIntentStorage<InMemoryIntentStorage>()
+            .WithIntentScheduler<SimpleIntentScheduler>()
+            .WithSwapStorage<InMemorySwapStorage>()
+            .WithContractStorage<InMemoryContractStorage>()
+            .WithWalletProvider<InMemoryWalletProvider>()
+            .WithVtxoStorage<InMemoryVtxoStorage>()
+            .WithTimeProvider<ChainTimeProvider>()
+            .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
+            {
+                o.Network = Network.RegTest;
+                o.Uri = _app.GetEndpoint("nbxplorer", "http");
+            }))
+            .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
+            {
+                o.Threshold = TimeSpan.FromHours(2);
+                o.ThresholdHeight = 2000;
+            }))
+            .ConfigureServices(s => s.Configure<IntentGenerationServiceOptions>(o => o.PollInterval = TimeSpan.FromSeconds(5)))
+            .Build();
+
+        await arkHost.StartAsync();
+
+        var contractService = arkHost.Services.GetRequiredService<IContractService>();
+        var wallet = arkHost.Services.GetRequiredService<InMemoryWalletProvider>();
+        var intentStorage = arkHost.Services.GetRequiredService<IIntentStorage>();
+
+        var noteCommandResult =
+            await _app.ResourceCommands.ExecuteCommandAsync("ark", "create-note");
+
+        if (!noteCommandResult.Success || noteCommandResult.ErrorMessage is null)
+            throw new Exception("Note creation failed!");
+
+        var fp = await wallet.CreateTestWallet();
+
+        await contractService.ImportContract(fp, ArkNoteContract.Parse(noteCommandResult.ErrorMessage));
+
+        var gotBatchTcs = new TaskCompletionSource();
+
+        intentStorage.IntentChanged += (_, intent) =>
+        {
+            if (intent.State == ArkIntentState.BatchSucceeded)
+                gotBatchTcs.TrySetResult();
+        };
+
+        await gotBatchTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
+
+        await arkHost.StopAsync();
+    }
+}

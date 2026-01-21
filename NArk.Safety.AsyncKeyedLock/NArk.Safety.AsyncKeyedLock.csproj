@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="AsyncKeyedLock" Version="7.1.8" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
+    </ItemGroup>
+
+</Project>
