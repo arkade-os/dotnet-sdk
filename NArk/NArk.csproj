@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <IncludeContentInPack>false</IncludeContentInPack>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
+      <ProjectReference Include="..\NArk.Blockchain.NBXplorer\NArk.Blockchain.NBXplorer.csproj" />
+      <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
+      <ProjectReference Include="..\NArk.Hosting\NArk.Hosting.csproj" />
+      <ProjectReference Include="..\NArk.Safety.AsyncKeyedLock\NArk.Safety.AsyncKeyedLock.csproj" />
+      <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
+      <ProjectReference Include="..\NArk.Transport.GrpcClient\NArk.Transport.GrpcClient.csproj" />
+    </ItemGroup>
+
+</Project>
