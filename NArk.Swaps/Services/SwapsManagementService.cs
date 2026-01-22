@@ -13,14 +13,17 @@ using NArk.Core.Contracts;
 using NArk.Core.Helpers;
 using NArk.Core.Services;
 using NArk.Swaps.Abstractions;
+using NArk.Swaps.Extensions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
+using NArk.Swaps.Boltz.Models.Restore;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Helpers;
 using NArk.Swaps.Models;
 using NArk.Core.Transport;
 using NBitcoin;
+using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 
 namespace NArk.Swaps.Services;
@@ -155,10 +158,10 @@ public class SwapsManagementService : IAsyncDisposable
             }
             else
             {
-                var swaps =
-                    await _swapsStorage.GetActiveSwaps(null, cancellationToken);
+                var activeSwaps =
+                    await _swapsStorage.GetSwaps(null,null, true, cancellationToken);
                 var newSwapIdSet =
-                    swaps.Select(s => s.SwapId).ToHashSet();
+                    activeSwaps.Select(s => s.SwapId).ToHashSet();
 
                 if (_swapsIdToWatch.SetEquals(newSwapIdSet))
                     continue;
@@ -480,6 +483,272 @@ public class SwapsManagementService : IAsyncDisposable
             ), cancellationToken);
 
         return revSwap.Swap.Invoice;
+    }
+
+    // Swap Restoration
+
+    /// <summary>
+    /// Restores swaps from Boltz for the given descriptors.
+    /// Caller determines which descriptors to pass (current key, all used indexes, etc.)
+    /// </summary>
+    /// <param name="walletId">The wallet identifier to associate restored swaps with.</param>
+    /// <param name="descriptors">Array of output descriptors to search for in swaps.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of restored swaps that were not previously known.</returns>
+    public async Task<IReadOnlyList<ArkSwap>> RestoreSwaps(
+        string walletId,
+        OutputDescriptor[] descriptors,
+        CancellationToken cancellationToken = default)
+    {
+        if (descriptors.Length == 0)
+            return [];
+
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+
+        // Extract public keys from all descriptors
+        var publicKeys = descriptors
+            .Select(d => d.Extract().PubKey?.ToBytes()?.ToHexStringLower())
+            .Where(s => s is not null)
+            .Select(s => s!)
+            .Distinct()
+            .ToArray();
+
+        var restoredSwaps = (await _boltzClient.RestoreSwapsAsync(publicKeys, cancellationToken))
+            .Where(swap => swap.From == "ARK" || swap.To == "ARK").ToArray();
+        var results = new List<ArkSwap>();
+
+        var existingSwapIds =
+            (await _swapsStorage.GetSwaps(walletId, restoredSwaps.Select(swap => swap.Id).ToArray(),
+                cancellationToken: cancellationToken)).Select(swap => swap.SwapId);
+
+        restoredSwaps = restoredSwaps.ExceptBy(existingSwapIds, swap => swap.Id).ToArray();
+        foreach (var restored in restoredSwaps)
+        {
+            var swap = MapRestoredSwap(restored, walletId, serverInfo);
+            if (swap == null)
+                continue;
+
+            // Try to reconstruct and import the VHTLC contract
+            var contract = ReconstructContract(restored, serverInfo, descriptors);
+            if (contract != null)
+            {
+                // Update swap with contract script
+                swap = swap with { ContractScript = contract.GetArkAddress().ScriptPubKey.ToHex() };
+
+                await _contractService.ImportContract(
+                    walletId,
+                    contract,
+                    ContractActivityState.Active,
+                    cancellationToken);
+            }
+
+            await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
+            results.Add(swap);
+        }
+
+        return results;
+    }
+
+    private ArkSwap? MapRestoredSwap(RestorableSwap restored, string walletId, ArkServerInfo serverInfo)
+    {
+        var swapType = restored.Type switch
+        {
+            "reverse" => ArkSwapType.ReverseSubmarine,
+            "submarine" => ArkSwapType.Submarine,
+            _ => (ArkSwapType?)null
+        };
+
+        if (swapType == null)
+            return null;
+
+        var details = restored.Details;
+        if (details == null)
+            return null;
+
+        return new ArkSwap(
+            SwapId: restored.Id,
+            WalletId: walletId,
+            SwapType: swapType.Value,
+            Invoice: "", // Not available from restore - needs enrichment
+            ExpectedAmount: details.Amount ?? 0,
+            ContractScript: "", // Will be updated after contract reconstruction
+            Address: details.LockupAddress,
+            Status: Map(restored.Status),
+            FailReason: null,
+            CreatedAt: DateTimeOffset.FromUnixTimeSeconds(restored.CreatedAt),
+            UpdatedAt: DateTimeOffset.UtcNow,
+            Hash: restored.PreimageHash ?? ""
+        );
+    }
+
+    private VHTLCContract? ReconstructContract(
+        RestorableSwap restored,
+        ArkServerInfo serverInfo,
+        OutputDescriptor[] descriptors)
+    {
+        var details = restored.Details;
+        if (details?.Tree == null)
+            return null;
+
+        try
+        {
+            // Extract timelocks from tree leaves
+            var refundLocktime = ScriptParser.ExtractAbsoluteTimelock(
+                details.Tree.RefundWithoutBoltzLeaf?.Output);
+            var unilateralClaimDelay = ScriptParser.ExtractRelativeTimelock(
+                details.Tree.UnilateralClaimLeaf?.Output);
+            var unilateralRefundDelay = ScriptParser.ExtractRelativeTimelock(
+                details.Tree.UnilateralRefundLeaf?.Output);
+            var unilateralRefundWithoutBoltzDelay = ScriptParser.ExtractRelativeTimelock(
+                details.Tree.UnilateralRefundWithoutBoltzLeaf?.Output);
+
+            // Validate we have the necessary timelocks
+            if (refundLocktime == null || unilateralClaimDelay == null ||
+                unilateralRefundDelay == null || unilateralRefundWithoutBoltzDelay == null)
+            {
+                return null;
+            }
+
+            // Parse preimage hash
+            uint160? hash = null;
+            if (!string.IsNullOrEmpty(restored.PreimageHash))
+            {
+                // Boltz uses SHA256 for preimage hash, we need RIPEMD160(SHA256(preimage))
+                // The preimageHash from restore is the SHA256 hash
+                var sha256Hash = Convert.FromHexString(restored.PreimageHash);
+                hash = new uint160(NBitcoin.Crypto.Hashes.RIPEMD160(sha256Hash), false);
+            }
+
+            if (hash == null)
+                return null;
+
+            // Determine sender and receiver based on swap type
+            OutputDescriptor sender;
+            OutputDescriptor receiver;
+
+            if (restored.IsReverseSwap)
+            {
+                // Reverse swap: we are the receiver (claiming)
+                sender = KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
+                receiver = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
+            }
+            else
+            {
+                // Submarine swap: we are the sender (refunding)
+                sender = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
+                receiver = KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
+            }
+
+            return new VHTLCContract(
+                server: serverInfo.SignerKey,
+                sender: sender,
+                receiver: receiver,
+                hash: hash,
+                refundLocktime: refundLocktime.Value,
+                unilateralClaimDelay: unilateralClaimDelay.Value,
+                unilateralRefundDelay: unilateralRefundDelay.Value,
+                unilateralRefundWithoutReceiverDelay: unilateralRefundWithoutBoltzDelay.Value
+            );
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static OutputDescriptor? FindMatchingDescriptor(
+        OutputDescriptor[] descriptors,
+        SwapDetails details)
+    {
+        // If keyIndex is provided, try to find the matching descriptor
+        if (details.KeyIndex.HasValue && details.KeyIndex.Value < descriptors.Length)
+        {
+            return descriptors[details.KeyIndex.Value];
+        }
+
+        // Return first descriptor as fallback
+        return descriptors.Length > 0 ? descriptors[0] : null;
+    }
+
+    // Enrichment Methods
+
+    /// <summary>
+    /// Enriches a restored reverse swap with the preimage needed for claiming.
+    /// Validates the preimage matches the stored hash before updating.
+    /// </summary>
+    /// <param name="swapId">The swap ID to enrich.</param>
+    /// <param name="preimage">The preimage bytes.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task EnrichReverseSwapPreimage(
+        string swapId,
+        byte[] preimage,
+        CancellationToken cancellationToken = default)
+    {
+        await using var @lock = await _safetyService.LockKeyAsync($"swap::{swapId}", cancellationToken);
+
+        var swap = await _swapsStorage.GetSwap(swapId, cancellationToken);
+        if (swap.SwapType != ArkSwapType.ReverseSubmarine)
+            throw new InvalidOperationException("Preimage enrichment only valid for reverse swaps");
+
+        // Validate preimage matches hash (SHA256 for Boltz)
+        var computedHash = NBitcoin.Crypto.Hashes.SHA256(preimage).ToHexStringLower();
+        if (!string.Equals(computedHash, swap.Hash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Preimage does not match stored hash");
+
+        // Update contract with preimage for claiming
+        var contracts = await _contractStorage.LoadContractsByScripts(
+            [swap.ContractScript], [swap.WalletId], cancellationToken);
+        var contractEntity = contracts.SingleOrDefault(c => c.Type == VHTLCContract.ContractType);
+        if (contractEntity == null)
+            throw new InvalidOperationException("VHTLC contract not found for swap");
+
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        var contract = VHTLCContract.Parse(contractEntity.AdditionalData, serverInfo.Network) as VHTLCContract;
+        if (contract == null)
+            throw new InvalidOperationException("Failed to parse VHTLC contract");
+
+        // Re-create contract with preimage and save
+        var enrichedContract = new VHTLCContract(
+            contract.Server, contract.Sender, contract.Receiver, preimage,
+            contract.RefundLocktime, contract.UnilateralClaimDelay,
+            contract.UnilateralRefundDelay, contract.UnilateralRefundWithoutReceiverDelay);
+
+        await _contractStorage.SaveContract(
+            enrichedContract.ToEntity(swap.WalletId, contractEntity.CreatedAt, ContractActivityState.Active),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Enriches a restored submarine swap with the invoice.
+    /// Validates the invoice payment hash matches the stored hash.
+    /// </summary>
+    /// <param name="swapId">The swap ID to enrich.</param>
+    /// <param name="invoice">The BOLT11 invoice string.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task EnrichSubmarineSwapInvoice(
+        string swapId,
+        string invoice,
+        CancellationToken cancellationToken = default)
+    {
+        await using var @lock = await _safetyService.LockKeyAsync($"swap::{swapId}", cancellationToken);
+
+        var swap = await _swapsStorage.GetSwap(swapId, cancellationToken);
+        if (swap.SwapType != ArkSwapType.Submarine)
+            throw new InvalidOperationException("Invoice enrichment only valid for submarine swaps");
+
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        var bolt11 = BOLT11PaymentRequest.Parse(invoice, serverInfo.Network);
+        if (bolt11.PaymentHash == null)
+            throw new InvalidOperationException("Invoice does not contain payment hash");
+
+        // Validate invoice payment hash matches stored hash
+        var invoiceHashHex = bolt11.PaymentHash.ToString();
+        if (!string.Equals(invoiceHashHex, swap.Hash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Invoice payment hash does not match stored hash");
+
+        // Update swap with invoice
+        var enrichedSwap = swap with { Invoice = invoice, UpdatedAt = DateTimeOffset.UtcNow };
+        await _swapsStorage.SaveSwap(swap.WalletId, enrichedSwap, cancellationToken);
     }
 
     private static bool IsRefundableStatus(string status)

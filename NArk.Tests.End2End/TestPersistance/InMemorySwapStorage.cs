@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Models;
 using NBitcoin;
@@ -34,13 +35,38 @@ public class InMemorySwapStorage : ISwapStorage
         }
     }
 
-    public Task<IReadOnlyCollection<ArkSwap>> GetActiveSwaps(string? walletId = null, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyCollection<ArkSwap>> GetSwaps(string? walletId = null, string[]? swapIds = null, bool? active = null,
+        CancellationToken cancellationToken = default)
+    {
+        
+        lock (_swaps)
+        {
+            var result = walletId is not null
+                ? _swaps.TryGet(walletId)?.ToList()?? []
+                : _swaps.Values.SelectMany(s => s).ToList();
+
+            if (swapIds is not null)
+            {
+                result = result.Where(x => swapIds.Contains(x.SwapId)).ToList();
+            }
+
+            if (active is not null)
+            {
+                result = result.Where(x => active == x.Status.IsActive()).ToList();
+            }
+
+            return Task.FromResult<IReadOnlyCollection<ArkSwap>>(new ReadOnlyCollection<ArkSwap>(result));
+        }
+    }
+
+    /// <summary>
+    /// Clears all swaps from storage. Used for testing swap restoration.
+    /// </summary>
+    public void Clear()
     {
         lock (_swaps)
         {
-            return walletId is null ?
-                Task.FromResult<IReadOnlyCollection<ArkSwap>>(_swaps.Values.SelectMany(s => s).ToList()) :
-                Task.FromResult<IReadOnlyCollection<ArkSwap>>(_swaps.TryGet(walletId) ?? []);
+            _swaps.Clear();
         }
     }
 }

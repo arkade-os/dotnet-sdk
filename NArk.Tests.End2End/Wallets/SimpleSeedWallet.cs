@@ -113,4 +113,19 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
         var contract = new ArkPaymentContract(serverInfo.SignerKey, serverInfo.UnilateralExit, descriptor);
         return (contract, contract.ToEntity(_identifier, null, null, activityState));
     }
+
+    /// <summary>
+    /// Gets all descriptors that have been used (from index 0 to lastIndex-1).
+    /// Used for testing swap restoration.
+    /// </summary>
+    public async Task<OutputDescriptor[]> GetUsedDescriptors(CancellationToken cancellationToken = default)
+    {
+        var network = (await _clientTransport.GetServerInfoAsync(cancellationToken)).Network;
+        var descriptors = new List<OutputDescriptor>();
+        for (int i = 0; i < _lastIndex; i++)
+        {
+            descriptors.Add(GetDescriptorFromIndex(network, _descriptor, i));
+        }
+        return descriptors.ToArray();
+    }
 }

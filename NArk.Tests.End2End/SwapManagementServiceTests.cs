@@ -228,4 +228,80 @@ public class SwapManagementServiceTests
         await refundedSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
     }
 
+    [Test]
+    public async Task CanRestoreSwapsFromBoltz()
+    {
+        var boltzApi = _app.GetEndpoint("boltz", "api");
+        var boltzWs = _app.GetEndpoint("boltz", "ws");
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var swapStorage = new InMemorySwapStorage();
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+            { BoltzUrl = boltzApi.ToString(), WebsocketUrl = boltzWs.ToString() }));
+        var intentStorage = new InMemoryIntentStorage();
+
+        var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
+            [
+                new PaymentContractTransformer(testingPrerequisite.walletProvider),
+                new HashLockedContractTransformer(testingPrerequisite.walletProvider),
+                new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
+            ]);
+
+        await using var swapMgr = new SwapsManagementService(
+            new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
+                testingPrerequisite.walletProvider,
+                coinService,
+                testingPrerequisite.contractService, testingPrerequisite.clientTransport, new DefaultCoinSelector(),
+                testingPrerequisite.safetyService, intentStorage),
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider,
+            swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, intentStorage, boltzClient, chainTimeProvider);
+
+        await swapMgr.StartAsync(CancellationToken.None);
+
+        // Create a reverse swap (this creates a swap on Boltz that we can restore later)
+        var invoice = await swapMgr.InitiateReverseSwap(
+            testingPrerequisite.walletIdentifier,
+            new CreateInvoiceParams(LightMoney.Satoshis(50000), "Test Restore", TimeSpan.FromHours(1)),
+            CancellationToken.None
+        );
+        Assert.That(invoice, Is.Not.Null);
+
+        // Verify the swap was created
+        var swapsBeforeClear = await swapStorage.GetSwaps(testingPrerequisite.walletIdentifier);
+        Assert.That(swapsBeforeClear, Has.Count.EqualTo(1));
+        var originalSwap = swapsBeforeClear.First();
+
+        // Simulate data loss by clearing the swap storage
+        swapStorage.Clear();
+
+        // Verify storage is empty
+        var swapsAfterClear = await swapStorage.GetSwaps(testingPrerequisite.walletIdentifier);
+        Assert.That(swapsAfterClear, Has.Count.EqualTo(0));
+
+        // Get the descriptors used by the wallet
+        var testWallet = testingPrerequisite.walletProvider.GetTestWallet(testingPrerequisite.walletIdentifier);
+        Assert.That(testWallet, Is.Not.Null);
+        var descriptors = await testWallet!.GetUsedDescriptors();
+
+        // Restore swaps from Boltz
+        var restoredSwaps = await swapMgr.RestoreSwaps(
+            testingPrerequisite.walletIdentifier,
+            descriptors,
+            CancellationToken.None
+        );
+
+        // Verify the swap was restored
+        Assert.That(restoredSwaps, Has.Count.GreaterThanOrEqualTo(1));
+        var restoredSwap = restoredSwaps.First(s => s.SwapId == originalSwap.SwapId);
+        Assert.That(restoredSwap.SwapType, Is.EqualTo(ArkSwapType.ReverseSubmarine));
+        Assert.That(restoredSwap.Address, Is.Not.Empty);
+
+        // Verify the swap is now in storage
+        var swapsAfterRestore = await swapStorage.GetSwaps(testingPrerequisite.walletIdentifier);
+        Assert.That(swapsAfterRestore, Has.Count.GreaterThanOrEqualTo(1));
+    }
+
 }

@@ -25,4 +25,12 @@ public class InMemoryWalletProvider(IClientTransport transport) : IWalletProvide
     {
         return _wallets.GetValueOrDefault(identifier);
     }
+
+    /// <summary>
+    /// Gets the underlying SimpleSeedWallet for testing purposes.
+    /// </summary>
+    public SimpleSeedWallet? GetTestWallet(string identifier)
+    {
+        return _wallets.GetValueOrDefault(identifier);
+    }
 }
