@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using NArk.Swaps.Boltz.Models.Restore;
 using NArk.Swaps.Boltz.Models.Swaps.Common;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
@@ -75,5 +76,31 @@ public partial class BoltzClient
     public async Task<SubmarineRefundResponse> RefundSubmarineSwapAsync(string swapId, SubmarineRefundRequest request, CancellationToken cancellation)
     {
         return await PostAsJsonAsync<SubmarineRefundRequest, SubmarineRefundResponse>($"v2/swap/submarine/{swapId}/refund/ark", request, cancellation);
+    }
+
+    // Swap Restoration
+
+    /// <summary>
+    /// Restores swaps associated with a single public key.
+    /// </summary>
+    /// <param name="publicKey">Hex-encoded public key to search for in swaps.</param>
+    /// <param name="cancellation">Cancellation token.</param>
+    /// <returns>Array of restorable swaps associated with the public key.</returns>
+    public async Task<RestorableSwap[]> RestoreSwapsAsync(string publicKey, CancellationToken cancellation = default)
+    {
+        var request = new RestoreRequest { PublicKey = publicKey };
+        return await PostAsJsonAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);
+    }
+
+    /// <summary>
+    /// Restores swaps associated with multiple public keys.
+    /// </summary>
+    /// <param name="publicKeys">Array of hex-encoded public keys to search for in swaps.</param>
+    /// <param name="cancellation">Cancellation token.</param>
+    /// <returns>Array of restorable swaps associated with any of the public keys.</returns>
+    public async Task<RestorableSwap[]> RestoreSwapsAsync(string[] publicKeys, CancellationToken cancellation = default)
+    {
+        var request = new RestoreRequest { PublicKeys = publicKeys };
+        return await PostAsJsonAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);
     }
 }

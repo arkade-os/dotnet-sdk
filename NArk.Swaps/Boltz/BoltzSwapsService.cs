@@ -68,11 +68,12 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         OutputDescriptor receiver,
         CancellationToken cancellationToken = default)
     {
-        var extractedReceiver = OutputDescriptorHelpers.Extract(receiver);
+        var extractedReceiver = receiver.Extract();
 
         // Get operator terms 
         var operatorTerms = await clientTransport.GetServerInfoAsync(cancellationToken);
 
+        //TODO: deterministic hash somehow instead?
         // Generate preimage and compute preimage hash using SHA256 for Boltz
         var preimage = RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
