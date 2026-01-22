@@ -707,6 +707,9 @@ public class SwapsManagementService : IAsyncDisposable
         if (contract == null)
             throw new InvalidOperationException("Failed to parse VHTLC contract");
 
+        if (contract.Server == null)
+            throw new InvalidOperationException("Server key is required for VHTLC contract");
+
         // Re-create contract with preimage and save
         var enrichedContract = new VHTLCContract(
             contract.Server, contract.Sender, contract.Receiver, preimage,
@@ -714,7 +717,7 @@ public class SwapsManagementService : IAsyncDisposable
             contract.UnilateralRefundDelay, contract.UnilateralRefundWithoutReceiverDelay);
 
         await _contractStorage.SaveContract(
-            enrichedContract.ToEntity(swap.WalletId, contractEntity.CreatedAt, ContractActivityState.Active),
+            enrichedContract.ToEntity(swap.WalletId, null, contractEntity.CreatedAt, ContractActivityState.Active),
             cancellationToken);
     }
 
