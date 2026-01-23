@@ -1,4 +1,4 @@
-using NArk.Contracts;
+using NArk.Core.Contracts;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 
 namespace NArk.Swaps.Boltz.Models;

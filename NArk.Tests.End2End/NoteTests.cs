@@ -2,11 +2,11 @@ using Aspire.Hosting;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Intents;
 using NArk.Blockchain.NBXplorer;
-using NArk.Contracts;
+using NArk.Core.Contracts;
 using NArk.Hosting;
-using NArk.Models.Options;
+using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
-using NArk.Services;
+using NArk.Core.Services;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 

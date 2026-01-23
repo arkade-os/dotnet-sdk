@@ -1,5 +1,5 @@
 using Ark.V1;
-using SubmitTxResponse = NArk.Transport.Models.SubmitTxResponse;
+using SubmitTxResponse = NArk.Core.Transport.Models.SubmitTxResponse;
 
 namespace NArk.Transport.GrpcClient;
 

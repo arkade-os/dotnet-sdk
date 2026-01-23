@@ -1,15 +1,15 @@
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Fees;
-using NArk.CoinSelector;
-using NArk.Fees;
-using NArk.Services;
-using NArk.Sweeper;
+using NArk.Core.CoinSelector;
+using NArk.Core.Fees;
+using NArk.Core.Services;
+using NArk.Core.Sweeper;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
-using NArk.Transformers;
-using NArk.Transport;
+using NArk.Core.Transformers;
+using NArk.Core.Transport;
 using NArk.Transport.GrpcClient;
 
 namespace NArk.Hosting;

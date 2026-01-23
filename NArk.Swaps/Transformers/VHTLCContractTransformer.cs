@@ -3,8 +3,8 @@ using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
-using NArk.Contracts;
-using NArk.Transformers;
+using NArk.Core.Contracts;
+using NArk.Core.Transformers;
 using NBitcoin;
 
 namespace NArk.Swaps.Transformers;

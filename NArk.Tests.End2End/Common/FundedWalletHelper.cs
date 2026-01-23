@@ -1,11 +1,11 @@
 using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
-using NArk.Contracts;
+using NArk.Core.Contracts;
 using NArk.Safety.AsyncKeyedLock;
-using NArk.Services;
+using NArk.Core.Services;
 using NArk.Tests.End2End.TestPersistance;
-using NArk.Transport;
+using NArk.Core.Transport;
 using NArk.Transport.GrpcClient;
 namespace NArk.Tests.End2End.Common;
 

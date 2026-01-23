@@ -6,14 +6,14 @@ using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain.NBXplorer;
-using NArk.Contracts;
+using NArk.Core.Contracts;
 using NArk.Safety.AsyncKeyedLock;
-using NArk.Services;
+using NArk.Core.Services;
 using NArk.Tests.End2End.TestPersistance;
-using NArk.Transformers;
+using NArk.Core.Transformers;
 using NArk.Transport.GrpcClient;
 using NBitcoin;
-using DefaultCoinSelector = NArk.CoinSelector.DefaultCoinSelector;
+using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 
 namespace NArk.Tests.End2End;
 

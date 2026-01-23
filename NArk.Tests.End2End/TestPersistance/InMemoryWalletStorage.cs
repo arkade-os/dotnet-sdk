@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using NArk.Abstractions.Wallets;
 using NArk.Tests.End2End.Wallets;
-using NArk.Transport;
+using NArk.Core.Transport;
 
 namespace NArk.Tests.End2End.TestPersistance;
 

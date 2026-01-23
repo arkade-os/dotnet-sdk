@@ -1,4 +1,4 @@
-using NArk.Scripts;
+using NArk.Core.Scripts;
 using NBitcoin;
 using NBitcoin.Secp256k1;
 

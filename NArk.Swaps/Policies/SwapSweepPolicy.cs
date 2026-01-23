@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using NArk.Abstractions;
-using NArk.Contracts;
-using NArk.Sweeper;
+using NArk.Core.Contracts;
+using NArk.Core.Sweeper;
 
 namespace NArk.Swaps.Policies;
 
