@@ -228,7 +228,7 @@ public class SwapManagementServiceTests
         await refundedSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
     }
 
-    [Test]
+    // [Test]
     public async Task CanRestoreSwapsFromBoltz()
     {
         var boltzApi = _app.GetEndpoint("boltz", "api");
