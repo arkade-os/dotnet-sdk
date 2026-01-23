@@ -9,7 +9,9 @@ using NArk.Abstractions.Safety;
 
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core;
 using NArk.Core.Contracts;
+using NArk.Core.Extensions;
 using NArk.Core.Helpers;
 using NArk.Core.Services;
 using NArk.Swaps.Abstractions;
@@ -22,6 +24,7 @@ using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Helpers;
 using NArk.Swaps.Models;
 using NArk.Core.Transport;
+using NArk.Swaps.Utils;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
@@ -524,7 +527,7 @@ public class SwapsManagementService : IAsyncDisposable
         restoredSwaps = restoredSwaps.ExceptBy(existingSwapIds, swap => swap.Id).ToArray();
         foreach (var restored in restoredSwaps)
         {
-            var swap = MapRestoredSwap(restored, walletId, serverInfo);
+            var swap = MapRestoredSwap(restored, walletId);
             if (swap == null)
                 continue;
 
@@ -549,7 +552,7 @@ public class SwapsManagementService : IAsyncDisposable
         return results;
     }
 
-    private ArkSwap? MapRestoredSwap(RestorableSwap restored, string walletId, ArkServerInfo serverInfo)
+    private ArkSwap? MapRestoredSwap(RestorableSwap restored, string walletId)
     {
         var swapType = restored.Type switch
         {
