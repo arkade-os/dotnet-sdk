@@ -124,7 +124,6 @@ public class SpendingService(
     public async Task<IReadOnlySet<ArkCoin>> GetAvailableCoins(string walletId, CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Getting available coins for wallet {WalletId}", walletId);
-
         
         var contractByScript =
             (await contractStorage.LoadAllContractsByWallet(walletId, cancellationToken)).ToDictionary(entity => entity.Script);
@@ -165,34 +164,7 @@ public class SpendingService(
 
         // Check if any output is explicitly subdust (the user wants to send subdust amount)
         var hasExplicitSubdustOutput = outputs.Count(o => o.Value < serverInfo.Dust);
-        //FIXME: load unspent vtxos joined with contracts, by walletid
-        var contracts = await contractStorage.LoadActiveContracts([walletId], cancellationToken);
-        var contractByScript =
-            contracts
-                .GroupBy(c => c.Script)
-                .ToDictionary(g => g.Key, g => g.First());
-        var vtxos = await vtxoStorage.GetVtxosByScripts([.. contracts.Select(c => c.Script)],
-            cancellationToken: cancellationToken);
-        var vtxosByContracts =
-            vtxos
-                .GroupBy(v => contractByScript[v.Script]);
-
-        HashSet<ArkCoin> coins = [];
-        foreach (var vtxosByContract in vtxosByContracts)
-        {
-            foreach (var vtxo in vtxosByContract)
-            {
-                try
-                {
-                    coins.Add(
-                        await coinService.GetCoin(vtxosByContract.Key, vtxo, cancellationToken));
-                }
-                catch (AdditionalInformationRequiredException ex)
-                {
-                    logger?.LogDebug(0, ex, "Skipping vtxo {TxId}:{Index} during coin selection - requires additional information (likely VHTLC contract)", vtxo.TransactionId, vtxo.TransactionOutputIndex);
-                }
-            }
-        }
+        var coins = (await GetAvailableCoins(walletId, cancellationToken)).ToList();
 
         var selectedCoins = coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
             hasExplicitSubdustOutput);
