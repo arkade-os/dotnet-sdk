@@ -190,7 +190,7 @@ public class SwapsManagementService : IAsyncDisposable
             if (swap.Status is ArkSwapStatus.Refunded) continue;
 
             // If not refunded and status is refundable, start a coop refund
-            if (swap.Status is not ArkSwapStatus.Refunded && IsRefundableStatus(swapStatus.Status))
+            if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded && IsRefundableStatus(swapStatus.Status))
             {
                 var newSwap =
                     swap with { Status = ArkSwapStatus.Failed, UpdatedAt = DateTimeOffset.Now };
