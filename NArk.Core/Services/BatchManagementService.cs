@@ -83,36 +83,19 @@ public class BatchManagementService(
             {
                 var unreservedConnections =
                     _isReservedConnections.Where(kvp => !kvp.Value).ToArray();
-                if (unreservedConnections.Length > 1)
-                    foreach (var (connId, _) in unreservedConnections.Skip(1))
-                    {
-                        if (!_connections.TryGetValue(connId, out var connection)) continue;
-
-                        logger?.LogInformation("Closing unreserved connection {ConnectionId}", connId);
-
-                        try
-                        {
-                            _ = connection.CancellationTokenSource.CancelAsync();
-                        }
-                        catch (Exception ex)
-                        {
-                            logger?.LogDebug(0, ex, "Failed to cancel connection {ConnectionId}", connId);
-                        }
-
-                        _connections.Remove(connId);
-                        _isReservedConnections.Remove(connId);
-                    }
-
-                var connectionId = RandomNumberGenerator.GetInt32(int.MinValue, int.MaxValue);
-                var newCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                await LoadActiveIntentsAsync(cancellationToken);
-                var newFreeConnection = RunSharedEventStreamAsync(connectionId, newCts.Token);
-                _connections[connectionId] = new Connection(
-                    connectionId,
-                    newFreeConnection,
-                    newCts
-                );
-                _isReservedConnections[connectionId] = false;
+                if (unreservedConnections.Length == 0)
+                {
+                    var connectionId = RandomNumberGenerator.GetInt32(int.MinValue, int.MaxValue);
+                    var newCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    await LoadActiveIntentsAsync(cancellationToken);
+                    var newFreeConnection = RunSharedEventStreamAsync(connectionId, newCts.Token);
+                    _connections[connectionId] = new Connection(
+                        connectionId,
+                        newFreeConnection,
+                        newCts
+                    );
+                    _isReservedConnections[connectionId] = false;
+                }
             }
             finally
             {
