@@ -175,7 +175,7 @@ public class SweeperService(
         logger?.LogDebug("Starting sweep for {OutpointCount} coins", coinsToSweep.Count);
         foreach (var coin in coinsToSweep)
         {
-            if (coin.CanSpendOffchain(timeHeight))
+            if (!coin.CanSpendOffchain(timeHeight))
             {
                 if (recoverablesByWallet.TryGetValue(coin.WalletIdentifier, out var recoverables))
                     recoverables.Add(coin);
