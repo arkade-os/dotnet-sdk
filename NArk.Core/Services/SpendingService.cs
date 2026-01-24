@@ -126,7 +126,8 @@ public class SpendingService(
         logger?.LogDebug("Getting available coins for wallet {WalletId}", walletId);
         
         var contractByScript =
-            (await contractStorage.LoadAllContractsByWallet(walletId, cancellationToken)).ToDictionary(entity => entity.Script);
+            (await contractStorage.LoadAllContractsByWallet(walletId, cancellationToken))
+                .ToDictionary(entity => entity.Script);
         
         var vtxos = await vtxoStorage.GetVtxosByScripts(contractByScript.Keys, false, cancellationToken);
         
@@ -164,8 +165,8 @@ public class SpendingService(
 
         // Check if any output is explicitly subdust (the user wants to send subdust amount)
         var hasExplicitSubdustOutput = outputs.Count(o => o.Value < serverInfo.Dust);
-        var coins = (await GetAvailableCoins(walletId, cancellationToken)).ToList();
-
+        
+        var coins = await GetAvailableCoins(walletId, cancellationToken);
         var selectedCoins = coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
             hasExplicitSubdustOutput);
         logger?.LogDebug("Selected {SelectedCount} coins for spending", selectedCoins.Count);
