@@ -42,7 +42,7 @@ public class CoinService(IClientTransport clientTransport, IContractStorage cont
         logger?.LogDebug("Getting PSBT signer for vtxo by script {TxId}:{Index}", vtxo.TransactionId, vtxo.TransactionOutputIndex);
         var contracts = await contractStorage.LoadContractsByScripts([vtxo.Script], [walletIdentifier], cancellationToken);
 
-        if (contracts.SingleOrDefault() is not { } contract)
+        if (contracts.FirstOrDefault() is not { } contract)
         {
             logger?.LogWarning("Could not find contract for vtxo {TxId}:{Index}", vtxo.TransactionId,
                 vtxo.TransactionOutputIndex);
