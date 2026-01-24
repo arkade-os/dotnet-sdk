@@ -258,7 +258,7 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
     }, cancellationToken: cancellationToken);
 
     var noteOutput = await Cli.Wrap("docker")
-        .WithArguments(["exec", "-t", "ark", "arkd", "note", "--amount", "1000000"])
+        .WithArguments(["exec", "-t", "ark", "arkd", "note", "--amount", "3000000"])
         .ExecuteBufferedAsync(cancellationToken);
     var note = noteOutput.StandardOutput.Trim();
     await Cli.Wrap("docker")
