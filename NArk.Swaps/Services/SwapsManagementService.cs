@@ -379,6 +379,7 @@ public class SwapsManagementService : IAsyncDisposable
         var swap = await _boltzService.CreateSubmarineSwap(invoice,
             await addressProvider!.GetNextSigningDescriptor(cancellationToken),
             cancellationToken);
+        await _contractService.ImportContract(walletId, swap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate, cancellationToken: cancellationToken);
         await _swapsStorage.SaveSwap(
             walletId,
             new ArkSwap(
@@ -397,7 +398,6 @@ public class SwapsManagementService : IAsyncDisposable
             ), cancellationToken);
         try
         {
-            await _contractService.ImportContract(walletId, swap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate, cancellationToken: cancellationToken);
             return autoPay
                 ? (await _spendingService.Spend(walletId,
                     [new ArkTxOut(ArkTxOutType.Vtxo, swap.Swap.ExpectedAmount, swap.Address)], cancellationToken))
