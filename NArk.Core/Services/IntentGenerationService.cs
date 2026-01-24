@@ -156,13 +156,9 @@ public class IntentGenerationService(
 
         var (RegisterTx, Delete, RegisterMessage, DeleteMessage) = await CreateIntents(
             serverInfo.Network,
-            intentSpec
-                .Coins
-                .Select(c => c.SignerDescriptor ?? singingDescriptor)
-                .Select(descriptor => OutputDescriptorHelpers.Extract(descriptor).PubKey)
-                .Where(p => p is not null)
-                .Select(p => p!)
-                .ToHashSet(),
+            new HashSet<ECPubKey>([
+                singingDescriptor.ToPubKey()
+            ]),
             intentSpec.ValidFrom,
             intentSpec.ValidUntil,
             intentSpec.Coins,
