@@ -103,7 +103,7 @@ public class BatchManagementService(
         {
             if (intent.IntentId is null)
             {
-                logger?.LogDebug("Skipping intent with null IntentId (InternalId: {InternalId})", intent.InternalId);
+                logger?.LogDebug("Skipping intent with null IntentId (IntentTxId: {IntentTxId})", intent.IntentTxId);
                 continue;
             }
 

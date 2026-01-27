@@ -80,12 +80,12 @@ public class IntentSynchronizationService(
 
     private async Task SubmitIntent(ArkIntent intentToSubmit, CancellationToken token)
     {
-        logger?.LogDebug("Submitting intent {IntentId}", intentToSubmit.InternalId);
-        await using var @lock = await safetyService.LockKeyAsync($"intent::{intentToSubmit.InternalId}", token);
-        var intentAfterLock = await intentStorage.GetIntentByInternalId(intentToSubmit.InternalId, token);
+        logger?.LogDebug("Submitting intent {IntentTxId}", intentToSubmit.IntentTxId);
+        await using var @lock = await safetyService.LockKeyAsync($"intent::{intentToSubmit.IntentTxId}", token);
+        var intentAfterLock = await intentStorage.GetIntentByIntentTxId(intentToSubmit.IntentTxId, token);
         if (intentAfterLock is null)
         {
-            logger?.LogError("Intent {IntentId} disappeared from storage mid-action", intentToSubmit.InternalId);
+            logger?.LogError("Intent {IntentTxId} disappeared from storage mid-action", intentToSubmit.IntentTxId);
             throw new Exception("Should not happen, intent disappeared from storage mid-action");
         }
 
@@ -107,13 +107,13 @@ public class IntentSynchronizationService(
                         UpdatedAt = now
                     }, token);
 
-                logger?.LogInformation("Intent {IntentId} registered successfully with server intent id {ServerIntentId}", intentToSubmit.InternalId, intentId);
+                logger?.LogInformation("Intent {IntentTxId} registered successfully with server intent id {ServerIntentId}", intentToSubmit.IntentTxId, intentId);
                 await eventHandlers.SafeHandleEventAsync(new PostIntentSubmissionEvent(intentAfterLock, now, true,
                     ActionState.Successful, null), token);
             }
             catch (AlreadyLockedVtxoException ex)
             {
-                logger?.LogWarning(0, ex, "Intent {IntentId} vtxo already locked, deleting and re-registering", intentToSubmit.InternalId);
+                logger?.LogWarning(0, ex, "Intent {IntentTxId} vtxo already locked, deleting and re-registering", intentToSubmit.IntentTxId);
                 await clientTransport.DeleteIntent(intentAfterLock, token);
 
                 var intentId =
@@ -130,14 +130,14 @@ public class IntentSynchronizationService(
                         UpdatedAt = now
                     }, token);
 
-                logger?.LogInformation("Intent {IntentId} re-registered successfully after deletion", intentToSubmit.InternalId);
+                logger?.LogInformation("Intent {IntentTxId} re-registered successfully after deletion", intentToSubmit.IntentTxId);
                 await eventHandlers.SafeHandleEventAsync(new PostIntentSubmissionEvent(intentAfterLock, now, false,
                     ActionState.Successful, null), token);
             }
         }
         catch (Exception ex)
         {
-            logger?.LogError(0, ex, "Intent {IntentId} submission failed", intentToSubmit.InternalId);
+            logger?.LogError(0, ex, "Intent {IntentTxId} submission failed", intentToSubmit.IntentTxId);
             var now = DateTimeOffset.UtcNow;
 
             await intentStorage.SaveIntent(

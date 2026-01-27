@@ -60,3 +60,4 @@ nunit-*.xml
 .idea/
 *.user
 **/.DS_Store
+CLAUDE.md

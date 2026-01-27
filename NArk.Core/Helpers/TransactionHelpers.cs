@@ -280,9 +280,9 @@ public static class TransactionHelpers
                 foreach (var intent in intents)
                 {
                     await using var intentLock =
-                        await safetyService.LockKeyAsync($"intent::{intent.InternalId}", CancellationToken.None);
+                        await safetyService.LockKeyAsync($"intent::{intent.IntentTxId}", CancellationToken.None);
                     var intentAfterLock =
-                        await intentStorage.GetIntentByInternalId(intent.InternalId, CancellationToken.None)
+                        await intentStorage.GetIntentByIntentTxId(intent.IntentTxId, CancellationToken.None)
                         ?? throw new Exception("Should not happen, intent disappeared from storage mid-action");
                     await intentStorage.SaveIntent(intentAfterLock.WalletId,
                         intentAfterLock with { State = ArkIntentState.Cancelled }, CancellationToken.None);

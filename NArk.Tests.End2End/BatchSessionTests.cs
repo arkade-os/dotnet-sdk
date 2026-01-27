@@ -63,6 +63,12 @@ public class BatchSessionTests
 
         intentStorage.IntentChanged += (_, intent) =>
         {
+            // Verify IntentTxId is computed from RegisterProof PSBT's transaction hash
+            var registerProofPsbt = PSBT.Parse(intent.RegisterProof, Network.RegTest);
+            var expectedIntentTxId = registerProofPsbt.GetGlobalTransaction().GetHash().ToString();
+            Assert.That(intent.IntentTxId, Is.EqualTo(expectedIntentTxId),
+                "IntentTxId should match the RegisterProof PSBT's transaction hash");
+
             switch (intent.State)
             {
                 case ArkIntentState.WaitingToSubmit:
