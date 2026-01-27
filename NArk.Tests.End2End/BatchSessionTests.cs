@@ -1,7 +1,11 @@
+using System.Text;
 using Aspire.Hosting;
 using Microsoft.Extensions.Options;
+using NArk.Abstractions.Batches;
+using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Intents;
 using NArk.Blockchain.NBXplorer;
+using NArk.Core.Extensions;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
@@ -9,6 +13,7 @@ using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
 using NBitcoin;
+using NBitcoin.Crypto;
 
 namespace NArk.Tests.End2End;
 
@@ -113,4 +118,5 @@ public class BatchSessionTests
 
         await newSuccessBatch.Task.WaitAsync(TimeSpan.FromMinutes(1));
     }
+
 }

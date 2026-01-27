@@ -323,6 +323,16 @@ public class BatchManagementService(
             {
                 var sessionCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+                // Save state BEFORE starting HandleBatchEvents to ensure BatchId is available
+                // when checking for BatchFailedEvent
+                await SaveToStorage(intentId, arkIntent =>
+                    (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
+                    {
+                        BatchId = batchEvent.Id,
+                        State = ArkIntentState.BatchInProgress,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    }, sessionCancellationTokenSource.Token);
+
                 _activeBatchSessions[intentId] = new BatchSessionWithConnection(
                     new Connection(
                         HandleBatchEvents(intentId, intent, session, sessionCancellationTokenSource.Token),
@@ -334,14 +344,6 @@ public class BatchManagementService(
                 await clientTransport.ConfirmRegistrationAsync(
                     intentId,
                     cancellationToken: sessionCancellationTokenSource.Token);
-
-                await SaveToStorage(intentId, arkIntent =>
-                    (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
-                    {
-                        BatchId = batchEvent.Id,
-                        State = ArkIntentState.BatchInProgress,
-                        UpdatedAt = DateTimeOffset.UtcNow
-                    }, sessionCancellationTokenSource.Token);
             }
             finally
             {
@@ -392,6 +394,9 @@ public class BatchManagementService(
                         {
                             await HandleBatchFailedAsync(intent, batchFailedEvent, cancellationToken);
                             _activeBatchSessions.TryRemove(intentId, out _);
+                            // Remove from _activeIntents - the intent will be re-registered by
+                            // IntentSynchronizationService with a new IntentId, and picked up
+                            // again through the normal LoadActiveIntentsAsync flow
                             _activeIntents.TryRemove(intentId, out _);
                             TriggerStreamUpdate();
                         }
@@ -431,6 +436,27 @@ public class BatchManagementService(
         }
     }
 
+    /// <summary>
+    /// Handles a batch failure by resetting the intent for re-registration.
+    ///
+    /// <para><b>Batch Failure Recovery Flow:</b></para>
+    /// <list type="number">
+    ///   <item>Intent state is reset to <see cref="ArkIntentState.WaitingToSubmit"/> with IntentId cleared</item>
+    ///   <item><see cref="IntentSynchronizationService"/> picks up the intent via GetUnsubmittedIntents()</item>
+    ///   <item>Re-registration is attempted with arkd:
+    ///     <list type="bullet">
+    ///       <item>If arkd requeued the intent: AlreadyLockedVtxoException is thrown, triggering delete + re-register</item>
+    ///       <item>If we got a conviction (our fault): re-registration succeeds with a new IntentId</item>
+    ///       <item>If we're banned (3 convictions): re-registration fails, intent is cancelled</item>
+    ///     </list>
+    ///   </item>
+    ///   <item>On successful re-registration, intent moves to WaitingForBatch and is picked up by BatchManagementService again</item>
+    /// </list>
+    ///
+    /// <para><b>Note:</b> arkd tracks "convictions" - if a batch fails due to your intent not signing,
+    /// you get a conviction and the intent is NOT automatically requeued. After 3 convictions,
+    /// the VTXOs used in that intent are temporarily banned from spending/refreshing.</para>
+    /// </summary>
     private async Task HandleBatchFailedAsync(
         ArkIntent intent,
         BatchFailedEvent batchEvent,
@@ -439,8 +465,9 @@ public class BatchManagementService(
         await SaveToStorage(intent.IntentId!, arkIntent =>
             (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
             {
-                State = ArkIntentState.BatchFailed,
-                CancellationReason = $"Batch failed: {batchEvent.Reason}",
+                State = ArkIntentState.WaitingToSubmit,
+                BatchId = null,
+                IntentId = null,
                 UpdatedAt = DateTimeOffset.UtcNow
             }, cancellationToken);
 

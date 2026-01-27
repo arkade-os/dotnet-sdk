@@ -64,9 +64,24 @@ public class IntentSynchronizationService(
                 foreach (var intentToSubmit in intentsToSubmit)
                 {
                     // In case storage did not respect our wish...
-                    if (intentToSubmit.ValidFrom > DateTimeOffset.UtcNow ||
-                            intentToSubmit.ValidUntil < DateTimeOffset.UtcNow)
+                    if (intentToSubmit.ValidFrom > DateTimeOffset.UtcNow)
                         continue;
+
+                    // Mark expired intents as cancelled
+                    if (intentToSubmit.ValidUntil < DateTimeOffset.UtcNow)
+                    {
+                        logger?.LogWarning("Intent {IntentTxId} has expired (ValidUntil: {ValidUntil}), marking as cancelled",
+                            intentToSubmit.IntentTxId, intentToSubmit.ValidUntil);
+                        await intentStorage.SaveIntent(
+                            intentToSubmit.WalletId,
+                            intentToSubmit with
+                            {
+                                State = ArkIntentState.Cancelled,
+                                CancellationReason = "Intent expired",
+                                UpdatedAt = DateTimeOffset.UtcNow
+                            }, token);
+                        continue;
+                    }
 
                     await SubmitIntent(intentToSubmit, token);
                 }
