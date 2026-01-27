@@ -5,7 +5,7 @@ namespace NArk.Core.Services;
 
 public interface IOnchainService
 {
-    Task<Guid> InitiateCollaborativeExit(string walletId, ArkTxOut output,
+    Task<string> InitiateCollaborativeExit(string walletId, ArkTxOut output,
         CancellationToken cancellationToken = default);
-    Task<Guid> InitiateCollaborativeExit(ArkCoin[] inputs, ArkTxOut[] outputs, CancellationToken cancellationToken = default);
+    Task<string> InitiateCollaborativeExit(ArkCoin[] inputs, ArkTxOut[] outputs, CancellationToken cancellationToken = default);
 }

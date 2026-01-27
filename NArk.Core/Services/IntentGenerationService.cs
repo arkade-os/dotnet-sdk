@@ -103,7 +103,7 @@ public class IntentGenerationService(
         }
     }
 
-    private async Task<Guid> GenerateIntentFromSpec(string walletId, ArkIntentSpec intentSpec, bool force = false, CancellationToken token = default)
+    private async Task<string?> GenerateIntentFromSpec(string walletId, ArkIntentSpec intentSpec, bool force = false, CancellationToken token = default)
     {
         logger?.LogDebug("Generating intent from spec for wallet {WalletId} with {CoinCount} coins", walletId, intentSpec.Coins.Length);
         ArkServerInfo serverInfo = await clientTransport.GetServerInfoAsync(token);
@@ -125,7 +125,7 @@ public class IntentGenerationService(
             if (!force)
             {
                 logger?.LogDebug("Intent generation skipped for wallet {WalletId}: overlapping intents exist", walletId);
-                return Guid.Empty;
+                return null;
             }
             else
             {
@@ -133,9 +133,9 @@ public class IntentGenerationService(
                 foreach (var intent in overlappingIntents)
                 {
                     await using var intentLock =
-                        await safetyService.LockKeyAsync($"intent::{intent.InternalId}", CancellationToken.None);
+                        await safetyService.LockKeyAsync($"intent::{intent.IntentTxId}", CancellationToken.None);
                     var intentAfterLock =
-                        await intentStorage.GetIntentByInternalId(intent.InternalId, CancellationToken.None)
+                        await intentStorage.GetIntentByIntentTxId(intent.IntentTxId, CancellationToken.None)
                         ?? throw new Exception("Should not happen, intent disappeared from storage mid-action");
                     await intentStorage.SaveIntent(intentAfterLock.WalletId,
                         intentAfterLock with { State = ArkIntentState.Cancelled }, CancellationToken.None);
@@ -166,17 +166,17 @@ public class IntentGenerationService(
             token
         );
 
-        var internalId = Guid.NewGuid();
+        var intentTxId = RegisterTx.GetGlobalTransaction().GetHash().ToString();
         await intentStorage.SaveIntent(walletId,
-            new ArkIntent(internalId, null, walletId, ArkIntentState.WaitingToSubmit,
+            new ArkIntent(intentTxId, null, walletId, ArkIntentState.WaitingToSubmit,
                 intentSpec.ValidFrom, intentSpec.ValidUntil, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
                 RegisterTx.ToBase64(), RegisterMessage, Delete.ToBase64(),
                 DeleteMessage, null, null, null,
                 [.. intentSpec.Coins.Select(c => c.Outpoint)],
                 singingDescriptor.ToString()), token);
 
-        logger?.LogInformation("Generated intent {IntentId} for wallet {WalletId}", internalId, walletId);
-        return internalId;
+        logger?.LogInformation("Generated intent {IntentTxId} for wallet {WalletId}", intentTxId, walletId);
+        return intentTxId;
     }
 
     private async Task<PSBT> CreateIntent(string message, Network network, ArkCoin[] inputs,
@@ -306,23 +306,23 @@ public class IntentGenerationService(
         logger?.LogInformation("Intent generation service disposed");
     }
 
-    public async Task<Guid> GenerateManualIntent(string walletId, ArkIntentSpec spec, bool force = false, CancellationToken cancellationToken = default)
+    public async Task<string> GenerateManualIntent(string walletId, ArkIntentSpec spec, bool force = false, CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Generating manual intent for wallet {WalletId}", walletId);
-        var internalId = await GenerateIntentFromSpec(walletId, spec, force, cancellationToken);
+        var intentTxId = await GenerateIntentFromSpec(walletId, spec, force, cancellationToken);
 
-        if (internalId == Guid.Empty)
+        if (intentTxId is null)
         {
             logger?.LogWarning("Manual intent generation failed for wallet {WalletId}: pending intents exist", walletId);
             throw new InvalidOperationException("Could not create intent, pending intents exist");
         }
 
-        return internalId;
+        return intentTxId;
     }
 }
 
 public interface IIntentGenerationService
 {
-    Task<Guid> GenerateManualIntent(string walletId, ArkIntentSpec spec,
+    Task<string> GenerateManualIntent(string walletId, ArkIntentSpec spec,
         bool force = false, CancellationToken cancellationToken = default);
 }

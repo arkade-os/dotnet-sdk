@@ -18,7 +18,7 @@ public class InMemoryIntentStorage : IIntentStorage
                 intents.Add(intent);
             }
             else
-                _intents[walletIdentifier] = new HashSet<ArkIntent>(ArkIntent.InternalIdComparer) { intent };
+                _intents[walletIdentifier] = new HashSet<ArkIntent>(ArkIntent.IntentTxIdComparer) { intent };
         }
 
         try
@@ -41,15 +41,15 @@ public class InMemoryIntentStorage : IIntentStorage
         }
     }
 
-    public Task<ArkIntent?> GetIntentByInternalId(Guid internalId, CancellationToken cancellationToken = default)
+    public Task<ArkIntent?> GetIntentByIntentTxId(string intentTxId, CancellationToken cancellationToken = default)
     {
         lock (_intents)
         {
             return Task.FromResult(
                 _intents
-                    .FirstOrDefault(i => i.Value.Any(intent => intent.InternalId == internalId))
+                    .FirstOrDefault(i => i.Value.Any(intent => intent.IntentTxId == intentTxId))
                     .Value
-                    .FirstOrDefault(intent => intent.InternalId == internalId));
+                    ?.FirstOrDefault(intent => intent.IntentTxId == intentTxId));
 
         }
     }

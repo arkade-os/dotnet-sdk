@@ -11,7 +11,7 @@ namespace NArk.Core.Services;
 
 public class OnchainService(IClientTransport clientTransport, IContractService contractService, ISpendingService spendingService, IIntentGenerationService intentGenerationService, IFeeEstimator feeEstimator, ICoinSelector coinSelector, ILogger<OnchainService>? logger = null) : IOnchainService
 {
-    public async Task<Guid> InitiateCollaborativeExit(string walletId, ArkTxOut output,
+    public async Task<string> InitiateCollaborativeExit(string walletId, ArkTxOut output,
         CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Initiating collaborative exit for wallet {WalletId} with output value {Value}", walletId, output.Value);
@@ -72,7 +72,7 @@ public class OnchainService(IClientTransport clientTransport, IContractService c
         }
     }
 
-    public async Task<Guid> InitiateCollaborativeExit(ArkCoin[] inputs, ArkTxOut[] outputs, CancellationToken cancellationToken = default)
+    public async Task<string> InitiateCollaborativeExit(ArkCoin[] inputs, ArkTxOut[] outputs, CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Initiating collaborative exit with {InputCount} inputs and {OutputCount} outputs", inputs.Length, outputs.Length);
         if (outputs.All(o => o.Type == ArkTxOutType.Vtxo))
