@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using NArk.Core.Services;
+using NArk.Swaps.Services;
 
 namespace NArk.Hosting;
 
@@ -8,7 +9,8 @@ public class ArkHostedLifecycle(
     IntentGenerationService intentGenerationService,
     IntentSynchronizationService intentSynchronizationService,
     BatchManagementService batchManagementService,
-    SweeperService sweeperService) : IHostedLifecycleService
+    SweeperService sweeperService,
+    SwapsManagementService? swapsManagementService = null) : IHostedLifecycleService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -17,6 +19,10 @@ public class ArkHostedLifecycle(
         await intentSynchronizationService.StartAsync(cancellationToken);
         await intentGenerationService.StartAsync(cancellationToken);
         await vtxoSynchronizationService.StartAsync(cancellationToken);
+        if (swapsManagementService is not null)
+        {
+            await swapsManagementService.StartAsync(cancellationToken);
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
