@@ -107,7 +107,7 @@ public class SweeperService(
         if (contracts.Count is 0)
             contracts = await contractStorage.LoadActiveContracts(cancellationToken: cancellationToken);
         var matchingVtxos =
-            (await vtxoStorage.GetVtxosByScripts([.. contracts.Select(c => c.Script)], false, cancellationToken))
+            (await vtxoStorage.GetVtxos(VtxoFilter.ByScripts(contracts.Select(c => c.Script).ToList()), cancellationToken))
             .GroupBy(vtxo => vtxo.Script).ToDictionary(vtxos => vtxos.Key, vtxos => vtxos.ToArray());
 
         Dictionary<ArkContractEntity, ArkVtxo[]> contractVtxos = new Dictionary<ArkContractEntity, ArkVtxo[]>();

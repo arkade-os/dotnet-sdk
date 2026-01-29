@@ -63,8 +63,8 @@ public class IntentGenerationService(
                             .ToDictionary(g => g.Key, g => g.First());
 
                     var unspentVtxos =
-                        await vtxoStorage.GetVtxosByScripts(
-                            [.. activeContractsByScript.Keys], cancellationToken: token);
+                        await vtxoStorage.GetVtxos(
+                            VtxoFilter.ByScripts(activeContractsByScript.Keys.ToList()), token);
 
                     List<ArkCoin> coins = [];
 

@@ -280,11 +280,10 @@ public class BatchManagementService(
             HashSet<ArkCoin> allWalletCoins = [];
             foreach (var outpoint in allVtxoOutpoints)
             {
+                var vtxo = (await vtxoStorage.GetVtxos(VtxoFilter.ByOutpoint(outpoint), cancellationToken)).FirstOrDefault()
+                    ?? throw new InvalidOperationException("Unknown vtxo outpoint");
                 allWalletCoins.Add(
-                    await coinService.GetCoin(
-                        await vtxoStorage.GetVtxoByOutPoint(outpoint, cancellationToken) ??
-                        throw new InvalidOperationException("Unknown vtxo outpoint"), intent.WalletId,
-                        cancellationToken)
+                    await coinService.GetCoin(vtxo, intent.WalletId, cancellationToken)
                 );
             }
 

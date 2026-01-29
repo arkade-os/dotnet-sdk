@@ -246,7 +246,7 @@ public class SwapsManagementService : IAsyncDisposable
         }
 
         // Get VTXOs for this contract
-        var vtxos = await _vtxoStorage.GetVtxosByScripts([swap.ContractScript], false,
+        var vtxos = await _vtxoStorage.GetVtxos(VtxoFilter.ByScripts(swap.ContractScript),
             cancellationToken);
         if (vtxos.Count == 0)
         {
