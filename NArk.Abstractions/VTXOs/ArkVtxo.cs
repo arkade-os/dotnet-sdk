@@ -42,16 +42,16 @@ public record ArkVtxo(
 
     public bool CanSpendOffchain(TimeHeight current)
     {
-        return !IsSpent() && !Swept && !IsExpired(current);
+        return !IsSpent() && IsRecoverable(current);
     }
 
-    public bool IsRecoverable()
+    public bool IsRecoverable(TimeHeight current)
     {
-        return Swept;
+        return Swept || IsExpired(current) ;
     }
-
-    public bool RequiresForfeit()
-    {
-        return !Swept;
-    }
+    //
+    // public bool RequiresForfeit()
+    // {
+    //     return !Swept;
+    // }
 }
