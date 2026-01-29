@@ -51,28 +51,31 @@ public class IntentGenerationService(
         {
             while (!token.IsCancellationRequested)
             {
-                var activeContractsByWallets =
-                    (await contractStorage.LoadActiveContracts(null, token))
+                var unspentVtxos =
+                    await vtxoStorage.GetVtxos(new VtxoFilter()
+                    {
+                        IncludeSpent = false,
+                        IncludeRecoverable = true,
+                    }, token);
+                var scriptsWithUnspentVtxos = unspentVtxos.Select(v => v.Script).ToHashSet();
+                var contracts =
+                    (await contractStorage.LoadContractsByScripts(scriptsWithUnspentVtxos.ToArray(), null, token))
                     .GroupBy(c => c.WalletIdentifier);
 
-                foreach (var activeContractsByWallet in activeContractsByWallets)
-                {
-                    var activeContractsByScript =
-                        activeContractsByWallet
-                            .GroupBy(c => c.Script)
-                            .ToDictionary(g => g.Key, g => g.First());
-
-                    var unspentVtxos =
-                        await vtxoStorage.GetVtxos(
-                            VtxoFilter.ByScripts(activeContractsByScript.Keys.ToList()), token);
+                
+                
+                foreach (var walletContracts in contracts)
+                {;
+                    var walletVtxos =
+                        unspentVtxos.Where(v => walletContracts.Any(c => c.Script == v.Script)).ToArray();
 
                     List<ArkCoin> coins = [];
 
-                    foreach (var vtxo in unspentVtxos)
+                    foreach (var vtxo in walletVtxos)
                     {
                         try
                         {
-                            var coin = await coinService.GetCoin(activeContractsByScript[vtxo.Script], vtxo, token);
+                            var coin = await coinService.GetCoin(walletContracts.Single(entity => entity.Script == vtxo.Script), vtxo, token);
                             coins.Add(coin);
                         }
                         catch (AdditionalInformationRequiredException ex)
@@ -86,7 +89,7 @@ public class IntentGenerationService(
 
                     foreach (var intentSpec in intentSpecs)
                     {
-                        await GenerateIntentFromSpec(activeContractsByWallet.Key, intentSpec, false, token);
+                        await GenerateIntentFromSpec(walletContracts.Key, intentSpec, false, token);
                     }
                 }
 
