@@ -4,26 +4,18 @@ using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.Fees;
-using NArk.Abstractions.Intents;
-
 using NArk.Abstractions.VTXOs;
-using NArk.Abstractions.Wallets;
 using NArk.Core.Enums;
 using NArk.Core.Events;
 using NArk.Core.Models.Options;
 using NArk.Core.Sweeper;
 using NArk.Core.Extensions;
-using NBitcoin;
 
 namespace NArk.Core.Services;
 
 public class SweeperService(
-    IFeeEstimator feeEstimator,
     IEnumerable<ISweepPolicy> policies,
     IVtxoStorage vtxoStorage,
-    IIntentGenerationService intentGenerationService,
-    IContractService contractService,
     ICoinService coinService,
     IContractStorage contractStorage,
     ISpendingService spendingService,
@@ -33,33 +25,27 @@ public class SweeperService(
     ILogger<SweeperService>? logger = null) : IAsyncDisposable
 {
     public SweeperService(
-        IFeeEstimator feeEstimator,
         IEnumerable<ISweepPolicy> policies,
         IVtxoStorage vtxoStorage,
-        IIntentGenerationService intentGenerationService,
-        IContractService contractService,
         ICoinService coinService,
         IContractStorage contractStorage,
         ISpendingService spendingService,
         IOptions<SweeperServiceOptions> options,
         IChainTimeProvider chainTimeProvider,
         ILogger<SweeperService> logger)
-            : this(feeEstimator, policies, vtxoStorage, intentGenerationService, contractService, coinService, contractStorage, spendingService, options, chainTimeProvider, [], logger)
+            : this(policies, vtxoStorage, coinService, contractStorage, spendingService, options, chainTimeProvider, [], logger)
     {
     }
 
     public SweeperService(
-        IFeeEstimator feeEstimator,
         IEnumerable<ISweepPolicy> policies,
         IVtxoStorage vtxoStorage,
-        IIntentGenerationService intentGenerationService,
-        IContractService contractService,
         ICoinService coinService,
         IContractStorage contractStorage,
         ISpendingService spendingService,
         IOptions<SweeperServiceOptions> options,
         IChainTimeProvider chainTimeProvider)
-        : this(feeEstimator, policies, vtxoStorage, intentGenerationService, contractService, coinService, contractStorage, spendingService, options, chainTimeProvider, [], null)
+        : this(policies, vtxoStorage, coinService, contractStorage, spendingService, options, chainTimeProvider, [], null)
     {
     }
 
@@ -95,20 +81,39 @@ public class SweeperService(
             {
                 SweepVtxoTrigger vtxoTrigger => TrySweepVtxos(vtxoTrigger.Vtxos, loopShutdownToken),
                 SweepContractTrigger contractTrigger => TrySweepContracts(contractTrigger.Contracts, loopShutdownToken),
-                SweepTimerTrigger _ => TrySweepContracts([], loopShutdownToken),
+                SweepTimerTrigger _ => TrySweepContracts(null, loopShutdownToken),
                 _ => throw new ArgumentOutOfRangeException()
             });
         }
     }
 
-    private async Task TrySweepContracts(IReadOnlyCollection<ArkContractEntity> contracts,
+    private async Task TrySweepContracts(IReadOnlyCollection<ArkContractEntity>? contracts,
         CancellationToken cancellationToken)
     {
-        if (contracts.Count is 0)
-            contracts = await contractStorage.LoadActiveContracts(cancellationToken: cancellationToken);
-        var matchingVtxos =
-            (await vtxoStorage.GetVtxos(VtxoFilter.ByScripts(contracts.Select(c => c.Script).ToList()), cancellationToken))
-            .GroupBy(vtxo => vtxo.Script).ToDictionary(vtxos => vtxos.Key, vtxos => vtxos.ToArray());
+        Dictionary<string, ArkVtxo[]> matchingVtxos;
+
+        if (contracts is null)
+        {
+            var unspentVtxos = await vtxoStorage.GetVtxos(includeSpent: false, cancellationToken: cancellationToken);
+            contracts =
+                await contractStorage.GetContracts(
+                    scripts: unspentVtxos.Select(v => v.Script).Distinct().ToArray(),
+                    cancellationToken: cancellationToken);
+            
+            matchingVtxos =
+                unspentVtxos
+                .GroupBy(vtxo => vtxo.Script).ToDictionary(vtxos => vtxos.Key, vtxos => vtxos.ToArray());
+            
+        }
+        else
+        {
+            
+            var contractScripts = contracts.Select(c => c.Script).ToHashSet();
+            var unspentVtxos = await vtxoStorage.GetVtxos(includeSpent: false, scripts: contractScripts , cancellationToken: cancellationToken);
+            matchingVtxos =
+                unspentVtxos
+                    .GroupBy(vtxo => vtxo.Script).ToDictionary(vtxos => vtxos.Key, vtxos => vtxos.ToArray());
+        }
 
         Dictionary<ArkContractEntity, ArkVtxo[]> contractVtxos = new Dictionary<ArkContractEntity, ArkVtxo[]>();
         foreach (var contract in contracts)
@@ -138,7 +143,7 @@ public class SweeperService(
             .ToDictionary(grouping => grouping.Key, grouping => grouping.ToArray());
 
         var contracts =
-            await contractStorage.LoadContractsByScripts(scriptToVtxos.Keys.ToArray(), null, cancellationToken);
+            await contractStorage.GetContracts(scripts: scriptToVtxos.Keys.ToArray(), cancellationToken: cancellationToken);
 
         Dictionary<ArkContractEntity, ArkVtxo[]> contractVtxos = new Dictionary<ArkContractEntity, ArkVtxo[]>();
         foreach (var contract in contracts)
@@ -170,81 +175,39 @@ public class SweeperService(
 
     private async Task Sweep(HashSet<ArkCoin> coinsToSweep)
     {
-        var recoverablesByWallet = new Dictionary<string, HashSet<ArkCoin>>();
         var timeHeight = await chainTimeProvider.GetChainTime();
         logger?.LogDebug("Starting sweep for {OutpointCount} coins", coinsToSweep.Count);
+
         foreach (var coin in coinsToSweep)
         {
             if (!coin.CanSpendOffchain(timeHeight))
             {
-                if (recoverablesByWallet.TryGetValue(coin.WalletIdentifier, out var recoverables))
-                    recoverables.Add(coin);
-                else
-                    recoverablesByWallet[coin.WalletIdentifier] = [coin];
-            }
-            else
-            {
-                try
-                {
-                    var txId = await spendingService.Spend(coin.WalletIdentifier, [coin], [],
-                        CancellationToken.None);
-                    logger?.LogInformation("Sweep successful for outpoint {Outpoint}, txId: {TxId}", coin.Outpoint, txId);
-                    await postSweepHandlers.SafeHandleEventAsync(new PostSweepActionEvent(coin, txId,
-                        ActionState.Successful, null));
-                    return;
-                }
-                catch (AlreadyLockedVtxoException ex)
-                {
-                    logger?.LogWarning(0, ex, "Sweep skipped for outpoint {Outpoint}: vtxo is already locked", coin.Outpoint);
-                    await postSweepHandlers.SafeHandleEventAsync(new PostSweepActionEvent(coin, null,
-                        ActionState.Failed, "Vtxo is already locked by another process."));
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    logger?.LogDebug(0, ex, "Sweep path failed for outpoint {Outpoint}", coin.Outpoint);
-                }
+                // Skip recoverable coins - IntentScheduler handles renewal before expiry
+                logger?.LogDebug("Skipping recoverable coin {Outpoint} - handled by IntentScheduler", coin.Outpoint);
+                continue;
             }
 
-        }
-
-        foreach (var (walletId, coins) in recoverablesByWallet)
-        {
-            if (options.Value.BatchRecoverableVtxosInSingleIntent)
+            try
             {
-                await CreateIntent(walletId, coins);
+                var txId = await spendingService.Spend(coin.WalletIdentifier, [coin], [],
+                    CancellationToken.None);
+                logger?.LogInformation("Sweep successful for outpoint {Outpoint}, txId: {TxId}", coin.Outpoint, txId);
+                await postSweepHandlers.SafeHandleEventAsync(new PostSweepActionEvent(coin, txId,
+                    ActionState.Successful, null));
             }
-            else
+            catch (AlreadyLockedVtxoException ex)
             {
-                foreach (var coin in coins)
-                {
-                    await CreateIntent(walletId, [coin]);
-                }
+                logger?.LogWarning(0, ex, "Sweep skipped for outpoint {Outpoint}: vtxo is already locked", coin.Outpoint);
+                await postSweepHandlers.SafeHandleEventAsync(new PostSweepActionEvent(coin, null,
+                    ActionState.Failed, "Vtxo is already locked by another process."));
+            }
+            catch (Exception ex)
+            {
+                logger?.LogDebug(0, ex, "Sweep failed for outpoint {Outpoint}", coin.Outpoint);
+                await postSweepHandlers.SafeHandleEventAsync(new PostSweepActionEvent(coin, null,
+                    ActionState.Failed, ex.Message));
             }
         }
-
-    }
-
-    private async Task CreateIntent(string walletIdentifier, IReadOnlyCollection<ArkCoin> coins)
-    {
-        var totalAmount = coins.Sum(c => c.Amount);
-
-        var output = await contractService.DeriveContract(walletIdentifier, NextContractPurpose.SendToSelf);
-        var feeEstimation = await feeEstimator.EstimateFeeAsync(
-            [.. coins],
-            [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(totalAmount), output.GetArkAddress())]
-        );
-
-        await intentGenerationService.GenerateManualIntent(
-            walletIdentifier,
-            new ArkIntentSpec(
-                [.. coins],
-                [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(totalAmount - feeEstimation), output.GetArkAddress())],
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow.AddHours(1)
-            ),
-            true
-        );
     }
 
     private void OnContractsChanged(object? sender, ArkContractEntity e) =>

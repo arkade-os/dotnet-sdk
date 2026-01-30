@@ -136,9 +136,8 @@ public class SwapManagementServiceTests
             testingPrerequisite.contractService, testingPrerequisite.clientTransport, new DefaultCoinSelector(),
             testingPrerequisite.safetyService, intentStorage);
         await using var sweepMgr = new SweeperService(
-            new DefaultFeeEstimator(testingPrerequisite.clientTransport),
             [new SwapSweepPolicy()], testingPrerequisite.vtxoStorage,
-            intentGeneration, testingPrerequisite.contractService, coinService, testingPrerequisite.contracts,
+            coinService, testingPrerequisite.contracts,
             spendingService,
             new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions()
             { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider);
