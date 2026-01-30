@@ -99,7 +99,8 @@ public class BatchManagementService(
 
     private async Task LoadActiveIntentsAsync(CancellationToken cancellationToken)
     {
-        foreach (var intent in await intentStorage.GetActiveIntents(cancellationToken))
+        var activeStates = new[] { ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch, ArkIntentState.BatchInProgress };
+        foreach (var intent in await intentStorage.GetIntents(states: activeStates, cancellationToken: cancellationToken))
         {
             if (intent.IntentId is null)
             {
@@ -151,7 +152,13 @@ public class BatchManagementService(
             }
             catch (OperationCanceledException)
             {
-                // ignored
+                // ignored - normal shutdown
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested ||
+                                       ex.InnerException is OperationCanceledException)
+            {
+                // Cancellation was requested or inner exception is cancellation (e.g., gRPC cancelled call)
+                // This is expected during shutdown, don't log as error
             }
             catch (Exception ex)
             {
@@ -280,7 +287,7 @@ public class BatchManagementService(
             HashSet<ArkCoin> allWalletCoins = [];
             foreach (var outpoint in allVtxoOutpoints)
             {
-                var vtxo = (await vtxoStorage.GetVtxos(VtxoFilter.ByOutpoint(outpoint), cancellationToken)).FirstOrDefault()
+                var vtxo = (await vtxoStorage.GetVtxos(outpoints: [outpoint], includeSpent: true, cancellationToken: cancellationToken)).FirstOrDefault()
                     ?? throw new InvalidOperationException("Unknown vtxo outpoint");
                 allWalletCoins.Add(
                     await coinService.GetCoin(vtxo, intent.WalletId, cancellationToken)
