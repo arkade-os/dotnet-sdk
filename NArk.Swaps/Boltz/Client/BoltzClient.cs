@@ -8,8 +8,8 @@ namespace NArk.Swaps.Boltz.Client;
 
 public partial class BoltzClient
 {
-    private readonly HttpClient _httpClient;
-    private readonly IOptions<BoltzClientOptions> _options;
+    protected readonly HttpClient _httpClient;
+    protected readonly IOptions<BoltzClientOptions> _options;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -33,7 +33,7 @@ public partial class BoltzClient
     /// <param name="baseHttpUri">The base HTTP URI of the Boltz API.</param>
     /// <returns>The corresponding WebSocket URI.</returns>
     /// <exception cref="ArgumentNullException">Thrown when baseHttpUri is null.</exception>
-    public Uri DeriveWebSocketUri()
+    public virtual Uri DeriveWebSocketUri()
     {
         var baseHttpUri = new Uri(_options.Value.WebsocketUrl);
 

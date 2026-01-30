@@ -14,7 +14,7 @@ public partial class BoltzClient
     /// </summary>
     /// <param name="swapId">The ID of the swap.</param>
     /// <returns>The status response for the swap.</returns>
-    public async Task<SwapStatusResponse?> GetSwapStatusAsync(string swapId, CancellationToken cancellation)
+    public virtual async Task<SwapStatusResponse?> GetSwapStatusAsync(string swapId, CancellationToken cancellation)
     {
         return await _httpClient.GetFromJsonAsync<SwapStatusResponse>($"v2/swap/{swapId}", cancellation);
     }
@@ -26,7 +26,7 @@ public partial class BoltzClient
     /// </summary>
     /// <param name="cancellation">Cancellation token.</param>
     /// <returns>The submarine pairs response.</returns>
-    public async Task<SubmarinePairsResponse?> GetSubmarinePairsAsync(CancellationToken cancellation = default)
+    public virtual async Task<SubmarinePairsResponse?> GetSubmarinePairsAsync(CancellationToken cancellation = default)
     {
         return await _httpClient.GetFromJsonAsync<SubmarinePairsResponse>("v2/swap/submarine", cancellation);
     }
@@ -36,7 +36,7 @@ public partial class BoltzClient
     /// </summary>
     /// <param name="request">The submarine swap creation request.</param>
     /// <returns>The submarine swap response.</returns>
-    public async Task<SubmarineResponse> CreateSubmarineSwapAsync(SubmarineRequest request, CancellationToken cancellation)
+    public virtual async Task<SubmarineResponse> CreateSubmarineSwapAsync(SubmarineRequest request, CancellationToken cancellation)
     {
         return await PostAsJsonAsync<SubmarineRequest, SubmarineResponse>("v2/swap/submarine", request, cancellation);
     }
@@ -48,7 +48,7 @@ public partial class BoltzClient
     /// </summary>
     /// <param name="cancellation">Cancellation token.</param>
     /// <returns>The reverse pairs response.</returns>
-    public async Task<ReversePairsResponse?> GetReversePairsAsync(CancellationToken cancellation = default)
+    public virtual async Task<ReversePairsResponse?> GetReversePairsAsync(CancellationToken cancellation = default)
     {
         return await _httpClient.GetFromJsonAsync<ReversePairsResponse>("v2/swap/reverse", cancellation);
     }
@@ -59,7 +59,7 @@ public partial class BoltzClient
     /// <param name="request">The reverse swap creation request.</param>
     /// <param name="cancellation"></param>
     /// <returns>The reverse swap response.</returns>
-    public async Task<ReverseResponse?> CreateReverseSwapAsync(ReverseRequest request, CancellationToken cancellation)
+    public virtual async Task<ReverseResponse?> CreateReverseSwapAsync(ReverseRequest request, CancellationToken cancellation)
     {
         return await PostAsJsonAsync<ReverseRequest, ReverseResponse>("v2/swap/reverse", request, cancellation);
     }
@@ -73,7 +73,7 @@ public partial class BoltzClient
     /// <param name="request">The refund request containing transaction and checkpoint PSBTs.</param>
     /// <param name="cancellation">Cancellation token.</param>
     /// <returns>The refund response with Boltz-signed transactions.</returns>
-    public async Task<SubmarineRefundResponse> RefundSubmarineSwapAsync(string swapId, SubmarineRefundRequest request, CancellationToken cancellation)
+    public virtual async Task<SubmarineRefundResponse> RefundSubmarineSwapAsync(string swapId, SubmarineRefundRequest request, CancellationToken cancellation)
     {
         return await PostAsJsonAsync<SubmarineRefundRequest, SubmarineRefundResponse>($"v2/swap/submarine/{swapId}/refund/ark", request, cancellation);
     }
@@ -86,7 +86,7 @@ public partial class BoltzClient
     /// <param name="publicKey">Hex-encoded public key to search for in swaps.</param>
     /// <param name="cancellation">Cancellation token.</param>
     /// <returns>Array of restorable swaps associated with the public key.</returns>
-    public async Task<RestorableSwap[]> RestoreSwapsAsync(string publicKey, CancellationToken cancellation = default)
+    public virtual async Task<RestorableSwap[]> RestoreSwapsAsync(string publicKey, CancellationToken cancellation = default)
     {
         var request = new RestoreRequest { PublicKey = publicKey };
         return await PostAsJsonAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);
@@ -98,7 +98,7 @@ public partial class BoltzClient
     /// <param name="publicKeys">Array of hex-encoded public keys to search for in swaps.</param>
     /// <param name="cancellation">Cancellation token.</param>
     /// <returns>Array of restorable swaps associated with any of the public keys.</returns>
-    public async Task<RestorableSwap[]> RestoreSwapsAsync(string[] publicKeys, CancellationToken cancellation = default)
+    public virtual async Task<RestorableSwap[]> RestoreSwapsAsync(string[] publicKeys, CancellationToken cancellation = default)
     {
         var request = new RestoreRequest { PublicKeys = publicKeys };
         return await PostAsJsonAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);

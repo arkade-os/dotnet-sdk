@@ -11,7 +11,7 @@ public partial class BoltzClient
     /// Gets the version of the Boltz API.
     /// </summary>
     /// <returns>The API version information.</returns>
-    public async Task<VersionResponse?> GetVersionAsync()
+    public virtual async Task<VersionResponse?> GetVersionAsync()
     {
         return await _httpClient.GetFromJsonAsync<VersionResponse>("v2/version");
     }
