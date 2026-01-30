@@ -5,12 +5,15 @@ using NArk.Core.CoinSelector;
 using NArk.Core.Fees;
 using NArk.Core.Services;
 using NArk.Core.Sweeper;
+using NArk.Swaps.Boltz;
+using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
 using NArk.Transport.GrpcClient;
+using Microsoft.Extensions.Logging;
 
 namespace NArk.Hosting;
 
@@ -26,25 +29,39 @@ public record ArkNetworkConfig(
     string? ArkadeWalletUri = null,
 
     [property: JsonPropertyName("boltz")]
-    string? BoltzUri = null)
+    string? BoltzUri = null,
+
+    [property: JsonPropertyName("explorer")]
+    string? ExplorerUri = null)
 {
     /// <summary>Mainnet configuration.</summary>
     public static readonly ArkNetworkConfig Mainnet = new(
         ArkUri: "https://arkade.computer",
         ArkadeWalletUri: "https://arkade.money",
-        BoltzUri: "https://api.ark.boltz.exchange/");
+        BoltzUri: "https://api.ark.boltz.exchange/",
+        ExplorerUri: "https://arkade.space");
 
     /// <summary>Mutinynet (signet) configuration.</summary>
     public static readonly ArkNetworkConfig Mutinynet = new(
         ArkUri: "https://mutinynet.arkade.sh",
         ArkadeWalletUri: "https://mutinynet.arkade.money",
-        BoltzUri: "https://api.boltz.mutinynet.arkade.sh/");
+        BoltzUri: "https://api.boltz.mutinynet.arkade.sh/",
+        ExplorerUri: "https://explorer.mutinynet.arkade.sh");
 
     /// <summary>Local regtest configuration.</summary>
     public static readonly ArkNetworkConfig Regtest = new(
         ArkUri: "http://localhost:7070",
         ArkadeWalletUri: "http://localhost:3002",
-        BoltzUri: "http://localhost:9001/");
+        BoltzUri: "http://localhost:9001/",
+        ExplorerUri: null);
+
+    /// <summary>Get transaction explorer link.</summary>
+    public string? GetTxLink(string txid) =>
+        string.IsNullOrEmpty(ExplorerUri) ? null : $"{ExplorerUri.TrimEnd('/')}/tx/{txid}";
+
+    /// <summary>Get address explorer link.</summary>
+    public string? GetAddressLink(string address) =>
+        string.IsNullOrEmpty(ExplorerUri) ? null : $"{ExplorerUri.TrimEnd('/')}/address/{address}";
 }
 
 /// <summary>
@@ -89,6 +106,8 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<SwapsManagementService>();
         services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
+        services.AddSingleton<CachedBoltzClient>();
+        services.AddSingleton<BoltzLimitsValidator>();
 
         return services;
     }
@@ -104,8 +123,16 @@ public static class ServiceCollectionExtensions
         // Register the config itself for injection
         services.AddSingleton(config);
 
-        // Register transport (includes deadline interceptor by default)
-        services.AddSingleton<IClientTransport>(_ => new GrpcClientTransport(config.ArkUri));
+        // Register the raw gRPC transport
+        services.AddSingleton(_ => new GrpcClientTransport(config.ArkUri));
+
+        // Register IClientTransport with caching wrapper as the default
+        services.AddSingleton<IClientTransport>(sp =>
+        {
+            var inner = sp.GetRequiredService<GrpcClientTransport>();
+            var logger = sp.GetService<ILogger<CachingClientTransport>>();
+            return new CachingClientTransport(inner, logger);
+        });
 
         // Configure Boltz if URI is provided
         if (configureBoltz && !string.IsNullOrWhiteSpace(config.BoltzUri))
