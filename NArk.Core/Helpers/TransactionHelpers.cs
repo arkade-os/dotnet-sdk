@@ -271,18 +271,18 @@ public static class TransactionHelpers
             foreach (var spentCoins in arkCoins.GroupBy(c => c.WalletIdentifier))
             {
                 var intents =
-                    await intentStorage.GetIntentsByInputs(
-                        spentCoins.Key,
-                        [.. spentCoins.Select(c => c.Outpoint)],
-                        true,
-                        CancellationToken.None
+                    await intentStorage.GetIntents(
+                        walletIds: [spentCoins.Key],
+                        containingInputs: [.. spentCoins.Select(c => c.Outpoint)],
+                        states: [ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch],
+                        cancellationToken: CancellationToken.None
                     );
                 foreach (var intent in intents)
                 {
                     await using var intentLock =
                         await safetyService.LockKeyAsync($"intent::{intent.IntentTxId}", CancellationToken.None);
                     var intentAfterLock =
-                        await intentStorage.GetIntentByIntentTxId(intent.IntentTxId, CancellationToken.None)
+                        (await intentStorage.GetIntents(intentTxIds: [intent.IntentTxId], cancellationToken: CancellationToken.None)).FirstOrDefault()
                         ?? throw new Exception("Should not happen, intent disappeared from storage mid-action");
                     await intentStorage.SaveIntent(intentAfterLock.WalletId,
                         intentAfterLock with { State = ArkIntentState.Cancelled }, CancellationToken.None);

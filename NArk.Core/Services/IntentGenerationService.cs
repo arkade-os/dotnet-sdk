@@ -52,14 +52,13 @@ public class IntentGenerationService(
             while (!token.IsCancellationRequested)
             {
                 var unspentVtxos =
-                    await vtxoStorage.GetVtxos(new VtxoFilter()
-                    {
-                        IncludeSpent = false,
-                        IncludeRecoverable = true,
-                    }, token);
+                    await vtxoStorage.GetVtxos(
+                        includeSpent: false,
+                        includeRecoverable: true,
+                        cancellationToken: token);
                 var scriptsWithUnspentVtxos = unspentVtxos.Select(v => v.Script).ToHashSet();
                 var contracts =
-                    (await contractStorage.LoadContractsByScripts(scriptsWithUnspentVtxos.ToArray(), null, token))
+                    (await contractStorage.GetContracts(scripts: scriptsWithUnspentVtxos.ToArray(), cancellationToken: token))
                     .GroupBy(c => c.WalletIdentifier);
 
                 
@@ -122,7 +121,11 @@ public class IntentGenerationService(
         }
 
         var overlappingIntents =
-            await intentStorage.GetIntentsByInputs(walletId, [.. intentSpec.Coins.Select(c => c.Outpoint)], true, token);
+            await intentStorage.GetIntents(
+                walletIds: [walletId],
+                containingInputs: [.. intentSpec.Coins.Select(c => c.Outpoint)],
+                states: [ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch],
+                cancellationToken: token);
         if (overlappingIntents.Count != 0)
         {
             if (!force)
@@ -138,7 +141,7 @@ public class IntentGenerationService(
                     await using var intentLock =
                         await safetyService.LockKeyAsync($"intent::{intent.IntentTxId}", CancellationToken.None);
                     var intentAfterLock =
-                        await intentStorage.GetIntentByIntentTxId(intent.IntentTxId, CancellationToken.None)
+                        (await intentStorage.GetIntents(intentTxIds: [intent.IntentTxId], cancellationToken: CancellationToken.None)).FirstOrDefault()
                         ?? throw new Exception("Should not happen, intent disappeared from storage mid-action");
                     await intentStorage.SaveIntent(intentAfterLock.WalletId,
                         intentAfterLock with { State = ArkIntentState.Cancelled }, CancellationToken.None);

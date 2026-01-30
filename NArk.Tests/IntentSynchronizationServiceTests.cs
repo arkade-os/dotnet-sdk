@@ -37,7 +37,16 @@ public class IntentSynchronizationServiceTests
             validUntil: DateTimeOffset.UtcNow.AddHours(-1) // Expired 1 hour ago
         );
 
-        _intentStorage.GetUnsubmittedIntents(Arg.Any<DateTimeOffset?>(), Arg.Any<CancellationToken>())
+        _intentStorage.GetIntents(
+                walletIds: Arg.Any<string[]?>(),
+                intentTxIds: Arg.Any<string[]?>(),
+                intentIds: Arg.Any<string[]?>(),
+                containingInputs: Arg.Any<OutPoint[]?>(),
+                states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
+                validAt: Arg.Any<DateTimeOffset?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkIntent>>([expiredIntent]));
 
         ArkIntent? savedIntent = null;
@@ -78,7 +87,16 @@ public class IntentSynchronizationServiceTests
             validUntil: DateTimeOffset.UtcNow.AddHours(2)
         );
 
-        _intentStorage.GetUnsubmittedIntents(Arg.Any<DateTimeOffset?>(), Arg.Any<CancellationToken>())
+        _intentStorage.GetIntents(
+                walletIds: Arg.Any<string[]?>(),
+                intentTxIds: Arg.Any<string[]?>(),
+                intentIds: Arg.Any<string[]?>(),
+                containingInputs: Arg.Any<OutPoint[]?>(),
+                states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
+                validAt: Arg.Any<DateTimeOffset?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkIntent>>([futureIntent]));
 
         await using var service = new IntentSynchronizationService(
@@ -113,11 +131,29 @@ public class IntentSynchronizationServiceTests
             validUntil: DateTimeOffset.UtcNow.AddHours(1)  // Valid for 1 more hour
         );
 
-        _intentStorage.GetUnsubmittedIntents(Arg.Any<DateTimeOffset?>(), Arg.Any<CancellationToken>())
+        _intentStorage.GetIntents(
+                walletIds: Arg.Any<string[]?>(),
+                intentTxIds: Arg.Any<string[]?>(),
+                intentIds: Arg.Any<string[]?>(),
+                containingInputs: Arg.Any<OutPoint[]?>(),
+                states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
+                validAt: Arg.Any<DateTimeOffset?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkIntent>>([validIntent]));
 
-        _intentStorage.GetIntentByIntentTxId(validIntent.IntentTxId, Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<ArkIntent?>(validIntent));
+        _intentStorage.GetIntents(
+                walletIds: Arg.Any<string[]?>(),
+                intentTxIds: Arg.Is<string[]?>(ids => ids != null && ids.Contains(validIntent.IntentTxId)),
+                intentIds: Arg.Any<string[]?>(),
+                containingInputs: Arg.Any<OutPoint[]?>(),
+                states: Arg.Any<ArkIntentState[]?>(),
+                validAt: Arg.Any<DateTimeOffset?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<ArkIntent>>([validIntent]));
 
         _clientTransport.RegisterIntent(Arg.Any<ArkIntent>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult("server-intent-id-123"));
@@ -171,11 +207,29 @@ public class IntentSynchronizationServiceTests
             validUntil: DateTimeOffset.UtcNow.AddHours(1)
         );
 
-        _intentStorage.GetUnsubmittedIntents(Arg.Any<DateTimeOffset?>(), Arg.Any<CancellationToken>())
+        _intentStorage.GetIntents(
+                walletIds: Arg.Any<string[]?>(),
+                intentTxIds: Arg.Any<string[]?>(),
+                intentIds: Arg.Any<string[]?>(),
+                containingInputs: Arg.Any<OutPoint[]?>(),
+                states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
+                validAt: Arg.Any<DateTimeOffset?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkIntent>>([expiredIntent, futureIntent, validIntent]));
 
-        _intentStorage.GetIntentByIntentTxId(validIntent.IntentTxId, Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<ArkIntent?>(validIntent));
+        _intentStorage.GetIntents(
+                walletIds: Arg.Any<string[]?>(),
+                intentTxIds: Arg.Is<string[]?>(ids => ids != null && ids.Contains(validIntent.IntentTxId)),
+                intentIds: Arg.Any<string[]?>(),
+                containingInputs: Arg.Any<OutPoint[]?>(),
+                states: Arg.Any<ArkIntentState[]?>(),
+                validAt: Arg.Any<DateTimeOffset?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<ArkIntent>>([validIntent]));
 
         _clientTransport.RegisterIntent(Arg.Any<ArkIntent>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult("server-intent-id"));

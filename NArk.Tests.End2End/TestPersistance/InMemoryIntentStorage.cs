@@ -33,74 +33,73 @@ public class InMemoryIntentStorage : IIntentStorage
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyCollection<ArkIntent>> GetIntents(string walletId, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyCollection<ArkIntent>> GetIntents(
+        string[]? walletIds = null,
+        string[]? intentTxIds = null,
+        string[]? intentIds = null,
+        OutPoint[]? containingInputs = null,
+        ArkIntentState[]? states = null,
+        DateTimeOffset? validAt = null,
+        int? skip = null,
+        int? take = null,
+        CancellationToken cancellationToken = default)
     {
         lock (_intents)
         {
-            return Task.FromResult<IReadOnlyCollection<ArkIntent>>(_intents[walletId]);
-        }
-    }
+            IEnumerable<ArkIntent> query = _intents.Values.SelectMany(x => x);
 
-    public Task<ArkIntent?> GetIntentByIntentTxId(string intentTxId, CancellationToken cancellationToken = default)
-    {
-        lock (_intents)
-        {
-            return Task.FromResult(
-                _intents
-                    .FirstOrDefault(i => i.Value.Any(intent => intent.IntentTxId == intentTxId))
-                    .Value
-                    ?.FirstOrDefault(intent => intent.IntentTxId == intentTxId));
+            // Filter by wallet IDs
+            if (walletIds is { Length: > 0 })
+            {
+                var walletSet = walletIds.ToHashSet();
+                query = query.Where(i => walletSet.Contains(i.WalletId));
+            }
 
-        }
-    }
+            // Filter by intent transaction IDs
+            if (intentTxIds is { Length: > 0 })
+            {
+                var txIdSet = intentTxIds.ToHashSet();
+                query = query.Where(i => txIdSet.Contains(i.IntentTxId));
+            }
 
-    public Task<ArkIntent?> GetIntentByIntentId(string walletId, string intentId, CancellationToken cancellationToken = default)
-    {
-        lock (_intents)
-        {
-            return Task.FromResult(_intents[walletId].FirstOrDefault(intent => intent.IntentId == intentId));
-        }
-    }
+            // Filter by intent IDs
+            if (intentIds is { Length: > 0 })
+            {
+                var idSet = intentIds.ToHashSet();
+                query = query.Where(i => i.IntentId != null && idSet.Contains(i.IntentId));
+            }
 
-    public Task<IReadOnlyCollection<ArkIntent>> GetIntentsByInputs(string walletId, OutPoint[] inputs,
-        bool pendingOnly = true, CancellationToken cancellationToken = default)
-    {
-        lock (_intents)
-        {
-            return Task.FromResult<IReadOnlyCollection<ArkIntent>>(!_intents.TryGetValue(walletId, out var intents)
-                ? []
-                : intents.Where(intent => inputs.Intersect(intent.IntentVtxos).Any()).ToList());
-        }
-    }
+            // Filter by containing inputs
+            if (containingInputs is { Length: > 0 })
+            {
+                query = query.Where(i => containingInputs.Intersect(i.IntentVtxos).Any());
+            }
 
-    public Task<IReadOnlyCollection<ArkIntent>> GetUnsubmittedIntents(DateTimeOffset? validAt = null, CancellationToken cancellationToken = default)
-    {
-        lock (_intents)
-        {
-            var allIntents =
-                _intents
-                    .SelectMany(intents =>
-                        intents
-                            .Value
-                            .Where(intent => intent is { State: ArkIntentState.WaitingToSubmit, IntentId: null })
-                    );
+            // Filter by states
+            if (states is { Length: > 0 })
+            {
+                query = query.Where(i => states.Contains(i.State));
+            }
 
-            if (validAt is not { } validAtValue)
-                return Task.FromResult<IReadOnlyCollection<ArkIntent>>(allIntents.ToArray());
+            // Filter by validity time
+            if (validAt.HasValue)
+            {
+                query = query.Where(i =>
+                    i.ValidFrom <= validAt.Value && i.ValidUntil >= validAt.Value);
+            }
 
-            return Task.FromResult<IReadOnlyCollection<ArkIntent>>(
-                allIntents.Where(i => i.ValidFrom < validAtValue && i.ValidUntil > validAtValue).ToArray()
-            );
+            // Pagination
+            if (skip.HasValue)
+            {
+                query = query.Skip(skip.Value);
+            }
 
-        }
-    }
+            if (take.HasValue)
+            {
+                query = query.Take(take.Value);
+            }
 
-    public Task<IReadOnlyCollection<ArkIntent>> GetActiveIntents(CancellationToken cancellationToken = default)
-    {
-        lock (_intents)
-        {
-            return Task.FromResult<IReadOnlyCollection<ArkIntent>>(_intents.SelectMany(i =>
-                i.Value.Where(intent => intent is { State: ArkIntentState.WaitingForBatch, IntentId: not null })).ToArray());
+            return Task.FromResult<IReadOnlyCollection<ArkIntent>>(query.ToList());
         }
     }
 }

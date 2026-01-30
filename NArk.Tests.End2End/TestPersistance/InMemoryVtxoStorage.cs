@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using NArk.Abstractions.VTXOs;
+using NBitcoin;
 
 namespace NArk.Tests.End2End.TestPersistance;
 
@@ -25,55 +26,64 @@ public class InMemoryVtxoStorage : IVtxoStorage
         }
     }
 
-    public Task<IReadOnlyCollection<ArkVtxo>> GetVtxos(VtxoFilter filter, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyCollection<ArkVtxo>> GetVtxos(
+        IReadOnlyCollection<string>? scripts = null,
+        IReadOnlyCollection<OutPoint>? outpoints = null,
+        string[]? walletIds = null,
+        bool includeSpent = false,
+        bool includeRecoverable = true,
+        string? searchText = null,
+        int? skip = null,
+        int? take = null,
+        CancellationToken cancellationToken = default)
     {
         IEnumerable<ArkVtxo> query = _vtxos.Values;
 
         // Filter by scripts
-        if (filter.Scripts is { Count: > 0 })
+        if (scripts is { Count: > 0 })
         {
-            var scriptSet = filter.Scripts.ToHashSet();
+            var scriptSet = scripts.ToHashSet();
             query = query.Where(v => scriptSet.Contains(v.Script));
         }
 
         // Filter by outpoints
-        if (filter.Outpoints is { Count: > 0 })
+        if (outpoints is { Count: > 0 })
         {
-            var outpointSet = filter.Outpoints.Select(op => op.ToString()).ToHashSet();
+            var outpointSet = outpoints.Select(op => op.ToString()).ToHashSet();
             query = query.Where(v => outpointSet.Contains(v.OutPoint.ToString()));
         }
 
         // Note: WalletIds filter not supported in in-memory implementation (no wallet association tracking)
 
         // Filter by spent state
-        if (!filter.IncludeSpent)
+        if (!includeSpent)
         {
             query = query.Where(v => !v.IsSpent());
         }
 
-        // Filter by recoverable state
-        if (!filter.IncludeRecoverable)
+        // Filter by recoverable state (check Swept flag since we don't have chain time in storage layer)
+        if (!includeRecoverable)
         {
-            query = query.Where(v => !v.IsRecoverable());
+            query = query.Where(v => !v.Swept);
         }
 
         // Search text filter
-        if (!string.IsNullOrEmpty(filter.SearchText))
+        if (!string.IsNullOrEmpty(searchText))
         {
             query = query.Where(v =>
-                v.TransactionId.Contains(filter.SearchText, StringComparison.OrdinalIgnoreCase) ||
-                v.Script.Contains(filter.SearchText, StringComparison.OrdinalIgnoreCase));
+                v.TransactionId.Contains(searchText, StringComparison.OrdinalIgnoreCase) ||
+                v.Script.Contains(searchText, StringComparison.OrdinalIgnoreCase));
         }
 
         // Pagination
-        if (filter.Skip.HasValue)
+        if (skip.HasValue)
         {
-            query = query.Skip(filter.Skip.Value);
+            query = query.Skip(skip.Value);
         }
 
-        if (filter.Take.HasValue)
+        if (take.HasValue)
         {
-            query = query.Take(filter.Take.Value);
+            query = query.Take(take.Value);
         }
 
         return Task.FromResult<IReadOnlyCollection<ArkVtxo>>(query.ToList());

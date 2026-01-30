@@ -133,7 +133,7 @@ public class VtxoSynchronizationTests
         var contractScript = contractAddress.ScriptPubKey.ToHex();
 
         // Verify contract is in AwaitingFundsBeforeDeactivate state
-        var contractsBefore = await contracts.LoadActiveContracts();
+        var contractsBefore = await contracts.GetContracts(isActive: true);
         var awaitingContract = contractsBefore.FirstOrDefault(c => c.Script == contractScript);
         Assert.That(awaitingContract, Is.Not.Null, "Contract should exist");
         Assert.That(awaitingContract!.ActivityState, Is.EqualTo(ContractActivityState.AwaitingFundsBeforeDeactivate),
@@ -163,7 +163,7 @@ public class VtxoSynchronizationTests
         await deactivationTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
         // Verify contract is now Inactive
-        var allContracts = await contracts.LoadAllContractsByWallet(fp);
+        var allContracts = await contracts.GetContracts(walletIds: [fp]);
         var deactivatedContract = allContracts.FirstOrDefault(c => c.Script == contractScript);
         Assert.That(deactivatedContract, Is.Not.Null, "Contract should still exist");
         Assert.That(deactivatedContract!.ActivityState, Is.EqualTo(ContractActivityState.Inactive),

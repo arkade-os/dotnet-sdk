@@ -126,10 +126,10 @@ public class SpendingService(
         logger?.LogDebug("Getting available coins for wallet {WalletId}", walletId);
         
         var contractByScript =
-            (await contractStorage.LoadAllContractsByWallet(walletId, cancellationToken))
+            (await contractStorage.GetContracts(walletIds: [walletId], cancellationToken: cancellationToken))
                 .ToDictionary(entity => entity.Script);
         
-        var vtxos = await vtxoStorage.GetVtxos(VtxoFilter.ByScripts(contractByScript.Keys.ToList()), cancellationToken);
+        var vtxos = await vtxoStorage.GetVtxos(scripts: contractByScript.Keys.ToList(), cancellationToken: cancellationToken);
         
         var vtxosByContracts =
             vtxos

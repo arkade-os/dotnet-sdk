@@ -60,7 +60,10 @@ public class IntentSynchronizationService(
             {
                 token.ThrowIfCancellationRequested();
 
-                var intentsToSubmit = await intentStorage.GetUnsubmittedIntents(DateTimeOffset.UtcNow, token);
+                var intentsToSubmit = await intentStorage.GetIntents(
+                    states: [ArkIntentState.WaitingToSubmit],
+                    validAt: DateTimeOffset.UtcNow,
+                    cancellationToken: token);
                 foreach (var intentToSubmit in intentsToSubmit)
                 {
                     // In case storage did not respect our wish...
@@ -97,7 +100,7 @@ public class IntentSynchronizationService(
     {
         logger?.LogDebug("Submitting intent {IntentTxId}", intentToSubmit.IntentTxId);
         await using var @lock = await safetyService.LockKeyAsync($"intent::{intentToSubmit.IntentTxId}", token);
-        var intentAfterLock = await intentStorage.GetIntentByIntentTxId(intentToSubmit.IntentTxId, token);
+        var intentAfterLock = (await intentStorage.GetIntents(intentTxIds: [intentToSubmit.IntentTxId], cancellationToken: token)).FirstOrDefault();
         if (intentAfterLock is null)
         {
             logger?.LogError("Intent {IntentTxId} disappeared from storage mid-action", intentToSubmit.IntentTxId);

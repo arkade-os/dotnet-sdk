@@ -40,7 +40,7 @@ public class CoinService(IClientTransport clientTransport, IContractStorage cont
     public async Task<ArkCoin> GetCoin(ArkVtxo vtxo, string walletIdentifier, CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Getting PSBT signer for vtxo by script {TxId}:{Index}", vtxo.TransactionId, vtxo.TransactionOutputIndex);
-        var contracts = await contractStorage.LoadContractsByScripts([vtxo.Script], [walletIdentifier], cancellationToken);
+        var contracts = await contractStorage.GetContracts(walletIds: [walletIdentifier], scripts: [vtxo.Script], cancellationToken: cancellationToken);
 
         if (contracts.FirstOrDefault() is not { } contract)
         {

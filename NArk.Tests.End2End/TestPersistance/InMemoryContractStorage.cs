@@ -9,37 +9,52 @@ public class InMemoryContractStorage : IContractStorage
     public event EventHandler<ArkContractEntity>? ContractsChanged;
     public event EventHandler? ActiveScriptsChanged;
 
-    public Task<IReadOnlySet<ArkContractEntity>> LoadAllContractsByWallet(string walletIdentifier,
+    public Task<IReadOnlySet<ArkContractEntity>> GetContracts(
+        string[]? walletIds = null,
+        string[]? scripts = null,
+        bool? isActive = null,
+        int? skip = null,
+        int? take = null,
         CancellationToken cancellationToken = default)
     {
         lock (_contracts)
         {
-            return Task.FromResult<IReadOnlySet<ArkContractEntity>>(
-                _contracts.TryGetValue(walletIdentifier, out var contracts) ? contracts : []);
-        }
-    }
+            IEnumerable<ArkContractEntity> query = _contracts.Values.SelectMany(x => x);
 
-    public Task<IReadOnlySet<ArkContractEntity>> LoadActiveContracts(IReadOnlyCollection<string>? walletIdentifiers = null,
-        CancellationToken cancellationToken = default)
-    {
-        lock (_contracts)
-            return Task.FromResult<IReadOnlySet<ArkContractEntity>>(_contracts
-                .Where(x => walletIdentifiers is null || walletIdentifiers.Contains(x.Key))
-                .SelectMany(x => x.Value)
-                .Where(x => x.ActivityState != ContractActivityState.Inactive)
-                .ToHashSet());
-    }
+            // Filter by wallet IDs
+            if (walletIds is { Length: > 0 })
+            {
+                var walletSet = walletIds.ToHashSet();
+                query = query.Where(c => walletSet.Contains(c.WalletIdentifier));
+            }
 
-    public Task<IReadOnlySet<ArkContractEntity>> LoadContractsByScripts(string[] scripts, IReadOnlyCollection<string>? walletIdentifiers = null,
-        CancellationToken cancellationToken = default)
-    {
-        lock (_contracts)
-        {
-            if (walletIdentifiers is null)
-                return Task.FromResult<IReadOnlySet<ArkContractEntity>>(_contracts.Values.SelectMany(x => x).Where(x => scripts.Contains(x.Script)).ToHashSet());
+            // Filter by scripts
+            if (scripts is { Length: > 0 })
+            {
+                var scriptSet = scripts.ToHashSet();
+                query = query.Where(c => scriptSet.Contains(c.Script));
+            }
 
-            var walletContracts = _contracts.Where(x => walletIdentifiers.Contains(x.Key)).ToDictionary(k => k.Key, v => v.Value);
-            return Task.FromResult<IReadOnlySet<ArkContractEntity>>(walletContracts.SelectMany(x => x.Value).Where(x => scripts.Contains(x.Script)).ToHashSet());
+            // Filter by activity state
+            if (isActive.HasValue)
+            {
+                query = isActive.Value
+                    ? query.Where(c => c.ActivityState != ContractActivityState.Inactive)
+                    : query.Where(c => c.ActivityState == ContractActivityState.Inactive);
+            }
+
+            // Pagination
+            if (skip.HasValue)
+            {
+                query = query.Skip(skip.Value);
+            }
+
+            if (take.HasValue)
+            {
+                query = query.Take(take.Value);
+            }
+
+            return Task.FromResult<IReadOnlySet<ArkContractEntity>>(query.ToHashSet());
         }
     }
 

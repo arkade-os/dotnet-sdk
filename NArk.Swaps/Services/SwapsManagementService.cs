@@ -235,7 +235,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
         var matchedSwapContracts =
-            await _contractStorage.LoadContractsByScripts([swap.ContractScript], [swap.WalletId], cancellationToken);
+            await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript], cancellationToken: cancellationToken);
 
         var matchedSwapContractForSwapWallet = matchedSwapContracts.Single(entity => entity.Type == VHTLCContract.ContractType);
 
@@ -246,8 +246,8 @@ public class SwapsManagementService : IAsyncDisposable
         }
 
         // Get VTXOs for this contract
-        var vtxos = await _vtxoStorage.GetVtxos(VtxoFilter.ByScripts(swap.ContractScript),
-            cancellationToken);
+        var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript],
+            cancellationToken: cancellationToken);
         if (vtxos.Count == 0)
         {
             // logger.LogWarning("No VTXOs found for submarine swap {SwapId} refund", swap.SwapId);
@@ -699,8 +699,8 @@ public class SwapsManagementService : IAsyncDisposable
             throw new InvalidOperationException("Preimage does not match stored hash");
 
         // Update contract with preimage for claiming
-        var contracts = await _contractStorage.LoadContractsByScripts(
-            [swap.ContractScript], [swap.WalletId], cancellationToken);
+        var contracts = await _contractStorage.GetContracts(
+            walletIds: [swap.WalletId], scripts: [swap.ContractScript], cancellationToken: cancellationToken);
         var contractEntity = contracts.SingleOrDefault(c => c.Type == VHTLCContract.ContractType);
         if (contractEntity == null)
             throw new InvalidOperationException("VHTLC contract not found for swap");

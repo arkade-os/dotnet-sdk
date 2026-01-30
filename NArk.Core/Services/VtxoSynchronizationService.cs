@@ -59,25 +59,26 @@ public class VtxoSynchronizationService : IAsyncDisposable
     {
         try
         {
-            await DeactivateAwaitingContractsForScript(vtxo.Script);
+            await HandleContractStateTransitionsForScript(vtxo.Script);
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(0, ex, "Error auto-deactivating contracts for script {Script}", vtxo.Script);
+            _logger?.LogWarning(0, ex, "Error handling contract state transitions for script {Script}", vtxo.Script);
         }
     }
 
-    private async Task DeactivateAwaitingContractsForScript(string script)
+    private async Task HandleContractStateTransitionsForScript(string script)
     {
-        // Find all contract storages and deactivate awaiting contracts
+        // Find all contract storages and handle state transitions
         foreach (var provider in _activeScriptsProviders)
         {
             if (provider is IContractStorage contractStorage)
             {
-                var count = await contractStorage.DeactivateAwaitingContractsByScript(script, _shutdownCts.Token);
-                if (count > 0)
+                // Deactivate contracts that are awaiting funds before deactivation (one-time-use contracts)
+                var deactivatedCount = await contractStorage.DeactivateAwaitingContractsByScript(script, _shutdownCts.Token);
+                if (deactivatedCount > 0)
                 {
-                    _logger?.LogInformation("Auto-deactivated {Count} awaiting contracts for script {Script}", count, script);
+                    _logger?.LogInformation("Auto-deactivated {Count} awaiting contracts for script {Script}", deactivatedCount, script);
                 }
             }
         }
@@ -183,6 +184,21 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 // Upsert
                 var updated = await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
             }
+        }
+    }
+
+    /// <summary>
+    /// On-demand polling for specific scripts. Use this to poll inactive contract scripts
+    /// or any other scripts that aren't actively tracked.
+    /// </summary>
+    public async Task PollScriptsForVtxos(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
+    {
+        if (scripts.Count == 0)
+            return;
+
+        await foreach (var vtxo in _arkClientTransport.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken))
+        {
+            await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
         }
     }
 
