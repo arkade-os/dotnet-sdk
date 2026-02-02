@@ -9,10 +9,12 @@ public class InMemoryContractStorage : IContractStorage
     public event EventHandler<ArkContractEntity>? ContractsChanged;
     public event EventHandler? ActiveScriptsChanged;
 
-    public Task<IReadOnlySet<ArkContractEntity>> GetContracts(
+    public Task<IReadOnlyCollection<ArkContractEntity>> GetContracts(
         string[]? walletIds = null,
         string[]? scripts = null,
         bool? isActive = null,
+        string[]? contractTypes = null,
+        string? searchText = null,
         int? skip = null,
         int? take = null,
         CancellationToken cancellationToken = default)
@@ -43,6 +45,19 @@ public class InMemoryContractStorage : IContractStorage
                     : query.Where(c => c.ActivityState == ContractActivityState.Inactive);
             }
 
+            // Filter by contract types
+            if (contractTypes is { Length: > 0 })
+            {
+                var typeSet = contractTypes.ToHashSet();
+                query = query.Where(c => typeSet.Contains(c.Type));
+            }
+
+            // Filter by search text (script contains)
+            if (!string.IsNullOrEmpty(searchText))
+            {
+                query = query.Where(c => c.Script.Contains(searchText, StringComparison.OrdinalIgnoreCase));
+            }
+
             // Pagination
             if (skip.HasValue)
             {
@@ -54,7 +69,56 @@ public class InMemoryContractStorage : IContractStorage
                 query = query.Take(take.Value);
             }
 
-            return Task.FromResult<IReadOnlySet<ArkContractEntity>>(query.ToHashSet());
+            return Task.FromResult<IReadOnlyCollection<ArkContractEntity>>(query.ToList());
+        }
+    }
+
+    public Task<bool> UpdateContractActivityState(
+        string walletId,
+        string script,
+        ContractActivityState activityState,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_contracts)
+        {
+            if (!_contracts.TryGetValue(walletId, out var contracts))
+                return Task.FromResult(false);
+
+            var existing = contracts.FirstOrDefault(c => c.Script == script);
+            if (existing == null)
+                return Task.FromResult(false);
+
+            contracts.Remove(existing);
+            var updated = existing with { ActivityState = activityState };
+            contracts.Add(updated);
+
+            ContractsChanged?.Invoke(this, updated);
+            ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
+
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> DeleteContract(
+        string walletId,
+        string script,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_contracts)
+        {
+            if (!_contracts.TryGetValue(walletId, out var contracts))
+                return Task.FromResult(false);
+
+            var existing = contracts.FirstOrDefault(c => c.Script == script);
+            if (existing == null)
+                return Task.FromResult(false);
+
+            contracts.Remove(existing);
+
+            ContractsChanged?.Invoke(this, existing);
+            ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
+
+            return Task.FromResult(true);
         }
     }
 

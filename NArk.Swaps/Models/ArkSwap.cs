@@ -1,3 +1,5 @@
+using NArk.Abstractions.Contracts;
+
 namespace NArk.Swaps.Models;
 
 public record ArkSwap(
@@ -13,6 +15,13 @@ public record ArkSwap(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     string Hash);
+
+/// <summary>
+/// A swap with its associated contract entity.
+/// </summary>
+public record ArkSwapWithContract(
+    ArkSwap Swap,
+    ArkContractEntity? Contract);
 
 public enum ArkSwapStatus
 {

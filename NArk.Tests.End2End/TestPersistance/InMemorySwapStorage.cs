@@ -27,22 +27,24 @@ public class InMemorySwapStorage : ISwapStorage
         return Task.CompletedTask;
     }
 
-    public Task<ArkSwap> GetSwap(string swapId, CancellationToken cancellationToken = default)
-    {
-        lock (_swaps)
-        {
-            return Task.FromResult(_swaps.Values.SelectMany(x => x).First(x => x.SwapId == swapId));
-        }
-    }
-
-    public Task<IReadOnlyCollection<ArkSwap>> GetSwaps(string? walletId = null, string[]? swapIds = null, bool? active = null,
+    public Task<IReadOnlyCollection<ArkSwap>> GetSwaps(
+        string? walletId = null,
+        string[]? swapIds = null,
+        bool? active = null,
+        ArkSwapType? swapType = null,
+        ArkSwapStatus? status = null,
+        string[]? contractScripts = null,
+        string? hash = null,
+        string? invoice = null,
+        string? searchText = null,
+        int? skip = null,
+        int? take = null,
         CancellationToken cancellationToken = default)
     {
-        
         lock (_swaps)
         {
             var result = walletId is not null
-                ? _swaps.TryGet(walletId)?.ToList()?? []
+                ? _swaps.TryGet(walletId)?.ToList() ?? []
                 : _swaps.Values.SelectMany(s => s).ToList();
 
             if (swapIds is not null)
@@ -55,8 +57,105 @@ public class InMemorySwapStorage : ISwapStorage
                 result = result.Where(x => active == x.Status.IsActive()).ToList();
             }
 
+            if (swapType.HasValue)
+            {
+                result = result.Where(x => x.SwapType == swapType.Value).ToList();
+            }
+
+            if (status.HasValue)
+            {
+                result = result.Where(x => x.Status == status.Value).ToList();
+            }
+
+            if (contractScripts is { Length: > 0 })
+            {
+                result = result.Where(x => contractScripts.Contains(x.ContractScript)).ToList();
+            }
+
+            if (!string.IsNullOrEmpty(hash))
+            {
+                result = result.Where(x => x.Hash == hash).ToList();
+            }
+
+            if (!string.IsNullOrEmpty(invoice))
+            {
+                result = result.Where(x => x.Invoice == invoice).ToList();
+            }
+
+            if (!string.IsNullOrEmpty(searchText))
+            {
+                result = result.Where(x =>
+                    x.SwapId.Contains(searchText) ||
+                    x.Invoice.Contains(searchText) ||
+                    x.Hash.Contains(searchText)).ToList();
+            }
+
+            // Order by CreatedAt descending
+            result = result.OrderByDescending(x => x.CreatedAt).ToList();
+
+            if (skip.HasValue)
+            {
+                result = result.Skip(skip.Value).ToList();
+            }
+
+            if (take.HasValue)
+            {
+                result = result.Take(take.Value).ToList();
+            }
+
             return Task.FromResult<IReadOnlyCollection<ArkSwap>>(new ReadOnlyCollection<ArkSwap>(result));
         }
+    }
+
+    public Task<bool> UpdateSwapStatus(
+        string walletId,
+        string swapId,
+        ArkSwapStatus status,
+        string? failReason = null,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_swaps)
+        {
+            if (!_swaps.TryGetValue(walletId, out var swaps))
+                return Task.FromResult(false);
+
+            var swap = swaps.FirstOrDefault(x => x.SwapId == swapId);
+            if (swap == null)
+                return Task.FromResult(false);
+
+            // Remove old and add updated (since ArkSwap is a record, we need to replace it)
+            swaps.Remove(swap);
+            var updatedSwap = swap with
+            {
+                Status = status,
+                FailReason = failReason,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            swaps.Add(updatedSwap);
+
+            SwapsChanged?.Invoke(this, updatedSwap);
+            return Task.FromResult(true);
+        }
+    }
+
+    public async Task<IReadOnlyCollection<ArkSwapWithContract>> GetSwapsWithContracts(
+        string? walletId = null,
+        string[]? swapIds = null,
+        bool? active = null,
+        ArkSwapType? swapType = null,
+        ArkSwapStatus? status = null,
+        string[]? contractScripts = null,
+        string? hash = null,
+        string? invoice = null,
+        string? searchText = null,
+        int? skip = null,
+        int? take = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Get swaps using the existing method, then wrap with null contract
+        var swaps = await GetSwaps(walletId, swapIds, active, swapType, status,
+            contractScripts, hash, invoice, searchText, skip, take, cancellationToken);
+        return swaps.Select(s => new ArkSwapWithContract(s, null)).ToList();
     }
 
     /// <summary>

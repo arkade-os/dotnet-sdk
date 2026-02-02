@@ -54,7 +54,6 @@ public class IntentGenerationService(
                 var unspentVtxos =
                     await vtxoStorage.GetVtxos(
                         includeSpent: false,
-                        includeRecoverable: true,
                         cancellationToken: token);
                 var scriptsWithUnspentVtxos = unspentVtxos.Select(v => v.Script).ToHashSet();
                 var contracts =

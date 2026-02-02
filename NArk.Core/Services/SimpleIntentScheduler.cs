@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Blockchain;
+using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Fees;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Wallets;
@@ -78,7 +79,7 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
                 logger?.LogWarning("Wallet {WalletId} has inputs below dust threshold - not implemented", g.Key);
                 throw new NotImplementedException();
             }
-            var outputContract = await contractService.DeriveContract(g.Key, NextContractPurpose.SendToSelf, cancellationToken: cancellationToken);
+            var outputContract = await contractService.DeriveContract(g.Key, NextContractPurpose.SendToSelf, ContractActivityState.Inactive, cancellationToken: cancellationToken);
             var finalSpec =
                 new ArkIntentSpec(
                     g.ToArray(),

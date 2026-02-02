@@ -17,7 +17,6 @@ public interface IVtxoStorage : IActiveScriptsProvider
     /// <param name="outpoints">Filter by specific outpoints. If null, no outpoint filter applied.</param>
     /// <param name="walletIds">Filter by wallet IDs (requires join with contracts). If null, no wallet filter.</param>
     /// <param name="includeSpent">Include spent VTXOs. Default: false (unspent only).</param>
-    /// <param name="includeRecoverable">Include recoverable (swept) VTXOs. Default: true.</param>
     /// <param name="searchText">Search text for TransactionId or Script. If null, no text search.</param>
     /// <param name="skip">Number of records to skip (for pagination). If null, no skip.</param>
     /// <param name="take">Number of records to take (for pagination). If null, no limit.</param>
@@ -27,7 +26,6 @@ public interface IVtxoStorage : IActiveScriptsProvider
         IReadOnlyCollection<OutPoint>? outpoints = null,
         string[]? walletIds = null,
         bool includeSpent = false,
-        bool includeRecoverable = true,
         string? searchText = null,
         int? skip = null,
         int? take = null,

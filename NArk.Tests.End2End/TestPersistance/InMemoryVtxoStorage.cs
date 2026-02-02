@@ -31,7 +31,6 @@ public class InMemoryVtxoStorage : IVtxoStorage
         IReadOnlyCollection<OutPoint>? outpoints = null,
         string[]? walletIds = null,
         bool includeSpent = false,
-        bool includeRecoverable = true,
         string? searchText = null,
         int? skip = null,
         int? take = null,
@@ -59,12 +58,6 @@ public class InMemoryVtxoStorage : IVtxoStorage
         if (!includeSpent)
         {
             query = query.Where(v => !v.IsSpent());
-        }
-
-        // Filter by recoverable state (check Swept flag since we don't have chain time in storage layer)
-        if (!includeRecoverable)
-        {
-            query = query.Where(v => !v.Swept);
         }
 
         // Search text filter

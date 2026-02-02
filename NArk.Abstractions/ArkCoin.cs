@@ -73,12 +73,12 @@ public class ArkCoin : Coin
 
     public bool CanSpendOffchain(TimeHeight current)
     {
-        return !Swept && !IsExpired(current);
+        return IsRecoverable(current);
     }
 
-    public bool IsRecoverable()
+    public bool IsRecoverable(TimeHeight current)
     {
-        return Swept;
+        return Swept || IsExpired(current) ;
     }
 
     public bool RequiresForfeit()

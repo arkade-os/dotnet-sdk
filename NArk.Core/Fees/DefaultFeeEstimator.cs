@@ -1,12 +1,13 @@
 using Cel;
 using NArk.Abstractions;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Fees;
 using NArk.Abstractions.Intents;
 using NArk.Core.Transport;
 
 namespace NArk.Core.Fees;
 
-public class DefaultFeeEstimator(IClientTransport clientTransport) : IFeeEstimator
+public class DefaultFeeEstimator(IClientTransport clientTransport, IChainTimeProvider chainTimeProvider) : IFeeEstimator
 {
     private readonly ICelEnvironment _celEnvironment = new CelEnvironment(null, null);
 
@@ -18,11 +19,12 @@ public class DefaultFeeEstimator(IClientTransport clientTransport) : IFeeEstimat
     public async Task<long> EstimateFeeAsync(ArkIntentSpec spec, CancellationToken cancellationToken = default)
     {
         var info = await clientTransport.GetServerInfoAsync(cancellationToken);
+        var currentTime = await chainTimeProvider.GetChainTime(cancellationToken);
         var offchainInputFeeFunc = _celEnvironment.Compile(info.FeeTerms.IntentOffchainInput);
         var inputFees =
             spec
                 .Coins
-                .Select(lite => (lite, GetInputFee(offchainInputFeeFunc, lite)))
+                .Select(lite => (lite, GetInputFee(offchainInputFeeFunc, lite, currentTime)))
                 //.Where(tuple => tuple.lite.Amount.Satoshi > tuple.Item2)
                 .Sum(tuple => tuple.Item2);
 
@@ -52,14 +54,14 @@ public class DefaultFeeEstimator(IClientTransport clientTransport) : IFeeEstimat
         return Convert.ToDouble(feeFunc.Invoke(vars)!);
     }
 
-    private double GetInputFee(CelProgramDelegate offchainInputFeeFunc, ArkCoin arkCoin)
+    private double GetInputFee(CelProgramDelegate offchainInputFeeFunc, ArkCoin arkCoin, TimeHeight currentTime)
     {
         var vars = new Dictionary<string, object?>
         {
             { "amount", Convert.ToDouble(arkCoin.Amount.Satoshi) },
             { "expiry", arkCoin.GetRawExpiry() },
             { "birth", arkCoin.Birth.ToUnixTimeSeconds() },
-            { "type", arkCoin.IsRecoverable() ? "recoverable" : arkCoin.Contract.Type == "arknote" ? "note" : "vtxo" },
+            { "type", arkCoin.IsRecoverable(currentTime) ? "recoverable" : arkCoin.Contract.Type == "arknote" ? "note" : "vtxo" },
             { "weight", 0 }
         };
 

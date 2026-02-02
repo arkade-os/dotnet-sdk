@@ -162,7 +162,7 @@ public class SwapsManagementService : IAsyncDisposable
             else
             {
                 var activeSwaps =
-                    await _swapsStorage.GetSwaps(null,null, true, cancellationToken);
+                    await _swapsStorage.GetSwaps(active: true, cancellationToken: cancellationToken);
                 var newSwapIdSet =
                     activeSwaps.Select(s => s.SwapId).ToHashSet();
 
@@ -189,7 +189,9 @@ public class SwapsManagementService : IAsyncDisposable
             if (swapStatus?.Status is null) continue;
 
             await using var @lock = await _safetyService.LockKeyAsync($"swap::{idToPoll}", cancellationToken);
-            var swap = await _swapsStorage.GetSwap(idToPoll, cancellationToken);
+            var swaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
+            var swap = swaps.FirstOrDefault();
+            if (swap == null) continue;
             _swapAddressToIds[swap.SwapId] = swap.Address;
 
             // There's nothing after refunded, ignore...
@@ -435,7 +437,9 @@ public class SwapsManagementService : IAsyncDisposable
     public async Task<uint256> PayExistingSubmarineSwap(string walletId, string swapId,
         CancellationToken cancellationToken = default)
     {
-        var swap = await _swapsStorage.GetSwap(swapId, cancellationToken);
+        var swaps = await _swapsStorage.GetSwaps(walletId: walletId, swapIds: [swapId], cancellationToken: cancellationToken);
+        var swap = swaps.FirstOrDefault()
+            ?? throw new InvalidOperationException($"Swap {swapId} not found");
         try
         {
             return await _spendingService.Spend(walletId,
@@ -689,7 +693,9 @@ public class SwapsManagementService : IAsyncDisposable
     {
         await using var @lock = await _safetyService.LockKeyAsync($"swap::{swapId}", cancellationToken);
 
-        var swap = await _swapsStorage.GetSwap(swapId, cancellationToken);
+        var swaps = await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken);
+        var swap = swaps.FirstOrDefault()
+            ?? throw new InvalidOperationException($"Swap {swapId} not found");
         if (swap.SwapType != ArkSwapType.ReverseSubmarine)
             throw new InvalidOperationException("Preimage enrichment only valid for reverse swaps");
 
@@ -738,7 +744,9 @@ public class SwapsManagementService : IAsyncDisposable
     {
         await using var @lock = await _safetyService.LockKeyAsync($"swap::{swapId}", cancellationToken);
 
-        var swap = await _swapsStorage.GetSwap(swapId, cancellationToken);
+        var swaps = await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken);
+        var swap = swaps.FirstOrDefault()
+            ?? throw new InvalidOperationException($"Swap {swapId} not found");
         if (swap.SwapType != ArkSwapType.Submarine)
             throw new InvalidOperationException("Invoice enrichment only valid for submarine swaps");
 

@@ -102,4 +102,24 @@ public class InMemoryIntentStorage : IIntentStorage
             return Task.FromResult<IReadOnlyCollection<ArkIntent>>(query.ToList());
         }
     }
+
+    public Task<IReadOnlyCollection<OutPoint>> GetLockedVtxoOutpoints(
+        string walletId,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_intents)
+        {
+            if (!_intents.TryGetValue(walletId, out var intents))
+            {
+                return Task.FromResult<IReadOnlyCollection<OutPoint>>([]);
+            }
+
+            var lockedOutpoints = intents
+                .Where(i => i.State == ArkIntentState.WaitingToSubmit || i.State == ArkIntentState.WaitingForBatch)
+                .SelectMany(i => i.IntentVtxos)
+                .ToList();
+
+            return Task.FromResult<IReadOnlyCollection<OutPoint>>(lockedOutpoints);
+        }
+    }
 }

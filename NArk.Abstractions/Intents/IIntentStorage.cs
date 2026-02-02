@@ -31,4 +31,15 @@ public interface IIntentStorage
         int? skip = null,
         int? take = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets outpoints of VTXOs that are locked by pending intents.
+    /// Used for balance calculations to exclude locked VTXOs from available balance.
+    /// </summary>
+    /// <param name="walletId">The wallet ID to get locked outpoints for</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Collection of outpoints locked by pending intents</returns>
+    Task<IReadOnlyCollection<OutPoint>> GetLockedVtxoOutpoints(
+        string walletId,
+        CancellationToken cancellationToken = default);
 }

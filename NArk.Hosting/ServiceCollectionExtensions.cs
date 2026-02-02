@@ -55,13 +55,6 @@ public record ArkNetworkConfig(
         BoltzUri: "http://localhost:9001/",
         ExplorerUri: null);
 
-    /// <summary>Get transaction explorer link.</summary>
-    public string? GetTxLink(string txid) =>
-        string.IsNullOrEmpty(ExplorerUri) ? null : $"{ExplorerUri.TrimEnd('/')}/tx/{txid}";
-
-    /// <summary>Get address explorer link.</summary>
-    public string? GetAddressLink(string address) =>
-        string.IsNullOrEmpty(ExplorerUri) ? null : $"{ExplorerUri.TrimEnd('/')}/address/{address}";
 }
 
 /// <summary>
