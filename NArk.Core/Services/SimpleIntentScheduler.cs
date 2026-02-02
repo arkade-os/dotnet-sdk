@@ -51,6 +51,11 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
             // var outputContract = await contractService.DeriveContract(g.Key,NextContractPurpose.SendToSelf, cancellationToken);
 
             var inputsSumAfterBeforeFees = g.Sum(c => c.Amount);
+            if (inputsSumAfterBeforeFees < serverInfo.Dust)
+            {
+                logger?.LogWarning("Wallet {WalletId} has inputs below dust threshold - skipping until quota above dust", g.Key);
+                continue;
+            }
             var specBeforeFees =
                 new ArkIntentSpec(
                     g.ToArray(),
@@ -74,11 +79,7 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
                 logger?.LogDebug("Skipping wallet {WalletId}: inputs sum after fees is negative", g.Key);
                 continue;
             }
-            if (inputsSumAfterBeforeFees < serverInfo.Dust)
-            {
-                logger?.LogWarning("Wallet {WalletId} has inputs below dust threshold - not implemented", g.Key);
-                throw new NotImplementedException();
-            }
+            
             var outputContract = await contractService.DeriveContract(g.Key, NextContractPurpose.SendToSelf, ContractActivityState.Inactive, cancellationToken: cancellationToken);
             var finalSpec =
                 new ArkIntentSpec(

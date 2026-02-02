@@ -36,13 +36,39 @@ public class IntentGenerationService(
 ) : IIntentGenerationService, IAsyncDisposable
 {
     private readonly CancellationTokenSource _shutdownCts = new();
+    private readonly SemaphoreSlim _vtxoUpdateSignal = new(0, 1);
     private Task? _generationTask;
+
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         logger?.LogInformation("Starting intent generation service");
+
+        // Subscribe to VTXO updates to trigger immediate intent generation
+        vtxoStorage.VtxosChanged += OnVtxoChanged;
+
         var multiToken = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token, cancellationToken);
         _generationTask = DoGenerationLoop(multiToken.Token);
         return Task.CompletedTask;
+    }
+
+    private void OnVtxoChanged(object? sender, ArkVtxo vtxo)
+    {
+        logger?.LogDebug("VTXO changed event received for {TxId}:{Index}, signaling immediate intent generation",
+            vtxo.TransactionId, vtxo.TransactionOutputIndex);
+
+        // Try to release the semaphore if not already signaled
+        // CurrentCount check avoids InvalidOperationException if already at max
+        if (_vtxoUpdateSignal.CurrentCount == 0)
+        {
+            try
+            {
+                _vtxoUpdateSignal.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // Already signaled, ignore
+            }
+        }
     }
 
     private async Task DoGenerationLoop(CancellationToken token)
@@ -51,47 +77,20 @@ public class IntentGenerationService(
         {
             while (!token.IsCancellationRequested)
             {
-                var unspentVtxos =
-                    await vtxoStorage.GetVtxos(
-                        includeSpent: false,
-                        cancellationToken: token);
-                var scriptsWithUnspentVtxos = unspentVtxos.Select(v => v.Script).ToHashSet();
-                var contracts =
-                    (await contractStorage.GetContracts(scripts: scriptsWithUnspentVtxos.ToArray(), cancellationToken: token))
-                    .GroupBy(c => c.WalletIdentifier);
+                await RunIntentGenerationCycle(token);
 
-                
-                
-                foreach (var walletContracts in contracts)
-                {;
-                    var walletVtxos =
-                        unspentVtxos.Where(v => walletContracts.Any(c => c.Script == v.Script)).ToArray();
+                // Wait for either a VTXO update signal or the poll interval timeout
+                var pollInterval = options?.Value.PollInterval ?? TimeSpan.FromMinutes(5);
+                var signaled = await _vtxoUpdateSignal.WaitAsync(pollInterval, token);
 
-                    List<ArkCoin> coins = [];
-
-                    foreach (var vtxo in walletVtxos)
-                    {
-                        try
-                        {
-                            var coin = await coinService.GetCoin(walletContracts.Single(entity => entity.Script == vtxo.Script), vtxo, token);
-                            coins.Add(coin);
-                        }
-                        catch (AdditionalInformationRequiredException ex)
-                        {
-                            logger?.LogDebug(0, ex, "Skipping vtxo {TxId}:{Index} - requires additional information (likely VHTLC contract)", vtxo.TransactionId, vtxo.TransactionOutputIndex);
-                        }
-                    }
-
-                    var intentSpecs =
-                        await intentScheduler.GetIntentsToSubmit([.. coins], token);
-
-                    foreach (var intentSpec in intentSpecs)
-                    {
-                        await GenerateIntentFromSpec(walletContracts.Key, intentSpec, false, token);
-                    }
+                if (signaled)
+                {
+                    logger?.LogDebug("Intent generation triggered by VTXO update");
                 }
-
-                await Task.Delay(options?.Value.PollInterval ?? TimeSpan.FromMinutes(5), token);
+                else
+                {
+                    logger?.LogDebug("Intent generation triggered by poll interval");
+                }
             }
         }
         catch (OperationCanceledException)
@@ -101,6 +100,47 @@ public class IntentGenerationService(
         catch (Exception ex)
         {
             logger?.LogError(0, ex, "Intent generation loop failed with unexpected error");
+        }
+    }
+
+    private async Task RunIntentGenerationCycle(CancellationToken token)
+    {
+        var unspentVtxos =
+            await vtxoStorage.GetVtxos(
+                includeSpent: false,
+                cancellationToken: token);
+        var scriptsWithUnspentVtxos = unspentVtxos.Select(v => v.Script).ToHashSet();
+        var contracts =
+            (await contractStorage.GetContracts(scripts: scriptsWithUnspentVtxos.ToArray(), cancellationToken: token))
+            .GroupBy(c => c.WalletIdentifier);
+
+        foreach (var walletContracts in contracts)
+        {
+            var walletVtxos =
+                unspentVtxos.Where(v => walletContracts.Any(c => c.Script == v.Script)).ToArray();
+
+            List<ArkCoin> coins = [];
+
+            foreach (var vtxo in walletVtxos)
+            {
+                try
+                {
+                    var coin = await coinService.GetCoin(walletContracts.Single(entity => entity.Script == vtxo.Script), vtxo, token);
+                    coins.Add(coin);
+                }
+                catch (AdditionalInformationRequiredException ex)
+                {
+                    logger?.LogDebug(0, ex, "Skipping vtxo {TxId}:{Index} - requires additional information (likely VHTLC contract)", vtxo.TransactionId, vtxo.TransactionOutputIndex);
+                }
+            }
+
+            var intentSpecs =
+                await intentScheduler.GetIntentsToSubmit([.. coins], token);
+
+            foreach (var intentSpec in intentSpecs)
+            {
+                await GenerateIntentFromSpec(walletContracts.Key, intentSpec, false, token);
+            }
         }
     }
 
@@ -303,10 +343,16 @@ public class IntentGenerationService(
     public async ValueTask DisposeAsync()
     {
         logger?.LogDebug("Disposing intent generation service");
+
+        // Unsubscribe from VTXO updates
+        vtxoStorage.VtxosChanged -= OnVtxoChanged;
+
         await _shutdownCts.CancelAsync();
 
         if (_generationTask is not null)
             await _generationTask;
+
+        _vtxoUpdateSignal.Dispose();
 
         logger?.LogInformation("Intent generation service disposed");
     }
