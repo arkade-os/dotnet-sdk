@@ -42,7 +42,9 @@ public record ArkVtxo(
 
     public bool CanSpendOffchain(TimeHeight current)
     {
-        return !IsSpent() && IsRecoverable(current);
+        // VTXOs can be spent offchain (in Ark protocol) if they are NOT spent and NOT recoverable.
+        // Recoverable VTXOs are swept or expired and can only be redeemed onchain.
+        return !IsSpent() && !IsRecoverable(current);
     }
 
     public bool IsRecoverable(TimeHeight current)

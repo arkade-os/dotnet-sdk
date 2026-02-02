@@ -129,7 +129,7 @@ public class SpendingService(
             (await contractStorage.GetContracts(walletIds: [walletId], cancellationToken: cancellationToken))
                 .ToDictionary(entity => entity.Script);
         
-        var vtxos = await vtxoStorage.GetVtxos(scripts: contractByScript.Keys.ToList(), walletIds: [walletId], cancellationToken: cancellationToken);
+        var vtxos = await vtxoStorage.GetVtxos(scripts: contractByScript.Keys.ToList(), walletIds: [walletId], includeSpent:false,  cancellationToken: cancellationToken);
         
         var vtxosByContracts =
             vtxos

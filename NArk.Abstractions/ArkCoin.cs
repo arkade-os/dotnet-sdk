@@ -73,7 +73,9 @@ public class ArkCoin : Coin
 
     public bool CanSpendOffchain(TimeHeight current)
     {
-        return IsRecoverable(current);
+        // Coins can be spent offchain (in Ark protocol) if they are NOT recoverable.
+        // Recoverable coins are swept or expired and can only be redeemed onchain.
+        return !IsRecoverable(current);
     }
 
     public bool IsRecoverable(TimeHeight current)
