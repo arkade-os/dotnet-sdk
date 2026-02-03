@@ -80,7 +80,8 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
                 continue;
             }
             
-            var outputContract = await contractService.DeriveContract(g.Key, NextContractPurpose.SendToSelf, ContractActivityState.Inactive, cancellationToken: cancellationToken);
+            var inputContracts = g.Select(c => c.Contract).ToArray();
+            var outputContract = await contractService.DeriveContract(g.Key, NextContractPurpose.SendToSelf, inputContracts, ContractActivityState.Inactive, cancellationToken: cancellationToken);
             var finalSpec =
                 new ArkIntentSpec(
                     g.ToArray(),

@@ -2,7 +2,9 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Fees;
 using NArk.Core.CoinSelector;
+using NArk.Core.Events;
 using NArk.Core.Fees;
+using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Sweeper;
 using NArk.Swaps.Boltz;
@@ -64,7 +66,7 @@ public record ArkNetworkConfig(
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers all NArk core services.
+    /// Registers all NArk core services including VTXO polling event handlers.
     /// Caller must still register: IVtxoStorage, IContractStorage, IIntentStorage, IWalletStorage,
     /// ISwapStorage, IWallet, ISafetyService, IChainTimeProvider, and IClientTransport.
     /// </summary>
@@ -87,6 +89,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IFeeEstimator, DefaultFeeEstimator>();
         services.AddSingleton<ICoinSelector, DefaultCoinSelector>();
         services.AddHostedService<ArkHostedLifecycle>();
+
+        // VTXO polling - automatically poll for updates after batch success and spend transactions
+        services.AddVtxoPolling();
 
         return services;
     }
@@ -157,4 +162,36 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddArkRegtest(this IServiceCollection services)
         => services.AddArkNetwork(ArkNetworkConfig.Regtest);
+
+    /// <summary>
+    /// Registers VTXO polling event handlers that automatically poll for VTXO updates
+    /// after batch success and spend transactions.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configureOptions">Optional action to configure polling delays.</param>
+    public static IServiceCollection AddVtxoPolling(this IServiceCollection services, Action<VtxoPollingOptions>? configureOptions = null)
+    {
+        // Configure options
+        if (configureOptions is not null)
+        {
+            services.Configure(configureOptions);
+        }
+        else
+        {
+            services.Configure<VtxoPollingOptions>(options =>
+            {
+                options.BatchSuccessPollingDelay = TimeSpan.FromMilliseconds(500);
+                options.TransactionBroadcastPollingDelay = TimeSpan.FromMilliseconds(500);
+            });
+        }
+
+        // Register event handlers
+        services.AddSingleton<PostBatchVtxoPollingHandler>();
+        services.AddSingleton<IEventHandler<PostBatchSessionEvent>>(sp => sp.GetRequiredService<PostBatchVtxoPollingHandler>());
+
+        services.AddSingleton<PostSpendVtxoPollingHandler>();
+        services.AddSingleton<IEventHandler<PostCoinsSpendActionEvent>>(sp => sp.GetRequiredService<PostSpendVtxoPollingHandler>());
+
+        return services;
+    }
 }

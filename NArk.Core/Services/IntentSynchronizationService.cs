@@ -157,17 +157,19 @@ public class IntentSynchronizationService(
         {
             logger?.LogError(0, ex, "Intent {IntentTxId} submission failed", intentToSubmit.IntentTxId);
             var now = DateTimeOffset.UtcNow;
+            var reason = $"Submission failed: {ex.Message}";
 
             await intentStorage.SaveIntent(
                 intentAfterLock.WalletId,
                 intentAfterLock with
                 {
                     State = ArkIntentState.Cancelled,
+                    CancellationReason = reason,
                     UpdatedAt = now
                 }, token);
 
             await eventHandlers.SafeHandleEventAsync(new PostIntentSubmissionEvent(intentAfterLock, now, false,
-                ActionState.Failed, $"Intent submission failed with ex: {ex}"), token);
+                ActionState.Failed, reason), token);
         }
     }
 

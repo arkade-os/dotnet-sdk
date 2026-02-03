@@ -104,12 +104,28 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
         return GetDescriptorFromIndex(network, _descriptor, _lastIndex++);
     }
 
-    public async Task<(ArkContract contract, ArkContractEntity entity)> GetNextContract(NextContractPurpose purpose, ContractActivityState activityState,
+    public async Task<(ArkContract contract, ArkContractEntity entity)> GetNextContract(
+        NextContractPurpose purpose,
+        ContractActivityState activityState,
+        ArkContract[]? inputContracts = null,
         CancellationToken cancellationToken = default)
     {
-
-        var descriptor = await GetNextSigningDescriptor(cancellationToken);
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+
+        // For test wallet, simple recycling from inputs when SendToSelf
+        OutputDescriptor? descriptor = null;
+        if (purpose == NextContractPurpose.SendToSelf && inputContracts is not null)
+        {
+            // Try to recycle from first ArkPaymentContract input
+            var firstPayment = inputContracts.OfType<ArkPaymentContract>().FirstOrDefault();
+            if (firstPayment is not null && await IsOurs(firstPayment.User, cancellationToken))
+            {
+                descriptor = firstPayment.User;
+                activityState = ContractActivityState.Inactive;
+            }
+        }
+
+        descriptor ??= await GetNextSigningDescriptor(cancellationToken);
         var contract = new ArkPaymentContract(serverInfo.SignerKey, serverInfo.UnilateralExit, descriptor);
         return (contract, contract.ToEntity(_identifier, null, null, activityState));
     }

@@ -117,6 +117,17 @@ public static class AppExtensions
             return this;
         }
 
+        /// <summary>
+        /// Configures VTXO polling options. VTXO polling is enabled by default via AddArkCoreServices.
+        /// Use this method only if you need to customize the polling delays.
+        /// </summary>
+        /// <param name="configureOptions">Action to configure polling delays.</param>
+        public ArkApplicationBuilder ConfigureVtxoPolling(Action<VtxoPollingOptions> configureOptions)
+        {
+            _hostBuilder.ConfigureServices(services => services.Configure(configureOptions));
+            return this;
+        }
+
         public ArkApplicationBuilder OnMainnet()
         {
             _hostBuilder.ConfigureServices(services => services.AddArkNetwork(ArkNetworkConfig.Mainnet));

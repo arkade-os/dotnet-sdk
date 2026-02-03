@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
+using NArk.Core.Contracts;
 using NArk.Core.Events;
 using NArk.Core.Transport;
 using NArk.Core.Extensions;
@@ -27,22 +28,42 @@ public class ContractService(
     {
     }
 
-    public async Task<ArkContract> DeriveContract(
+    public Task<ArkContract> DeriveContract(
         string walletId,
         NextContractPurpose purpose,
         ContractActivityState activityState = ContractActivityState.Active,
         CancellationToken cancellationToken = default)
     {
-        logger?.LogDebug("Deriving {purpose} contract for wallet {WalletId} with state {ActivityState}",
-            purpose, walletId, activityState);
+        return DeriveContractInternal(walletId, purpose, null, activityState, cancellationToken);
+    }
+
+    public Task<ArkContract> DeriveContract(
+        string walletId,
+        NextContractPurpose purpose,
+        ArkContract[] inputContracts,
+        ContractActivityState activityState = ContractActivityState.Active,
+        CancellationToken cancellationToken = default)
+    {
+        return DeriveContractInternal(walletId, purpose, inputContracts, activityState, cancellationToken);
+    }
+
+    private async Task<ArkContract> DeriveContractInternal(
+        string walletId,
+        NextContractPurpose purpose,
+        ArkContract[]? inputContracts,
+        ContractActivityState activityState,
+        CancellationToken cancellationToken)
+    {
+        logger?.LogDebug("Deriving {Purpose} contract for wallet {WalletId} with state {ActivityState}, inputContracts: {InputCount}",
+            purpose, walletId, activityState, inputContracts?.Length ?? 0);
 
         var addressProvider = await walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
 
-        var (contract, entity) = await addressProvider!.GetNextContract(purpose, activityState, cancellationToken);
+        var (contract, entity) = await addressProvider!.GetNextContract(purpose, activityState, inputContracts, cancellationToken);
         await contractStorage.SaveContract(entity, cancellationToken);
-        //TODO: maybe this should be in the contract storage?
+
         await eventHandlers.SafeHandleEventAsync(new NewContractActionEvent(contract, walletId), cancellationToken);
-        logger?.LogInformation("Derived {purpose} contract for wallet {WalletId}", purpose, walletId);
+        logger?.LogInformation("Derived {Purpose} contract for wallet {WalletId}", purpose, walletId);
         return contract;
     }
 
@@ -64,5 +85,4 @@ public class ContractService(
         await eventHandlers.SafeHandleEventAsync(new NewContractActionEvent(contract, walletId), cancellationToken);
         logger?.LogInformation("Imported contract for wallet {WalletId}", walletId);
     }
-
 }

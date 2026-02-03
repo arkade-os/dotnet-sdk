@@ -82,8 +82,9 @@ public class SpendingService(
 
             if (needsChange)
             {
-                // GetDestination uses DerivePaymentContract, which saves the contract to DB
-                changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf, cancellationToken: cancellationToken)).GetArkAddress();
+                // Pass input contracts for potential descriptor recycling (avoids HD index bloat)
+                var inputContracts = inputs.Select(i => i.Contract).ToArray();
+                changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf, inputContracts, cancellationToken: cancellationToken)).GetArkAddress();
             }
 
             // Add change output if it's at or above the dust threshold
@@ -184,8 +185,9 @@ public class SpendingService(
 
             if (needsChange)
             {
-                // GetDestination uses DerivePaymentContract, which saves the contract to DB
-                changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf, cancellationToken: cancellationToken)).GetArkAddress();
+                // Pass input contracts for potential descriptor recycling (avoids HD index bloat)
+                var inputContracts = selectedCoins.Select(c => c.Contract).ToArray();
+                changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf, inputContracts, cancellationToken: cancellationToken)).GetArkAddress();
             }
 
             // Add change output if it's at or above the dust threshold

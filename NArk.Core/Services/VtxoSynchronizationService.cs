@@ -17,6 +17,12 @@ public class VtxoSynchronizationService : IAsyncDisposable
 
     private HashSet<string> _lastViewOfScripts = [];
 
+    /// <summary>
+    /// Gets the set of scripts currently being listened to for VTXO updates.
+    /// This is useful for debugging to see which contracts are actively tracked.
+    /// </summary>
+    public IReadOnlySet<string> ListenedScripts => _lastViewOfScripts;
+
     private readonly SemaphoreSlim _viewSyncLock = new(1);
 
     private readonly Channel<HashSet<string>> _readyToPoll =

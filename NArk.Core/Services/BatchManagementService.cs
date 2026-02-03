@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
+using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
@@ -29,6 +30,7 @@ public class BatchManagementService(
     IIntentStorage intentStorage,
     IClientTransport clientTransport,
     IVtxoStorage vtxoStorage,
+    IContractStorage contractStorage,
     IWalletProvider walletProvider,
     ICoinService coinService,
     ISafetyService safetyService,
@@ -249,12 +251,6 @@ public class BatchManagementService(
             return;
         }
 
-        // Collect all VTXO outpoints from all selected intents
-        var allVtxoOutpoints = selectedIntentIds
-            .Where(id => _activeIntents.ContainsKey(id))
-            .SelectMany(id => _activeIntents[id].IntentVtxos)
-            .ToHashSet();
-
         // Get spendable coins for all wallets, filtered by the specific VTXOs locked in intents
 
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
@@ -267,7 +263,7 @@ public class BatchManagementService(
 
             try
             {
-                _ = RunConnectionForIntent(intentId, intent, serverInfo, batchEvent, allVtxoOutpoints,
+                _ = RunConnectionForIntent(intentId, intent, serverInfo, batchEvent,
                     CancellationToken.None);
             }
             catch (Exception ex)
@@ -278,34 +274,47 @@ public class BatchManagementService(
     }
 
     private async Task RunConnectionForIntent(string intentId, ArkIntent intent, ArkServerInfo serverInfo,
-        BatchStartedEvent batchEvent, HashSet<OutPoint> allVtxoOutpoints, CancellationToken cancellationToken)
+        BatchStartedEvent batchEvent,  CancellationToken cancellationToken)
     {
         logger?.LogInformation("BatchManagementService: start dedicated connection for intent {IntentId}", intentId);
-
+        
         try
         {
-            HashSet<ArkCoin> allWalletCoins = [];
-            foreach (var outpoint in allVtxoOutpoints)
+            HashSet<ArkCoin> spendableCoins = [];
+            var vtxos = await vtxoStorage.GetVtxos(
+                outpoints:intent.IntentVtxos,
+                includeSpent: true,
+                walletIds: [intent.WalletId],
+                cancellationToken: cancellationToken);
+            var vtxoScripts = vtxos.Select(v => v.Script).ToHashSet();
+            var contracts = await contractStorage.GetContracts(
+                scripts: vtxoScripts.ToArray(),
+                walletIds: [intent.WalletId],
+                cancellationToken: cancellationToken);
+            foreach (var outpoint in intent.IntentVtxos)
             {
-                var vtxo = (await vtxoStorage.GetVtxos(outpoints: [outpoint], includeSpent: true, cancellationToken: cancellationToken)).FirstOrDefault()
-                    ?? throw new InvalidOperationException("Unknown vtxo outpoint");
-                allWalletCoins.Add(
-                    await coinService.GetCoin(vtxo, intent.WalletId, cancellationToken)
+                var vtxo = vtxos.FirstOrDefault(v => v.OutPoint == outpoint);
+                if (vtxo is null)
+                {
+                    logger?.LogWarning("VTXO {Outpoint} not found in storage for intent {IntentId}", outpoint,
+                        intentId);
+                    throw new InvalidOperationException(
+                        $"VTXO {outpoint} not found in storage for intent {intentId}");
+                }
+                var contract = contracts.FirstOrDefault(c => c.Script == vtxo.Script);
+                if (contract is null)
+                {
+                    logger?.LogWarning("Contract for VTXO {Outpoint} not found in storage for intent {IntentId}",
+                        outpoint, intentId);
+                    throw new InvalidOperationException(
+                        $"Contract for VTXO {outpoint} not found in storage for intent {intentId}");
+                    
+                }
+                spendableCoins.Add(
+                    await coinService.GetCoin(contract,vtxo, cancellationToken)
                 );
             }
-
-            // Filter to only the VTXOs locked by this intent
-            var intentVtxoOutpoints = intent.IntentVtxos.ToHashSet();
-
-            var spendableCoins = allWalletCoins
-                .Where(coin => intentVtxoOutpoints.Contains(coin.Outpoint))
-                .ToList();
-
-            if (spendableCoins.Count == 0)
-            {
-                logger?.LogWarning("No spendable coins found for intent {IntentId}", intentId);
-                return;
-            }
+            
 
             await LoadActiveIntentsAsync(cancellationToken);
 
@@ -317,7 +326,7 @@ public class BatchManagementService(
                     intentStorage),
                 serverInfo.Network,
                 intent,
-                [.. spendableCoins],
+                spendableCoins.ToArray(),
                 batchEvent);
 
             await session.InitializeAsync(cancellationToken);
@@ -468,17 +477,25 @@ public class BatchManagementService(
         BatchFailedEvent batchEvent,
         CancellationToken cancellationToken)
     {
+        // Note: We reset to WaitingToSubmit for automatic re-registration.
+        // CancellationReason is set to track the failure but cleared IntentId
+        // means IntentSynchronizationService will re-register with a new ID.
+        var reason = !string.IsNullOrEmpty(batchEvent.Reason)
+            ? $"Batch failed: {batchEvent.Reason}"
+            : "Batch failed";
+
         await SaveToStorage(intent.IntentId!, arkIntent =>
             (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
             {
                 State = ArkIntentState.WaitingToSubmit,
+                CancellationReason = reason,
                 BatchId = null,
                 IntentId = null,
                 UpdatedAt = DateTimeOffset.UtcNow
             }, cancellationToken);
 
         await eventHandlers.SafeHandleEventAsync(
-            new PostBatchSessionEvent(intent, null, ActionState.Failed, batchEvent.Reason),
+            new PostBatchSessionEvent(intent, null, ActionState.Failed, reason),
             cancellationToken);
     }
 
@@ -491,6 +508,7 @@ public class BatchManagementService(
             (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
             {
                 State = ArkIntentState.BatchSucceeded,
+                CancellationReason = null, // Clear any previous failure reason on success
                 CommitmentTransactionId = finalizedEvent.CommitmentTxId,
                 UpdatedAt = DateTimeOffset.UtcNow
             }, cancellationToken);
@@ -604,21 +622,23 @@ public class BatchManagementService(
     public BatchManagementService(IIntentStorage intentStorage,
         IClientTransport clientTransport,
         IVtxoStorage vtxoStorage,
+        IContractStorage contractStorage,
         IWalletProvider walletProvider,
         ICoinService coinService,
         ISafetyService safetyService)
-        : this(intentStorage, clientTransport, vtxoStorage, walletProvider, coinService, safetyService, [])
+        : this(intentStorage, clientTransport, vtxoStorage, contractStorage, walletProvider, coinService, safetyService, [])
     {
     }
 
     public BatchManagementService(IIntentStorage intentStorage,
         IClientTransport clientTransport,
         IVtxoStorage vtxoStorage,
+        IContractStorage contractStorage,
         IWalletProvider walletProvider,
         ICoinService coinService,
         ISafetyService safetyService,
         ILogger<BatchManagementService> logger)
-        : this(intentStorage, clientTransport, vtxoStorage, walletProvider, coinService, safetyService, [], logger)
+        : this(intentStorage, clientTransport, vtxoStorage, contractStorage, walletProvider, coinService, safetyService, [], logger)
     {
     }
 }
