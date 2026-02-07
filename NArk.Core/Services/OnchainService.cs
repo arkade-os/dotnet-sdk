@@ -93,8 +93,9 @@ public class OnchainService(IClientTransport clientTransport, IContractService c
             DateTime.UtcNow.AddHours(1)
         );
 
+        // Create intent (automatically cancels any overlapping intents)
         var intent =
-            await intentGenerationService.GenerateManualIntent(inputs[0].WalletIdentifier, intentSpec, true, cancellationToken);
+            await intentGenerationService.GenerateManualIntent(inputs[0].WalletIdentifier, intentSpec, cancellationToken);
 
         logger?.LogInformation("Collaborative exit initiated for wallet {WalletId} with intent {IntentId}", inputs[0].WalletIdentifier, intent);
         return intent;

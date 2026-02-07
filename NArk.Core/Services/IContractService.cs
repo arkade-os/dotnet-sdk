@@ -12,6 +12,7 @@ public interface IContractService
         string walletId,
         NextContractPurpose purpose,
         ContractActivityState activityState = ContractActivityState.Active,
+        Dictionary<string, string>? metadata = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -24,11 +25,13 @@ public interface IContractService
         NextContractPurpose purpose,
         ArkContract[] inputContracts,
         ContractActivityState activityState = ContractActivityState.Active,
+        Dictionary<string, string>? metadata = null,
         CancellationToken cancellationToken = default);
 
     Task ImportContract(
         string walletId,
         ArkContract contract,
         ContractActivityState activityState = ContractActivityState.Active,
+        Dictionary<string, string>? metadata = null,
         CancellationToken cancellationToken = default);
 }

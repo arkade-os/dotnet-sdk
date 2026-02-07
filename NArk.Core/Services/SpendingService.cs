@@ -125,13 +125,16 @@ public class SpendingService(
     public async Task<IReadOnlySet<ArkCoin>> GetAvailableCoins(string walletId, CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Getting available coins for wallet {WalletId}", walletId);
-        
+
+
+        var vtxos = await vtxoStorage.GetVtxos(walletIds: [walletId], includeSpent: false,
+            cancellationToken: cancellationToken);
+
+        var scripts = vtxos.Select(v => v.Script).Distinct().ToArray();
         var contractByScript =
-            (await contractStorage.GetContracts(walletIds: [walletId], cancellationToken: cancellationToken))
-                .ToDictionary(entity => entity.Script);
-        
-        var vtxos = await vtxoStorage.GetVtxos(scripts: contractByScript.Keys.ToList(), walletIds: [walletId], includeSpent:false,  cancellationToken: cancellationToken);
-        
+            (await contractStorage.GetContracts(walletIds: [walletId], scripts: scripts,
+                cancellationToken: cancellationToken))
+            .ToDictionary(entity => entity.Script);
         var vtxosByContracts =
             vtxos
                 .GroupBy(v => contractByScript[v.Script]);

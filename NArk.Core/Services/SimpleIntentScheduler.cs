@@ -92,8 +92,8 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
                             outputContract.GetArkAddress()
                         )
                     ],
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow.AddHours(1)
+                    null,
+                    null
                 );
 
             intentSpecs.Add(finalSpec);

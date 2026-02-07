@@ -147,6 +147,12 @@ public class IntentGenerationService(
     private async Task<string?> GenerateIntentFromSpec(string walletId, ArkIntentSpec intentSpec, bool force = false, CancellationToken token = default)
     {
         logger?.LogDebug("Generating intent from spec for wallet {WalletId} with {CoinCount} coins", walletId, intentSpec.Coins.Length);
+
+        // Lock on wallet level to prevent race conditions between concurrent intent creation.
+        // This ensures that the check for overlapping intents and the creation of new intent
+        // happen atomically, preventing duplicate intents for the same VTXOs.
+        await using var walletLock = await safetyService.LockKeyAsync($"intent-generation::{walletId}", token);
+
         ArkServerInfo serverInfo = await clientTransport.GetServerInfoAsync(token);
         var outputsSum = intentSpec.Outputs.Sum(o => o.Value);
         var inputsSum = intentSpec.Coins.Sum(c => c.Amount);

@@ -267,7 +267,9 @@ public class SwapsManagementService : IAsyncDisposable
         // Use AwaitingFundsBeforeDeactivate so it auto-deactivates after receiving the refund
         var refundAddress =
             await _contractService.DeriveContract(swap.WalletId, NextContractPurpose.SendToSelf,
-                ContractActivityState.AwaitingFundsBeforeDeactivate, cancellationToken);
+                ContractActivityState.AwaitingFundsBeforeDeactivate,
+                metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.SwapId}" },
+                cancellationToken: cancellationToken);
         if (refundAddress == null)
         {
             throw new InvalidOperationException("Failed to get refund address");
@@ -387,7 +389,8 @@ public class SwapsManagementService : IAsyncDisposable
         var swap = await _boltzService.CreateSubmarineSwap(invoice,
             await addressProvider!.GetNextSigningDescriptor(cancellationToken),
             cancellationToken);
-        await _contractService.ImportContract(walletId, swap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate, cancellationToken: cancellationToken);
+        await _contractService.ImportContract(walletId, swap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.Swap.Id}" }, cancellationToken: cancellationToken);
         await _swapsStorage.SaveSwap(
             walletId,
             new ArkSwap(
@@ -471,7 +474,8 @@ public class SwapsManagementService : IAsyncDisposable
                 destinationDescriptor,
                 cancellationToken
             );
-        await _contractService.ImportContract(walletId, revSwap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate, cancellationToken: cancellationToken);
+        await _contractService.ImportContract(walletId, revSwap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{revSwap.Swap.Id}" }, cancellationToken: cancellationToken);
         await _swapsStorage.SaveSwap(
             walletId,
             new ArkSwap(
@@ -546,7 +550,8 @@ public class SwapsManagementService : IAsyncDisposable
                     walletId,
                     contract,
                     ContractActivityState.Active,
-                    cancellationToken);
+                    metadata: new Dictionary<string, string> { ["Source"] = $"swap:{restored.Id}" },
+                    cancellationToken: cancellationToken);
             }
 
             await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);

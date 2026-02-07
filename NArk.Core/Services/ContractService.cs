@@ -32,9 +32,10 @@ public class ContractService(
         string walletId,
         NextContractPurpose purpose,
         ContractActivityState activityState = ContractActivityState.Active,
+        Dictionary<string, string>? metadata = null,
         CancellationToken cancellationToken = default)
     {
-        return DeriveContractInternal(walletId, purpose, null, activityState, cancellationToken);
+        return DeriveContractInternal(walletId, purpose, null, activityState, metadata, cancellationToken);
     }
 
     public Task<ArkContract> DeriveContract(
@@ -42,9 +43,10 @@ public class ContractService(
         NextContractPurpose purpose,
         ArkContract[] inputContracts,
         ContractActivityState activityState = ContractActivityState.Active,
+        Dictionary<string, string>? metadata = null,
         CancellationToken cancellationToken = default)
     {
-        return DeriveContractInternal(walletId, purpose, inputContracts, activityState, cancellationToken);
+        return DeriveContractInternal(walletId, purpose, inputContracts, activityState, metadata, cancellationToken);
     }
 
     private async Task<ArkContract> DeriveContractInternal(
@@ -52,6 +54,7 @@ public class ContractService(
         NextContractPurpose purpose,
         ArkContract[]? inputContracts,
         ContractActivityState activityState,
+        Dictionary<string, string>? metadata,
         CancellationToken cancellationToken)
     {
         logger?.LogDebug("Deriving {Purpose} contract for wallet {WalletId} with state {ActivityState}, inputContracts: {InputCount}",
@@ -60,6 +63,10 @@ public class ContractService(
         var addressProvider = await walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
 
         var (contract, entity) = await addressProvider!.GetNextContract(purpose, activityState, inputContracts, cancellationToken);
+
+        if (metadata is { Count: > 0 })
+            entity = entity with { Metadata = metadata };
+
         await contractStorage.SaveContract(entity, cancellationToken);
 
         await eventHandlers.SafeHandleEventAsync(new NewContractActionEvent(contract, walletId), cancellationToken);
@@ -71,6 +78,7 @@ public class ContractService(
         string walletId,
         ArkContract contract,
         ContractActivityState activityState = ContractActivityState.Active,
+        Dictionary<string, string>? metadata = null,
         CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Importing contract for wallet {WalletId} with state {ActivityState}",
@@ -81,7 +89,10 @@ public class ContractService(
             logger?.LogWarning("Cannot import contract for wallet {WalletId}: server key mismatch", walletId);
             throw new InvalidOperationException("Cannot import contract with different server key");
         }
-        await contractStorage.SaveContract(contract.ToEntity(walletId, defaultServerKey: info.SignerKey, activityState: activityState), cancellationToken);
+        var entity = contract.ToEntity(walletId, defaultServerKey: info.SignerKey, activityState: activityState);
+        if (metadata is { Count: > 0 })
+            entity = entity with { Metadata = metadata };
+        await contractStorage.SaveContract(entity, cancellationToken);
         await eventHandlers.SafeHandleEventAsync(new NewContractActionEvent(contract, walletId), cancellationToken);
         logger?.LogInformation("Imported contract for wallet {WalletId}", walletId);
     }
