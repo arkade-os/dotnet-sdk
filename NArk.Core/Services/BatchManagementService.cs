@@ -69,14 +69,39 @@ public class BatchManagementService(
         await LoadActiveIntentsAsync(cancellationToken);
         _ = RunSharedEventStreamController(_serviceCts.Token);
         await _triggerChannel.Writer.WriteAsync("STARTUP", cancellationToken);
-        intentStorage.IntentChanged += (_, _) => _triggerChannel.Writer.TryWrite("INTENT_CHANGED");
+        intentStorage.IntentChanged += OnIntentChanged;
+    }
+
+    private void OnIntentChanged(object? sender, ArkIntent intent)
+    {
+        // Only trigger stream update if:
+        // 1. A new intent is ready for batch (WaitingForBatch with IntentId)
+        // 2. An intent was cancelled/completed and should be removed
+        // Don't trigger for state changes within a batch (BatchInProgress updates)
+        if (intent.State == ArkIntentState.WaitingForBatch && intent.IntentId is not null)
+        {
+            // New intent ready - check if we already know about it
+            if (!_activeIntents.ContainsKey(intent.IntentId))
+            {
+                _triggerChannel.Writer.TryWrite("INTENT_ADDED");
+            }
+        }
+        else if (intent.State is ArkIntentState.Cancelled or ArkIntentState.BatchFailed or ArkIntentState.BatchSucceeded)
+        {
+            // Intent completed - remove from tracking if present
+            if (intent.IntentId is not null && _activeIntents.ContainsKey(intent.IntentId))
+            {
+                _triggerChannel.Writer.TryWrite("INTENT_COMPLETED");
+            }
+        }
+        // Don't trigger for WaitingToSubmit (not yet ready) or BatchInProgress (already tracking)
     }
 
     private async Task RunSharedEventStreamController(CancellationToken cancellationToken)
     {
         await foreach (var triggerReason in _triggerChannel.Reader.ReadAllAsync(cancellationToken))
         {
-            logger?.LogInformation("Received trigger in EventStreamController: {TriggerReason}", triggerReason);
+            logger?.LogDebug("Received trigger in EventStreamController: {TriggerReason}", triggerReason);
             await _connectionManipulationSemaphore.WaitAsync(cancellationToken);
             try
             {
@@ -102,7 +127,64 @@ public class BatchManagementService(
     private async Task LoadActiveIntentsAsync(CancellationToken cancellationToken)
     {
         var activeStates = new[] { ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch, ArkIntentState.BatchInProgress };
-        foreach (var intent in await intentStorage.GetIntents(states: activeStates, cancellationToken: cancellationToken))
+        var allActiveIntents = await intentStorage.GetIntents(states: activeStates, cancellationToken: cancellationToken);
+
+        // Group intents by their VTXOs to detect duplicates
+        // An intent's VTXOs are stored in IntentVtxos (list of outpoints)
+        var vtxoToIntents = new Dictionary<string, List<ArkIntent>>();
+        foreach (var intent in allActiveIntents)
+        {
+            foreach (var vtxo in intent.IntentVtxos)
+            {
+                var key = $"{vtxo.Hash}:{vtxo.N}";
+                if (!vtxoToIntents.ContainsKey(key))
+                    vtxoToIntents[key] = [];
+                vtxoToIntents[key].Add(intent);
+            }
+        }
+
+        // Find VTXOs that have multiple intents - these are duplicates that need cleanup
+        var duplicateVtxos = vtxoToIntents.Where(kv => kv.Value.Count > 1).ToList();
+        if (duplicateVtxos.Any())
+        {
+            logger?.LogWarning(
+                "Found {Count} VTXOs with multiple active intents - cleaning up duplicates",
+                duplicateVtxos.Count);
+
+            // For each VTXO with duplicates, keep only the most recent intent (by UpdatedAt)
+            var intentsToCancel = new HashSet<string>();
+            foreach (var (vtxoKey, intents) in duplicateVtxos)
+            {
+                // Sort by UpdatedAt descending, keep the first (most recent), cancel the rest
+                var sorted = intents.OrderByDescending(i => i.UpdatedAt).ToList();
+                for (int i = 1; i < sorted.Count; i++)
+                {
+                    intentsToCancel.Add(sorted[i].IntentTxId);
+                }
+            }
+
+            // Cancel the duplicate intents
+            foreach (var intentTxId in intentsToCancel)
+            {
+                var intent = allActiveIntents.First(i => i.IntentTxId == intentTxId);
+                logger?.LogWarning(
+                    "Cancelling duplicate intent {IntentTxId} (IntentId: {IntentId}) - VTXO already claimed by another intent",
+                    intent.IntentTxId, intent.IntentId);
+
+                var cancelledIntent = intent with
+                {
+                    State = ArkIntentState.Cancelled,
+                    CancellationReason = "Duplicate intent for same VTXO - cleaned up on startup",
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+                await intentStorage.SaveIntent(cancelledIntent.WalletId, cancelledIntent, cancellationToken);
+            }
+
+            // Remove cancelled intents from the list
+            allActiveIntents = allActiveIntents.Where(i => !intentsToCancel.Contains(i.IntentTxId)).ToList();
+        }
+
+        foreach (var intent in allActiveIntents)
         {
             if (intent.IntentId is null)
             {
@@ -110,7 +192,26 @@ public class BatchManagementService(
                 continue;
             }
 
-            logger?.LogInformation("Loaded active intent {IntentId} in state {State}", intent.IntentId, intent.State);
+            // Cancel all BatchInProgress intents on startup. Batch sessions are never carried
+            // over across restarts, so any BatchInProgress intent is definitively stale.
+            // The next generation cycle will create a fresh intent if needed.
+            if (intent.State == ArkIntentState.BatchInProgress)
+            {
+                logger?.LogWarning(
+                    "Cancelling orphaned BatchInProgress intent {IntentId} on startup (no active batch session)",
+                    intent.IntentId);
+
+                var cancelledIntent = intent with
+                {
+                    State = ArkIntentState.Cancelled,
+                    CancellationReason = "Orphaned BatchInProgress - no active batch session after restart",
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+                await intentStorage.SaveIntent(cancelledIntent.WalletId, cancelledIntent, cancellationToken);
+                continue;
+            }
+
+            logger?.LogDebug("Loaded active intent {IntentId} in state {State}", intent.IntentId, intent.State);
             _activeIntents[intent.IntentId] = intent;
         }
     }
@@ -124,7 +225,7 @@ public class BatchManagementService(
 
     private async Task RunMainSharedEventStreamAsync(CancellationToken cancellationToken)
     {
-        logger?.LogInformation("BatchManagementService: Main shared event stream started");
+        logger?.LogDebug("BatchManagementService: Main shared event stream started");
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -314,9 +415,6 @@ public class BatchManagementService(
                     await coinService.GetCoin(contract,vtxo, cancellationToken)
                 );
             }
-            
-
-            await LoadActiveIntentsAsync(cancellationToken);
 
             // Create and initialize a batch session
             var session = new BatchSession(
@@ -407,11 +505,10 @@ public class BatchManagementService(
                     case BatchFailedEvent batchFailedEvent:
                         if (batchFailedEvent.Id == intent.BatchId)
                         {
+                            // Mark as BatchFailed and done - no auto-retry
+                            // The VTXOs become available for new intents via Send flow or scheduler
                             await HandleBatchFailedAsync(intent, batchFailedEvent, cancellationToken);
                             _activeBatchSessions.TryRemove(intentId, out _);
-                            // Remove from _activeIntents - the intent will be re-registered by
-                            // IntentSynchronizationService with a new IntentId, and picked up
-                            // again through the normal LoadActiveIntentsAsync flow
                             _activeIntents.TryRemove(intentId, out _);
                             TriggerStreamUpdate();
                         }
@@ -421,10 +518,14 @@ public class BatchManagementService(
                     case BatchFinalizedEvent batchFinalized:
                         if (batchFinalized.Id == intent.BatchId)
                         {
+                            // Note: HandleBatchFinalizedAsync calls SaveToStorage which triggers OnIntentChanged.
+                            // OnIntentChanged will write to _triggerChannel because the intent is still in
+                            // _activeIntents at that point. We remove from _activeIntents AFTER to ensure
+                            // the trigger is sent, then the trigger handler will reload and see the new state.
                             await HandleBatchFinalizedAsync(intent, batchFinalized, cancellationToken);
                             _activeBatchSessions.TryRemove(intentId, out _);
                             _activeIntents.TryRemove(intentId, out _);
-                            TriggerStreamUpdate();
+                            // Note: TriggerStreamUpdate() removed - OnIntentChanged handles this now
                         }
 
                         break;
@@ -452,45 +553,31 @@ public class BatchManagementService(
     }
 
     /// <summary>
-    /// Handles a batch failure by resetting the intent for re-registration.
+    /// Handles a batch failure by marking the intent as failed.
     ///
-    /// <para><b>Batch Failure Recovery Flow:</b></para>
-    /// <list type="number">
-    ///   <item>Intent state is reset to <see cref="ArkIntentState.WaitingToSubmit"/> with IntentId cleared</item>
-    ///   <item><see cref="IntentSynchronizationService"/> picks up the intent via GetUnsubmittedIntents()</item>
-    ///   <item>Re-registration is attempted with arkd:
-    ///     <list type="bullet">
-    ///       <item>If arkd requeued the intent: AlreadyLockedVtxoException is thrown, triggering delete + re-register</item>
-    ///       <item>If we got a conviction (our fault): re-registration succeeds with a new IntentId</item>
-    ///       <item>If we're banned (3 convictions): re-registration fails, intent is cancelled</item>
-    ///     </list>
-    ///   </item>
-    ///   <item>On successful re-registration, intent moves to WaitingForBatch and is picked up by BatchManagementService again</item>
-    /// </list>
+    /// <para>The intent stays in <see cref="ArkIntentState.BatchFailed"/> state permanently.
+    /// The VTXOs become available again for new intents via the Send flow or scheduler.</para>
     ///
-    /// <para><b>Note:</b> arkd tracks "convictions" - if a batch fails due to your intent not signing,
-    /// you get a conviction and the intent is NOT automatically requeued. After 3 convictions,
-    /// the VTXOs used in that intent are temporarily banned from spending/refreshing.</para>
+    /// <para><b>Note:</b> We no longer auto-retry failed intents. If the user wants to retry,
+    /// they can create a new intent which will automatically cancel this failed one.</para>
     /// </summary>
     private async Task HandleBatchFailedAsync(
         ArkIntent intent,
         BatchFailedEvent batchEvent,
         CancellationToken cancellationToken)
     {
-        // Note: We reset to WaitingToSubmit for automatic re-registration.
-        // CancellationReason is set to track the failure but cleared IntentId
-        // means IntentSynchronizationService will re-register with a new ID.
         var reason = !string.IsNullOrEmpty(batchEvent.Reason)
             ? $"Batch failed: {batchEvent.Reason}"
             : "Batch failed";
 
+        // Just mark as failed and done - no auto-retry
+        // Keep BatchId for tracking/debugging
         await SaveToStorage(intent.IntentId!, arkIntent =>
             (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
             {
-                State = ArkIntentState.WaitingToSubmit,
+                State = ArkIntentState.BatchFailed,
                 CancellationReason = reason,
-                BatchId = null,
-                IntentId = null,
+                // Keep BatchId for tracking
                 UpdatedAt = DateTimeOffset.UtcNow
             }, cancellationToken);
 
@@ -525,6 +612,9 @@ public class BatchManagementService(
     {
         if (_disposed)
             return;
+
+        // Unsubscribe from intent changes first to prevent new triggers during disposal
+        intentStorage.IntentChanged -= OnIntentChanged;
 
         try
         {

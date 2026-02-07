@@ -285,7 +285,12 @@ public static class TransactionHelpers
                         (await intentStorage.GetIntents(intentTxIds: [intent.IntentTxId], cancellationToken: CancellationToken.None)).FirstOrDefault()
                         ?? throw new Exception("Should not happen, intent disappeared from storage mid-action");
                     await intentStorage.SaveIntent(intentAfterLock.WalletId,
-                        intentAfterLock with { State = ArkIntentState.Cancelled }, CancellationToken.None);
+                        intentAfterLock with
+                        {
+                            State = ArkIntentState.Cancelled,
+                            CancellationReason = "Cancelled — inputs spent by another transaction",
+                            UpdatedAt = DateTimeOffset.UtcNow
+                        }, CancellationToken.None);
                 }
             }
 

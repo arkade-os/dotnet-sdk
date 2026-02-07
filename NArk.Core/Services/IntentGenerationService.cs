@@ -116,6 +116,47 @@ public class IntentGenerationService(
 
         foreach (var walletContracts in contracts)
         {
+            var walletId = walletContracts.Key;
+
+            // Check for BatchInProgress intents. A batch resolves in seconds, so if an intent
+            // has been stuck in BatchInProgress for over 5 minutes, it's orphaned — cancel it
+            // and let the cycle proceed. Otherwise, skip this wallet and wait for the batch to
+            // resolve naturally (it will fire another VTXO change event).
+            var inProgressIntents = await intentStorage.GetIntents(
+                walletIds: [walletId],
+                states: [ArkIntentState.BatchInProgress],
+                cancellationToken: token);
+            if (inProgressIntents.Count > 0)
+            {
+                var staleThreshold = TimeSpan.FromMinutes(5);
+                var staleIntents = inProgressIntents
+                    .Where(i => DateTimeOffset.UtcNow - i.UpdatedAt > staleThreshold)
+                    .ToList();
+
+                if (staleIntents.Count > 0)
+                {
+                    foreach (var stale in staleIntents)
+                    {
+                        logger?.LogWarning("Cancelling stuck BatchInProgress intent {IntentTxId} for wallet {WalletId} (stuck for {Duration})",
+                            stale.IntentTxId, walletId, DateTimeOffset.UtcNow - stale.UpdatedAt);
+                        await intentStorage.SaveIntent(walletId, stale with
+                        {
+                            State = ArkIntentState.Cancelled,
+                            CancellationReason = "Stuck in BatchInProgress — batch session likely lost",
+                            UpdatedAt = DateTimeOffset.UtcNow
+                        }, token);
+                    }
+                }
+
+                // If any non-stale BatchInProgress intents remain, skip this wallet
+                if (staleIntents.Count < inProgressIntents.Count)
+                {
+                    logger?.LogDebug("Skipping intent generation for wallet {WalletId} - {Count} intent(s) with batch in progress",
+                        walletId, inProgressIntents.Count - staleIntents.Count);
+                    continue;
+                }
+            }
+
             var walletVtxos =
                 unspentVtxos.Where(v => walletContracts.Any(c => c.Script == v.Script)).ToArray();
 
@@ -139,12 +180,73 @@ public class IntentGenerationService(
 
             foreach (var intentSpec in intentSpecs)
             {
-                await GenerateIntentFromSpec(walletContracts.Key, intentSpec, false, token);
+                await GenerateIntentFromSpec(walletContracts.Key, intentSpec, token);
             }
         }
     }
 
-    private async Task<string?> GenerateIntentFromSpec(string walletId, ArkIntentSpec intentSpec, bool force = false, CancellationToken token = default)
+    /// <summary>
+    /// Cancels any active intents that share VTXOs with the specified outpoints.
+    /// For intents already submitted to arkd (WaitingForBatch), also deletes them from the server.
+    /// This enforces the invariant: no two active intents may share any VTXO.
+    /// </summary>
+    private async Task CancelOverlappingIntentsAsync(string walletId, OutPoint[] outpoints, CancellationToken token)
+    {
+        // Active states: intents that are still "in play" and could conflict
+        var activeStates = new[] { ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch, ArkIntentState.BatchInProgress };
+
+        var overlappingIntents = await intentStorage.GetIntents(
+            walletIds: [walletId],
+            containingInputs: outpoints,
+            states: activeStates,
+            cancellationToken: token);
+
+        if (overlappingIntents.Count == 0)
+            return;
+
+        logger?.LogInformation("Cancelling {OverlappingIntentCount} overlapping intents for wallet {WalletId}", overlappingIntents.Count, walletId);
+
+        foreach (var intent in overlappingIntents)
+        {
+            await using var intentLock =
+                await safetyService.LockKeyAsync($"intent::{intent.IntentTxId}", CancellationToken.None);
+
+            var intentAfterLock =
+                (await intentStorage.GetIntents(intentTxIds: [intent.IntentTxId], cancellationToken: CancellationToken.None)).FirstOrDefault();
+
+            if (intentAfterLock is null)
+            {
+                logger?.LogDebug("Intent {IntentTxId} no longer exists, skipping cancellation", intent.IntentTxId);
+                continue;
+            }
+
+            // If the intent has been submitted to arkd, delete it from the server first
+            if ( intentAfterLock.IntentId is not null)
+            {
+                try
+                {
+                    logger?.LogDebug("Deleting intent {IntentId} from arkd server", intentAfterLock.IntentId);
+                    await clientTransport.DeleteIntent(intentAfterLock, token);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogDebug(0, ex, "Failed to delete intent {IntentId} from arkd server, continuing with local cancellation", intentAfterLock.IntentId);
+                }
+            }
+
+            await intentStorage.SaveIntent(intentAfterLock.WalletId,
+                intentAfterLock with
+                {
+                    State = ArkIntentState.Cancelled,
+                    CancellationReason = "Superseded by new intent",
+                    UpdatedAt = DateTimeOffset.UtcNow
+                }, CancellationToken.None);
+
+            logger?.LogDebug("Cancelled overlapping intent {IntentTxId} (was in state {State})", intentAfterLock.IntentTxId, intentAfterLock.State);
+        }
+    }
+
+    private async Task<string?> GenerateIntentFromSpec(string walletId, ArkIntentSpec intentSpec, CancellationToken token = default)
     {
         logger?.LogDebug("Generating intent from spec for wallet {WalletId} with {CoinCount} coins", walletId, intentSpec.Coins.Length);
 
@@ -165,35 +267,9 @@ public class IntentGenerationService(
                 $"Scheduler is not considering fees properly, missing fees by {inputsSum + fee - outputsSum} sats");
         }
 
-        var overlappingIntents =
-            await intentStorage.GetIntents(
-                walletIds: [walletId],
-                containingInputs: [.. intentSpec.Coins.Select(c => c.Outpoint)],
-                states: [ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch],
-                cancellationToken: token);
-        if (overlappingIntents.Count != 0)
-        {
-            if (!force)
-            {
-                logger?.LogDebug("Intent generation skipped for wallet {WalletId}: overlapping intents exist", walletId);
-                return null;
-            }
-            else
-            {
-                logger?.LogWarning("Forcing intent generation for wallet {WalletId}: cancelling {OverlappingIntentCount} overlapping intents", walletId, overlappingIntents.Count);
-                foreach (var intent in overlappingIntents)
-                {
-                    await using var intentLock =
-                        await safetyService.LockKeyAsync($"intent::{intent.IntentTxId}", CancellationToken.None);
-                    var intentAfterLock =
-                        (await intentStorage.GetIntents(intentTxIds: [intent.IntentTxId], cancellationToken: CancellationToken.None)).FirstOrDefault()
-                        ?? throw new Exception("Should not happen, intent disappeared from storage mid-action");
-                    await intentStorage.SaveIntent(intentAfterLock.WalletId,
-                        intentAfterLock with { State = ArkIntentState.Cancelled }, CancellationToken.None);
-                }
-            }
-
-        }
+        // Always cancel any overlapping intents - new intent wins
+        var inputOutpoints = intentSpec.Coins.Select(c => c.Outpoint).ToArray();
+        await CancelOverlappingIntentsAsync(walletId, inputOutpoints, token);
 
         var addrProvider = await walletProvider.GetAddressProviderAsync(walletId, token)
                            ?? throw new InvalidOperationException("Wallet belonging to the intent was not found!");
@@ -315,8 +391,8 @@ public class IntentGenerationService(
     private async Task<(PSBT RegisterTx, PSBT Delete, string RegisterMessage, string DeleteMessage)> CreateIntents(
         Network network,
         IReadOnlySet<ECPubKey> cosigners,
-        DateTimeOffset validAt,
-        DateTimeOffset expireAt,
+        DateTimeOffset? validAt,
+        DateTimeOffset? expireAt,
         IReadOnlyCollection<ArkCoin> inputCoins,
         IReadOnlyCollection<ArkTxOut>? outs = null,
         CancellationToken cancellationToken = default
@@ -326,15 +402,15 @@ public class IntentGenerationService(
         {
             Type = "register",
             OnchainOutputsIndexes = outs?.Select((x, i) => (x, i)).Where(o => o.x.Type == ArkTxOutType.Onchain).Select((_, i) => i).ToArray() ?? [],
-            ValidAt = validAt.ToUnixTimeSeconds(),
-            ExpireAt = expireAt.ToUnixTimeSeconds(),
+            ValidAt = validAt?.ToUnixTimeSeconds()??0,
+            ExpireAt = expireAt?.ToUnixTimeSeconds()??0,
             CosignersPublicKeys = cosigners.Select(c => c.ToBytes().ToHexStringLower()).ToArray()
         };
 
         var deleteMsg = new Messages.DeleteIntentMessage()
         {
             Type = "delete",
-            ExpireAt = expireAt.ToUnixTimeSeconds()
+            ExpireAt = expireAt?.ToUnixTimeSeconds()??0
         };
         var message = JsonSerializer.Serialize(msg);
         var deleteMessage = JsonSerializer.Serialize(deleteMsg);
@@ -363,16 +439,11 @@ public class IntentGenerationService(
         logger?.LogInformation("Intent generation service disposed");
     }
 
-    public async Task<string> GenerateManualIntent(string walletId, ArkIntentSpec spec, bool force = false, CancellationToken cancellationToken = default)
+    public async Task<string> GenerateManualIntent(string walletId, ArkIntentSpec spec, CancellationToken cancellationToken = default)
     {
         logger?.LogDebug("Generating manual intent for wallet {WalletId}", walletId);
-        var intentTxId = await GenerateIntentFromSpec(walletId, spec, force, cancellationToken);
-
-        if (intentTxId is null)
-        {
-            logger?.LogWarning("Manual intent generation failed for wallet {WalletId}: pending intents exist", walletId);
-            throw new InvalidOperationException("Could not create intent, pending intents exist");
-        }
+        var intentTxId = await GenerateIntentFromSpec(walletId, spec, cancellationToken)
+            ?? throw new InvalidOperationException("Intent generation returned null unexpectedly");
 
         return intentTxId;
     }
@@ -381,5 +452,5 @@ public class IntentGenerationService(
 public interface IIntentGenerationService
 {
     Task<string> GenerateManualIntent(string walletId, ArkIntentSpec spec,
-        bool force = false, CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default);
 }
