@@ -1,6 +1,6 @@
 using Aspire.Hosting;
 
-namespace NArk.Tests.End2End;
+namespace NArk.Tests.End2End.Core;
 
 [SetUpFixture]
 public class SharedArkInfrastructure

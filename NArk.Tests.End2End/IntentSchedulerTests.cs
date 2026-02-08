@@ -9,7 +9,7 @@ using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
 using NBitcoin;
 
-namespace NArk.Tests.End2End;
+namespace NArk.Tests.End2End.Core;
 
 public class IntentSchedulerTests
 {

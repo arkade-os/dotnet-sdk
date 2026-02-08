@@ -14,7 +14,7 @@ using NArk.Transport.GrpcClient;
 using NBitcoin;
 using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 
-namespace NArk.Tests.End2End;
+namespace NArk.Tests.End2End.Core;
 
 public class VtxoSynchronizationTests
 {

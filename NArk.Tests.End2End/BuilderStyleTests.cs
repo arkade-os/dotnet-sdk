@@ -11,7 +11,7 @@ using NArk.Core.Services;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 
-namespace NArk.Tests.End2End;
+namespace NArk.Tests.End2End.Core;
 
 public class BuilderStyleTests
 {

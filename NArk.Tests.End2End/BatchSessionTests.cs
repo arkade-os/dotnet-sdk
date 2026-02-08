@@ -15,7 +15,7 @@ using NArk.Core.Transformers;
 using NBitcoin;
 using NBitcoin.Crypto;
 
-namespace NArk.Tests.End2End;
+namespace NArk.Tests.End2End.Core;
 
 public class BatchSessionTests
 {
