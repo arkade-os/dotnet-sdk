@@ -1,6 +1,6 @@
 using NArk.Abstractions.Intents;
 using NArk.Core;
-using NArk.Core.Extensions;
+using NArk.Abstractions.Extensions;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Secp256k1;

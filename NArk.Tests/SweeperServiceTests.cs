@@ -5,7 +5,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Contracts;
 using NArk.Core.Events;
-using NArk.Core.Extensions;
+using NArk.Abstractions.Extensions;
 using NArk.Core.Models.Options;
 using NArk.Core.Scripts;
 using NArk.Core.Services;

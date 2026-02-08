@@ -1,5 +1,5 @@
 using NArk.Core.Contracts;
-using NArk.Core.Extensions;
+using NArk.Abstractions.Extensions;
 using NBitcoin;
 
 namespace NArk.Tests;

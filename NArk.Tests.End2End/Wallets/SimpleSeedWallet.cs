@@ -1,13 +1,13 @@
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
-using NArk.Swaps.Helpers;
+using NArk.Abstractions.Extensions;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NBitcoin.Secp256k1.Musig;
-using OutputDescriptorHelpers = NArk.Swaps.Helpers.OutputDescriptorHelpers;
+using OutputDescriptorHelpers = NArk.Abstractions.Extensions.OutputDescriptorHelpers;
 
 namespace NArk.Tests.End2End.Wallets;
 

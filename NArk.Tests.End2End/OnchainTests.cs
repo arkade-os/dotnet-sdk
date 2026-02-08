@@ -9,7 +9,7 @@ using NArk.Hosting;
 using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
-using NArk.Swaps.Helpers;
+using NArk.Abstractions.Extensions;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 

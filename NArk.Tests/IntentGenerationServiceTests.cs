@@ -140,7 +140,7 @@ public class IntentGenerationServiceTests
             result: []);
 
         // CoinService returns a coin for the vtxo
-        var serverKey = NArk.Core.Extensions.KeyExtensions.ParseOutputDescriptor(
+        var serverKey = NArk.Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(
             "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
             Network.RegTest);
         var mockContract = Substitute.For<ArkContract>(serverKey);

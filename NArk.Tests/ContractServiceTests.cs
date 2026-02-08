@@ -2,7 +2,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Core;
 using NArk.Core.Events;
-using NArk.Core.Extensions;
+using NArk.Abstractions.Extensions;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NBitcoin;

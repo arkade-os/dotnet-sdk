@@ -139,7 +139,7 @@ public class DefaultCoinSelectorTests
         scriptBuilder.Build().Returns(new TapScript(Script.Empty, TapLeafVersion.C0));
 
         var contract = Substitute.For<ArkContract>(
-            NArk.Core.Extensions.KeyExtensions.ParseOutputDescriptor(
+            NArk.Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(
                 "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
                 Network.RegTest));
 
