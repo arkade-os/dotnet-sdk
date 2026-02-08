@@ -1,3 +1,4 @@
+using NArk.Abstractions.Helpers;
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using NBitcoin.Scripting;
@@ -5,7 +6,7 @@ using NBitcoin.Secp256k1;
 
 namespace NArk.Abstractions.Extensions;
 
-internal static class KeyExtensions
+public static class KeyExtensions
 {
     public static ECXOnlyPubKey ToECXOnlyPubKey(this byte[] pubKeyBytes)
     {
@@ -21,40 +22,15 @@ internal static class KeyExtensions
 
     public static ECPubKey ToPubKey(this OutputDescriptor descriptor)
     {
-        if (descriptor is not OutputDescriptor.Tr trOutputDescriptor)
-        {
-            throw new ArgumentException("the output descriptor must be tr", nameof(descriptor));
-        }
-
-        byte[]? bytes;
-        if (trOutputDescriptor.InnerPubkey is PubKeyProvider.Const constPubKeyProvider)
-        {
-            if (constPubKeyProvider.Xonly)
-                throw new ArgumentException("the output descriptor only describe an xonly public key",
-                    nameof(descriptor));
-            bytes = constPubKeyProvider.Pk.ToBytes();
-        }
-        else
-        {
-            bytes = trOutputDescriptor.InnerPubkey.GetPubKey(0, _ => null).ToBytes();
-        }
-
-        return ECPubKey.Create(bytes);
+        return descriptor.Extract().PubKey ?? throw new ArgumentException("the output descriptor does not contain a pubkey", nameof(descriptor));
     }
 
     public static ECXOnlyPubKey ToXOnlyPubKey(this OutputDescriptor descriptor)
     {
-        if (descriptor is not OutputDescriptor.Tr trOutputDescriptor)
-        {
-            throw new ArgumentException("the output descriptor must be tr", nameof(descriptor));
-        }
-
-        if (trOutputDescriptor.InnerPubkey is PubKeyProvider.Const { Xonly: true } constPubKeyProvider)
-            return ECXOnlyPubKey.Create(constPubKeyProvider.Pk.ToBytes()[1..]);
-
-        return descriptor.ToPubKey().ToXOnlyPubKey();
+        return descriptor.Extract().XOnlyPubKey ?? throw new ArgumentException("the output descriptor does not contain an xonly pubkey", nameof(descriptor));
     }
-
+    
+    
     public static OutputDescriptor ParseOutputDescriptor(string str, Network network)
     {
         if (!HexEncoder.IsWellFormed(str))

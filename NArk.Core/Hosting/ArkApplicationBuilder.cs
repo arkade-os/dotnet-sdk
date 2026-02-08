@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Blockchain;
@@ -10,9 +10,6 @@ using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Events;
 using NArk.Core.Models.Options;
-using NArk.Swaps.Abstractions;
-using NArk.Swaps.Boltz.Client;
-using NArk.Swaps.Boltz.Models;
 
 namespace NArk.Hosting;
 
@@ -75,12 +72,6 @@ public static class AppExtensions
         public ArkApplicationBuilder WithIntentStorage<TStorage>() where TStorage : class, IIntentStorage
         {
             _hostBuilder.ConfigureServices(services => { services.AddSingleton<IIntentStorage, TStorage>(); });
-            return this;
-        }
-
-        public ArkApplicationBuilder WithSwapStorage<TStorage>() where TStorage : class, ISwapStorage
-        {
-            _hostBuilder.ConfigureServices(services => { services.AddSingleton<ISwapStorage, TStorage>(); });
             return this;
         }
 
@@ -155,35 +146,7 @@ public static class AppExtensions
         public ArkApplicationBuilder OnCustomGrpcArk(string arkUrl)
         {
             _hostBuilder.ConfigureServices(services =>
-                services.AddArkNetwork(new ArkNetworkConfig(arkUrl), configureBoltz: false));
-            return this;
-        }
-
-        public ArkApplicationBuilder OnCustomBoltz(string boltzUrl, string? websocketUrl)
-        {
-            _hostBuilder.ConfigureServices(services =>
-            {
-                services.Configure<BoltzClientOptions>(b =>
-                {
-                    b.BoltzUrl = boltzUrl;
-                    b.WebsocketUrl = websocketUrl ?? boltzUrl;
-                });
-            });
-            return EnableSwaps();
-        }
-
-        public ArkApplicationBuilder EnableSwaps(Action<BoltzClientOptions>? boltzOptionsConfigure = null)
-        {
-            _hostBuilder.ConfigureServices(services =>
-            {
-                if (boltzOptionsConfigure != null)
-                {
-                    services.Configure(boltzOptionsConfigure);
-                }
-
-                services.AddHttpClient<BoltzClient>();
-                services.AddArkSwapServices();
-            });
+                services.AddArkNetwork(new ArkNetworkConfig(arkUrl)));
             return this;
         }
 

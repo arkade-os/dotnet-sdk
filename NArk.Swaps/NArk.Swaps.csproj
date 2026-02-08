@@ -14,5 +14,12 @@
     <ItemGroup>
       <PackageReference Include="BTCPayServer.Lightning.Common" Version="1.5.2" />
       <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
+      <!-- For swap hosting/DI extensions -->
+      <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+      <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="Helpers\" />
     </ItemGroup>
 </Project>

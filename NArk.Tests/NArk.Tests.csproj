@@ -30,6 +30,7 @@
 
     <ItemGroup>
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
+      <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
     </ItemGroup>
 
 </Project>

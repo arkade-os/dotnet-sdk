@@ -7,11 +7,6 @@ using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Sweeper;
-using NArk.Swaps.Boltz;
-using NArk.Swaps.Boltz.Client;
-using NArk.Swaps.Boltz.Models;
-using NArk.Swaps.Policies;
-using NArk.Swaps.Services;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
 using NArk.Transport.GrpcClient;
@@ -97,26 +92,11 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers NArk swap services (Boltz integration).
-    /// Caller must configure BoltzClient's HttpClient base address.
-    /// </summary>
-    public static IServiceCollection AddArkSwapServices(this IServiceCollection services)
-    {
-        services.AddSingleton<SwapsManagementService>();
-        services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
-        services.AddSingleton<CachedBoltzClient>();
-        services.AddSingleton<BoltzLimitsValidator>();
-
-        return services;
-    }
-
-    /// <summary>
     /// Registers the Ark network configuration and configures transport services.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="config">The network configuration.</param>
-    /// <param name="configureBoltz">If true and BoltzUri is set, configures Boltz client options. Default is true.</param>
-    public static IServiceCollection AddArkNetwork(this IServiceCollection services, ArkNetworkConfig config, bool configureBoltz = true)
+    public static IServiceCollection AddArkNetwork(this IServiceCollection services, ArkNetworkConfig config)
     {
         // Register the config itself for injection
         services.AddSingleton(config);
@@ -131,16 +111,6 @@ public static class ServiceCollectionExtensions
             var logger = sp.GetService<ILogger<CachingClientTransport>>();
             return new CachingClientTransport(inner, logger);
         });
-
-        // Configure Boltz if URI is provided
-        if (configureBoltz && !string.IsNullOrWhiteSpace(config.BoltzUri))
-        {
-            services.Configure<BoltzClientOptions>(options =>
-            {
-                options.BoltzUrl = config.BoltzUri;
-                options.WebsocketUrl = config.BoltzUri;
-            });
-        }
 
         return services;
     }

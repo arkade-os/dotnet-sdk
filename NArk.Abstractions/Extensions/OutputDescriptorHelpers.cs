@@ -2,7 +2,7 @@ using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 
-namespace NArk.Swaps.Helpers;
+namespace NArk.Abstractions.Extensions;
 
 public static class OutputDescriptorHelpers
 {
@@ -26,9 +26,10 @@ public static class OutputDescriptorHelpers
 
         switch (trOutputDescriptor.InnerPubkey)
         {
-            case PubKeyProvider.Const { Xonly: true } @const:
-                return new OutputDescriptorMetadata(null, null, null, null, null,
-                    ECXOnlyPubKey.Create(@const.Pk.TaprootInternalKey.ToBytes()));
+            // bug in nbitcoin where it always returns xonly:true for tr descriptors
+            // case PubKeyProvider.Const { Xonly: true } @const:
+            //     return new OutputDescriptorMetadata(null, null, null, null, null,
+            //         ECXOnlyPubKey.Create(@const.Pk.TaprootInternalKey.ToBytes()));
             case PubKeyProvider.Const @const:
                 var pk = ECPubKey.Create(@const.Pk.ToBytes());
                 return new OutputDescriptorMetadata(null, null, null, null, pk, pk.ToXOnlyPubKey());

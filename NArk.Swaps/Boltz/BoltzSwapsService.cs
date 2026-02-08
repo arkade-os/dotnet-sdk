@@ -1,17 +1,17 @@
 using BTCPayServer.Lightning;
+using NArk.Abstractions.Extensions;
 using NArk.Core.Contracts;
 using NArk.Core.Extensions;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
-using NArk.Swaps.Extensions;
-using NArk.Swaps.Helpers;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Crypto;
 using NBitcoin.DataEncoders;
 using NBitcoin.Scripting;
+using KeyExtensions = NArk.Swaps.Extensions.KeyExtensions;
 
 namespace NArk.Swaps.Boltz;
 

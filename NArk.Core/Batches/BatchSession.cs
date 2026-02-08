@@ -2,6 +2,8 @@ using System.Text.Json;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
+using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Intents;
 
 using NArk.Abstractions.Wallets;
@@ -161,11 +163,11 @@ public class BatchSession(
 
 
         // Create a signing session
-        var session = new TreeSignerSession(walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value);
+        var session = new TreeSignerSession(arkIntent.WalletId,walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value);
 
         // Generate and submit nonces
         var nonces = await session.GetNoncesAsync(cancellationToken);
-        var pubKey = OutputDescriptorHelpers.Extract(_outputDescriptor).PubKey;
+        var pubKey = _outputDescriptor.Extract().PubKey;
 
         var request = new SubmitTreeNoncesRequest(
             signingEvent.Id,

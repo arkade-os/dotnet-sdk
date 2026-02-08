@@ -1,5 +1,6 @@
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Extensions;

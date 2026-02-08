@@ -27,7 +27,7 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\NArk.Transport.GrpcClient\NArk.Transport.GrpcClient.csproj" />
+      <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
     </ItemGroup>
 
 </Project>

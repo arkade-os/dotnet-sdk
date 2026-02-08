@@ -1,4 +1,5 @@
-﻿using NArk.Abstractions.Helpers;
+﻿using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Helpers;
 using NArk.Core.Extensions;
@@ -16,14 +17,16 @@ public class TreeSignerSession
 {
     private Dictionary<uint256, (MusigPrivNonce secNonce, MusigPubNonce pubNonce)>? _myNonces;
     private Dictionary<uint256, MusigContext>? _musigContexts;
+    private readonly string _walletId;
     private readonly IWalletProvider _walletProvider;
     private readonly TxTree _graph;
     private readonly uint256? _tapsciptMerkleRoot;
     private readonly OutputDescriptor _descriptor;
     private readonly Money _rootSharedOutputAmount;
 
-    public TreeSignerSession(IWalletProvider walletProvider, TxTree tree, uint256? tapsciptMerkleRoot, OutputDescriptor descriptor, Money rootInputAmount)
+    public TreeSignerSession(string walletId, IWalletProvider walletProvider, TxTree tree, uint256? tapsciptMerkleRoot, OutputDescriptor descriptor, Money rootInputAmount)
     {
+        _walletId = walletId;
         _walletProvider = walletProvider;
         _graph = tree;
         _tapsciptMerkleRoot = tapsciptMerkleRoot;
@@ -120,7 +123,7 @@ public class TreeSignerSession
         if (_myNonces != null)
             throw new InvalidOperationException("nonces already generated");
 
-        var walletIdentifier = OutputDescriptorHelpers.Extract(_descriptor).WalletId;
+        var walletIdentifier = _walletId;
         var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken);
 
         var res = new Dictionary<uint256, (MusigPrivNonce secNonce, MusigPubNonce pubNonce)>();
@@ -151,7 +154,7 @@ public class TreeSignerSession
         if (musigContext.AggregateNonce is null)
             throw new InvalidOperationException("missing aggregate nonce");
 
-        var walletIdentifier = OutputDescriptorHelpers.Extract(_descriptor).WalletId;
+        var walletIdentifier = _walletId;
         var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken);
 
         // Use the wallet signer to create a MUSIG2 partial signature

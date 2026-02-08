@@ -21,13 +21,13 @@ using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models.Restore;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Swaps.Boltz.Models.WebSocket;
-using NArk.Swaps.Helpers;
 using NArk.Swaps.Models;
 using NArk.Core.Transport;
 using NArk.Swaps.Utils;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
+using OutputDescriptorHelpers = NArk.Abstractions.Extensions.OutputDescriptorHelpers;
 
 namespace NArk.Swaps.Services;
 
@@ -125,7 +125,7 @@ public class SwapsManagementService : IAsyncDisposable
         var multiToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCts.Token);
 
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
-        _serverKey = serverInfo.SignerKey.Extract().XOnlyPubKey;
+        _serverKey = OutputDescriptorHelpers.Extract(serverInfo.SignerKey).XOnlyPubKey;
         _network = serverInfo.Network;
 
         _cacheTask = DoUpdateStorage(multiToken.Token);
@@ -518,7 +518,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         // Extract public keys from all descriptors
         var publicKeys = descriptors
-            .Select(d => d.Extract().PubKey?.ToBytes()?.ToHexStringLower())
+            .Select(d => OutputDescriptorHelpers.Extract(d).PubKey?.ToBytes()?.ToHexStringLower())
             .Where(s => s is not null)
             .Select(s => s!)
             .Distinct()
