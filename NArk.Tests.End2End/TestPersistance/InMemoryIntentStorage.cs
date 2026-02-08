@@ -81,11 +81,12 @@ public class InMemoryIntentStorage : IIntentStorage
                 query = query.Where(i => states.Contains(i.State));
             }
 
-            // Filter by validity time
+            // Filter by validity time (null ValidFrom/ValidUntil means no constraint)
             if (validAt.HasValue)
             {
                 query = query.Where(i =>
-                    i.ValidFrom <= validAt.Value && i.ValidUntil >= validAt.Value);
+                    (i.ValidFrom is null || i.ValidFrom <= validAt.Value) &&
+                    (i.ValidUntil is null || i.ValidUntil >= validAt.Value));
             }
 
             // Pagination
