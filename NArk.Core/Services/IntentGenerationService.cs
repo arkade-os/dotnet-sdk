@@ -166,7 +166,7 @@ public class IntentGenerationService(
             {
                 try
                 {
-                    var coin = await coinService.GetCoin(walletContracts.Single(entity => entity.Script == vtxo.Script), vtxo, token);
+                    var coin = await coinService.GetCoin(walletContracts.First(entity => entity.Script == vtxo.Script), vtxo, token);
                     coins.Add(coin);
                 }
                 catch (AdditionalInformationRequiredException ex)
