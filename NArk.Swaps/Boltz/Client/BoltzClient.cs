@@ -9,7 +9,6 @@ namespace NArk.Swaps.Boltz.Client;
 public partial class BoltzClient
 {
     protected readonly HttpClient _httpClient;
-    protected readonly HttpClient _sidecarHttpClient;
     protected readonly IOptions<BoltzClientOptions> _options;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -26,9 +25,6 @@ public partial class BoltzClient
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _httpClient.BaseAddress = new Uri(options.Value.BoltzUrl);
         _options = options;
-
-        var sidecarUrl = options.Value.SidecarUrl ?? options.Value.BoltzUrl;
-        _sidecarHttpClient = new HttpClient { BaseAddress = new Uri(sidecarUrl) };
     }
 
     /// <summary>
@@ -57,18 +53,9 @@ public partial class BoltzClient
     /// <summary>
     /// Posts a value as JSON using the shared serialization options.
     /// </summary>
-    private Task<TReturn> PostAsJsonAsync<T, TReturn>(string uri, T value, CancellationToken ct = default)
-        => PostAsJsonAsync<T, TReturn>(_httpClient, uri, value, ct);
-
-    /// <summary>
-    /// Posts a value as JSON to the sidecar API.
-    /// </summary>
-    protected Task<TReturn> PostToSidecarAsync<T, TReturn>(string uri, T value, CancellationToken ct = default)
-        => PostAsJsonAsync<T, TReturn>(_sidecarHttpClient, uri, value, ct);
-
-    private static async Task<TReturn> PostAsJsonAsync<T, TReturn>(HttpClient client, string uri, T value, CancellationToken ct = default)
+    protected async Task<TReturn> PostAsJsonAsync<T, TReturn>(string uri, T value, CancellationToken ct = default)
     {
-        var resp = await client.PostAsJsonAsync(uri, value, JsonOptions, ct);
+        var resp = await _httpClient.PostAsJsonAsync(uri, value, JsonOptions, ct);
 
         if (resp.IsSuccessStatusCode)
         {

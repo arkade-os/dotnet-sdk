@@ -539,7 +539,6 @@ tlsextradomain=lnd")
             .WithEndpoint(9000, 9000, protocol: ProtocolType.Tcp, name: "grpc")
             .WithHttpEndpoint(9001, 9001, name: "api")
             .WithHttpEndpoint(9004, 9004, name: "ws")
-            .WithHttpEndpoint(9005, 9005, name: "sidecar-api")
             .WithEnvironment("BOLTZ_CONFIG", @"loglevel = ""debug""
 network = ""regtest""
 [ark]
@@ -633,6 +632,15 @@ macaroonpath = ""/home/boltz/.lnd/data/chain/bitcoin/regtest/admin.macaroon""")
             .WaitFor(boltzLnd)
             .WaitFor(boltzFulmine)
             .WaitFor(lnd);
+
+    // Nginx reverse proxy that unifies Boltz main API (9001) and sidecar API (9005)
+    // behind a single port (9069), so clients don't need to know about the sidecar.
+    builder
+        .AddContainer("boltz-proxy", "nginx", "alpine")
+        .WithContainerName("boltz-proxy")
+        .WithHttpEndpoint(9069, 9069, name: "api")
+        .WithContainerFiles("/etc/nginx/conf.d/", "Assets/boltz-proxy.conf")
+        .WaitFor(boltz);
 }
 builder
     .Build()

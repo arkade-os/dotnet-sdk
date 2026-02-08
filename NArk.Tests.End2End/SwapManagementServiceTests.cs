@@ -54,13 +54,13 @@ public class SwapManagementServiceTests
 
     public async Task CanPayInvoiceWithArkUsingBoltz()
     {
-        var boltzApi = _app.GetEndpoint("boltz", "api");
+        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzApi.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
@@ -98,14 +98,14 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanReceiveArkFundsUsingReverseSwap()
     {
-        var boltzApi = _app.GetEndpoint("boltz", "api");
+        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzApi.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var options =
@@ -174,13 +174,13 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanDoArkCoOpRefundUsingBoltz()
     {
-        var boltzApi = _app.GetEndpoint("boltz", "api");
+        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzApi.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
@@ -230,15 +230,14 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanRestoreSwapsFromBoltz()
     {
-        var boltzApi = _app.GetEndpoint("boltz", "api");
+        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var boltzSidecar = _app.GetEndpoint("boltz", "sidecar-api");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzApi.ToString(), WebsocketUrl = boltzWs.ToString(), SidecarUrl = boltzSidecar.ToString() }));
+            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
