@@ -157,6 +157,19 @@ public class IntentGenerationService(
                 }
             }
 
+            // Also skip wallets with active WaitingToSubmit or WaitingForBatch intents — they are
+            // already being processed and will resolve naturally. Re-generating would cancel them.
+            var activeIntents = await intentStorage.GetIntents(
+                walletIds: [walletId],
+                states: [ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch],
+                cancellationToken: token);
+            if (activeIntents.Count > 0)
+            {
+                logger?.LogDebug("Skipping intent generation for wallet {WalletId} - {Count} active intent(s) pending",
+                    walletId, activeIntents.Count);
+                continue;
+            }
+
             var walletVtxos =
                 unspentVtxos.Where(v => walletContracts.Any(c => c.Script == v.Script)).ToArray();
 
