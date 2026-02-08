@@ -229,6 +229,7 @@ public class SwapManagementServiceTests
     }
 
     [Test]
+    [Ignore("Boltz test image does not support /v2/swap/restore yet (requires boltz-backend >= 3.12.0)")]
     public async Task CanRestoreSwapsFromBoltz()
     {
         var boltzApi = _app.GetEndpoint("boltz", "api");
