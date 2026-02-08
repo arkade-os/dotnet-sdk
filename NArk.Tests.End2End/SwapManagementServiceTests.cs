@@ -19,7 +19,7 @@ using NArk.Core.Transformers;
 using NBitcoin;
 using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 
-namespace NArk.Tests.End2End;
+namespace NArk.Tests.End2End.Swaps;
 
 public class SwapManagementServiceTests
 {

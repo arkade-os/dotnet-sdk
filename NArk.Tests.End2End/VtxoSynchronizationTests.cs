@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
 using NArk.Abstractions;
@@ -19,35 +18,12 @@ namespace NArk.Tests.End2End;
 
 public class VtxoSynchronizationTests
 {
-    private DistributedApplication _app;
-
-    [OneTimeSetUp]
-    public async Task StartDependencies()
-    {
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: ["--noswap"],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
-
-        // Start dependencies
-        _app = await builder.BuildAsync();
-        await _app.StartAsync(CancellationToken.None);
-        await _app.ResourceNotifications.WaitForResourceHealthyAsync("ark", CancellationToken.None);
-    }
-
-    [OneTimeTearDown]
-    public async Task StopDependencies()
-    {
-        await _app.StopAsync();
-        await _app.DisposeAsync();
-    }
-
     [Test]
     public async Task CanReceiveVtxosFromImportedContract()
     {
+        var app = SharedArkInfrastructure.App;
         // Receive arkd information
-        var clientTransport = new GrpcClientTransport(_app.GetEndpoint("ark", "arkd").ToString());
+        var clientTransport = new GrpcClientTransport(app.GetEndpoint("ark", "arkd").ToString());
         var info = await clientTransport.GetServerInfoAsync();
 
         // Pay a random amount to the contract address
@@ -104,8 +80,9 @@ public class VtxoSynchronizationTests
     [Test]
     public async Task AwaitingContractsAutoDeactivateWhenFundsReceived()
     {
+        var app = SharedArkInfrastructure.App;
         // Receive arkd information
-        var clientTransport = new GrpcClientTransport(_app.GetEndpoint("ark", "arkd").ToString());
+        var clientTransport = new GrpcClientTransport(app.GetEndpoint("ark", "arkd").ToString());
         var info = await clientTransport.GetServerInfoAsync();
 
         // Create wallet and storage
@@ -173,8 +150,9 @@ public class VtxoSynchronizationTests
     [Test]
     public async Task CanSendAndReceiveBackVtxo()
     {
+        var app = SharedArkInfrastructure.App;
         // Receive arkd information
-        var clientTransport = new GrpcClientTransport(_app.GetEndpoint("ark", "arkd").ToString());
+        var clientTransport = new GrpcClientTransport(app.GetEndpoint("ark", "arkd").ToString());
 
         // Create a new wallet
         var inMemoryWalletProvider = new InMemoryWalletProvider(clientTransport);
@@ -231,7 +209,7 @@ public class VtxoSynchronizationTests
         var contract2 = await contractService.DeriveContract(fp2, NextContractPurpose.Receive);
         var wallet2Address = contract2.GetArkAddress();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, app.GetEndpoint("nbxplorer", "http"));
 
         var coinService = new CoinService(clientTransport, contracts,
             [new PaymentContractTransformer(inMemoryWalletProvider), new HashLockedContractTransformer(inMemoryWalletProvider)]);

@@ -1,4 +1,3 @@
-using Aspire.Hosting;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Intents;
 using NArk.Blockchain.NBXplorer;
@@ -14,35 +13,12 @@ namespace NArk.Tests.End2End;
 
 public class IntentSchedulerTests
 {
-    private DistributedApplication _app;
-
-    [OneTimeSetUp]
-    public async Task StartDependencies()
-    {
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: ["--noswap"],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
-
-        // Start dependencies
-        _app = await builder.BuildAsync();
-        await _app.StartAsync(CancellationToken.None);
-        await _app.ResourceNotifications.WaitForResourceHealthyAsync("ark", CancellationToken.None);
-    }
-
-    [OneTimeTearDown]
-    public async Task StopDependencies()
-    {
-        await _app.StopAsync();
-        await _app.DisposeAsync();
-    }
-
     [Test]
     public async Task CanScheduleIntent()
     {
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(_app);
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var app = SharedArkInfrastructure.App;
+        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, app.GetEndpoint("nbxplorer", "http"));
         // The threshold is so high, it will force an intent generation
         var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
             walletDetails.clientTransport, walletDetails.contractService, chainTimeProvider,

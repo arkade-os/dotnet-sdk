@@ -1,5 +1,4 @@
 using System.Text;
-using Aspire.Hosting;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
@@ -20,38 +19,13 @@ namespace NArk.Tests.End2End;
 
 public class BatchSessionTests
 {
-    private DistributedApplication _app;
-
-    [OneTimeSetUp]
-    public async Task StartDependencies()
-    {
-        ThreadPool.SetMinThreads(50, 50);
-
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: ["--noswap"],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
-
-        // Start dependencies
-        _app = await builder.BuildAsync();
-        await _app.StartAsync(CancellationToken.None);
-        await _app.ResourceNotifications.WaitForResourceHealthyAsync("ark", CancellationToken.None);
-    }
-
-    [OneTimeTearDown]
-    public async Task StopDependencies()
-    {
-        await _app.StopAsync();
-        await _app.DisposeAsync();
-    }
-
     [Test]
     public async Task CanDoFullBatchSessionUsingGeneratedIntent()
     {
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(_app);
+        var app = SharedArkInfrastructure.App;
+        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, app.GetEndpoint("nbxplorer", "http"));
         var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
             [new PaymentContractTransformer(walletDetails.walletProvider), new HashLockedContractTransformer(walletDetails.walletProvider)]);
 

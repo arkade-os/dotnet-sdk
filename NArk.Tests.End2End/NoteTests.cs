@@ -1,4 +1,3 @@
-using Aspire.Hosting;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Intents;
 using NArk.Blockchain.NBXplorer;
@@ -14,37 +13,14 @@ namespace NArk.Tests.End2End;
 
 public class NoteTests
 {
-    private DistributedApplication _app;
-
-    [OneTimeSetUp]
-    public async Task StartDependencies()
-    {
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: ["--noswap"],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
-
-        // Start dependencies
-        _app = await builder.BuildAsync();
-        await _app.StartAsync(CancellationToken.None);
-        await _app.ResourceNotifications.WaitForResourceHealthyAsync("ark", CancellationToken.None);
-    }
-
-    [OneTimeTearDown]
-    public async Task StopDependencies()
-    {
-        await _app.StopAsync();
-        await _app.DisposeAsync();
-    }
-
     [Test]
     public async Task CanCompleteBatchWithOnlyOneNote()
     {
+        var app = SharedArkInfrastructure.App;
         var arkHost =
             Host.CreateDefaultBuilder([])
             .AddArk()
-            .OnCustomGrpcArk(_app.GetEndpoint("ark", "arkd").ToString())
+            .OnCustomGrpcArk(app.GetEndpoint("ark", "arkd").ToString())
             .WithSafetyService<AsyncSafetyService>()
             .WithIntentStorage<InMemoryIntentStorage>()
             .WithIntentScheduler<SimpleIntentScheduler>()
@@ -56,7 +32,7 @@ public class NoteTests
             .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
             {
                 o.Network = Network.RegTest;
-                o.Uri = _app.GetEndpoint("nbxplorer", "http");
+                o.Uri = app.GetEndpoint("nbxplorer", "http");
             }))
             .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
             {
@@ -73,7 +49,7 @@ public class NoteTests
         var intentStorage = arkHost.Services.GetRequiredService<IIntentStorage>();
 
         var noteCommandResult =
-            await _app.ResourceCommands.ExecuteCommandAsync("ark", "create-note");
+            await app.ResourceCommands.ExecuteCommandAsync("ark", "create-note");
 
         if (!noteCommandResult.Success || noteCommandResult.ErrorMessage is null)
             throw new Exception("Note creation failed!");
