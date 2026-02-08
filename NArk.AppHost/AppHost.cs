@@ -533,7 +533,7 @@ tlsextradomain=lnd")
 
     var boltz =
         builder
-            .AddContainer("boltz", "boltz/boltz", "latest")
+            .AddContainer("boltz", "boltz/boltz", "ark")
             .WithContainerName("boltz")
             .WithContainerNetworkAlias("boltz")
             .WithEndpoint(9000, 9000, protocol: ProtocolType.Tcp, name: "grpc")
