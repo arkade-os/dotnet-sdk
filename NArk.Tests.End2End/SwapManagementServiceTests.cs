@@ -172,7 +172,6 @@ public class SwapManagementServiceTests
     }
 
     [Test]
-    [Ignore("Flaky test - times out on CI infrastructure")]
     public async Task CanDoArkCoOpRefundUsingBoltz()
     {
         var boltzApi = _app.GetEndpoint("boltz", "api");
