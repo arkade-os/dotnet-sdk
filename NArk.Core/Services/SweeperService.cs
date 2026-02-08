@@ -77,6 +77,9 @@ public class SweeperService(
     {
         await foreach (var reason in _sweepJobTrigger.Reader.ReadAllAsync(loopShutdownToken))
         {
+            try
+            {
+
             await (reason switch
             {
                 SweepVtxoTrigger vtxoTrigger => TrySweepVtxos(vtxoTrigger.Vtxos, loopShutdownToken),
@@ -84,6 +87,12 @@ public class SweeperService(
                 SweepTimerTrigger _ => TrySweepContracts(null, loopShutdownToken),
                 _ => throw new ArgumentOutOfRangeException()
             });
+            
+            }
+            catch (Exception e)
+            {
+                logger?.LogInformation(0, e, "Error during sweeping loop execution for trigger {TriggerType}", reason.GetType().Name);
+            }
         }
     }
 
@@ -125,15 +134,17 @@ public class SweeperService(
 
         }
 
-        var transformedCoins = await GetCoins(contractVtxos).ToListAsync(cancellationToken);
+        var transformedCoins = await GetCoinsAsync(contractVtxos);
         await ExecutePoliciesAsync(transformedCoins);
     }
 
-    private async IAsyncEnumerable<ArkCoin> GetCoins(Dictionary<ArkContractEntity, ArkVtxo[]> coins)
+    private async Task<List<ArkCoin>> GetCoinsAsync(Dictionary<ArkContractEntity, ArkVtxo[]> coins)
     {
+        var result = new List<ArkCoin>();
         foreach (var contractCoins in coins)
             foreach (var vtxo in contractCoins.Value)
-                yield return await coinService.GetCoin(contractCoins.Key, vtxo);
+                result.Add(await coinService.GetCoin(contractCoins.Key, vtxo));
+        return result;
     }
 
     private async Task TrySweepVtxos(IReadOnlyCollection<ArkVtxo> vtxos, CancellationToken cancellationToken)
@@ -154,7 +165,7 @@ public class SweeperService(
             contractVtxos.Add(contract, x.ToArray());
         }
 
-        var transformedCoins = await GetCoins(contractVtxos).ToListAsync(cancellationToken: cancellationToken);
+        var transformedCoins = await GetCoinsAsync(contractVtxos);
         await ExecutePoliciesAsync(transformedCoins);
     }
 
