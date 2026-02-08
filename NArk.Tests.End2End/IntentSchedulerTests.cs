@@ -44,7 +44,7 @@ public class IntentSchedulerTests
         var walletDetails = await FundedWalletHelper.GetFundedWallet(_app);
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
         // The threshold is so high, it will force an intent generation
-        var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(walletDetails.clientTransport),
+        var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
             walletDetails.clientTransport, walletDetails.contractService, chainTimeProvider,
             new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions()
             { Threshold = TimeSpan.FromHours(2), ThresholdHeight = 2000 }));
@@ -81,7 +81,7 @@ public class IntentSchedulerTests
         var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
             [new PaymentContractTransformer(walletDetails.walletProvider), new HashLockedContractTransformer(walletDetails.walletProvider)]);
         await using var intentGeneration = new IntentGenerationService(walletDetails.clientTransport,
-            new DefaultFeeEstimator(walletDetails.clientTransport), coinService, walletDetails.walletProvider, intentStorage, walletDetails.safetyService,
+            new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider), coinService, walletDetails.walletProvider, intentStorage, walletDetails.safetyService,
             walletDetails.contracts, walletDetails.vtxoStorage, scheduler,
             options);
         await using var intentSync = new IntentSynchronizationService(intentStorage, walletDetails.clientTransport, walletDetails.safetyService);

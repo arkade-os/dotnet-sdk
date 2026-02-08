@@ -118,15 +118,15 @@ public class SwapManagementServiceTests
             [new PaymentContractTransformer(testingPrerequisite.walletProvider), new HashLockedContractTransformer(testingPrerequisite.walletProvider), new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)]);
 
         // The threshold is so high, it will force an intent generation
-        var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(testingPrerequisite.clientTransport), testingPrerequisite.clientTransport, testingPrerequisite.contractService,
-            new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http")),
+        var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(testingPrerequisite.clientTransport, chainTimeProvider), testingPrerequisite.clientTransport, testingPrerequisite.contractService,
+            chainTimeProvider,
             new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions()
             { Threshold = TimeSpan.FromHours(2), ThresholdHeight = 2000 }));
 
 
 
         await using var intentGeneration = new IntentGenerationService(testingPrerequisite.clientTransport,
-            new DefaultFeeEstimator(testingPrerequisite.clientTransport), coinService, testingPrerequisite.walletProvider, intentStorage, testingPrerequisite.safetyService,
+            new DefaultFeeEstimator(testingPrerequisite.clientTransport, chainTimeProvider), coinService, testingPrerequisite.walletProvider, intentStorage, testingPrerequisite.safetyService,
             testingPrerequisite.contracts, testingPrerequisite.vtxoStorage, scheduler,
             options);
 

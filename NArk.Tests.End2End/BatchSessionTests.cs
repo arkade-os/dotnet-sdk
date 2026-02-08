@@ -5,6 +5,7 @@ using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Intents;
 using NArk.Blockchain.NBXplorer;
+using NArk.Core.Events;
 using NArk.Core.Extensions;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
@@ -57,8 +58,8 @@ public class BatchSessionTests
         var intentStorage = new InMemoryIntentStorage();
 
         // The threshold is so high, it will force an intent generation
-        var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(walletDetails.clientTransport), walletDetails.clientTransport, walletDetails.contractService,
-            new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http")),
+        var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider), walletDetails.clientTransport, walletDetails.contractService,
+            chainTimeProvider,
             new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions()
             { Threshold = TimeSpan.FromHours(2), ThresholdHeight = 2000 }));
 
@@ -93,7 +94,7 @@ public class BatchSessionTests
 
 
         await using var intentGeneration = new IntentGenerationService(walletDetails.clientTransport,
-            new DefaultFeeEstimator(walletDetails.clientTransport),
+            new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
             coinService,
             walletDetails.walletProvider,
             intentStorage,
@@ -111,8 +112,9 @@ public class BatchSessionTests
         await newSubmittedIntentTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
 
         await using var batchManager = new BatchManagementService(intentStorage,
-            walletDetails.clientTransport, walletDetails.vtxoStorage,
-            walletDetails.walletProvider, coinService, walletDetails.safetyService);
+            walletDetails.clientTransport, walletDetails.vtxoStorage, walletDetails.contracts,
+            walletDetails.walletProvider, coinService, walletDetails.safetyService,
+            Array.Empty<IEventHandler<PostBatchSessionEvent>>());
 
         await batchManager.StartAsync(CancellationToken.None);
 
