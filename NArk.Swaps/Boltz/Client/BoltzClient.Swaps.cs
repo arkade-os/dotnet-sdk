@@ -89,7 +89,7 @@ public partial class BoltzClient
     public virtual async Task<RestorableSwap[]> RestoreSwapsAsync(string publicKey, CancellationToken cancellation = default)
     {
         var request = new RestoreRequest { PublicKey = publicKey };
-        return await PostAsJsonAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);
+        return await PostToSidecarAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);
     }
 
     /// <summary>
@@ -101,6 +101,6 @@ public partial class BoltzClient
     public virtual async Task<RestorableSwap[]> RestoreSwapsAsync(string[] publicKeys, CancellationToken cancellation = default)
     {
         var request = new RestoreRequest { PublicKeys = publicKeys };
-        return await PostAsJsonAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);
+        return await PostToSidecarAsync<RestoreRequest, RestorableSwap[]>("v2/swap/restore", request, cancellation);
     }
 }

@@ -539,6 +539,7 @@ tlsextradomain=lnd")
             .WithEndpoint(9000, 9000, protocol: ProtocolType.Tcp, name: "grpc")
             .WithHttpEndpoint(9001, 9001, name: "api")
             .WithHttpEndpoint(9004, 9004, name: "ws")
+            .WithHttpEndpoint(9005, 9005, name: "sidecar-api")
             .WithEnvironment("BOLTZ_CONFIG", @"loglevel = ""debug""
 network = ""regtest""
 [ark]

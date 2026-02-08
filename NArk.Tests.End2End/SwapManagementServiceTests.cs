@@ -233,12 +233,13 @@ public class SwapManagementServiceTests
     {
         var boltzApi = _app.GetEndpoint("boltz", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
+        var boltzSidecar = _app.GetEndpoint("boltz", "sidecar-api");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzApi.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = boltzApi.ToString(), WebsocketUrl = boltzWs.ToString(), SidecarUrl = boltzSidecar.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
