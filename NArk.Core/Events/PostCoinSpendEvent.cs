@@ -7,6 +7,7 @@ namespace NArk.Core.Events;
 public record PostCoinsSpendActionEvent(
     IReadOnlyCollection<ArkCoin> ArkCoins,
     uint256? TransactionId,
+    PSBT? Psbt,
     ActionState State,
     string? FailReason
 );

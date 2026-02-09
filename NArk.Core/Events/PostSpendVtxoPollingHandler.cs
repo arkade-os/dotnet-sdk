@@ -26,23 +26,12 @@ public class PostSpendVtxoPollingHandler(
             return;
         }
 
-        // Get unique wallet IDs from the spent coins
-        var walletIds = @event.ArkCoins
-            .Select(c => c.WalletIdentifier)
-            .Where(id => !string.IsNullOrEmpty(id))
-            .Distinct()
-            .ToArray();
-
-        if (walletIds.Length == 0)
+        if (@event.Psbt is null)
         {
-            logger?.LogDebug("No wallet IDs found in spent coins, skipping VTXO polling");
             return;
         }
 
         var delay = options.Value.TransactionBroadcastPollingDelay;
-
-        logger?.LogDebug("Spend transaction {TxId} successful, waiting {DelayMs}ms before polling VTXOs for {WalletCount} wallets",
-            @event.TransactionId, delay.TotalMilliseconds, walletIds.Length);
 
         // Wait for the configured delay to avoid race conditions with server persistence
         if (delay > TimeSpan.Zero)
@@ -52,20 +41,15 @@ public class PostSpendVtxoPollingHandler(
 
         try
         {
-            // Get active contracts for all affected wallets
-            var contracts = await contractStorage.GetContracts(
-                walletIds: walletIds,
-                isActive: true,
-                cancellationToken: cancellationToken);
+            // Get ALL contracts for affected wallets (not just active ones).
+            // Sweep destinations are created as Inactive, so we must poll them too
+            // to detect the new VTXOs from the spend transaction.
+            
 
-            if (contracts.Count == 0)
-            {
-                logger?.LogDebug("No active contracts found for wallets {WalletIds}, skipping VTXO polling",
-                    string.Join(", ", walletIds));
-                return;
-            }
+            var scripts = @event.ArkCoins.Select(c => c.ScriptPubKey.ToHex())
+                .Concat(@event.Psbt.Outputs.Select(o => o.ScriptPubKey.ToHex()).ToArray()).ToHashSet();
 
-            var scripts = contracts.Select(c => c.Script).ToHashSet();
+            scripts.Remove("51024e73");
             logger?.LogDebug("Polling {ScriptCount} scripts for VTXOs after spend transaction {TxId}",
                 scripts.Count, @event.TransactionId);
 

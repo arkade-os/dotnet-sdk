@@ -204,75 +204,48 @@ public class PostSpendVtxoPollingHandlerTests
         var @event = new PostCoinsSpendActionEvent(
             ArkCoins: [coin],
             TransactionId: uint256.One,
+            Psbt: CreateMockPsbt(),
             State: ActionState.Failed,
             FailReason: "broadcast failed");
 
         await _handler.HandleAsync(@event);
 
-        // Contract storage should NOT be queried when state is not Successful
-        await _contractStorage.DidNotReceive().GetContracts(
-            walletIds: Arg.Any<string[]?>(),
-            scripts: Arg.Any<string[]?>(),
-            isActive: Arg.Any<bool?>(),
-            contractTypes: Arg.Any<string[]?>(),
-            searchText: Arg.Any<string?>(),
-            skip: Arg.Any<int?>(),
-            take: Arg.Any<int?>(),
-            cancellationToken: Arg.Any<CancellationToken>());
+        // VTXO polling should NOT happen when state is not Successful
+        _clientTransport.DidNotReceive().GetVtxoByScriptsAsSnapshot(
+            Arg.Any<IReadOnlySet<string>>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
-    public async Task SkipsPolling_WhenNoWalletIds()
+    public async Task SkipsPolling_WhenPsbtIsNull()
     {
-        // Create a coin with empty wallet identifier
-        var coin = CreateMockCoin("");
+        var coin = CreateMockCoin("wallet-1");
         var @event = new PostCoinsSpendActionEvent(
             ArkCoins: [coin],
             TransactionId: uint256.One,
+            Psbt: null,
             State: ActionState.Successful,
             FailReason: null);
 
         await _handler.HandleAsync(@event);
 
-        // Contract storage should NOT be queried when no wallet IDs
-        await _contractStorage.DidNotReceive().GetContracts(
-            walletIds: Arg.Any<string[]?>(),
-            scripts: Arg.Any<string[]?>(),
-            isActive: Arg.Any<bool?>(),
-            contractTypes: Arg.Any<string[]?>(),
-            searchText: Arg.Any<string?>(),
-            skip: Arg.Any<int?>(),
-            take: Arg.Any<int?>(),
-            cancellationToken: Arg.Any<CancellationToken>());
+        // VTXO polling should NOT happen when PSBT is null
+        _clientTransport.DidNotReceive().GetVtxoByScriptsAsSnapshot(
+            Arg.Any<IReadOnlySet<string>>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
     public async Task PollsVtxos_AfterSpendSuccess()
     {
         var coin = CreateMockCoin("wallet-1");
+        var psbt = CreateMockPsbt();
         var @event = new PostCoinsSpendActionEvent(
             ArkCoins: [coin],
             TransactionId: uint256.One,
+            Psbt: psbt,
             State: ActionState.Successful,
             FailReason: null);
-
-        var contracts = new List<ArkContractEntity>
-        {
-            new(Script: "spend-script-1", ActivityState: ContractActivityState.Active,
-                Type: "generic", AdditionalData: new Dictionary<string, string>(),
-                WalletIdentifier: "wallet-1", CreatedAt: DateTimeOffset.UtcNow)
-        };
-
-        _contractStorage.GetContracts(
-                walletIds: Arg.Any<string[]?>(),
-                scripts: Arg.Any<string[]?>(),
-                isActive: Arg.Is<bool?>(b => b == true),
-                contractTypes: Arg.Any<string[]?>(),
-                searchText: Arg.Any<string?>(),
-                skip: Arg.Any<int?>(),
-                take: Arg.Any<int?>(),
-                cancellationToken: Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyCollection<ArkContractEntity>>(contracts));
 
         _clientTransport.GetVtxoByScriptsAsSnapshot(
                 Arg.Any<IReadOnlySet<string>>(),
@@ -281,37 +254,18 @@ public class PostSpendVtxoPollingHandlerTests
 
         await _handler.HandleAsync(@event);
 
+        // Should poll scripts from both input coins and PSBT outputs
         _clientTransport.Received(1).GetVtxoByScriptsAsSnapshot(
-            Arg.Is<IReadOnlySet<string>>(s => s.Contains("spend-script-1")),
+            Arg.Any<IReadOnlySet<string>>(),
             Arg.Any<CancellationToken>());
     }
 
-    [Test]
-    public async Task SkipsPolling_WhenNoActiveContracts()
+    private static PSBT CreateMockPsbt()
     {
-        var coin = CreateMockCoin("wallet-1");
-        var @event = new PostCoinsSpendActionEvent(
-            ArkCoins: [coin],
-            TransactionId: uint256.One,
-            State: ActionState.Successful,
-            FailReason: null);
-
-        _contractStorage.GetContracts(
-                walletIds: Arg.Any<string[]?>(),
-                scripts: Arg.Any<string[]?>(),
-                isActive: Arg.Is<bool?>(b => b == true),
-                contractTypes: Arg.Any<string[]?>(),
-                searchText: Arg.Any<string?>(),
-                skip: Arg.Any<int?>(),
-                take: Arg.Any<int?>(),
-                cancellationToken: Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyCollection<ArkContractEntity>>([]));
-
-        await _handler.HandleAsync(@event);
-
-        _clientTransport.DidNotReceive().GetVtxoByScriptsAsSnapshot(
-            Arg.Any<IReadOnlySet<string>>(),
-            Arg.Any<CancellationToken>());
+        var tx = Transaction.Create(Network.RegTest);
+        tx.Inputs.Add(new OutPoint(uint256.One, 0));
+        tx.Outputs.Add(Money.Satoshis(5000), new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86));
+        return PSBT.FromTransaction(tx, Network.RegTest);
     }
 
     private static ArkCoin CreateMockCoin(string walletIdentifier)

@@ -99,28 +99,31 @@ public class SweeperService(
     private async Task TrySweepContracts(IReadOnlyCollection<ArkContractEntity>? contracts,
         CancellationToken cancellationToken)
     {
+        var timeHeight = await chainTimeProvider.GetChainTime(cancellationToken);
         Dictionary<string, ArkVtxo[]> matchingVtxos;
 
         if (contracts is null)
         {
             var unspentVtxos = await vtxoStorage.GetVtxos(includeSpent: false, cancellationToken: cancellationToken);
+            var spendableVtxos = unspentVtxos.Where(v => v.CanSpendOffchain(timeHeight)).ToArray();
             contracts =
                 await contractStorage.GetContracts(
-                    scripts: unspentVtxos.Select(v => v.Script).Distinct().ToArray(),
+                    scripts: spendableVtxos.Select(v => v.Script).Distinct().ToArray(),
                     cancellationToken: cancellationToken);
-            
+
             matchingVtxos =
-                unspentVtxos
+                spendableVtxos
                 .GroupBy(vtxo => vtxo.Script).ToDictionary(vtxos => vtxos.Key, vtxos => vtxos.ToArray());
-            
+
         }
         else
         {
-            
+
             var contractScripts = contracts.Select(c => c.Script).ToHashSet();
             var unspentVtxos = await vtxoStorage.GetVtxos(includeSpent: false, scripts: contractScripts , cancellationToken: cancellationToken);
+            var spendableVtxos = unspentVtxos.Where(v => v.CanSpendOffchain(timeHeight)).ToArray();
             matchingVtxos =
-                unspentVtxos
+                spendableVtxos
                     .GroupBy(vtxo => vtxo.Script).ToDictionary(vtxos => vtxos.Key, vtxos => vtxos.ToArray());
         }
 
@@ -149,7 +152,10 @@ public class SweeperService(
 
     private async Task TrySweepVtxos(IReadOnlyCollection<ArkVtxo> vtxos, CancellationToken cancellationToken)
     {
-        var unspentVtxos = vtxos.Where(v => !v.IsSpent()).ToArray();
+        var timeHeight = await chainTimeProvider.GetChainTime(cancellationToken);
+        var unspentVtxos = vtxos.Where(v => v.CanSpendOffchain(timeHeight)).ToArray();
+        if (unspentVtxos.Length == 0)
+            return;
         var scriptToVtxos = unspentVtxos.GroupBy(vtxo => vtxo.Script)
             .ToDictionary(grouping => grouping.Key, grouping => grouping.ToArray());
 
@@ -171,6 +177,9 @@ public class SweeperService(
 
     private async Task ExecutePoliciesAsync(IReadOnlyCollection<ArkCoin> coins)
     {
+        if (coins.Count == 0)
+            return;
+
         HashSet<ArkCoin> coinsToSweep = [];
 
         foreach (var policy in policies)
@@ -186,18 +195,10 @@ public class SweeperService(
 
     private async Task Sweep(HashSet<ArkCoin> coinsToSweep)
     {
-        var timeHeight = await chainTimeProvider.GetChainTime();
         logger?.LogDebug("Starting sweep for {OutpointCount} coins", coinsToSweep.Count);
 
         foreach (var coin in coinsToSweep)
         {
-            if (!coin.CanSpendOffchain(timeHeight))
-            {
-                // Skip recoverable coins - IntentScheduler handles renewal before expiry
-                logger?.LogDebug("Skipping recoverable coin {Outpoint} - handled by IntentScheduler", coin.Outpoint);
-                continue;
-            }
-
             try
             {
                 var txId = await spendingService.Spend(coin.WalletIdentifier, [coin], [],

@@ -114,15 +114,18 @@ public class SweeperServiceTests
     [Test]
     public async Task SkipsCoins_WhenNotSpendableOffchain()
     {
-        // Arrange: coin with Swept=true cannot be spent offchain
+        // Arrange: VTXO with Swept=true cannot be spent offchain and is filtered out early
         var scriptHex = "a914" + new string('0', 40) + "87";
-        var vtxo = CreateVtxo(scriptHex, swept: false);
+        var vtxo = CreateVtxo(scriptHex, swept: true);
+
+        // Verify the VTXO is correctly identified as non-spendable
+        Assert.That(vtxo.CanSpendOffchain(CurrentTime), Is.False, "Swept VTXO should not be spendable offchain");
+
         var contract = CreateContractEntity(scriptHex);
         var sweptCoin = CreateArkCoin(scriptHex, swept: true);
 
         SetupVtxoTrigger(vtxo, contract, sweptCoin);
 
-        // Policy still recommends the coin, but Sweep should skip it
         _sweepPolicy.SweepAsync(Arg.Any<IEnumerable<ArkCoin>>(), Arg.Any<CancellationToken>())
             .Returns(ToAsyncEnumerable(new[] { sweptCoin }));
 

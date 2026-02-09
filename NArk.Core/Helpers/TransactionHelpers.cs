@@ -245,7 +245,7 @@ public static class TransactionHelpers
         }
 
 
-        public async Task<uint256> ConstructAndSubmitArkTransaction(
+        public async Task<PSBT> ConstructAndSubmitArkTransaction(
             IReadOnlyCollection<ArkCoin> arkCoins,
             ArkTxOut[] arkOutputs,
             CancellationToken cancellationToken)
@@ -294,7 +294,7 @@ public static class TransactionHelpers
                 }
             }
 
-            return arkTx.GetGlobalTransaction().GetHash();
+            return arkTx;
         }
 
         public async Task<PSBT> ConstructForfeitTx(ArkServerInfo arkServerInfo, ArkCoin coin, Coin? connector,
