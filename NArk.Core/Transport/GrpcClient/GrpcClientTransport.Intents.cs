@@ -33,6 +33,10 @@ public partial class GrpcClientTransport
         {
             throw new AlreadyLockedVtxoException("VTXO is already locked by another intent");
         }
+        catch (Exception ex) when (ex.Message.Contains("already spent") || ex.Message.Contains("VTXO_ALREADY_SPENT"))
+        {
+            throw new VtxoAlreadySpentException($"VTXO input was already spent in a batch: {ex.Message}");
+        }
     }
 
     public async Task DeleteIntent(ArkIntent intent, CancellationToken cancellationToken = default)

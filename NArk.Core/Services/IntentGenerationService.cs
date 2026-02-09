@@ -171,8 +171,28 @@ public class IntentGenerationService(
                 continue;
             }
 
-            var walletVtxos =
-                unspentVtxos.Where(v => walletContracts.Any(c => c.Script == v.Script)).ToArray();
+            // Exclude VTXOs that were consumed by recently-succeeded batches but haven't
+            // been marked as spent yet (VTXO poll may still be in progress). This prevents
+            // the race condition where we generate intents using already-spent VTXOs.
+            var recentSucceeded = await intentStorage.GetIntents(
+                walletIds: [walletId],
+                states: [ArkIntentState.BatchSucceeded],
+                cancellationToken: token);
+            var recentlySpentOutpoints = recentSucceeded
+                .SelectMany(i => i.IntentVtxos)
+                .ToHashSet();
+
+            var walletVtxos = unspentVtxos
+                .Where(v => walletContracts.Any(c => c.Script == v.Script))
+                .Where(v => !recentlySpentOutpoints.Contains(new OutPoint(uint256.Parse(v.TransactionId), v.TransactionOutputIndex)))
+                .ToArray();
+
+            if (walletVtxos.Length == 0 && recentlySpentOutpoints.Count > 0)
+            {
+                logger?.LogDebug("Skipping intent generation for wallet {WalletId} - all VTXOs consumed by recent batch (VTXO poll pending)",
+                    walletId);
+                continue;
+            }
 
             List<ArkCoin> coins = [];
 

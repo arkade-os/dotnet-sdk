@@ -152,6 +152,25 @@ public class IntentSynchronizationService(
                 await eventHandlers.SafeHandleEventAsync(new PostIntentSubmissionEvent(intentAfterLock, now, false,
                     ActionState.Successful, null), token);
             }
+            catch (VtxoAlreadySpentException ex)
+            {
+                // VTXO was spent in a completed batch — this intent is stale.
+                // Cancel it so the generation service can create a fresh one with current VTXOs.
+                logger?.LogWarning(0, ex, "Intent {IntentTxId} references already-spent VTXO, cancelling as stale", intentToSubmit.IntentTxId);
+                var now = DateTimeOffset.UtcNow;
+
+                await intentStorage.SaveIntent(
+                    intentAfterLock.WalletId,
+                    intentAfterLock with
+                    {
+                        State = ArkIntentState.Cancelled,
+                        CancellationReason = $"VTXO already spent: {ex.Message}",
+                        UpdatedAt = now
+                    }, token);
+
+                await eventHandlers.SafeHandleEventAsync(new PostIntentSubmissionEvent(intentAfterLock, now, false,
+                    ActionState.Failed, ex.Message), token);
+            }
         }
         catch (Exception ex)
         {
