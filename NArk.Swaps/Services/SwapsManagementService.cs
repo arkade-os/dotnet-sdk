@@ -6,7 +6,6 @@ using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
-
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core;
@@ -50,9 +49,10 @@ public class SwapsManagementService : IAsyncDisposable
     private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
 
     private HashSet<string> _swapsIdToWatch = [];
-    private ConcurrentDictionary<string, string> _swapAddressToIds = [];
+    private readonly ConcurrentDictionary<string, string> _swapIdsToScript = [];
 
     private Task? _cacheTask;
+    private Task? _routinePollTask;
 
     private Task? _lastStreamTask;
     private CancellationTokenSource _restartCts = new();
@@ -101,10 +101,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         try
         {
-            var vtxoAddress = ArkAddress
-                .FromScriptPubKey(Script.FromHex(e.Script), _serverKey)
-                .ToString(_network.ChainName == ChainName.Mainnet);
-            if (_swapAddressToIds.TryGetValue(vtxoAddress, out var id))
+            if (_swapIdsToScript.TryGetValue(e.Script, out var id))
             {
                 _triggerChannel.Writer.TryWrite($"id:{id}");
             }
@@ -127,10 +124,19 @@ public class SwapsManagementService : IAsyncDisposable
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
         _serverKey = OutputDescriptorHelpers.Extract(serverInfo.SignerKey).XOnlyPubKey;
         _network = serverInfo.Network;
-
+        _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
         _cacheTask = DoUpdateStorage(multiToken.Token);
-        _triggerChannel.Writer.TryWrite("");
     }
+
+    private async Task RoutinePoll(TimeSpan interval, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            _triggerChannel.Writer.TryWrite("");
+            await Task.Delay(interval, cancellationToken);
+        }
+    }
+
 
     private async Task DoUpdateStorage(CancellationToken cancellationToken)
     {
@@ -156,7 +162,6 @@ public class SwapsManagementService : IAsyncDisposable
                     _lastStreamTask = DoStatusCheck(newSwapIdSet, newRestartCts.Token);
                     await _restartCts.CancelAsync();
                     _restartCts = newRestartCts;
-
                 }
             }
             else
@@ -167,7 +172,12 @@ public class SwapsManagementService : IAsyncDisposable
                     activeSwaps.Select(s => s.SwapId).ToHashSet();
 
                 if (_swapsIdToWatch.SetEquals(newSwapIdSet))
+                {
+                    // Set unchanged, but still poll as a failsafe (websocket may have dropped)
+                    if (newSwapIdSet.Count > 0)
+                        await PollSwapState(newSwapIdSet, cancellationToken);
                     continue;
+                }
 
                 await PollSwapState(newSwapIdSet.Except(_swapsIdToWatch), cancellationToken);
 
@@ -192,13 +202,14 @@ public class SwapsManagementService : IAsyncDisposable
             var swaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
             var swap = swaps.FirstOrDefault();
             if (swap == null) continue;
-            _swapAddressToIds[swap.SwapId] = swap.Address;
+            _swapIdsToScript[swap.SwapId] = swap.ContractScript;
 
             // There's nothing after refunded, ignore...
             if (swap.Status is ArkSwapStatus.Refunded) continue;
 
             // If not refunded and status is refundable, start a coop refund
-            if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded && IsRefundableStatus(swapStatus.Status))
+            if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
+                IsRefundableStatus(swapStatus.Status))
             {
                 var newSwap =
                     swap with { Status = ArkSwapStatus.Failed, UpdatedAt = DateTimeOffset.Now };
@@ -217,7 +228,7 @@ public class SwapsManagementService : IAsyncDisposable
 
             if (swapWithNewStatus.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded)
             {
-                _swapAddressToIds.Remove(swapWithNewStatus.SwapId, out _);
+                _swapIdsToScript.Remove(swapWithNewStatus.SwapId, out _);
                 _swapsIdToWatch.Remove(swapWithNewStatus.SwapId);
             }
         }
@@ -237,12 +248,15 @@ public class SwapsManagementService : IAsyncDisposable
 
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
         var matchedSwapContracts =
-            await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript], cancellationToken: cancellationToken);
+            await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript],
+                cancellationToken: cancellationToken);
 
-        var matchedSwapContractForSwapWallet = matchedSwapContracts.Single(entity => entity.Type == VHTLCContract.ContractType);
+        var matchedSwapContractForSwapWallet =
+            matchedSwapContracts.Single(entity => entity.Type == VHTLCContract.ContractType);
 
         // Parse the VHTLC contract
-        if (ArkContractParser.Parse(matchedSwapContractForSwapWallet.Type, matchedSwapContractForSwapWallet.AdditionalData, serverInfo.Network) is not VHTLCContract contract)
+        if (ArkContractParser.Parse(matchedSwapContractForSwapWallet.Type,
+                matchedSwapContractForSwapWallet.AdditionalData, serverInfo.Network) is not VHTLCContract contract)
         {
             throw new InvalidOperationException("Failed to parse VHTLC contract for refund");
         }
@@ -312,15 +326,18 @@ public class SwapsManagementService : IAsyncDisposable
 
             await _swapsStorage.SaveSwap(newSwap.WalletId, newSwap, cancellationToken);
 
-            await using var @lock = await _safetyService.LockKeyAsync($"contract::{contract.GetArkAddress().ScriptPubKey.ToHex()}", cancellationToken);
+            await using var @lock =
+                await _safetyService.LockKeyAsync($"contract::{contract.GetArkAddress().ScriptPubKey.ToHex()}",
+                    cancellationToken);
         }
         catch (Exception)
         {
             //coop swap failed, let's not keep listening for something that will never happen
-            await _contractStorage.SaveContract(refundAddress.ToEntity(swap.WalletId, activityState: ContractActivityState.Inactive), cancellationToken);
+            await _contractStorage.SaveContract(
+                refundAddress.ToEntity(swap.WalletId, activityState: ContractActivityState.Inactive),
+                cancellationToken);
             throw;
         }
-
     }
 
     private static ArkSwapStatus Map(string status)
@@ -340,17 +357,34 @@ public class SwapsManagementService : IAsyncDisposable
 
     private async Task DoStatusCheck(HashSet<string> swapsIds, CancellationToken cancellationToken)
     {
-        await using var websocketClient = new BoltzWebsocketClient(_boltzClient.DeriveWebSocketUri());
-        websocketClient.OnAnyEventReceived += OnSwapEventReceived;
-        try
+        while (!cancellationToken.IsCancellationRequested)
         {
-            await websocketClient.ConnectAsync(cancellationToken);
-            await websocketClient.SubscribeAsync(swapsIds.ToArray(), cancellationToken);
-            await websocketClient.WaitUntilDisconnected(cancellationToken);
-        }
-        finally
-        {
-            websocketClient.OnAnyEventReceived -= OnSwapEventReceived;
+            try
+            {
+                await using var websocketClient = new BoltzWebsocketClient(_boltzClient.DeriveWebSocketUri());
+                websocketClient.OnAnyEventReceived += OnSwapEventReceived;
+                try
+                {
+                    await websocketClient.ConnectAsync(cancellationToken);
+                    await websocketClient.SubscribeAsync(swapsIds.ToArray(), cancellationToken);
+                    await websocketClient.WaitUntilDisconnected(cancellationToken);
+                }
+                finally
+                {
+                    websocketClient.OnAnyEventReceived -= OnSwapEventReceived;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Websocket dropped — wait before reconnecting
+            }
+
+            if (!cancellationToken.IsCancellationRequested)
+                await Task.Delay(5000, cancellationToken);
         }
     }
 
@@ -389,8 +423,10 @@ public class SwapsManagementService : IAsyncDisposable
         var swap = await _boltzService.CreateSubmarineSwap(invoice,
             await addressProvider!.GetNextSigningDescriptor(cancellationToken),
             cancellationToken);
-        await _contractService.ImportContract(walletId, swap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate,
-            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.Swap.Id}" }, cancellationToken: cancellationToken);
+        await _contractService.ImportContract(walletId, swap.Contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.Swap.Id}" },
+            cancellationToken: cancellationToken);
         await _swapsStorage.SaveSwap(
             walletId,
             new ArkSwap(
@@ -440,9 +476,10 @@ public class SwapsManagementService : IAsyncDisposable
     public async Task<uint256> PayExistingSubmarineSwap(string walletId, string swapId,
         CancellationToken cancellationToken = default)
     {
-        var swaps = await _swapsStorage.GetSwaps(walletId: walletId, swapIds: [swapId], cancellationToken: cancellationToken);
+        var swaps = await _swapsStorage.GetSwaps(walletId: walletId, swapIds: [swapId],
+            cancellationToken: cancellationToken);
         var swap = swaps.FirstOrDefault()
-            ?? throw new InvalidOperationException($"Swap {swapId} not found");
+                   ?? throw new InvalidOperationException($"Swap {swapId} not found");
         try
         {
             return await _spendingService.Spend(walletId,
@@ -474,8 +511,10 @@ public class SwapsManagementService : IAsyncDisposable
                 destinationDescriptor,
                 cancellationToken
             );
-        await _contractService.ImportContract(walletId, revSwap.Contract, ContractActivityState.AwaitingFundsBeforeDeactivate,
-            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{revSwap.Swap.Id}" }, cancellationToken: cancellationToken);
+        await _contractService.ImportContract(walletId, revSwap.Contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{revSwap.Swap.Id}" },
+            cancellationToken: cancellationToken);
         await _swapsStorage.SaveSwap(
             walletId,
             new ArkSwap(
@@ -700,7 +739,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         var swaps = await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken);
         var swap = swaps.FirstOrDefault()
-            ?? throw new InvalidOperationException($"Swap {swapId} not found");
+                   ?? throw new InvalidOperationException($"Swap {swapId} not found");
         if (swap.SwapType != ArkSwapType.ReverseSubmarine)
             throw new InvalidOperationException("Preimage enrichment only valid for reverse swaps");
 
@@ -751,7 +790,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         var swaps = await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken);
         var swap = swaps.FirstOrDefault()
-            ?? throw new InvalidOperationException($"Swap {swapId} not found");
+                   ?? throw new InvalidOperationException($"Swap {swapId} not found");
         if (swap.SwapType != ArkSwapType.Submarine)
             throw new InvalidOperationException("Invoice enrichment only valid for submarine swaps");
 
@@ -793,6 +832,16 @@ public class SwapsManagementService : IAsyncDisposable
         {
             if (_cacheTask is not null)
                 await _cacheTask;
+        }
+        catch
+        {
+            // ignored
+        }
+
+        try
+        {
+            if (_routinePollTask is not null)
+                await _routinePollTask;
         }
         catch
         {
