@@ -1,10 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Core.Sweeper;
+using NArk.Core.Transformers;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
+using NArk.Swaps.Transformers;
 
 namespace NArk.Hosting;
 
@@ -21,6 +23,8 @@ public static class SwapServiceCollectionExtensions
     {
         services.AddSingleton<SwapsManagementService>();
         services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
+        services.AddSingleton<IContractTransformer, VHTLCContractTransformer>();
+        
         services.AddSingleton<CachedBoltzClient>();
         services.AddSingleton<BoltzLimitsValidator>();
         services.AddHostedService<NArk.Swaps.Hosting.SwapHostedLifecycle>();
@@ -32,7 +36,7 @@ public static class SwapServiceCollectionExtensions
                 if (!string.IsNullOrWhiteSpace(config.BoltzUri))
                 {
                     boltz.BoltzUrl ??= config.BoltzUri;
-                    boltz.WebsocketUrl ??= config.BoltzUri;
+                    boltz.WebsocketUrl ??= config.BoltzWsUri ?? config.BoltzUri;
                 }
             });
 
