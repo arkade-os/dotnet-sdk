@@ -28,9 +28,6 @@ public record ArkNetworkConfig(
     [property: JsonPropertyName("boltz")]
     string? BoltzUri = null,
 
-    [property: JsonPropertyName("boltz-ws")]
-    string? BoltzWsUri = null,
-
     [property: JsonPropertyName("explorer")]
     string? ExplorerUri = null)
 {
@@ -52,8 +49,7 @@ public record ArkNetworkConfig(
     public static readonly ArkNetworkConfig Regtest = new(
         ArkUri: "http://localhost:7070",
         ArkadeWalletUri: "http://localhost:3002",
-        BoltzUri: "http://localhost:9001/",
-        BoltzWsUri: "http://localhost:9004/",
+        BoltzUri: "http://localhost:9069/",
         ExplorerUri: null);
 
 }

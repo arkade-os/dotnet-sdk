@@ -50,7 +50,11 @@ public partial class GrpcClientTransport
                         vtxo.IsSwept,
                         DateTimeOffset.FromUnixTimeSeconds(vtxo.CreatedAt),
                         expiresAt,
-                        expiresAtHeight
+                        expiresAtHeight,
+                        Preconfirmed: vtxo.IsPreconfirmed,
+                        Unrolled: vtxo.IsUnrolled,
+                        CommitmentTxids: vtxo.CommitmentTxids.ToList(),
+                        ArkTxid: string.IsNullOrEmpty(vtxo.ArkTxid) ? null : vtxo.ArkTxid
                     );
                 }
 

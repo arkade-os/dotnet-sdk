@@ -13,7 +13,11 @@ public record ArkVtxo(
     bool Swept,
     DateTimeOffset CreatedAt,
     DateTimeOffset? ExpiresAt,
-    uint? ExpiresAtHeight)
+    uint? ExpiresAtHeight,
+    bool Preconfirmed = false,
+    bool Unrolled = false,
+    IReadOnlyList<string>? CommitmentTxids = null,
+    string? ArkTxid = null)
 {
     public OutPoint OutPoint => new(new uint256(TransactionId), TransactionOutputIndex);
     public TxOut TxOut => new(Money.Satoshis(Amount), NBitcoin.Script.FromHex(Script));

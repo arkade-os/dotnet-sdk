@@ -36,7 +36,7 @@ public static class SwapServiceCollectionExtensions
                 if (!string.IsNullOrWhiteSpace(config.BoltzUri))
                 {
                     boltz.BoltzUrl ??= config.BoltzUri;
-                    boltz.WebsocketUrl ??= config.BoltzWsUri ?? config.BoltzUri;
+                    boltz.WebsocketUrl ??= config.BoltzUri;
                 }
             });
 
