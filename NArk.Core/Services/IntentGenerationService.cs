@@ -37,39 +37,15 @@ public class IntentGenerationService(
 ) : IIntentGenerationService, IAsyncDisposable
 {
     private readonly CancellationTokenSource _shutdownCts = new();
-    private readonly SemaphoreSlim _vtxoUpdateSignal = new(0, 1);
     private Task? _generationTask;
 
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         logger?.LogInformation("Starting intent generation service");
 
-        // Subscribe to VTXO updates to trigger immediate intent generation
-        vtxoStorage.VtxosChanged += OnVtxoChanged;
-
         var multiToken = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token, cancellationToken);
         _generationTask = DoGenerationLoop(multiToken.Token);
         return Task.CompletedTask;
-    }
-
-    private void OnVtxoChanged(object? sender, ArkVtxo vtxo)
-    {
-        logger?.LogDebug("VTXO changed event received for {TxId}:{Index}, signaling immediate intent generation",
-            vtxo.TransactionId, vtxo.TransactionOutputIndex);
-
-        // Try to release the semaphore if not already signaled
-        // CurrentCount check avoids InvalidOperationException if already at max
-        if (_vtxoUpdateSignal.CurrentCount == 0)
-        {
-            try
-            {
-                _vtxoUpdateSignal.Release();
-            }
-            catch (SemaphoreFullException)
-            {
-                // Already signaled, ignore
-            }
-        }
     }
 
     private async Task DoGenerationLoop(CancellationToken token)
@@ -80,18 +56,8 @@ public class IntentGenerationService(
             {
                 await RunIntentGenerationCycle(token);
 
-                // Wait for either a VTXO update signal or the poll interval timeout
                 var pollInterval = options?.Value.PollInterval ?? TimeSpan.FromMinutes(5);
-                var signaled = await _vtxoUpdateSignal.WaitAsync(pollInterval, token);
-
-                if (signaled)
-                {
-                    logger?.LogDebug("Intent generation triggered by VTXO update");
-                }
-                else
-                {
-                    logger?.LogDebug("Intent generation triggered by poll interval");
-                }
+                await Task.Delay(pollInterval, token);
             }
         }
         catch (OperationCanceledException)
@@ -138,6 +104,20 @@ public class IntentGenerationService(
                 {
                     foreach (var stale in staleIntents)
                     {
+                        // Never cancel an intent that has a commitment tx — the batch succeeded
+                        if (stale.CommitmentTransactionId is not null)
+                        {
+                            logger?.LogInformation("Stale BatchInProgress intent {IntentTxId} has commitment tx {CommitmentTx} — marking as succeeded",
+                                stale.IntentTxId, stale.CommitmentTransactionId);
+                            await intentStorage.SaveIntent(walletId, stale with
+                            {
+                                State = ArkIntentState.BatchSucceeded,
+                                CancellationReason = null,
+                                UpdatedAt = DateTimeOffset.UtcNow
+                            }, token);
+                            continue;
+                        }
+
                         logger?.LogWarning("Cancelling stuck BatchInProgress intent {IntentTxId} for wallet {WalletId} (stuck for {Duration})",
                             stale.IntentTxId, walletId, DateTimeOffset.UtcNow - stale.UpdatedAt);
                         await intentStorage.SaveIntent(walletId, stale with
@@ -251,6 +231,14 @@ public class IntentGenerationService(
             if (intentAfterLock is null)
             {
                 logger?.LogDebug("Intent {IntentTxId} no longer exists, skipping cancellation", intent.IntentTxId);
+                continue;
+            }
+
+            // Never cancel an intent that has a commitment tx — the batch succeeded
+            if (intentAfterLock.CommitmentTransactionId is not null)
+            {
+                logger?.LogInformation("Skipping cancellation of intent {IntentTxId} — has commitment tx {CommitmentTx}",
+                    intentAfterLock.IntentTxId, intentAfterLock.CommitmentTransactionId);
                 continue;
             }
 
@@ -460,15 +448,10 @@ public class IntentGenerationService(
     {
         logger?.LogDebug("Disposing intent generation service");
 
-        // Unsubscribe from VTXO updates
-        vtxoStorage.VtxosChanged -= OnVtxoChanged;
-
         await _shutdownCts.CancelAsync();
 
         if (_generationTask is not null)
             await _generationTask;
-
-        _vtxoUpdateSignal.Dispose();
 
         logger?.LogInformation("Intent generation service disposed");
     }

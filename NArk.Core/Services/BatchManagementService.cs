@@ -18,7 +18,6 @@ using NArk.Core.Helpers;
 using NArk.Core.Models;
 using NArk.Core.Transport;
 using NArk.Core.Extensions;
-using NBitcoin;
 using NBitcoin.Crypto;
 
 namespace NArk.Core.Services;
@@ -105,7 +104,7 @@ public class BatchManagementService(
             await _connectionManipulationSemaphore.WaitAsync(cancellationToken);
             try
             {
-                await LoadActiveIntentsAsync(cancellationToken);
+                await LoadActiveIntentsAsync(cancellationToken, false);
                 var cancellationTokenSourceForMain = new CancellationTokenSource();
                 if (_sharedMainConnection is not null)
                     await _sharedMainConnection.CancellationTokenSource.CancelAsync();
@@ -124,7 +123,7 @@ public class BatchManagementService(
 
     #region Private Methods
 
-    private async Task LoadActiveIntentsAsync(CancellationToken cancellationToken)
+    private async Task LoadActiveIntentsAsync(CancellationToken cancellationToken, bool firstRun = true)
     {
         var activeStates = new[] { ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch, ArkIntentState.BatchInProgress };
         var allActiveIntents = await intentStorage.GetIntents(states: activeStates, cancellationToken: cancellationToken);
@@ -195,8 +194,25 @@ public class BatchManagementService(
             // Cancel all BatchInProgress intents on startup. Batch sessions are never carried
             // over across restarts, so any BatchInProgress intent is definitively stale.
             // The next generation cycle will create a fresh intent if needed.
-            if (intent.State == ArkIntentState.BatchInProgress)
+            if (firstRun && intent.State == ArkIntentState.BatchInProgress)
             {
+                // If the intent has a commitment tx, the batch actually succeeded — fix the state
+                if (intent.CommitmentTransactionId is not null)
+                {
+                    logger?.LogInformation(
+                        "Orphaned BatchInProgress intent {IntentId} has commitment tx {CommitmentTx} — marking as succeeded",
+                        intent.IntentId, intent.CommitmentTransactionId);
+
+                    var succeededIntent = intent with
+                    {
+                        State = ArkIntentState.BatchSucceeded,
+                        CancellationReason = null,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    };
+                    await intentStorage.SaveIntent(succeededIntent.WalletId, succeededIntent, cancellationToken);
+                    continue;
+                }
+
                 logger?.LogWarning(
                     "Cancelling orphaned BatchInProgress intent {IntentId} on startup (no active batch session)",
                     intent.IntentId);
@@ -436,6 +452,10 @@ public class BatchManagementService(
             {
                 var sessionCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+                await clientTransport.ConfirmRegistrationAsync(
+                    intentId,
+                    cancellationToken: sessionCancellationTokenSource.Token);
+                
                 // Save state BEFORE starting HandleBatchEvents to ensure BatchId is available
                 // when checking for BatchFailedEvent
                 await SaveToStorage(intentId, arkIntent =>
@@ -454,9 +474,7 @@ public class BatchManagementService(
                     session
                 );
 
-                await clientTransport.ConfirmRegistrationAsync(
-                    intentId,
-                    cancellationToken: sessionCancellationTokenSource.Token);
+               
             }
             finally
             {
