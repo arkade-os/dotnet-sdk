@@ -282,7 +282,7 @@ public class IntentGenerationService(
         var inputsSum = intentSpec.Coins.Sum(c => c.Amount);
         var fee = await feeEstimator.EstimateFeeAsync(intentSpec, token);
 
-        if (outputsSum - inputsSum < fee)
+        if (inputsSum -outputsSum < fee)
         {
             logger?.LogWarning("Intent generation failed for wallet {WalletId}: fees not properly considered, missing {MissingAmount} sats", walletId, inputsSum + fee - outputsSum);
             throw new InvalidOperationException(
