@@ -88,7 +88,7 @@ public class HashLockedArkPaymentContract(
         var exitDelay = new Sequence(uint.Parse(contractData["exit_delay"]));
         var userDescriptor = KeyExtensions.ParseOutputDescriptor(contractData["user"], network);
         var preimage = Convert.FromHexString(contractData["preimage"]);
-        var hashLockType = Enum.Parse<HashLockTypeOption>(contractData["hash_lock_type"]);
+        var hashLockType = Enum.Parse<HashLockTypeOption>(contractData["hash_lock_type"], true);
         return new HashLockedArkPaymentContract(server, exitDelay, userDescriptor, preimage, hashLockType);
     }
 }
