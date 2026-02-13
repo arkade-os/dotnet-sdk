@@ -248,6 +248,7 @@ public class IntentGenerationServiceTests
                     s.Length == stateFilter.Length &&
                     stateFilter.All(sf => s.Contains(sf))),
                 validAt: Arg.Any<DateTimeOffset?>(),
+                searchText: Arg.Any<string?>(),
                 skip: Arg.Any<int?>(),
                 take: Arg.Any<int?>(),
                 cancellationToken: Arg.Any<CancellationToken>())

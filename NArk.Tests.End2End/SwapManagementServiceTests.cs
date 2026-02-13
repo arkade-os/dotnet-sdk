@@ -269,7 +269,7 @@ public class SwapManagementServiceTests
         Assert.That(invoice, Is.Not.Null);
 
         // Verify the swap was created
-        var swapsBeforeClear = await swapStorage.GetSwaps(testingPrerequisite.walletIdentifier);
+        var swapsBeforeClear = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
         Assert.That(swapsBeforeClear, Has.Count.EqualTo(1));
         var originalSwap = swapsBeforeClear.First();
 
@@ -277,7 +277,7 @@ public class SwapManagementServiceTests
         swapStorage.Clear();
 
         // Verify storage is empty
-        var swapsAfterClear = await swapStorage.GetSwaps(testingPrerequisite.walletIdentifier);
+        var swapsAfterClear = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
         Assert.That(swapsAfterClear, Has.Count.EqualTo(0));
 
         // Get the descriptors used by the wallet
@@ -299,7 +299,7 @@ public class SwapManagementServiceTests
         Assert.That(restoredSwap.Address, Is.Not.Empty);
 
         // Verify the swap is now in storage
-        var swapsAfterRestore = await swapStorage.GetSwaps(testingPrerequisite.walletIdentifier);
+        var swapsAfterRestore = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
         Assert.That(swapsAfterRestore, Has.Count.GreaterThanOrEqualTo(1));
     }
 

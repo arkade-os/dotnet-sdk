@@ -40,6 +40,7 @@ public class InMemoryIntentStorage : IIntentStorage
         OutPoint[]? containingInputs = null,
         ArkIntentState[]? states = null,
         DateTimeOffset? validAt = null,
+        string? searchText = null,
         int? skip = null,
         int? take = null,
         CancellationToken cancellationToken = default)
@@ -87,6 +88,15 @@ public class InMemoryIntentStorage : IIntentStorage
                 query = query.Where(i =>
                     (i.ValidFrom is null || i.ValidFrom <= validAt.Value) &&
                     (i.ValidUntil is null || i.ValidUntil >= validAt.Value));
+            }
+
+            // Search text
+            if (!string.IsNullOrEmpty(searchText))
+            {
+                query = query.Where(i =>
+                    (i.IntentId != null && i.IntentId.Contains(searchText)) ||
+                    (i.BatchId != null && i.BatchId.Contains(searchText)) ||
+                    (i.CommitmentTransactionId != null && i.CommitmentTransactionId.Contains(searchText)));
             }
 
             // Pagination

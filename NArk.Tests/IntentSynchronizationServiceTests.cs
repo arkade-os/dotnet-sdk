@@ -44,6 +44,7 @@ public class IntentSynchronizationServiceTests
                 containingInputs: Arg.Any<OutPoint[]?>(),
                 states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
                 validAt: Arg.Any<DateTimeOffset?>(),
+                searchText: Arg.Any<string?>(),
                 skip: Arg.Any<int?>(),
                 take: Arg.Any<int?>(),
                 cancellationToken: Arg.Any<CancellationToken>())
@@ -94,6 +95,7 @@ public class IntentSynchronizationServiceTests
                 containingInputs: Arg.Any<OutPoint[]?>(),
                 states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
                 validAt: Arg.Any<DateTimeOffset?>(),
+                searchText: Arg.Any<string?>(),
                 skip: Arg.Any<int?>(),
                 take: Arg.Any<int?>(),
                 cancellationToken: Arg.Any<CancellationToken>())
@@ -138,6 +140,7 @@ public class IntentSynchronizationServiceTests
                 containingInputs: Arg.Any<OutPoint[]?>(),
                 states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
                 validAt: Arg.Any<DateTimeOffset?>(),
+                searchText: Arg.Any<string?>(),
                 skip: Arg.Any<int?>(),
                 take: Arg.Any<int?>(),
                 cancellationToken: Arg.Any<CancellationToken>())
@@ -150,6 +153,7 @@ public class IntentSynchronizationServiceTests
                 containingInputs: Arg.Any<OutPoint[]?>(),
                 states: Arg.Any<ArkIntentState[]?>(),
                 validAt: Arg.Any<DateTimeOffset?>(),
+                searchText: Arg.Any<string?>(),
                 skip: Arg.Any<int?>(),
                 take: Arg.Any<int?>(),
                 cancellationToken: Arg.Any<CancellationToken>())
@@ -214,6 +218,7 @@ public class IntentSynchronizationServiceTests
                 containingInputs: Arg.Any<OutPoint[]?>(),
                 states: Arg.Is<ArkIntentState[]?>(s => s != null && s.Contains(ArkIntentState.WaitingToSubmit)),
                 validAt: Arg.Any<DateTimeOffset?>(),
+                searchText: Arg.Any<string?>(),
                 skip: Arg.Any<int?>(),
                 take: Arg.Any<int?>(),
                 cancellationToken: Arg.Any<CancellationToken>())
@@ -226,6 +231,7 @@ public class IntentSynchronizationServiceTests
                 containingInputs: Arg.Any<OutPoint[]?>(),
                 states: Arg.Any<ArkIntentState[]?>(),
                 validAt: Arg.Any<DateTimeOffset?>(),
+                searchText: Arg.Any<string?>(),
                 skip: Arg.Any<int?>(),
                 take: Arg.Any<int?>(),
                 cancellationToken: Arg.Any<CancellationToken>())

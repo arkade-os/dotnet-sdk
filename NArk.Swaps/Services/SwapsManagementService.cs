@@ -529,7 +529,7 @@ public class SwapsManagementService : IAsyncDisposable
     public async Task<uint256> PayExistingSubmarineSwap(string walletId, string swapId,
         CancellationToken cancellationToken = default)
     {
-        var swaps = await _swapsStorage.GetSwaps(walletId: walletId, swapIds: [swapId],
+        var swaps = await _swapsStorage.GetSwaps(walletIds: [walletId], swapIds: [swapId],
             cancellationToken: cancellationToken);
         var swap = swaps.FirstOrDefault()
                    ?? throw new InvalidOperationException($"Swap {swapId} not found");
@@ -623,7 +623,7 @@ public class SwapsManagementService : IAsyncDisposable
         var results = new List<ArkSwap>();
 
         var existingSwapIds =
-            (await _swapsStorage.GetSwaps(walletId, restoredSwaps.Select(swap => swap.Id).ToArray(),
+            (await _swapsStorage.GetSwaps(walletIds: [walletId], swapIds: restoredSwaps.Select(swap => swap.Id).ToArray(),
                 cancellationToken: cancellationToken)).Select(swap => swap.SwapId);
 
         restoredSwaps = restoredSwaps.ExceptBy(existingSwapIds, swap => swap.Id).ToArray();

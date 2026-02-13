@@ -18,6 +18,7 @@ public interface IIntentStorage
     /// <param name="containingInputs">Filter to intents containing any of these input outpoints. If null/empty, no filter.</param>
     /// <param name="states">Filter by intent states. If null/empty, all states.</param>
     /// <param name="validAt">Filter to intents valid at this time. If null, no time filter.</param>
+    /// <param name="searchText">Search text across IntentId, BatchId, CommitmentTransactionId. If null, no text search.</param>
     /// <param name="skip">Number of records to skip (for pagination). If null, no skip.</param>
     /// <param name="take">Number of records to take (for pagination). If null, no limit.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -28,6 +29,7 @@ public interface IIntentStorage
         OutPoint[]? containingInputs = null,
         ArkIntentState[]? states = null,
         DateTimeOffset? validAt = null,
+        string? searchText = null,
         int? skip = null,
         int? take = null,
         CancellationToken cancellationToken = default);

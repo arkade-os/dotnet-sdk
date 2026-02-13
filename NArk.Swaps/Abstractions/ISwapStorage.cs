@@ -27,14 +27,14 @@ public interface ISwapStorage
     /// <param name="take">Number of records to take for pagination</param>
     /// <param name="cancellationToken">Cancellation token</param>
     Task<IReadOnlyCollection<ArkSwap>> GetSwaps(
-        string? walletId = null,
+        string[]? walletIds = null,
         string[]? swapIds = null,
         bool? active = null,
-        ArkSwapType? swapType = null,
-        ArkSwapStatus? status = null,
+        ArkSwapType[]? swapTypes = null,
+        ArkSwapStatus[]? status = null,
         string[]? contractScripts = null,
-        string? hash = null,
-        string? invoice = null,
+        string[]? hashes = null,
+        string[]? invoices = null,
         string? searchText = null,
         int? skip = null,
         int? take = null,
