@@ -37,9 +37,10 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
 
         var coins = unspentVtxos
             .Where(v =>
-                    v.Swept ||
-                    (v.ExpiresAt is { } exp && exp + options.Value.Threshold > chainTime.Timestamp) ||
-                    (v.ExpiresAtHeight is { } height && height + options.Value.ThresholdHeight > chainTime.Height)
+                v.IsRecoverable(chainTime)
+                 ||
+                    (v.ExpiresAt is { } exp && options.Value.Threshold is { } thresh && exp - thresh < chainTime.Timestamp) ||
+                    (v.ExpiresAtHeight is { } height && options.Value.ThresholdHeight is { } threshHeight && height - threshHeight < chainTime.Height)
             )
             .GroupBy(v => v.WalletIdentifier);
 
