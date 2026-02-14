@@ -5,7 +5,8 @@ namespace NArk.Swaps.Boltz.Models;
 
 /// <summary>
 /// Result from creating a chain swap (BTC→ARK or ARK→BTC).
-/// Boltz's fulmine sidecar creates the Ark VHTLC — we only need the lockup address.
+/// Boltz's fulmine sidecar creates the Ark VHTLC — we only need the lockup addresses.
+/// The BTC Taproot HTLC spend info is reconstructed at claim time from the stored response.
 /// </summary>
 public record ChainSwapResult(
     /// <summary>
@@ -26,10 +27,4 @@ public record ChainSwapResult(
     /// <summary>
     /// Ephemeral BTC key for MuSig2 operations.
     /// </summary>
-    Key EphemeralBtcKey,
-
-    /// <summary>
-    /// TaprootSpendInfo for the BTC HTLC (reconstructed from Boltz's swap tree).
-    /// Null when the BTC side has no swap tree (e.g. when we don't interact with BTC HTLC).
-    /// </summary>
-    TaprootSpendInfo? BtcHtlcSpendInfo);
+    Key EphemeralBtcKey);
