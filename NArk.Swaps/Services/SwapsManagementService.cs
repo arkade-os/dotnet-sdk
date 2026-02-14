@@ -636,18 +636,20 @@ public class SwapsManagementService : IAsyncDisposable
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
         var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
 
-        var result = await _boltzChainService.CreateBtcToArkSwapAsync(
-            amountSats, claimDescriptor, cancellationToken);
+        // Extract pub key hex for Boltz API
+        var extractedClaim = OutputDescriptorHelpers.Extract(claimDescriptor);
+        var claimPubKeyHex = Convert.ToHexString(
+            extractedClaim.PubKey?.ToBytes() ?? extractedClaim.XOnlyPubKey.ToBytes()).ToLowerInvariant();
 
-        // Import the Ark VHTLC contract (Boltz will lock funds here)
-        await _contractService.ImportContract(walletId, result.Contract,
-            ContractActivityState.AwaitingFundsBeforeDeactivate,
-            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
-            cancellationToken: cancellationToken);
+        var result = await _boltzChainService.CreateBtcToArkSwapAsync(
+            amountSats, claimPubKeyHex, cancellationToken);
 
         // The BTC lockup address is in lockupDetails (where customer sends BTC)
         var btcAddress = result.Swap.LockupDetails?.LockupAddress
             ?? throw new InvalidOperationException("Missing BTC lockup address");
+
+        // The ARK lockup address from claimDetails (where Boltz locks the Ark VHTLC)
+        var arkLockupAddress = result.Swap.ClaimDetails?.LockupAddress ?? "";
 
         var swap = new ArkSwap(
             result.Swap.Id,
@@ -655,7 +657,7 @@ public class SwapsManagementService : IAsyncDisposable
             ArkSwapType.ChainBtcToArk,
             "", // No invoice for chain swaps
             amountSats,
-            result.Contract.GetArkAddress().ScriptPubKey.ToHex(),
+            arkLockupAddress, // Store ARK lockup address as contract script identifier
             btcAddress,
             ArkSwapStatus.Pending,
             null,
@@ -693,17 +695,17 @@ public class SwapsManagementService : IAsyncDisposable
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
         var refundDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
 
+        // Extract pub key hex for Boltz API
+        var extractedRefund = OutputDescriptorHelpers.Extract(refundDescriptor);
+        var refundPubKeyHex = Convert.ToHexString(
+            extractedRefund.PubKey?.ToBytes() ?? extractedRefund.XOnlyPubKey.ToBytes()).ToLowerInvariant();
+
         var result = await _boltzChainService.CreateArkToBtcSwapAsync(
-            amountSats, refundDescriptor, btcDestination, cancellationToken);
+            amountSats, refundPubKeyHex, cancellationToken);
 
-        // Import the Ark VHTLC contract (we will lock our funds here)
-        await _contractService.ImportContract(walletId, result.Contract,
-            ContractActivityState.AwaitingFundsBeforeDeactivate,
-            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
-            cancellationToken: cancellationToken);
-
-        var arkAddress = result.Contract.GetArkAddress();
-        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        // Parse the Ark lockup address (Boltz's fulmine created the VHTLC)
+        var arkLockupAddressStr = result.Swap.LockupDetails!.LockupAddress;
+        var arkAddress = ArkAddress.Parse(arkLockupAddressStr);
 
         var swap = new ArkSwap(
             result.Swap.Id,
@@ -711,8 +713,8 @@ public class SwapsManagementService : IAsyncDisposable
             ArkSwapType.ChainArkToBtc,
             "", // No invoice for chain swaps
             amountSats,
-            arkAddress.ScriptPubKey.ToHex(),
-            arkAddress.ToString(serverInfo.Network.ChainName == ChainName.Mainnet),
+            arkLockupAddressStr, // Store ARK lockup address as identifier
+            arkLockupAddressStr,
             ArkSwapStatus.Pending,
             null,
             DateTimeOffset.UtcNow,

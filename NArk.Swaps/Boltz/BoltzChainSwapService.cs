@@ -1,7 +1,5 @@
 using System.Text.Json;
 using NArk.Abstractions.Extensions;
-using NArk.Core.Contracts;
-using NArk.Core.Extensions;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
@@ -9,15 +7,13 @@ using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Crypto;
 using NBitcoin.DataEncoders;
-using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
-using KeyExtensions = NArk.Swaps.Extensions.KeyExtensions;
 
 namespace NArk.Swaps.Boltz;
 
 /// <summary>
-/// Creates chain swaps (BTC ↔ ARK) via Boltz, constructing the Ark VHTLC
-/// and BTC Taproot HTLC, and validating addresses match.
+/// Creates chain swaps (BTC ↔ ARK) via Boltz.
+/// Boltz's fulmine sidecar handles the Ark VHTLC — we only construct the BTC Taproot HTLC.
 /// </summary>
 internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport clientTransport)
 {
@@ -26,12 +22,12 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
     /// Customer pays BTC on-chain → store receives Ark VTXOs.
     /// </summary>
     /// <param name="amountSats">Amount in satoshis to receive on Ark side.</param>
-    /// <param name="arkClaimDescriptor">The Ark-side descriptor that will claim the VHTLC (receiver).</param>
+    /// <param name="claimPubKeyHex">Hex-encoded public key for the Ark claim side.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>Chain swap result with contract, BTC lockup address, and keys.</returns>
+    /// <returns>Chain swap result with BTC lockup address and keys.</returns>
     public async Task<ChainSwapResult> CreateBtcToArkSwapAsync(
         long amountSats,
-        OutputDescriptor arkClaimDescriptor,
+        string claimPubKeyHex,
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
@@ -42,10 +38,6 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
         // Ephemeral BTC key for refund (MuSig2 on BTC side)
         var ephemeralKey = new Key();
-
-        var extractedClaim = arkClaimDescriptor.Extract();
-        var claimPubKeyHex = (extractedClaim.PubKey?.ToBytes() ?? extractedClaim.XOnlyPubKey.ToBytes())
-            .ToHexStringLower();
 
         var request = new ChainRequest
         {
@@ -59,45 +51,18 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
         var response = await boltzClient.CreateChainSwapAsync(request, ct);
 
-        // Construct Ark VHTLC from claimDetails (Boltz locks this for us)
-        var claimDetails = response.ClaimDetails
-            ?? throw new InvalidOperationException(
+        // Validate we got the expected details
+        if (response.ClaimDetails == null)
+            throw new InvalidOperationException(
                 $"Chain swap {response.Id}: missing claim details (Ark side). Raw: {SerializeResponse(response)}");
 
-        if (string.IsNullOrEmpty(claimDetails.ServerPublicKey))
+        if (response.LockupDetails == null)
             throw new InvalidOperationException(
-                $"Chain swap {response.Id}: claimDetails.serverPublicKey is null. Raw: {SerializeResponse(response)}");
-
-        // The VHTLC uses Hash160 = RIPEMD160(SHA256(preimage))
-        var hash160 = new uint160(Hashes.RIPEMD160(preimageHash), false);
-
-        var vhtlcContract = new VHTLCContract(
-            server: operatorTerms.SignerKey,
-            sender: KeyExtensions.ParseOutputDescriptor(claimDetails.ServerPublicKey, operatorTerms.Network),
-            receiver: arkClaimDescriptor,
-            preimage: preimage,
-            refundLocktime: new LockTime(claimDetails.TimeoutBlockHeight),
-            // Chain swaps use default timeouts — Boltz doesn't specify unilateral delays for chain swaps
-            // Use reasonable defaults matching the operator terms
-            unilateralClaimDelay: operatorTerms.UnilateralExit,
-            unilateralRefundDelay: operatorTerms.UnilateralExit,
-            unilateralRefundWithoutReceiverDelay: operatorTerms.UnilateralExit
-        );
-
-        // Validate Ark address matches
-        var arkAddress = vhtlcContract.GetArkAddress();
-        var computedAddress = arkAddress.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet);
-        if (computedAddress != claimDetails.LockupAddress)
-        {
-            throw new InvalidOperationException(
-                $"Ark address mismatch: computed {computedAddress}, Boltz expects {claimDetails.LockupAddress}");
-        }
+                $"Chain swap {response.Id}: missing lockup details (BTC side). Raw: {SerializeResponse(response)}");
 
         // Reconstruct BTC HTLC from lockupDetails (user sends BTC here)
-        var lockupDetails = response.LockupDetails
-            ?? throw new InvalidOperationException($"Chain swap {response.Id}: missing lockup details (BTC side)");
-
         TaprootSpendInfo? btcSpendInfo = null;
+        var lockupDetails = response.LockupDetails;
         if (lockupDetails.SwapTree != null && lockupDetails.ServerPublicKey != null)
         {
             var boltzBtcPubKey = ECPubKey.Create(Convert.FromHexString(lockupDetails.ServerPublicKey));
@@ -113,7 +78,7 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
             }
         }
 
-        return new ChainSwapResult(vhtlcContract, response, preimage, preimageHash, ephemeralKey, btcSpendInfo);
+        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey, btcSpendInfo);
     }
 
     /// <summary>
@@ -121,14 +86,12 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
     /// User sends Ark VTXOs → receives BTC on-chain.
     /// </summary>
     /// <param name="amountSats">Amount in satoshis to send from Ark side.</param>
-    /// <param name="arkRefundDescriptor">The Ark-side descriptor for refund (sender).</param>
-    /// <param name="btcDestination">BTC destination address for receiving funds.</param>
+    /// <param name="refundPubKeyHex">Hex-encoded public key for the Ark refund side.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>Chain swap result with contract, Ark lockup address, and keys.</returns>
+    /// <returns>Chain swap result with Ark lockup address and keys.</returns>
     public async Task<ChainSwapResult> CreateArkToBtcSwapAsync(
         long amountSats,
-        OutputDescriptor arkRefundDescriptor,
-        BitcoinAddress btcDestination,
+        string refundPubKeyHex,
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
@@ -139,10 +102,6 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
         // Ephemeral BTC key for claiming (MuSig2 on BTC side)
         var ephemeralKey = new Key();
-
-        var extractedRefund = arkRefundDescriptor.Extract();
-        var refundPubKeyHex = (extractedRefund.PubKey?.ToBytes() ?? extractedRefund.XOnlyPubKey.ToBytes())
-            .ToHexStringLower();
 
         var request = new ChainRequest
         {
@@ -156,42 +115,18 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
         var response = await boltzClient.CreateChainSwapAsync(request, ct);
 
-        // Construct Ark VHTLC from lockupDetails (we lock our Ark here)
-        var lockupDetails = response.LockupDetails
-            ?? throw new InvalidOperationException(
+        // Validate we got the expected details
+        if (response.LockupDetails == null)
+            throw new InvalidOperationException(
                 $"Chain swap {response.Id}: missing lockup details (Ark side). Raw: {SerializeResponse(response)}");
 
-        if (string.IsNullOrEmpty(lockupDetails.ServerPublicKey))
+        if (response.ClaimDetails == null)
             throw new InvalidOperationException(
-                $"Chain swap {response.Id}: lockupDetails.serverPublicKey is null. Raw: {SerializeResponse(response)}");
-
-        var hash160 = new uint160(Hashes.RIPEMD160(preimageHash), false);
-
-        var vhtlcContract = new VHTLCContract(
-            server: operatorTerms.SignerKey,
-            sender: arkRefundDescriptor,
-            receiver: KeyExtensions.ParseOutputDescriptor(lockupDetails.ServerPublicKey, operatorTerms.Network),
-            hash: hash160,
-            refundLocktime: new LockTime(lockupDetails.TimeoutBlockHeight),
-            unilateralClaimDelay: operatorTerms.UnilateralExit,
-            unilateralRefundDelay: operatorTerms.UnilateralExit,
-            unilateralRefundWithoutReceiverDelay: operatorTerms.UnilateralExit
-        );
-
-        // Validate Ark address matches
-        var arkAddress = vhtlcContract.GetArkAddress();
-        var computedAddress = arkAddress.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet);
-        if (computedAddress != lockupDetails.LockupAddress)
-        {
-            throw new InvalidOperationException(
-                $"Ark address mismatch: computed {computedAddress}, Boltz expects {lockupDetails.LockupAddress}");
-        }
+                $"Chain swap {response.Id}: missing claim details (BTC side). Raw: {SerializeResponse(response)}");
 
         // Reconstruct BTC HTLC from claimDetails (Boltz locks BTC here for us to claim)
-        var claimDetails = response.ClaimDetails
-            ?? throw new InvalidOperationException($"Chain swap {response.Id}: missing claim details (BTC side)");
-
         TaprootSpendInfo? btcSpendInfo = null;
+        var claimDetails = response.ClaimDetails;
         if (claimDetails.SwapTree != null && claimDetails.ServerPublicKey != null)
         {
             var boltzBtcPubKey = ECPubKey.Create(Convert.FromHexString(claimDetails.ServerPublicKey));
@@ -207,7 +142,7 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
             }
         }
 
-        return new ChainSwapResult(vhtlcContract, response, preimage, preimageHash, ephemeralKey, btcSpendInfo);
+        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey, btcSpendInfo);
     }
 
     /// <summary>
