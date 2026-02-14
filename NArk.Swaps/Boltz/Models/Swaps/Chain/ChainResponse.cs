@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 
 namespace NArk.Swaps.Boltz.Models.Swaps.Chain;
 
@@ -30,6 +31,12 @@ public class ChainSwapData
 
     [JsonPropertyName("timeoutBlockHeight")]
     public int TimeoutBlockHeight { get; set; }
+
+    /// <summary>
+    /// VHTLC timeout block heights (ARK side returns this object with multiple values).
+    /// </summary>
+    [JsonPropertyName("timeoutBlockHeights")]
+    public TimeoutBlockHeights? TimeoutBlockHeights { get; set; }
 
     [JsonPropertyName("amount")]
     public long Amount { get; set; }

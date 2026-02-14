@@ -104,15 +104,15 @@ public class ChainSwapTests
             .ExecuteBufferedAsync();
         Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
 
-        // Mine blocks periodically so Boltz confirms the BTC lockup and proceeds
-        for (var i = 0; i < 5; i++)
+        // Mine blocks periodically so Boltz confirms the BTC lockup, locks ARK, and we claim
+        for (var i = 0; i < 10; i++)
         {
             await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
             if (settledSwapTcs.Task.IsCompleted) break;
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
 
-        // Wait for the swap to settle (Boltz detects BTC, claims on Ark side)
+        // Wait for the swap to settle (Boltz detects BTC → locks ARK → we claim VHTLC → Boltz claims BTC)
         await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(3));
 
         // Verify the swap settled
@@ -180,16 +180,15 @@ public class ChainSwapTests
 
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
-        // Mine blocks periodically so Boltz sees the Ark lockup and locks BTC
-        // The Ark round needs blocks to confirm, then Boltz needs to see it and lock BTC
-        for (var i = 0; i < 5; i++)
+        // Mine blocks periodically so Boltz sees the Ark lockup, locks BTC, and we MuSig2-claim
+        for (var i = 0; i < 10; i++)
         {
             await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
             if (settledSwapTcs.Task.IsCompleted) break;
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
 
-        // Wait for the swap to settle (our TryClaimBtcForChainSwap does MuSig2 cooperative claim)
+        // Wait for the swap to settle (Boltz locks BTC → we MuSig2 claim → Boltz claims ARK)
         await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(3));
 
         // Verify the swap settled

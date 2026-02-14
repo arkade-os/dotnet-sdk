@@ -256,6 +256,15 @@ public class SwapsManagementService : IAsyncDisposable
                     await RequestRefundCooperatively(newSwap, cancellationToken);
                 }
 
+                // For BTC→ARK chain swaps: claim the ARK VHTLC when Boltz has locked
+                if (swap.SwapType is ArkSwapType.ChainBtcToArk &&
+                    IsChainSwapClaimableStatus(swapStatus.Status))
+                {
+                    _logger?.LogInformation("Chain swap {SwapId}: server locked ARK ('{BoltzStatus}'), attempting VHTLC claim",
+                        idToPoll, swapStatus.Status);
+                    await TryClaimArkForChainSwap(swap, cancellationToken);
+                }
+
                 // For ARK→BTC chain swaps: try to claim BTC when server has locked
                 if (swap.SwapType is ArkSwapType.ChainArkToBtc &&
                     IsChainSwapClaimableStatus(swapStatus.Status))
@@ -409,8 +418,8 @@ public class SwapsManagementService : IAsyncDisposable
             "invoice.failedToPay" or "invoice.expired" or "swap.expired" or "transaction.failed"
                 or "transaction.refunded" =>
                 ArkSwapStatus.Failed,
-            "transaction.mempool" => ArkSwapStatus.Pending,
-            "transaction.confirmed" or "invoice.settled" or "transaction.claimed" => ArkSwapStatus.Settled,
+            "transaction.mempool" or "transaction.confirmed" => ArkSwapStatus.Pending,
+            "invoice.settled" or "transaction.claimed" => ArkSwapStatus.Settled,
             // Chain swap specific statuses
             "transaction.server.mempool" or "transaction.server.confirmed"
                 or "transaction.claim.pending" => ArkSwapStatus.Pending,
@@ -636,28 +645,31 @@ public class SwapsManagementService : IAsyncDisposable
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
         var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
 
-        // Extract pub key hex for Boltz API
-        var extractedClaim = OutputDescriptorHelpers.Extract(claimDescriptor);
-        var claimPubKeyHex = Convert.ToHexString(
-            extractedClaim.PubKey?.ToBytes() ?? extractedClaim.XOnlyPubKey.ToBytes()).ToLowerInvariant();
-
         var result = await _boltzChainService.CreateBtcToArkSwapAsync(
-            amountSats, claimPubKeyHex, cancellationToken);
+            amountSats, claimDescriptor, cancellationToken);
 
-        // The BTC lockup address is in lockupDetails (where customer sends BTC)
         var btcAddress = result.Swap.LockupDetails?.LockupAddress
             ?? throw new InvalidOperationException("Missing BTC lockup address");
 
-        // The ARK lockup address from claimDetails (where Boltz locks the Ark VHTLC)
-        var arkLockupAddress = result.Swap.ClaimDetails?.LockupAddress ?? "";
+        var contract = result.Contract
+            ?? throw new InvalidOperationException("Missing VHTLC contract for BTC→ARK chain swap");
+
+        // Import the VHTLC contract — VTXO polling will detect VTXOs at this address,
+        // and VHTLCContractTransformer will auto-create claimable coins (preimage is stored in the contract)
+        await _contractService.ImportContract(walletId, contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
+            cancellationToken: cancellationToken);
+
+        var contractScript = contract.GetArkAddress().ScriptPubKey.ToHex();
 
         var swap = new ArkSwap(
             result.Swap.Id,
             walletId,
             ArkSwapType.ChainBtcToArk,
-            "", // No invoice for chain swaps
+            "",
             amountSats,
-            arkLockupAddress, // Store ARK lockup address as contract script identifier
+            contractScript,
             btcAddress,
             ArkSwapStatus.Pending,
             null,
@@ -747,6 +759,63 @@ public class SwapsManagementService : IAsyncDisposable
 
         _logger?.LogInformation("ARK→BTC chain swap {SwapId} created, Ark locked", result.Swap.Id);
         return result.Swap.Id;
+    }
+
+    /// <summary>
+    /// Claims the ARK VHTLC for a BTC→ARK chain swap by spending the VTXO to a self-address.
+    /// This reveals the preimage to Boltz (via the Ark protocol), completing the swap.
+    /// </summary>
+    private async Task TryClaimArkForChainSwap(ArkSwap swap, CancellationToken cancellationToken)
+    {
+        if (swap.SwapType != ArkSwapType.ChainBtcToArk)
+            return;
+
+        try
+        {
+            // Check if there are VTXOs on the VHTLC contract script
+            var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript],
+                cancellationToken: cancellationToken);
+
+            if (vtxos.Count == 0)
+            {
+                _logger?.LogDebug("Chain swap {SwapId}: no VTXOs yet on VHTLC contract, waiting", swap.SwapId);
+                return;
+            }
+
+            // Get the VHTLC contract and use CoinService to create claimable coins
+            var contractEntities = await _contractStorage.GetContracts(
+                walletIds: [swap.WalletId], scripts: [swap.ContractScript],
+                cancellationToken: cancellationToken);
+            var contractEntity = contractEntities.FirstOrDefault(c => c.Type == VHTLCContract.ContractType);
+            if (contractEntity == null)
+            {
+                _logger?.LogWarning("Chain swap {SwapId}: VHTLC contract not found in storage", swap.SwapId);
+                return;
+            }
+
+            // Spend the VHTLC to a self-address — this reveals the preimage through the Ark protocol
+            var selfContract = await _contractService.DeriveContract(swap.WalletId, NextContractPurpose.SendToSelf,
+                ContractActivityState.AwaitingFundsBeforeDeactivate,
+                metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.SwapId}" },
+                cancellationToken: cancellationToken);
+
+            if (selfContract == null)
+            {
+                _logger?.LogWarning("Chain swap {SwapId}: failed to derive self-address for claim", swap.SwapId);
+                return;
+            }
+
+            var totalAmount = vtxos.Sum(v => v.TxOut.Value.Satoshi);
+            await _spendingService.Spend(swap.WalletId,
+                [new ArkTxOut(ArkTxOutType.Vtxo, totalAmount, selfContract.GetArkAddress())],
+                cancellationToken);
+
+            _logger?.LogInformation("Chain swap {SwapId}: ARK VHTLC claimed, preimage revealed", swap.SwapId);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Chain swap {SwapId}: error claiming ARK VHTLC", swap.SwapId);
+        }
     }
 
     /// <summary>
