@@ -1,4 +1,3 @@
-using NArk.Core.Contracts;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NBitcoin;
 
@@ -6,13 +5,9 @@ namespace NArk.Swaps.Boltz.Models;
 
 /// <summary>
 /// Result from creating a chain swap (BTC→ARK or ARK→BTC).
+/// Boltz's fulmine sidecar creates the Ark VHTLC — we only need the lockup address.
 /// </summary>
 public record ChainSwapResult(
-    /// <summary>
-    /// The Ark VHTLC contract (claim side for BTC→ARK, lockup side for ARK→BTC).
-    /// </summary>
-    VHTLCContract Contract,
-
     /// <summary>
     /// The Boltz chain swap response with both sides' details.
     /// </summary>
