@@ -115,10 +115,29 @@ public static class BtcHtlcScripts
     /// <summary>
     /// Computes the MuSig2 aggregate X-only public key from two keys.
     /// This is the internal key for the Taproot output.
-    /// Key ordering follows BIP327: lexicographic order of compressed public keys.
+    /// Boltz uses x-only keys for MuSig2 aggregation (even parity assumed),
+    /// so we convert both keys to even-parity before aggregating.
     /// </summary>
     public static ECXOnlyPubKey ComputeAggregateKey(ECPubKey key1, ECPubKey key2)
     {
-        return ECPubKey.MusigAggregate([key1, key2]).ToXOnlyPubKey();
+        // Convert to x-only then back to even-parity ECPubKey to match Boltz behavior.
+        // Boltz internally converts all keys to x-only before MuSig2 aggregation.
+        var evenKey1 = ToEvenParity(key1);
+        var evenKey2 = ToEvenParity(key2);
+        return ECPubKey.MusigAggregate([evenKey1, evenKey2]).ToXOnlyPubKey();
+    }
+
+    /// <summary>
+    /// Converts an ECPubKey to its even-parity version (02 prefix).
+    /// This matches Boltz's behavior of using x-only keys for MuSig2.
+    /// </summary>
+    internal static ECPubKey ToEvenParity(ECPubKey key)
+    {
+        // Get x-only (32 bytes), then prepend 02 to create even-parity compressed key
+        var xonly = key.ToXOnlyPubKey().ToBytes();
+        var compressed = new byte[33];
+        compressed[0] = 0x02;
+        xonly.CopyTo(compressed, 1);
+        return ECPubKey.Create(compressed);
     }
 }
