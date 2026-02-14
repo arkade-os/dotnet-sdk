@@ -651,19 +651,23 @@ public class SwapsManagementService : IAsyncDisposable
             ?? throw new InvalidOperationException("Missing BTC lockup address");
 
         // Import VHTLC contract if available (Boltz provided full parameters).
-        // If null, Boltz's fulmine handles the ARK VHTLC — we just reveal the preimage via API.
+        // The sweeper will automatically claim the VHTLC when VTXOs appear.
         string contractScript;
         if (result.Contract is { } contract)
         {
+            Console.WriteLine($"[InitBtcToArk] {result.Swap.Id}: VHTLC contract constructed, importing for sweeper");
             await _contractService.ImportContract(walletId, contract,
                 ContractActivityState.AwaitingFundsBeforeDeactivate,
                 metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
                 cancellationToken: cancellationToken);
             contractScript = contract.GetArkAddress().ScriptPubKey.ToHex();
+            Console.WriteLine($"[InitBtcToArk] {result.Swap.Id}: VHTLC imported, script={contractScript[..20]}..., arkAddr={contract.GetArkAddress()}");
         }
         else
         {
-            // Fulmine mode: store the ARK lockup address as identifier
+            // Fulmine mode: Boltz didn't provide full VHTLC parameters.
+            // The sweeper cannot claim — this should be rare with Boltz's Ark support.
+            Console.WriteLine($"[InitBtcToArk] {result.Swap.Id}: WARNING: no VHTLC contract (serverPubKey={result.Swap.ClaimDetails?.ServerPublicKey}), fulmine mode");
             contractScript = result.Swap.ClaimDetails!.LockupAddress;
         }
 

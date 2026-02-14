@@ -16,12 +16,16 @@ public class InMemorySwapStorage : ISwapStorage
         lock (_swaps)
         {
             if (_swaps.TryGetValue(walletId, out var swaps))
+            {
+                // Remove existing swap with same ID before adding (records use structural equality,
+                // so a swap with different Status would be a different HashSet entry)
+                swaps.RemoveWhere(s => s.SwapId == swap.SwapId);
                 swaps.Add(swap);
+            }
             else
                 _swaps[walletId] = [swap];
         }
 
-        // BEWARE: can this cause infinite loop?
         SwapsChanged?.Invoke(this, swap);
 
         return Task.CompletedTask;
