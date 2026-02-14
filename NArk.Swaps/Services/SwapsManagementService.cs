@@ -424,6 +424,7 @@ public class SwapsManagementService : IAsyncDisposable
             // Chain swap specific statuses
             "transaction.server.mempool" or "transaction.server.confirmed"
                 or "transaction.claim.pending" => ArkSwapStatus.Pending,
+            "transaction.lockupFailed" => ArkSwapStatus.Failed,
             _ => ArkSwapStatus.Unknown
         };
     }
@@ -635,7 +636,7 @@ public class SwapsManagementService : IAsyncDisposable
     /// Initiates a BTC→ARK chain swap. Customer pays BTC on-chain, store receives Ark VTXOs.
     /// Returns the BTC lockup address where the customer should send BTC.
     /// </summary>
-    public async Task<(string BtcAddress, string SwapId)> InitiateBtcToArkChainSwap(
+    public async Task<(string BtcAddress, string SwapId, long ExpectedLockupSats)> InitiateBtcToArkChainSwap(
         string walletId,
         long amountSats,
         CancellationToken cancellationToken = default)
@@ -692,10 +693,11 @@ public class SwapsManagementService : IAsyncDisposable
 
         await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
 
-        _logger?.LogInformation("BTC→ARK chain swap {SwapId} created, BTC lockup: {BtcAddress}",
-            result.Swap.Id, btcAddress);
+        var expectedLockupSats = result.Swap.LockupDetails!.Amount;
+        _logger?.LogInformation("BTC→ARK chain swap {SwapId} created, BTC lockup: {BtcAddress}, expected: {Amount} sats",
+            result.Swap.Id, btcAddress, expectedLockupSats);
 
-        return (btcAddress, result.Swap.Id);
+        return (btcAddress, result.Swap.Id, expectedLockupSats);
     }
 
     /// <summary>
@@ -917,11 +919,27 @@ public class SwapsManagementService : IAsyncDisposable
             var feeSats = 250L;
             var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, feeSats);
 
-            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: attempting MuSig2 cooperative claim...");
-            // Cooperative MuSig2 claim
-            var signedTx = await _chainSwapMusig.CooperativeClaimAsync(
-                swap.SwapId, swap.Preimage, unsignedClaimTx, prevOut, 0,
-                ecPrivKey, boltzPubKey, spendInfo, cancellationToken);
+            Transaction signedTx;
+            try
+            {
+                Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: attempting MuSig2 cooperative claim...");
+                signedTx = await _chainSwapMusig.CooperativeClaimAsync(
+                    swap.SwapId, swap.Preimage, unsignedClaimTx, prevOut, 0,
+                    ecPrivKey, boltzPubKey, spendInfo, cancellationToken);
+            }
+            catch (Exception coopEx)
+            {
+                Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: MuSig2 cooperative claim failed: {coopEx.Message}");
+                Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: falling back to script-path claim with preimage");
+
+                // Fallback: script-path claim with preimage
+                var claimLeaf = BtcHtlcScripts.GetClaimLeaf(claimDetails.SwapTree);
+                var preimageBytes = Convert.FromHexString(swap.Preimage);
+                BtcTransactionBuilder.SignScriptPathClaim(
+                    unsignedClaimTx, 0, prevOut, spendInfo, claimLeaf,
+                    preimageBytes, ephemeralKey);
+                signedTx = unsignedClaimTx;
+            }
 
             // Broadcast the signed claim transaction
             var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(

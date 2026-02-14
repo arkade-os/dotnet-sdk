@@ -33,7 +33,13 @@ public partial class BoltzClient
     /// </summary>
     public virtual async Task<ChainClaimDetails?> GetChainClaimDetailsAsync(string swapId, CancellationToken cancellation = default)
     {
-        return await _httpClient.GetFromJsonAsync<ChainClaimDetails>($"v2/swap/chain/{swapId}/claim", cancellation);
+        var resp = await _httpClient.GetAsync($"v2/swap/chain/{swapId}/claim", cancellation);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var body = await resp.Content.ReadAsStringAsync(cancellation);
+            throw new HttpRequestException($"GET chain/{swapId}/claim failed ({resp.StatusCode}): {body}", null, resp.StatusCode);
+        }
+        return await resp.Content.ReadFromJsonAsync<ChainClaimDetails>(cancellationToken: cancellation);
     }
 
     /// <summary>
