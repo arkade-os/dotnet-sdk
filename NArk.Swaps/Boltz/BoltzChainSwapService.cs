@@ -16,7 +16,8 @@ namespace NArk.Swaps.Boltz;
 
 /// <summary>
 /// Creates chain swaps (BTC ↔ ARK) via Boltz.
-/// For BTC→ARK: constructs a VHTLCContract for the ARK side so we can claim VTXOs.
+/// For BTC→ARK: constructs a VHTLCContract if Boltz provides the parameters, otherwise
+/// the ARK side is handled by Boltz's fulmine sidecar and claimed via the API.
 /// For ARK→BTC: the BTC Taproot HTLC is reconstructed at claim time from the stored response.
 /// </summary>
 internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport clientTransport)
@@ -28,7 +29,7 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
     /// <summary>
     /// Creates a BTC→ARK chain swap.
-    /// Customer pays BTC on-chain → store receives Ark VTXOs via VHTLC claim.
+    /// Customer pays BTC on-chain → store receives Ark VTXOs.
     /// </summary>
     public async Task<ChainSwapResult> CreateBtcToArkSwapAsync(
         long amountSats,
@@ -64,33 +65,31 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
             throw new InvalidOperationException(
                 $"Chain swap {response.Id}: missing lockup details (BTC side). Raw: {SerializeResponse(response)}");
 
-        // Construct VHTLC contract for the ARK side so we can claim VTXOs
+        // Try to construct VHTLC contract if Boltz provides the full parameters.
+        // Some Boltz versions (with fulmine sidecar) return serverPublicKey=null — in that case
+        // the ARK VHTLC is managed by fulmine and claimed via the Boltz API.
+        VHTLCContract? vhtlcContract = null;
         var claimDetails = response.ClaimDetails;
-        if (string.IsNullOrEmpty(claimDetails.ServerPublicKey))
-            throw new InvalidOperationException(
-                $"Chain swap {response.Id}: missing serverPublicKey for ARK side. Raw: {SerializeResponse(response)}");
+        if (!string.IsNullOrEmpty(claimDetails.ServerPublicKey) && claimDetails.TimeoutBlockHeights is { } timeouts)
+        {
+            vhtlcContract = new VHTLCContract(
+                server: operatorTerms.SignerKey,
+                sender: KeyExtensions.ParseOutputDescriptor(claimDetails.ServerPublicKey, operatorTerms.Network),
+                receiver: claimDescriptor,
+                preimage: preimage,
+                refundLocktime: new LockTime(timeouts.Refund),
+                unilateralClaimDelay: ParseSequence(timeouts.UnilateralClaim),
+                unilateralRefundDelay: ParseSequence(timeouts.UnilateralRefund),
+                unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver)
+            );
 
-        var timeouts = claimDetails.TimeoutBlockHeights
-            ?? throw new InvalidOperationException(
-                $"Chain swap {response.Id}: missing timeoutBlockHeights for ARK side. Raw: {SerializeResponse(response)}");
-
-        var vhtlcContract = new VHTLCContract(
-            server: operatorTerms.SignerKey,
-            sender: KeyExtensions.ParseOutputDescriptor(claimDetails.ServerPublicKey, operatorTerms.Network),
-            receiver: claimDescriptor,
-            preimage: preimage,
-            refundLocktime: new LockTime(timeouts.Refund),
-            unilateralClaimDelay: ParseSequence(timeouts.UnilateralClaim),
-            unilateralRefundDelay: ParseSequence(timeouts.UnilateralRefund),
-            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver)
-        );
-
-        // Validate our computed address matches Boltz's lockup address
-        var arkAddress = vhtlcContract.GetArkAddress();
-        var computedAddress = arkAddress.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet);
-        if (computedAddress != claimDetails.LockupAddress)
-            throw new InvalidOperationException(
-                $"Chain swap {response.Id}: ARK address mismatch. Computed {computedAddress}, Boltz expects {claimDetails.LockupAddress}");
+            // Validate address match
+            var computedAddress = vhtlcContract.GetArkAddress()
+                .ToString(operatorTerms.Network.ChainName == ChainName.Mainnet);
+            if (computedAddress != claimDetails.LockupAddress)
+                throw new InvalidOperationException(
+                    $"Chain swap {response.Id}: ARK address mismatch. Computed {computedAddress}, Boltz expects {claimDetails.LockupAddress}");
+        }
 
         return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey, vhtlcContract);
     }
