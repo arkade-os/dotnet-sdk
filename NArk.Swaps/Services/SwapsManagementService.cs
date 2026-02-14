@@ -242,8 +242,8 @@ public class SwapsManagementService : IAsyncDisposable
                 }
                 _swapIdsToScript[swap.SwapId] = swap.ContractScript;
 
-                // There's nothing after refunded, ignore...
-                if (swap.Status is ArkSwapStatus.Refunded) continue;
+                // Terminal states: nothing to do
+                if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled) continue;
 
                 // If not refunded and status is refundable, start a coop refund
                 if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
