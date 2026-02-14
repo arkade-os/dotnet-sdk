@@ -22,7 +22,12 @@ public partial class BoltzClient
     /// </summary>
     public virtual async Task<ChainResponse> CreateChainSwapAsync(ChainRequest request, CancellationToken cancellation = default)
     {
-        return await PostAsJsonAsync<ChainRequest, ChainResponse>("v2/swap/chain", request, cancellation);
+        var resp = await _httpClient.PostAsJsonAsync("v2/swap/chain", request, JsonOptions, cancellation);
+        var rawJson = await resp.Content.ReadAsStringAsync(cancellation);
+        Console.WriteLine($"[BoltzClient] POST v2/swap/chain raw response: {rawJson}");
+        if (!resp.IsSuccessStatusCode)
+            throw new HttpRequestException(rawJson, null, resp.StatusCode);
+        return System.Text.Json.JsonSerializer.Deserialize<ChainResponse>(rawJson, JsonOptions)!;
     }
 
     // Chain Swap Claiming (MuSig2 cooperative)

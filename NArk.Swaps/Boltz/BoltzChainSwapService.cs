@@ -57,6 +57,8 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
         var response = await boltzClient.CreateChainSwapAsync(request, ct);
 
+        Console.WriteLine($"[BoltzChainSwap] {response.Id}: raw response = {SerializeResponse(response)}");
+
         if (response.ClaimDetails == null)
             throw new InvalidOperationException(
                 $"Chain swap {response.Id}: missing claim details (Ark side). Raw: {SerializeResponse(response)}");
@@ -70,6 +72,7 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
         // the ARK VHTLC is managed by fulmine and claimed via the Boltz API.
         VHTLCContract? vhtlcContract = null;
         var claimDetails = response.ClaimDetails;
+        Console.WriteLine($"[BoltzChainSwap] {response.Id}: claimDetails.ServerPublicKey='{claimDetails.ServerPublicKey}', timeoutBlockHeights={claimDetails.TimeoutBlockHeights != null}");
         if (!string.IsNullOrEmpty(claimDetails.ServerPublicKey) && claimDetails.TimeoutBlockHeights is { } timeouts)
         {
             vhtlcContract = new VHTLCContract(
