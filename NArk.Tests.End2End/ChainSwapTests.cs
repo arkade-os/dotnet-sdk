@@ -9,6 +9,7 @@ using NArk.Core.Services;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Models;
+using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
 using NArk.Tests.End2End.Common;
@@ -59,6 +60,11 @@ public class ChainSwapTests
             { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
+        var options =
+            new OptionsWrapper<IntentGenerationServiceOptions>(
+                new IntentGenerationServiceOptions() { PollInterval = TimeSpan.FromMinutes(5) }
+            );
+
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
             [
                 new PaymentContractTransformer(testingPrerequisite.walletProvider),
@@ -66,11 +72,32 @@ public class ChainSwapTests
                 new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
             ]);
 
+        var scheduler = new SimpleIntentScheduler(
+            new DefaultFeeEstimator(testingPrerequisite.clientTransport, chainTimeProvider),
+            testingPrerequisite.clientTransport, testingPrerequisite.contractService,
+            chainTimeProvider,
+            new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions()
+            { Threshold = TimeSpan.FromHours(2), ThresholdHeight = 2000 }));
+
+        await using var intentGeneration = new IntentGenerationService(testingPrerequisite.clientTransport,
+            new DefaultFeeEstimator(testingPrerequisite.clientTransport, chainTimeProvider), coinService,
+            testingPrerequisite.walletProvider, intentStorage, testingPrerequisite.safetyService,
+            testingPrerequisite.contracts, testingPrerequisite.vtxoStorage, scheduler,
+            options);
+
         var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
             testingPrerequisite.walletProvider,
             coinService,
             testingPrerequisite.contractService, testingPrerequisite.clientTransport, new DefaultCoinSelector(),
             testingPrerequisite.safetyService, intentStorage);
+
+        await using var sweepMgr = new SweeperService(
+            [new SwapSweepPolicy()], testingPrerequisite.vtxoStorage,
+            coinService, testingPrerequisite.contracts,
+            spendingService,
+            new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions()
+            { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider);
+        await sweepMgr.StartAsync(CancellationToken.None);
 
         await using var swapMgr = new SwapsManagementService(
             spendingService,
