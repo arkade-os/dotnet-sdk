@@ -44,8 +44,8 @@ public class ChainSwapMusigSession(BoltzClient boltzClient)
         CancellationToken ct = default)
     {
         var userPubKey = userEcPrivKey.CreatePubKey();
-        // Boltz sorts keys (BIP327 KeySort) before MuSig2 aggregation
-        var cosignerKeys = new[] { userPubKey, boltzPubKey };
+        // Boltz always uses [boltzKey, userKey] order — no sorting (BIP327 KeyAgg is order-dependent)
+        var cosignerKeys = new[] { boltzPubKey, userPubKey };
 
         // Step 1: Get Boltz's signing details (their nonce + tx hash they want us to cross-sign)
         var claimDetails = await boltzClient.GetChainClaimDetailsAsync(swapId, ct)
@@ -55,7 +55,7 @@ public class ChainSwapMusigSession(BoltzClient boltzClient)
         var boltzTxHash = Convert.FromHexString(claimDetails.TransactionHash);
 
         // Step 2: Cross-sign Boltz's transaction hash (so they can claim our lockup)
-        var crossSignCtx = new MusigContext(cosignerKeys, sort: true, boltzTxHash, userPubKey);
+        var crossSignCtx = new MusigContext(cosignerKeys, boltzTxHash, userPubKey);
         ApplyTaprootTweak(crossSignCtx, spendInfo);
 
         var crossSignNonce = crossSignCtx.GenerateNonce(userEcPrivKey);
@@ -67,7 +67,7 @@ public class ChainSwapMusigSession(BoltzClient boltzClient)
             unsignedTx, inputIndex, [prevOutput]);
 
         // Step 4: Create our signing context and nonce
-        var ourCtx = new MusigContext(cosignerKeys, sort: true, ourSighash.ToBytes(), userPubKey);
+        var ourCtx = new MusigContext(cosignerKeys, ourSighash.ToBytes(), userPubKey);
         ApplyTaprootTweak(ourCtx, spendInfo);
 
         var ourNonce = ourCtx.GenerateNonce(userEcPrivKey);
@@ -121,15 +121,15 @@ public class ChainSwapMusigSession(BoltzClient boltzClient)
         CancellationToken ct = default)
     {
         var userPubKey = userEcPrivKey.CreatePubKey();
-        // Boltz sorts keys (BIP327 KeySort) before MuSig2 aggregation
-        var cosignerKeys = new[] { userPubKey, boltzPubKey };
+        // Boltz always uses [boltzKey, userKey] order — no sorting (BIP327 KeyAgg is order-dependent)
+        var cosignerKeys = new[] { boltzPubKey, userPubKey };
 
         // Compute sighash for our refund transaction
         var sighash = BtcTransactionBuilder.ComputeKeyPathSighash(
             unsignedTx, inputIndex, [prevOutput]);
 
         // Create signing context with Taproot tweak
-        var ctx = new MusigContext(cosignerKeys, sort: true, sighash.ToBytes(), userPubKey);
+        var ctx = new MusigContext(cosignerKeys, sighash.ToBytes(), userPubKey);
         ApplyTaprootTweak(ctx, spendInfo);
 
         var ourNonce = ctx.GenerateNonce(userEcPrivKey);

@@ -115,11 +115,12 @@ public static class BtcHtlcScripts
     /// <summary>
     /// Computes the MuSig2 aggregate X-only public key from two keys.
     /// This is the internal key for the Taproot output.
-    /// Boltz uses @scure/btc-signer's keyAggregate which sorts keys (BIP327 KeySort).
-    /// NBitcoin's MusigAggregate defaults to sort=false, so we must explicitly sort.
+    /// Boltz always uses [boltzKey, userKey] order — no sorting.
+    /// BIP327 KeyAgg is order-dependent (the "second distinct key" gets coefficient 1),
+    /// so we must match Boltz's exact ordering.
     /// </summary>
-    public static ECXOnlyPubKey ComputeAggregateKey(ECPubKey key1, ECPubKey key2)
+    public static ECXOnlyPubKey ComputeAggregateKey(ECPubKey userKey, ECPubKey boltzKey)
     {
-        return ECPubKey.MusigAggregate([key1, key2], sort: true).ToXOnlyPubKey();
+        return ECPubKey.MusigAggregate([boltzKey, userKey]).ToXOnlyPubKey();
     }
 }
