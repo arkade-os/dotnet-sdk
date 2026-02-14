@@ -90,19 +90,20 @@ public class ChainSwapTests
         await swapMgr.StartAsync(CancellationToken.None);
 
         // Create BTC→ARK chain swap
-        var (btcAddress, swapId) = await swapMgr.InitiateBtcToArkChainSwap(
+        var (btcAddress, swapId, expectedLockupSats) = await swapMgr.InitiateBtcToArkChainSwap(
             testingPrerequisite.walletIdentifier,
             50000,
             CancellationToken.None
         );
 
-        Console.WriteLine($"[BTC→ARK] Swap created: {swapId}, BTC lockup: {btcAddress}");
+        var btcAmount = (expectedLockupSats / 100_000_000m).ToString("0.########");
+        Console.WriteLine($"[BTC→ARK] Swap created: {swapId}, BTC lockup: {btcAddress}, expected: {expectedLockupSats} sats ({btcAmount} BTC)");
         Assert.That(btcAddress, Is.Not.Null.And.Not.Empty);
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
-        // Fund the BTC lockup address via bitcoin-cli sendtoaddress
+        // Fund the BTC lockup address with the exact expected amount
         var sendResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, "0.001"])
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, btcAmount])
             .ExecuteBufferedAsync();
         Console.WriteLine($"[BTC→ARK] sendtoaddress result: exit={sendResult.ExitCode}, stdout={sendResult.StandardOutput.Trim()}, stderr={sendResult.StandardError.Trim()}");
         Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
