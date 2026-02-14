@@ -791,24 +791,56 @@ public class SwapsManagementService : IAsyncDisposable
             var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
             var btcDest = BitcoinAddress.Create(swap.BtcAddress!, serverInfo.Network);
 
-            // Build unsigned claim tx
-            var lockupAddress = BitcoinAddress.Create(claimDetails.LockupAddress, serverInfo.Network);
-            var amount = Money.Satoshis(claimDetails.Amount);
-            var prevOut = new TxOut(amount, lockupAddress.ScriptPubKey);
-
-            // We need the outpoint from the lockup tx — for now use a placeholder
-            // In production, we'd get this from Boltz's status update or by watching the chain
-            // The cooperative claim gets the outpoint from the claim details API
-            var claimDetailsApi = await _boltzClient.GetChainClaimDetailsAsync(swap.SwapId, cancellationToken);
-            if (claimDetailsApi == null)
+            // Get the lockup transaction from Boltz's status response
+            var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, cancellationToken);
+            if (swapStatus?.Transaction?.Hex == null)
             {
-                _logger?.LogWarning("Chain swap {SwapId}: claim details not yet available from Boltz", swap.SwapId);
+                _logger?.LogWarning("Chain swap {SwapId}: lockup transaction hex not yet available", swap.SwapId);
                 return;
             }
 
-            // TODO: Get the actual outpoint from chain monitoring or Boltz status
-            // For now, this will be completed when we have chain monitoring infrastructure
-            _logger?.LogInformation("Chain swap {SwapId}: BTC claim details available, ready for cooperative claim", swap.SwapId);
+            // Parse the lockup tx and find the output matching the HTLC address
+            var lockupTx = Transaction.Parse(swapStatus.Transaction.Hex, serverInfo.Network);
+            var lockupScript = BitcoinAddress.Create(claimDetails.LockupAddress, serverInfo.Network).ScriptPubKey;
+            var vout = -1;
+            for (var i = 0; i < lockupTx.Outputs.Count; i++)
+            {
+                if (lockupTx.Outputs[i].ScriptPubKey == lockupScript)
+                {
+                    vout = i;
+                    break;
+                }
+            }
+
+            if (vout < 0)
+            {
+                _logger?.LogError("Chain swap {SwapId}: no output matching HTLC address {Address} in lockup tx",
+                    swap.SwapId, claimDetails.LockupAddress);
+                return;
+            }
+
+            var outpoint = new OutPoint(lockupTx.GetHash(), vout);
+            var prevOut = lockupTx.Outputs[vout];
+
+            // Build unsigned claim tx
+            var feeSats = 250L;
+            var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, feeSats);
+
+            // Cooperative MuSig2 claim
+            var signedTx = await _chainSwapMusig.CooperativeClaimAsync(
+                swap.SwapId, swap.Preimage, unsignedClaimTx, prevOut, 0,
+                ecPrivKey, boltzPubKey, spendInfo, cancellationToken);
+
+            // Broadcast the signed claim transaction
+            var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(
+                new BroadcastRequest { Hex = signedTx.ToHex() }, cancellationToken);
+
+            _logger?.LogInformation("Chain swap {SwapId}: BTC claimed, txid={TxId}",
+                swap.SwapId, broadcastResult.Id);
+
+            await _swapsStorage.SaveSwap(swap.WalletId,
+                swap with { Status = ArkSwapStatus.Settled, UpdatedAt = DateTimeOffset.UtcNow },
+                cancellationToken);
         }
         catch (Exception ex)
         {
