@@ -1,4 +1,3 @@
-using System.Net.Http.Json;
 using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
@@ -10,7 +9,6 @@ using NArk.Core.Services;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Models;
-using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
 using NArk.Tests.End2End.Common;
@@ -53,7 +51,6 @@ public class ChainSwapTests
     {
         var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var chopsticks = _app.GetEndpoint("chopsticks", "http");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
         var swapStorage = new InMemorySwapStorage();
@@ -74,15 +71,6 @@ public class ChainSwapTests
             coinService,
             testingPrerequisite.contractService, testingPrerequisite.clientTransport, new DefaultCoinSelector(),
             testingPrerequisite.safetyService, intentStorage);
-
-        // SweeperService needed to auto-claim the Ark VHTLC once Boltz locks it
-        await using var sweepMgr = new SweeperService(
-            [new SwapSweepPolicy()], testingPrerequisite.vtxoStorage,
-            coinService, testingPrerequisite.contracts,
-            spendingService,
-            new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions()
-            { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider);
-        await sweepMgr.StartAsync(CancellationToken.None);
 
         await using var swapMgr = new SwapsManagementService(
             spendingService,
@@ -110,21 +98,21 @@ public class ChainSwapTests
         Assert.That(btcAddress, Is.Not.Null.And.Not.Empty);
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
-        // Fund the BTC lockup address via chopsticks faucet
-        // The faucet sends BTC and auto-mines a block
-        using var httpClient = new HttpClient();
-        var faucetResponse = await httpClient.PostAsJsonAsync($"{chopsticks}/faucet", new
+        // Fund the BTC lockup address via bitcoin-cli sendtoaddress
+        var sendResult = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, "0.001"])
+            .ExecuteBufferedAsync();
+        Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
+
+        // Mine blocks periodically so Boltz confirms the BTC lockup and proceeds
+        for (var i = 0; i < 5; i++)
         {
-            address = btcAddress,
-            amount = 0.0005 // 50000 sats = 0.0005 BTC
-        });
-        Assert.That(faucetResponse.IsSuccessStatusCode, Is.True,
-            $"Faucet failed: {await faucetResponse.Content.ReadAsStringAsync()}");
+            await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+            if (settledSwapTcs.Task.IsCompleted) break;
+            await Task.Delay(TimeSpan.FromSeconds(5));
+        }
 
-        // Mine additional blocks to confirm
-        await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
-
-        // Wait for the swap to settle (Boltz locks Ark VHTLC → auto-claimed)
+        // Wait for the swap to settle (Boltz detects BTC, claims on Ark side)
         await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(3));
 
         // Verify the swap settled
@@ -192,8 +180,14 @@ public class ChainSwapTests
 
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
-        // Mine blocks so Boltz sees the Ark lockup confirmed and locks BTC
-        await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+        // Mine blocks periodically so Boltz sees the Ark lockup and locks BTC
+        // The Ark round needs blocks to confirm, then Boltz needs to see it and lock BTC
+        for (var i = 0; i < 5; i++)
+        {
+            await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+            if (settledSwapTcs.Task.IsCompleted) break;
+            await Task.Delay(TimeSpan.FromSeconds(5));
+        }
 
         // Wait for the swap to settle (our TryClaimBtcForChainSwap does MuSig2 cooperative claim)
         await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(3));
