@@ -259,11 +259,11 @@ public class SwapsManagementService : IAsyncDisposable
                     await RequestRefundCooperatively(newSwap, cancellationToken);
                 }
 
-                // For BTC→ARK chain swaps: claim the ARK VHTLC when Boltz has locked
+                // For BTC→ARK chain swaps: claim when appropriate
                 if (swap.SwapType is ArkSwapType.ChainBtcToArk &&
-                    IsChainSwapClaimableStatus(swapStatus.Status))
+                    IsBtcToArkClaimableStatus(swapStatus.Status))
                 {
-                    Console.WriteLine($"[PollSwapState] {swap.SwapId}: triggering TryClaimArkForChainSwap");
+                    Console.WriteLine($"[PollSwapState] {swap.SwapId}: triggering TryClaimArkForChainSwap (status={swapStatus.Status})");
                     await TryClaimArkForChainSwap(swap, cancellationToken);
                 }
 
@@ -431,10 +431,23 @@ public class SwapsManagementService : IAsyncDisposable
 
     /// <summary>
     /// Checks if a chain swap status indicates the server has locked funds and we can claim.
+    /// Used for ARK→BTC where we claim BTC ourselves.
     /// </summary>
     private static bool IsChainSwapClaimableStatus(string status)
     {
         return status is "transaction.server.mempool" or "transaction.server.confirmed";
+    }
+
+    /// <summary>
+    /// Checks if a BTC→ARK chain swap is in a claimable state.
+    /// In VHTLC mode: trigger when server locks ARK (server.mempool/confirmed).
+    /// In fulmine mode: trigger when Boltz signals claim.pending (preimage-only claim is accepted).
+    /// We check both to cover both modes — TryClaimArkForChainSwap handles the mode decision.
+    /// </summary>
+    private static bool IsBtcToArkClaimableStatus(string status)
+    {
+        return status is "transaction.server.mempool" or "transaction.server.confirmed"
+            or "transaction.claim.pending";
     }
 
 
@@ -819,17 +832,22 @@ public class SwapsManagementService : IAsyncDisposable
             else
             {
                 // Fulmine mode: Boltz's fulmine handles the ARK VHTLC.
-                // We just reveal the preimage via the Boltz claim API.
-                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: fulmine mode, revealing preimage to Boltz");
+                // We need to check the current Boltz status — preimage-only claim is only
+                // accepted when status is "transaction.claim.pending".
+                var currentStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, cancellationToken);
+                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: fulmine mode, Boltz status='{currentStatus?.Status}'");
 
-                var claimRequest = new ChainClaimRequest
+                if (currentStatus?.Status != "transaction.claim.pending")
                 {
-                    Preimage = swap.Preimage
-                };
+                    Console.WriteLine($"[TryClaimArk] {swap.SwapId}: waiting for claim.pending (currently '{currentStatus?.Status}')");
+                    return;
+                }
 
+                // In claim.pending state, Boltz accepts preimage-only claim (no toSign required)
+                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: revealing preimage to Boltz (claim.pending)");
+                var claimRequest = new ChainClaimRequest { Preimage = swap.Preimage };
                 await _boltzClient.PostChainClaimAsync(swap.SwapId, claimRequest, cancellationToken);
-
-                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: preimage revealed to Boltz successfully");
+                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: preimage revealed successfully");
             }
         }
         catch (Exception ex)
@@ -877,10 +895,11 @@ public class SwapsManagementService : IAsyncDisposable
             var userPubKey = ecPrivKey.CreatePubKey();
             var boltzPubKey = ECPubKey.Create(Convert.FromHexString(claimDetails.ServerPublicKey));
 
-            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
-                claimDetails.SwapTree, userPubKey, boltzPubKey);
-
             var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+
+            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
+                claimDetails.SwapTree, userPubKey, boltzPubKey,
+                claimDetails.LockupAddress, serverInfo.Network);
             var btcDest = BitcoinAddress.Create(swap.BtcAddress!, serverInfo.Network);
 
             // Get the lockup transaction from Boltz's status response
