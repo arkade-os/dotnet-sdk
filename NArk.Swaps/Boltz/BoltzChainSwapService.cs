@@ -61,14 +61,19 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
         // Construct Ark VHTLC from claimDetails (Boltz locks this for us)
         var claimDetails = response.ClaimDetails
-            ?? throw new InvalidOperationException($"Chain swap {response.Id}: missing claim details (Ark side)");
+            ?? throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing claim details (Ark side). Raw: {SerializeResponse(response)}");
+
+        if (string.IsNullOrEmpty(claimDetails.ServerPublicKey))
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: claimDetails.serverPublicKey is null. Raw: {SerializeResponse(response)}");
 
         // The VHTLC uses Hash160 = RIPEMD160(SHA256(preimage))
         var hash160 = new uint160(Hashes.RIPEMD160(preimageHash), false);
 
         var vhtlcContract = new VHTLCContract(
             server: operatorTerms.SignerKey,
-            sender: KeyExtensions.ParseOutputDescriptor(claimDetails.ServerPublicKey!, operatorTerms.Network),
+            sender: KeyExtensions.ParseOutputDescriptor(claimDetails.ServerPublicKey, operatorTerms.Network),
             receiver: arkClaimDescriptor,
             preimage: preimage,
             refundLocktime: new LockTime(claimDetails.TimeoutBlockHeight),
@@ -153,14 +158,19 @@ internal class BoltzChainSwapService(BoltzClient boltzClient, IClientTransport c
 
         // Construct Ark VHTLC from lockupDetails (we lock our Ark here)
         var lockupDetails = response.LockupDetails
-            ?? throw new InvalidOperationException($"Chain swap {response.Id}: missing lockup details (Ark side)");
+            ?? throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing lockup details (Ark side). Raw: {SerializeResponse(response)}");
+
+        if (string.IsNullOrEmpty(lockupDetails.ServerPublicKey))
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: lockupDetails.serverPublicKey is null. Raw: {SerializeResponse(response)}");
 
         var hash160 = new uint160(Hashes.RIPEMD160(preimageHash), false);
 
         var vhtlcContract = new VHTLCContract(
             server: operatorTerms.SignerKey,
             sender: arkRefundDescriptor,
-            receiver: KeyExtensions.ParseOutputDescriptor(lockupDetails.ServerPublicKey!, operatorTerms.Network),
+            receiver: KeyExtensions.ParseOutputDescriptor(lockupDetails.ServerPublicKey, operatorTerms.Network),
             hash: hash160,
             refundLocktime: new LockTime(lockupDetails.TimeoutBlockHeight),
             unilateralClaimDelay: operatorTerms.UnilateralExit,
