@@ -19,11 +19,15 @@ public static class BtcHtlcScripts
     /// <param name="swapTree">The swap tree from Boltz containing claim and refund leaf scripts.</param>
     /// <param name="userKey">The user's public key (ECPubKey).</param>
     /// <param name="boltzKey">Boltz's public key (ECPubKey).</param>
+    /// <param name="expectedAddress">Optional expected address for validation.</param>
+    /// <param name="network">Optional network for address validation.</param>
     /// <returns>TaprootSpendInfo with the reconstructed Taproot tree.</returns>
     public static TaprootSpendInfo ReconstructTaprootSpendInfo(
         ChainSwapTree swapTree,
         ECPubKey userKey,
-        ECPubKey boltzKey)
+        ECPubKey boltzKey,
+        string? expectedAddress = null,
+        Network? network = null)
     {
         // Build the MuSig2 aggregate internal key from user + Boltz keys
         var internalKey = ComputeAggregateKey(userKey, boltzKey);
@@ -36,12 +40,45 @@ public static class BtcHtlcScripts
         var claimLeaf = new TapScript(claimScript, TapLeafVersion.C0);
         var refundLeaf = new TapScript(refundScript, TapLeafVersion.C0);
 
-        // Build the taproot tree: [claim, refund] — order matters for Merkle root
-        var builder = new TapScript[] { claimLeaf, refundLeaf }.WithTree();
-
         // Create TaprootSpendInfo with the aggregate internal key as X-only
         var taprootInternalKey = new TaprootInternalPubKey(internalKey.ToBytes());
-        return builder.Finalize(taprootInternalKey);
+
+        // Try [claim, refund] order first (standard Boltz ordering)
+        var spendInfo = new TapScript[] { claimLeaf, refundLeaf }.WithTree().Finalize(taprootInternalKey);
+
+        // If we have an expected address, validate and try alternative ordering if needed
+        if (expectedAddress != null && network != null)
+        {
+            if (ValidateAddress(spendInfo, expectedAddress, network))
+            {
+                Console.WriteLine($"[BtcHtlcScripts] Address validated with [claim, refund] order");
+                return spendInfo;
+            }
+
+            Console.WriteLine($"[BtcHtlcScripts] [claim, refund] order mismatch, trying [refund, claim]...");
+            var altSpendInfo = new TapScript[] { refundLeaf, claimLeaf }.WithTree().Finalize(taprootInternalKey);
+            if (ValidateAddress(altSpendInfo, expectedAddress, network))
+            {
+                Console.WriteLine($"[BtcHtlcScripts] Address validated with [refund, claim] order");
+                return altSpendInfo;
+            }
+
+            // Log diagnostic info for debugging
+            var addr1 = spendInfo.OutputPubKey.ScriptPubKey.GetDestinationAddress(network);
+            var addr2 = altSpendInfo.OutputPubKey.ScriptPubKey.GetDestinationAddress(network);
+            Console.WriteLine($"[BtcHtlcScripts] NEITHER order matches! Expected: {expectedAddress}");
+            Console.WriteLine($"[BtcHtlcScripts]   [claim,refund] → {addr1}");
+            Console.WriteLine($"[BtcHtlcScripts]   [refund,claim] → {addr2}");
+            Console.WriteLine($"[BtcHtlcScripts]   internalKey: {Convert.ToHexString(internalKey.ToBytes()).ToLowerInvariant()}");
+            Console.WriteLine($"[BtcHtlcScripts]   userKey: {Convert.ToHexString(userKey.ToBytes()).ToLowerInvariant()}");
+            Console.WriteLine($"[BtcHtlcScripts]   boltzKey: {Convert.ToHexString(boltzKey.ToBytes()).ToLowerInvariant()}");
+            Console.WriteLine($"[BtcHtlcScripts]   claimLeaf hash: {claimLeaf.LeafHash}");
+            Console.WriteLine($"[BtcHtlcScripts]   refundLeaf hash: {refundLeaf.LeafHash}");
+            Console.WriteLine($"[BtcHtlcScripts]   claimScript: {swapTree.ClaimLeaf.Output}");
+            Console.WriteLine($"[BtcHtlcScripts]   refundScript: {swapTree.RefundLeaf.Output}");
+        }
+
+        return spendInfo;
     }
 
     /// <summary>
