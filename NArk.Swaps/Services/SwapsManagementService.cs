@@ -245,6 +245,9 @@ public class SwapsManagementService : IAsyncDisposable
                 // Terminal states: nothing to do
                 if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled) continue;
 
+                if (swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc)
+                    Console.WriteLine($"[PollSwapState] {swap.SwapId}: Boltz='{swapStatus.Status}', local={swap.Status}, type={swap.SwapType}");
+
                 // If not refunded and status is refundable, start a coop refund
                 if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
                     IsRefundableStatus(swapStatus.Status))
@@ -260,8 +263,7 @@ public class SwapsManagementService : IAsyncDisposable
                 if (swap.SwapType is ArkSwapType.ChainBtcToArk &&
                     IsChainSwapClaimableStatus(swapStatus.Status))
                 {
-                    _logger?.LogInformation("Chain swap {SwapId}: server locked ARK ('{BoltzStatus}'), attempting VHTLC claim",
-                        idToPoll, swapStatus.Status);
+                    Console.WriteLine($"[PollSwapState] {swap.SwapId}: triggering TryClaimArkForChainSwap");
                     await TryClaimArkForChainSwap(swap, cancellationToken);
                 }
 
@@ -269,8 +271,7 @@ public class SwapsManagementService : IAsyncDisposable
                 if (swap.SwapType is ArkSwapType.ChainArkToBtc &&
                     IsChainSwapClaimableStatus(swapStatus.Status))
                 {
-                    _logger?.LogInformation("Chain swap {SwapId}: server locked BTC ('{BoltzStatus}'), attempting claim",
-                        idToPoll, swapStatus.Status);
+                    Console.WriteLine($"[PollSwapState] {swap.SwapId}: triggering TryClaimBtcForChainSwap");
                     await TryClaimBtcForChainSwap(swap, cancellationToken);
                 }
 
@@ -777,7 +778,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         if (string.IsNullOrEmpty(swap.Preimage))
         {
-            _logger?.LogWarning("Chain swap {SwapId}: missing preimage for ARK claim", swap.SwapId);
+            Console.WriteLine($"[TryClaimArk] {swap.SwapId}: missing preimage");
             return;
         }
 
@@ -789,16 +790,16 @@ public class SwapsManagementService : IAsyncDisposable
                 cancellationToken: cancellationToken);
             var contractEntity = contractEntities.FirstOrDefault(c => c.Type == VHTLCContract.ContractType);
 
+            Console.WriteLine($"[TryClaimArk] {swap.SwapId}: contractEntity={contractEntity?.Type}, contractScript={swap.ContractScript}");
+
             if (contractEntity != null)
             {
                 // Full VHTLC mode: claim by spending the VTXO with preimage (reveals preimage on-chain)
                 var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript],
                     cancellationToken: cancellationToken);
+                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: VHTLC mode, {vtxos.Count} VTXOs found");
                 if (vtxos.Count == 0)
-                {
-                    _logger?.LogDebug("Chain swap {SwapId}: no VTXOs yet on VHTLC contract, waiting", swap.SwapId);
                     return;
-                }
 
                 var selfContract = await _contractService.DeriveContract(swap.WalletId, NextContractPurpose.SendToSelf,
                     ContractActivityState.AwaitingFundsBeforeDeactivate,
@@ -811,14 +812,13 @@ public class SwapsManagementService : IAsyncDisposable
                     [new ArkTxOut(ArkTxOutType.Vtxo, totalAmount, selfContract.GetArkAddress())],
                     cancellationToken);
 
-                _logger?.LogInformation("Chain swap {SwapId}: ARK VHTLC claimed via Ark protocol", swap.SwapId);
+                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: ARK VHTLC claimed via Ark protocol");
             }
             else
             {
                 // Fulmine mode: Boltz's fulmine handles the ARK VHTLC.
                 // We just reveal the preimage via the Boltz claim API.
-                // Boltz will cooperatively claim both sides.
-                _logger?.LogInformation("Chain swap {SwapId}: revealing preimage to Boltz (fulmine mode)", swap.SwapId);
+                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: fulmine mode, revealing preimage to Boltz");
 
                 var claimRequest = new ChainClaimRequest
                 {
@@ -827,12 +827,12 @@ public class SwapsManagementService : IAsyncDisposable
 
                 await _boltzClient.PostChainClaimAsync(swap.SwapId, claimRequest, cancellationToken);
 
-                _logger?.LogInformation("Chain swap {SwapId}: preimage revealed to Boltz", swap.SwapId);
+                Console.WriteLine($"[TryClaimArk] {swap.SwapId}: preimage revealed to Boltz successfully");
             }
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Chain swap {SwapId}: error claiming ARK", swap.SwapId);
+            Console.WriteLine($"[TryClaimArk] {swap.SwapId}: ERROR: {ex}");
         }
     }
 
@@ -849,7 +849,7 @@ public class SwapsManagementService : IAsyncDisposable
             string.IsNullOrEmpty(swap.BoltzResponseJson) ||
             string.IsNullOrEmpty(swap.Preimage))
         {
-            _logger?.LogWarning("Chain swap {SwapId}: missing data for BTC claim", swap.SwapId);
+            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: missing data (ephKey={!string.IsNullOrEmpty(swap.EphemeralKeyHex)}, json={!string.IsNullOrEmpty(swap.BoltzResponseJson)}, preimage={!string.IsNullOrEmpty(swap.Preimage)})");
             return;
         }
 
@@ -858,14 +858,15 @@ public class SwapsManagementService : IAsyncDisposable
             var response = BoltzChainSwapService.DeserializeResponse(swap.BoltzResponseJson);
             if (response == null)
             {
-                _logger?.LogError("Chain swap {SwapId}: failed to deserialize Boltz response", swap.SwapId);
+                Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: failed to deserialize Boltz response");
                 return;
             }
 
             var claimDetails = response.ClaimDetails;
+            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: claimDetails: swapTree={claimDetails?.SwapTree != null}, serverPubKey={claimDetails?.ServerPublicKey}, lockupAddr={claimDetails?.LockupAddress}");
             if (claimDetails?.SwapTree == null || claimDetails.ServerPublicKey == null)
             {
-                _logger?.LogWarning("Chain swap {SwapId}: no BTC claim details available", swap.SwapId);
+                Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: no BTC claim details (swapTree or serverPublicKey is null), bailing");
                 return;
             }
 
@@ -882,9 +883,10 @@ public class SwapsManagementService : IAsyncDisposable
 
             // Get the lockup transaction from Boltz's status response
             var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, cancellationToken);
+            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: swapStatus={swapStatus?.Status}, txHex={swapStatus?.Transaction?.Hex?.Length ?? 0} chars");
             if (swapStatus?.Transaction?.Hex == null)
             {
-                _logger?.LogWarning("Chain swap {SwapId}: lockup transaction hex not yet available", swap.SwapId);
+                Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: lockup tx hex not yet available");
                 return;
             }
 
@@ -901,10 +903,10 @@ public class SwapsManagementService : IAsyncDisposable
                 }
             }
 
+            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: lockup tx has {lockupTx.Outputs.Count} outputs, matched vout={vout}");
             if (vout < 0)
             {
-                _logger?.LogError("Chain swap {SwapId}: no output matching HTLC address {Address} in lockup tx",
-                    swap.SwapId, claimDetails.LockupAddress);
+                Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: no output matching HTLC address {claimDetails.LockupAddress}");
                 return;
             }
 
@@ -915,6 +917,7 @@ public class SwapsManagementService : IAsyncDisposable
             var feeSats = 250L;
             var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, feeSats);
 
+            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: attempting MuSig2 cooperative claim...");
             // Cooperative MuSig2 claim
             var signedTx = await _chainSwapMusig.CooperativeClaimAsync(
                 swap.SwapId, swap.Preimage, unsignedClaimTx, prevOut, 0,
@@ -924,8 +927,7 @@ public class SwapsManagementService : IAsyncDisposable
             var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(
                 new BroadcastRequest { Hex = signedTx.ToHex() }, cancellationToken);
 
-            _logger?.LogInformation("Chain swap {SwapId}: BTC claimed, txid={TxId}",
-                swap.SwapId, broadcastResult.Id);
+            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: BTC claimed! txid={broadcastResult.Id}");
 
             await _swapsStorage.SaveSwap(swap.WalletId,
                 swap with { Status = ArkSwapStatus.Settled, UpdatedAt = DateTimeOffset.UtcNow },
@@ -933,7 +935,7 @@ public class SwapsManagementService : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Chain swap {SwapId}: error attempting BTC claim", swap.SwapId);
+            Console.WriteLine($"[TryClaimBtc] {swap.SwapId}: ERROR: {ex}");
         }
     }
 

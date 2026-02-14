@@ -82,6 +82,7 @@ public class ChainSwapTests
         var settledSwapTcs = new TaskCompletionSource();
         swapStorage.SwapsChanged += (sender, swap) =>
         {
+            Console.WriteLine($"[BTC→ARK] SwapsChanged: {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
             if (swap.Status == ArkSwapStatus.Settled)
                 settledSwapTcs.TrySetResult();
         };
@@ -95,6 +96,7 @@ public class ChainSwapTests
             CancellationToken.None
         );
 
+        Console.WriteLine($"[BTC→ARK] Swap created: {swapId}, BTC lockup: {btcAddress}");
         Assert.That(btcAddress, Is.Not.Null.And.Not.Empty);
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
@@ -102,12 +104,25 @@ public class ChainSwapTests
         var sendResult = await Cli.Wrap("docker")
             .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, "0.001"])
             .ExecuteBufferedAsync();
+        Console.WriteLine($"[BTC→ARK] sendtoaddress result: exit={sendResult.ExitCode}, stdout={sendResult.StandardOutput.Trim()}, stderr={sendResult.StandardError.Trim()}");
         Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
 
         // Mine blocks periodically so Boltz confirms the BTC lockup, locks ARK, and we claim
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < 15; i++)
         {
             await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+
+            // Poll Boltz status directly to trace progress
+            try
+            {
+                var status = await boltzClient.GetSwapStatusAsync(swapId, CancellationToken.None);
+                Console.WriteLine($"[BTC→ARK] Mine round {i}: Boltz status = {status?.Status}, tx = {status?.Transaction?.Hex?.Substring(0, Math.Min(20, status?.Transaction?.Hex?.Length ?? 0))}...");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[BTC→ARK] Mine round {i}: status poll error: {ex.Message}");
+            }
+
             if (settledSwapTcs.Task.IsCompleted) break;
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
@@ -158,6 +173,7 @@ public class ChainSwapTests
         var settledSwapTcs = new TaskCompletionSource();
         swapStorage.SwapsChanged += (sender, swap) =>
         {
+            Console.WriteLine($"[ARK→BTC] SwapsChanged: {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
             if (swap.Status == ArkSwapStatus.Settled)
                 settledSwapTcs.TrySetResult();
         };
@@ -169,21 +185,44 @@ public class ChainSwapTests
             .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
             .ExecuteBufferedAsync();
         var btcDestination = BitcoinAddress.Create(addrResult.StandardOutput.Trim(), Network.RegTest);
+        Console.WriteLine($"[ARK→BTC] BTC destination: {btcDestination}");
 
         // Create ARK→BTC chain swap
-        var swapId = await swapMgr.InitiateArkToBtcChainSwap(
-            testingPrerequisite.walletIdentifier,
-            50000,
-            btcDestination,
-            CancellationToken.None
-        );
+        string swapId;
+        try
+        {
+            swapId = await swapMgr.InitiateArkToBtcChainSwap(
+                testingPrerequisite.walletIdentifier,
+                50000,
+                btcDestination,
+                CancellationToken.None
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ARK→BTC] InitiateArkToBtcChainSwap FAILED: {ex}");
+            throw;
+        }
 
+        Console.WriteLine($"[ARK→BTC] Swap created: {swapId}");
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
         // Mine blocks periodically so Boltz sees the Ark lockup, locks BTC, and we MuSig2-claim
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < 15; i++)
         {
             await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+
+            // Poll Boltz status directly to trace progress
+            try
+            {
+                var status = await boltzClient.GetSwapStatusAsync(swapId, CancellationToken.None);
+                Console.WriteLine($"[ARK→BTC] Mine round {i}: Boltz status = {status?.Status}, tx = {status?.Transaction?.Hex?.Substring(0, Math.Min(20, status?.Transaction?.Hex?.Length ?? 0))}...");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ARK→BTC] Mine round {i}: status poll error: {ex.Message}");
+            }
+
             if (settledSwapTcs.Task.IsCompleted) break;
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
