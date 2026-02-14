@@ -140,17 +140,40 @@ public class BoltzLimitsValidator
     }
 
     /// <summary>
-    /// Gets all limits for both submarine and reverse swaps in a single object.
+    /// Gets the current limits for chain swaps.
+    /// </summary>
+    /// <param name="isBtcToArk">True for BTC→ARK, false for ARK→BTC.</param>
+    public async Task<BoltzLimits?> GetChainLimitsAsync(bool isBtcToArk, CancellationToken cancellationToken = default)
+    {
+        var pairs = await _cachedClient.GetChainPairsAsync(cancellationToken);
+
+        var pairDetails = isBtcToArk
+            ? pairs?.BTC?.ARK
+            : pairs?.ARK?.BTC;
+
+        if (pairDetails == null) return null;
+
+        return new BoltzLimits(
+            pairDetails.Limits.Minimal,
+            pairDetails.Limits.Maximal,
+            pairDetails.Fees.Percentage / 100m,
+            pairDetails.Fees.MinerFees.User.Lockup + pairDetails.Fees.MinerFees.Server);
+    }
+
+    /// <summary>
+    /// Gets all limits for submarine, reverse, and chain swaps in a single object.
     /// </summary>
     public async Task<BoltzAllLimits?> GetAllLimitsAsync(CancellationToken cancellationToken = default)
     {
         var submarineTask = _cachedClient.GetSubmarinePairsAsync(cancellationToken);
         var reverseTask = _cachedClient.GetReversePairsAsync(cancellationToken);
+        var chainTask = _cachedClient.GetChainPairsAsync(cancellationToken);
 
-        await Task.WhenAll(submarineTask, reverseTask);
+        await Task.WhenAll(submarineTask, reverseTask, chainTask);
 
         var submarinePairs = await submarineTask;
         var reversePairs = await reverseTask;
+        var chainPairs = await chainTask;
 
         if (submarinePairs?.ARK?.BTC == null || reversePairs?.BTC?.ARK == null)
         {
@@ -158,7 +181,7 @@ public class BoltzLimitsValidator
             return null;
         }
 
-        return new BoltzAllLimits
+        var limits = new BoltzAllLimits
         {
             // Submarine: Ark → Lightning (sending)
             SubmarineMinAmount = submarinePairs.ARK.BTC.Limits?.Minimal ?? 0,
@@ -174,6 +197,27 @@ public class BoltzLimitsValidator
 
             FetchedAt = DateTimeOffset.UtcNow
         };
+
+        // Chain: BTC ↔ ARK (optional — may not be supported)
+        var btcToArk = chainPairs?.BTC?.ARK;
+        if (btcToArk != null)
+        {
+            limits.ChainBtcToArkMinAmount = btcToArk.Limits.Minimal;
+            limits.ChainBtcToArkMaxAmount = btcToArk.Limits.Maximal;
+            limits.ChainBtcToArkFeePercentage = btcToArk.Fees.Percentage / 100m;
+            limits.ChainBtcToArkMinerFee = btcToArk.Fees.MinerFees.User.Lockup + btcToArk.Fees.MinerFees.Server;
+        }
+
+        var arkToBtc = chainPairs?.ARK?.BTC;
+        if (arkToBtc != null)
+        {
+            limits.ChainArkToBtcMinAmount = arkToBtc.Limits.Minimal;
+            limits.ChainArkToBtcMaxAmount = arkToBtc.Limits.Maximal;
+            limits.ChainArkToBtcFeePercentage = arkToBtc.Fees.Percentage / 100m;
+            limits.ChainArkToBtcMinerFee = arkToBtc.Fees.MinerFees.User.Lockup + arkToBtc.Fees.MinerFees.Server;
+        }
+
+        return limits;
     }
 
     private async Task<(long? Min, long? Max, string SwapType)> GetLimitsInternalAsync(
@@ -236,7 +280,7 @@ public record BoltzLimits(
     long MinerFee);
 
 /// <summary>
-/// Combined Boltz limits for both submarine and reverse swaps.
+/// Combined Boltz limits for submarine, reverse, and chain swaps.
 /// </summary>
 public class BoltzAllLimits
 {
@@ -251,6 +295,21 @@ public class BoltzAllLimits
     public long ReverseMaxAmount { get; init; }
     public decimal ReverseFeePercentage { get; init; }
     public long ReverseMinerFee { get; init; }
+
+    /// <summary>Chain swap limits (BTC → ARK, on-chain to Ark)</summary>
+    public long? ChainBtcToArkMinAmount { get; set; }
+    public long? ChainBtcToArkMaxAmount { get; set; }
+    public decimal? ChainBtcToArkFeePercentage { get; set; }
+    public long? ChainBtcToArkMinerFee { get; set; }
+
+    /// <summary>Chain swap limits (ARK → BTC, Ark to on-chain)</summary>
+    public long? ChainArkToBtcMinAmount { get; set; }
+    public long? ChainArkToBtcMaxAmount { get; set; }
+    public decimal? ChainArkToBtcFeePercentage { get; set; }
+    public long? ChainArkToBtcMinerFee { get; set; }
+
+    /// <summary>Whether chain swaps are available.</summary>
+    public bool ChainSwapsAvailable => ChainBtcToArkMinAmount.HasValue || ChainArkToBtcMinAmount.HasValue;
 
     public DateTimeOffset FetchedAt { get; init; }
 }
