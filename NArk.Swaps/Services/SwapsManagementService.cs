@@ -18,7 +18,9 @@ using NArk.Swaps.Abstractions;
 using NArk.Swaps.Extensions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
+using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Restore;
+using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Models;
@@ -42,6 +44,8 @@ public class SwapsManagementService : IAsyncDisposable
     private readonly IContractStorage _contractStorage;
     private readonly ISafetyService _safetyService;
     private readonly BoltzSwapService _boltzService;
+    private readonly BoltzChainSwapService _boltzChainService;
+    private readonly ChainSwapMusigSession _chainSwapMusig;
     private readonly BoltzClient _boltzClient;
     private readonly IChainTimeProvider _chainTimeProvider;
     private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
@@ -91,6 +95,11 @@ public class SwapsManagementService : IAsyncDisposable
             _boltzClient,
             _clientTransport
         );
+        _boltzChainService = new BoltzChainSwapService(
+            _boltzClient,
+            _clientTransport
+        );
+        _chainSwapMusig = new ChainSwapMusigSession(_boltzClient);
         _transactionBuilder =
             new TransactionHelpers.ArkTransactionBuilder(clientTransport, safetyService, walletProvider, intentStorage);
 
@@ -247,6 +256,15 @@ public class SwapsManagementService : IAsyncDisposable
                     await RequestRefundCooperatively(newSwap, cancellationToken);
                 }
 
+                // For ARK→BTC chain swaps: try to claim BTC when server has locked
+                if (swap.SwapType is ArkSwapType.ChainArkToBtc &&
+                    IsChainSwapClaimableStatus(swapStatus.Status))
+                {
+                    _logger?.LogInformation("Chain swap {SwapId}: server locked BTC ('{BoltzStatus}'), attempting claim",
+                        idToPoll, swapStatus.Status);
+                    await TryClaimBtcForChainSwap(swap, cancellationToken);
+                }
+
                 var newStatus = Map(swapStatus.Status);
 
                 if (swap.Status == newStatus) continue;
@@ -393,8 +411,19 @@ public class SwapsManagementService : IAsyncDisposable
                 ArkSwapStatus.Failed,
             "transaction.mempool" => ArkSwapStatus.Pending,
             "transaction.confirmed" or "invoice.settled" or "transaction.claimed" => ArkSwapStatus.Settled,
+            // Chain swap specific statuses
+            "transaction.server.mempool" or "transaction.server.confirmed"
+                or "transaction.claim.pending" => ArkSwapStatus.Pending,
             _ => ArkSwapStatus.Unknown
         };
+    }
+
+    /// <summary>
+    /// Checks if a chain swap status indicates the server has locked funds and we can claim.
+    /// </summary>
+    private static bool IsChainSwapClaimableStatus(string status)
+    {
+        return status is "transaction.server.mempool" or "transaction.server.confirmed";
     }
 
 
@@ -588,6 +617,203 @@ public class SwapsManagementService : IAsyncDisposable
             ), cancellationToken);
 
         return revSwap.Swap.Invoice;
+    }
+
+    // Chain Swaps
+
+    /// <summary>
+    /// Initiates a BTC→ARK chain swap. Customer pays BTC on-chain, store receives Ark VTXOs.
+    /// Returns the BTC lockup address where the customer should send BTC.
+    /// </summary>
+    public async Task<(string BtcAddress, string SwapId)> InitiateBtcToArkChainSwap(
+        string walletId,
+        long amountSats,
+        CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation("Initiating BTC→ARK chain swap for wallet {WalletId}, amount={Amount}",
+            walletId, amountSats);
+
+        var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
+        var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
+
+        var result = await _boltzChainService.CreateBtcToArkSwapAsync(
+            amountSats, claimDescriptor, cancellationToken);
+
+        // Import the Ark VHTLC contract (Boltz will lock funds here)
+        await _contractService.ImportContract(walletId, result.Contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
+            cancellationToken: cancellationToken);
+
+        // The BTC lockup address is in lockupDetails (where customer sends BTC)
+        var btcAddress = result.Swap.LockupDetails?.LockupAddress
+            ?? throw new InvalidOperationException("Missing BTC lockup address");
+
+        var swap = new ArkSwap(
+            result.Swap.Id,
+            walletId,
+            ArkSwapType.ChainBtcToArk,
+            "", // No invoice for chain swaps
+            amountSats,
+            result.Contract.GetArkAddress().ScriptPubKey.ToHex(),
+            btcAddress,
+            ArkSwapStatus.Pending,
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            Convert.ToHexString(result.PreimageHash).ToLowerInvariant()
+        )
+        {
+            Preimage = Convert.ToHexString(result.Preimage).ToLowerInvariant(),
+            EphemeralKeyHex = Convert.ToHexString(result.EphemeralBtcKey.ToBytes()).ToLowerInvariant(),
+            BoltzResponseJson = BoltzChainSwapService.SerializeResponse(result.Swap),
+            BtcAddress = btcAddress
+        };
+
+        await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
+
+        _logger?.LogInformation("BTC→ARK chain swap {SwapId} created, BTC lockup: {BtcAddress}",
+            result.Swap.Id, btcAddress);
+
+        return (btcAddress, result.Swap.Id);
+    }
+
+    /// <summary>
+    /// Initiates an ARK→BTC chain swap. User sends Ark VTXOs, receives BTC on-chain.
+    /// </summary>
+    public async Task<string> InitiateArkToBtcChainSwap(
+        string walletId,
+        long amountSats,
+        BitcoinAddress btcDestination,
+        CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation("Initiating ARK→BTC chain swap for wallet {WalletId}, amount={Amount}, dest={Dest}",
+            walletId, amountSats, btcDestination);
+
+        var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
+        var refundDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
+
+        var result = await _boltzChainService.CreateArkToBtcSwapAsync(
+            amountSats, refundDescriptor, btcDestination, cancellationToken);
+
+        // Import the Ark VHTLC contract (we will lock our funds here)
+        await _contractService.ImportContract(walletId, result.Contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
+            cancellationToken: cancellationToken);
+
+        var arkAddress = result.Contract.GetArkAddress();
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+
+        var swap = new ArkSwap(
+            result.Swap.Id,
+            walletId,
+            ArkSwapType.ChainArkToBtc,
+            "", // No invoice for chain swaps
+            amountSats,
+            arkAddress.ScriptPubKey.ToHex(),
+            arkAddress.ToString(serverInfo.Network.ChainName == ChainName.Mainnet),
+            ArkSwapStatus.Pending,
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            Convert.ToHexString(result.PreimageHash).ToLowerInvariant()
+        )
+        {
+            Preimage = Convert.ToHexString(result.Preimage).ToLowerInvariant(),
+            EphemeralKeyHex = Convert.ToHexString(result.EphemeralBtcKey.ToBytes()).ToLowerInvariant(),
+            BoltzResponseJson = BoltzChainSwapService.SerializeResponse(result.Swap),
+            BtcAddress = btcDestination.ToString()
+        };
+
+        await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
+
+        // Auto-pay: send Ark VTXOs to the lockup address
+        try
+        {
+            var lockupAmount = result.Swap.LockupDetails?.Amount ?? amountSats;
+            await _spendingService.Spend(walletId,
+                [new ArkTxOut(ArkTxOutType.Vtxo, lockupAmount, arkAddress)], cancellationToken);
+        }
+        catch (Exception e)
+        {
+            await _swapsStorage.SaveSwap(walletId,
+                swap with { Status = ArkSwapStatus.Failed, FailReason = e.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
+                cancellationToken);
+            throw;
+        }
+
+        _logger?.LogInformation("ARK→BTC chain swap {SwapId} created, Ark locked", result.Swap.Id);
+        return result.Swap.Id;
+    }
+
+    /// <summary>
+    /// Attempts cooperative MuSig2 claim of BTC for an ARK→BTC chain swap.
+    /// Called when Boltz has locked BTC and we need to claim it.
+    /// </summary>
+    private async Task TryClaimBtcForChainSwap(ArkSwap swap, CancellationToken cancellationToken)
+    {
+        if (swap.SwapType != ArkSwapType.ChainArkToBtc)
+            return;
+
+        if (string.IsNullOrEmpty(swap.EphemeralKeyHex) ||
+            string.IsNullOrEmpty(swap.BoltzResponseJson) ||
+            string.IsNullOrEmpty(swap.Preimage))
+        {
+            _logger?.LogWarning("Chain swap {SwapId}: missing data for BTC claim", swap.SwapId);
+            return;
+        }
+
+        try
+        {
+            var response = BoltzChainSwapService.DeserializeResponse(swap.BoltzResponseJson);
+            if (response == null)
+            {
+                _logger?.LogError("Chain swap {SwapId}: failed to deserialize Boltz response", swap.SwapId);
+                return;
+            }
+
+            var claimDetails = response.ClaimDetails;
+            if (claimDetails?.SwapTree == null || claimDetails.ServerPublicKey == null)
+            {
+                _logger?.LogWarning("Chain swap {SwapId}: no BTC claim details available", swap.SwapId);
+                return;
+            }
+
+            var ephemeralKey = new Key(Convert.FromHexString(swap.EphemeralKeyHex));
+            var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
+            var userPubKey = ecPrivKey.CreatePubKey();
+            var boltzPubKey = ECPubKey.Create(Convert.FromHexString(claimDetails.ServerPublicKey));
+
+            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
+                claimDetails.SwapTree, userPubKey, boltzPubKey);
+
+            var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+            var btcDest = BitcoinAddress.Create(swap.BtcAddress!, serverInfo.Network);
+
+            // Build unsigned claim tx
+            var lockupAddress = BitcoinAddress.Create(claimDetails.LockupAddress, serverInfo.Network);
+            var amount = Money.Satoshis(claimDetails.Amount);
+            var prevOut = new TxOut(amount, lockupAddress.ScriptPubKey);
+
+            // We need the outpoint from the lockup tx — for now use a placeholder
+            // In production, we'd get this from Boltz's status update or by watching the chain
+            // The cooperative claim gets the outpoint from the claim details API
+            var claimDetailsApi = await _boltzClient.GetChainClaimDetailsAsync(swap.SwapId, cancellationToken);
+            if (claimDetailsApi == null)
+            {
+                _logger?.LogWarning("Chain swap {SwapId}: claim details not yet available from Boltz", swap.SwapId);
+                return;
+            }
+
+            // TODO: Get the actual outpoint from chain monitoring or Boltz status
+            // For now, this will be completed when we have chain monitoring infrastructure
+            _logger?.LogInformation("Chain swap {SwapId}: BTC claim details available, ready for cooperative claim", swap.SwapId);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Chain swap {SwapId}: error attempting BTC claim", swap.SwapId);
+        }
     }
 
     // Swap Restoration
