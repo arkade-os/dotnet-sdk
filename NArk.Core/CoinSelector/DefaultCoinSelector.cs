@@ -83,6 +83,67 @@ public class DefaultCoinSelector : ICoinSelector
     }
 
     /// <summary>
+    /// Asset-aware coin selection. First selects coins carrying required assets,
+    /// then fills remaining BTC from plain coins using the standard selection logic.
+    /// </summary>
+    public IReadOnlyCollection<ArkCoin> SelectCoins(
+        List<ArkCoin> availableCoins,
+        Money targetBtcAmount,
+        IReadOnlyList<AssetRequirement> assetRequirements,
+        Money dustThreshold,
+        int currentSubDustOutputs)
+    {
+        if (assetRequirements.Count == 0)
+            return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs);
+
+        var selected = new HashSet<ArkCoin>(ReferenceEqualityComparer.Instance);
+        var btcFromAssetCoins = Money.Zero;
+
+        foreach (var requirement in assetRequirements)
+        {
+            var assetCoins = availableCoins
+                .Where(c => !selected.Contains(c) && c.Assets is { Count: > 0 } assets
+                    && assets.Any(a => a.AssetId == requirement.AssetId))
+                .OrderBy(c => c.Assets!.First(a => a.AssetId == requirement.AssetId).Amount)
+                .ToList();
+
+            var assetTotal = 0UL;
+            foreach (var coin in assetCoins)
+            {
+                if (assetTotal >= requirement.Amount)
+                    break;
+
+                selected.Add(coin);
+                btcFromAssetCoins += coin.TxOut.Value;
+                assetTotal += coin.Assets!.First(a => a.AssetId == requirement.AssetId).Amount;
+            }
+
+            if (assetTotal < requirement.Amount)
+                throw new NotEnoughFundsException(
+                    $"Not enough {requirement.AssetId} funds: have {assetTotal}, need {requirement.Amount}",
+                    null, Money.Zero);
+        }
+
+        var remainingBtc = targetBtcAmount - btcFromAssetCoins;
+        if (remainingBtc <= Money.Zero)
+            return selected.ToList();
+
+        var remainingCoins = availableCoins.Where(c => !selected.Contains(c)).ToList();
+        if (remainingCoins.Count == 0 || remainingCoins.Sum(c => c.TxOut.Value) < remainingBtc)
+        {
+            if (selected.Sum(c => c.TxOut.Value) >= targetBtcAmount)
+                return selected.ToList();
+            throw new NotEnoughFundsException("Not enough BTC funds to create transaction", null, remainingBtc);
+        }
+
+        var btcSelected = SelectCoins(remainingCoins, remainingBtc, dustThreshold, currentSubDustOutputs);
+        foreach (var coin in btcSelected)
+            selected.Add(coin);
+
+        return selected.ToList();
+    }
+
+    /// <summary>
     /// Attempts to find a better coin combination that avoids subdust change
     /// </summary>
     private List<ArkCoin>? TryFindBetterCombination(
