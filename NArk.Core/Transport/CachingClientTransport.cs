@@ -150,4 +150,7 @@ public class CachingClientTransport : IClientTransport
 
     public IAsyncEnumerable<BatchEvent> GetEventStreamAsync(GetEventStreamRequest req, CancellationToken cancellationToken)
         => _inner.GetEventStreamAsync(req, cancellationToken);
+
+    public Task<ArkAssetDetails> GetAssetDetailsAsync(string assetId, CancellationToken cancellationToken = default)
+        => _inner.GetAssetDetailsAsync(assetId, cancellationToken);
 }

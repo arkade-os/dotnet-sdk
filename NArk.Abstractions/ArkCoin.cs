@@ -2,6 +2,7 @@ using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Scripts;
+using NArk.Abstractions.VTXOs;
 using NBitcoin;
 using NBitcoin.Scripting;
 
@@ -21,7 +22,8 @@ public class ArkCoin : Coin
         WitScript? spendingConditionWitness,
         LockTime? lockTime,
         Sequence? sequence,
-        bool swept) : base(outPoint, txOut)
+        bool swept,
+        IReadOnlyList<VtxoAsset>? assets = null) : base(outPoint, txOut)
     {
         //FIXME: every place where this is instantiated, it should check that the coin is unspent
         WalletIdentifier = walletIdentifier;
@@ -35,6 +37,7 @@ public class ArkCoin : Coin
         LockTime = lockTime;
         Sequence = sequence;
         Swept = swept;
+        Assets = assets;
 
         if (sequence is null && spendingScriptBuilder.BuildScript().Contains(OpcodeType.OP_CHECKSEQUENCEVERIFY))
         {
@@ -44,7 +47,7 @@ public class ArkCoin : Coin
 
     public ArkCoin(ArkCoin other) : this(
         other.WalletIdentifier, other.Contract, other.Birth, other.ExpiresAt, other.ExpiresAtHeight, other.Outpoint.Clone(), other.TxOut.Clone(), other.SignerDescriptor,
-        other.SpendingScriptBuilder, other.SpendingConditionWitness?.Clone(), other.LockTime, other.Sequence, other.Swept)
+        other.SpendingScriptBuilder, other.SpendingConditionWitness?.Clone(), other.LockTime, other.Sequence, other.Swept, other.Assets)
     {
     }
 
@@ -59,6 +62,7 @@ public class ArkCoin : Coin
     public LockTime? LockTime { get; }
     public Sequence? Sequence { get; }
     public bool Swept { get; }
+    public IReadOnlyList<VtxoAsset>? Assets { get; }
 
     public TapScript SpendingScript => SpendingScriptBuilder.Build();
 
