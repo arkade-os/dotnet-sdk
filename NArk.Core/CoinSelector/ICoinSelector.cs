@@ -11,4 +11,11 @@ public interface ICoinSelector
         Money targetAmount,
         Money dustThreshold,
         int currentSubDustOutputs);
+
+    IReadOnlyCollection<ArkCoin> SelectCoins(
+        List<ArkCoin> availableCoins,
+        Money targetBtcAmount,
+        IReadOnlyList<AssetRequirement> assetRequirements,
+        Money dustThreshold,
+        int currentSubDustOutputs);
 }
