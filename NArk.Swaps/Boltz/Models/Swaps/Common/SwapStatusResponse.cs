@@ -7,6 +7,14 @@ public class SwapStatusResponse
     [JsonPropertyName("status")]
     public required string Status { get; set; }
 
+    [JsonPropertyName("failureReason")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FailureReason { get; set; }
+
+    [JsonPropertyName("failureDetails")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FailureDetails { get; set; }
+
     [JsonPropertyName("transaction")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SwapStatusTransaction? Transaction { get; set; }

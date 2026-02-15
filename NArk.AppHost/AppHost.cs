@@ -41,7 +41,8 @@ var bitcoin =
             return new ExecuteCommandResult() { Success = true };
         })
         .WithVolume("nark-bitcoind", target: "/data/.bitcoin")
-        .WithContainerFiles("/data/.bitcoin/", "Assets/bitcoin.conf");
+        .WithContainerFiles("/data/.bitcoin/", "Assets/bitcoin.conf")
+        .WithArgs("-datadir=/data/.bitcoin", "-minrelaytxfee=0", "-mintxfee=0", "-paytxfee=0.00002");
 
 var electrs =
     builder
