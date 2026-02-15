@@ -54,7 +54,10 @@ public partial class GrpcClientTransport
                         Preconfirmed: vtxo.IsPreconfirmed,
                         Unrolled: vtxo.IsUnrolled,
                         CommitmentTxids: vtxo.CommitmentTxids.ToList(),
-                        ArkTxid: string.IsNullOrEmpty(vtxo.ArkTxid) ? null : vtxo.ArkTxid
+                        ArkTxid: string.IsNullOrEmpty(vtxo.ArkTxid) ? null : vtxo.ArkTxid,
+                        Assets: vtxo.Assets.Count > 0
+                            ? vtxo.Assets.Select(a => new VtxoAsset(a.AssetId, a.Amount)).ToList()
+                            : null
                     );
                 }
 
