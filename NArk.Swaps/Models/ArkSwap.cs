@@ -17,24 +17,22 @@ public record ArkSwap(
     string Hash)
 {
     /// <summary>
-    /// Preimage hex for chain swaps (needed for claiming).
+    /// Flexible key-value metadata for swap-type-specific data.
+    /// Chain swaps store preimage, ephemeral key, Boltz response, BTC address, etc.
     /// </summary>
-    public string? Preimage { get; init; }
+    public Dictionary<string, string>? Metadata { get; init; }
+}
 
-    /// <summary>
-    /// Ephemeral EC private key hex for BTC-side MuSig2 operations in chain swaps.
-    /// </summary>
-    public string? EphemeralKeyHex { get; init; }
-
-    /// <summary>
-    /// Serialized Boltz response JSON for recovery/debugging.
-    /// </summary>
-    public string? BoltzResponseJson { get; init; }
-
-    /// <summary>
-    /// BTC lockup address for chain swaps (either user's lockup or server's lockup).
-    /// </summary>
-    public string? BtcAddress { get; init; }
+/// <summary>
+/// Well-known metadata keys for chain swaps.
+/// </summary>
+public static class SwapMetadata
+{
+    public const string Preimage = "preimage";
+    public const string EphemeralKey = "ephemeralKey";
+    public const string BoltzResponse = "boltzResponse";
+    public const string BtcAddress = "btcAddress";
+    public const string CrossSigned = "crossSigned";
 }
 
 /// <summary>
@@ -68,4 +66,8 @@ public static class SwapExtensions
         return swapStatus is ArkSwapStatus.Pending or ArkSwapStatus.Unknown;
     }
 
+    public static string? Get(this ArkSwap swap, string key)
+    {
+        return swap.Metadata?.TryGetValue(key, out var value) == true ? value : null;
+    }
 }

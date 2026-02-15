@@ -22,12 +22,7 @@ public partial class BoltzClient
     /// </summary>
     public virtual async Task<ChainResponse> CreateChainSwapAsync(ChainRequest request, CancellationToken cancellation = default)
     {
-        var resp = await _httpClient.PostAsJsonAsync("v2/swap/chain", request, JsonOptions, cancellation);
-        var rawJson = await resp.Content.ReadAsStringAsync(cancellation);
-        Console.WriteLine($"[BoltzClient] POST v2/swap/chain raw response: {rawJson}");
-        if (!resp.IsSuccessStatusCode)
-            throw new HttpRequestException(rawJson, null, resp.StatusCode);
-        return System.Text.Json.JsonSerializer.Deserialize<ChainResponse>(rawJson, JsonOptions)!;
+        return await PostAsJsonAsync<ChainRequest, ChainResponse>("v2/swap/chain", request, cancellation);
     }
 
     // Chain Swap Claiming (MuSig2 cooperative)
@@ -54,6 +49,21 @@ public partial class BoltzClient
     public virtual async Task<PartialSignatureData?> PostChainClaimAsync(string swapId, ChainClaimRequest request, CancellationToken cancellation = default)
     {
         return await PostAsJsonAsync<ChainClaimRequest, PartialSignatureData?>($"v2/swap/chain/{swapId}/claim", request, cancellation);
+    }
+
+    /// <summary>
+    /// Submits only a cross-signature for Boltz to claim the user's BTC lockup.
+    /// Used for BTC→ARK chain swaps where we don't need a response signature.
+    /// Boltz returns an empty body on success.
+    /// </summary>
+    public virtual async Task PostChainClaimCrossSignatureAsync(string swapId, ChainClaimRequest request, CancellationToken cancellation = default)
+    {
+        var resp = await _httpClient.PostAsJsonAsync($"v2/swap/chain/{swapId}/claim", request, JsonOptions, cancellation);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var body = await resp.Content.ReadAsStringAsync(cancellation);
+            throw new HttpRequestException($"POST chain/{swapId}/claim cross-sign failed ({resp.StatusCode}): {body}", null, resp.StatusCode);
+        }
     }
 
     // Chain Swap Refunding

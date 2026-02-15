@@ -34,9 +34,13 @@ public class ChainSwapData
 
     /// <summary>
     /// VHTLC timeout block heights (ARK side returns this object with multiple values).
+    /// Boltz uses "timeoutBlockHeights" for BTC and "timeouts" for ARK — we accept both.
     /// </summary>
     [JsonPropertyName("timeoutBlockHeights")]
     public TimeoutBlockHeights? TimeoutBlockHeights { get; set; }
+
+    [JsonPropertyName("timeouts")]
+    public TimeoutBlockHeights? Timeouts { get; set; }
 
     [JsonPropertyName("amount")]
     public long Amount { get; set; }

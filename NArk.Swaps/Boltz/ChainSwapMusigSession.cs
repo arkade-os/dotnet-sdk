@@ -107,6 +107,63 @@ public class ChainSwapMusigSession(BoltzClient boltzClient)
     }
 
     /// <summary>
+    /// Provides a cooperative MuSig2 cross-signature so Boltz can claim the user's BTC lockup
+    /// via key-path spend. Used for BTC→ARK chain swaps after the user has already claimed
+    /// the ARK VTXOs (status: transaction.claim.pending).
+    ///
+    /// Unlike CooperativeClaimAsync (which also builds our own claim tx), this method only
+    /// cross-signs Boltz's transaction hash — we don't need to claim BTC ourselves.
+    /// </summary>
+    /// <param name="swapId">The Boltz swap ID.</param>
+    /// <param name="userEcPrivKey">Our ephemeral EC private key for this swap.</param>
+    /// <param name="boltzPubKey">Boltz's public key from the swap response.</param>
+    /// <param name="spendInfo">TaprootSpendInfo for the HTLC (needed for Merkle root tweak).</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task CrossSignBoltzClaimAsync(
+        string swapId,
+        ECPrivKey userEcPrivKey,
+        ECPubKey boltzPubKey,
+        TaprootSpendInfo spendInfo,
+        CancellationToken ct = default)
+    {
+        var userPubKey = userEcPrivKey.CreatePubKey();
+        // Boltz always uses [boltzKey, userKey] order — no sorting (BIP327 KeyAgg is order-dependent)
+        var cosignerKeys = new[] { boltzPubKey, userPubKey };
+
+        // Step 1: Get Boltz's signing details (their nonce + tx hash they want us to cross-sign)
+        var claimDetails = await boltzClient.GetChainClaimDetailsAsync(swapId, ct)
+            ?? throw new InvalidOperationException($"Chain swap {swapId}: claim details not available");
+
+        // Use Boltz's claim-time public key if different from lockup serverPublicKey
+        var claimBoltzPubKey = ECPubKey.Create(Convert.FromHexString(claimDetails.PublicKey));
+        if (!claimBoltzPubKey.Equals(boltzPubKey))
+            cosignerKeys = [claimBoltzPubKey, userPubKey];
+
+        var boltzNonce = new MusigPubNonce(Convert.FromHexString(claimDetails.PubNonce));
+        var boltzTxHash = Convert.FromHexString(claimDetails.TransactionHash);
+
+        // Step 2: Cross-sign Boltz's transaction hash
+        var crossSignCtx = new MusigContext(cosignerKeys, boltzTxHash, userPubKey);
+        ApplyTaprootTweak(crossSignCtx, spendInfo);
+
+        var crossSignNonce = crossSignCtx.GenerateNonce(userEcPrivKey);
+        crossSignCtx.ProcessNonces([crossSignNonce.CreatePubNonce(), boltzNonce]);
+        var crossPartialSig = crossSignCtx.Sign(userEcPrivKey, crossSignNonce);
+
+        // Step 3: POST cross-signature only (no toSign — we don't need to claim BTC ourselves)
+        var claimRequest = new ChainClaimRequest
+        {
+            Signature = new PartialSignatureData
+            {
+                PubNonce = Convert.ToHexString(crossSignNonce.CreatePubNonce().ToBytes()).ToLowerInvariant(),
+                PartialSignature = Convert.ToHexString(crossPartialSig.ToBytes()).ToLowerInvariant()
+            }
+        };
+
+        await boltzClient.PostChainClaimCrossSignatureAsync(swapId, claimRequest, ct);
+    }
+
+    /// <summary>
     /// Performs a cooperative MuSig2 refund of BTC funds locked in a chain swap HTLC.
     /// Used when the swap has expired and we want to reclaim our lockup.
     /// </summary>

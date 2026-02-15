@@ -117,6 +117,7 @@ var nbxplorer =
             "User ID=postgres;Host=postgres;Port=5432;Application Name=nbxplorer;MaxPoolSize=20;Database=nbxplorer")
         .WithEnvironment("NBXPLORER_EXPOSERPC", "1")
         .WithEnvironment("NBXPLORER_NOAUTH", "1")
+        .WithEnvironment("NBXPLORER_NOWARMUP", "1")
         .WithVolume("nark-nbxplorer", "/datadir")
         .WithHttpHealthCheck("/health", 200, "http")
         .WaitFor(nbxplorerDb)
@@ -533,7 +534,7 @@ tlsextradomain=lnd")
 
     var boltz =
         builder
-            .AddContainer("boltz", "boltz/boltz", "ark")
+            .AddContainer("boltz", "boltz/boltz", "latest")
             .WithContainerName("boltz")
             .WithContainerNetworkAlias("boltz")
             .WithEndpoint(9000, 9000, protocol: ProtocolType.Tcp, name: "grpc")
