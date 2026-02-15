@@ -213,24 +213,14 @@ public class ChainSwapTests
             .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
             .ExecuteBufferedAsync();
         var btcDestination = BitcoinAddress.Create(addrResult.StandardOutput.Trim(), Network.RegTest);
-        Console.WriteLine($"[ARK→BTC] BTC destination: {btcDestination}");
 
         // Create ARK→BTC chain swap
-        string swapId;
-        try
-        {
-            swapId = await swapMgr.InitiateArkToBtcChainSwap(
-                testingPrerequisite.walletIdentifier,
-                50000,
-                btcDestination,
-                CancellationToken.None
-            );
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ARK→BTC] InitiateArkToBtcChainSwap FAILED: {ex}");
-            throw;
-        }
+        var swapId = await swapMgr.InitiateArkToBtcChainSwap(
+            testingPrerequisite.walletIdentifier,
+            50000,
+            btcDestination,
+            CancellationToken.None
+        );
 
         Console.WriteLine($"[ARK→BTC] Swap created: {swapId}");
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
@@ -240,11 +230,10 @@ public class ChainSwapTests
         {
             await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
 
-            // Poll Boltz status directly to trace progress
             try
             {
                 var status = await boltzClient.GetSwapStatusAsync(swapId, CancellationToken.None);
-                Console.WriteLine($"[ARK→BTC] Mine round {i}: Boltz status = {status?.Status}, tx = {status?.Transaction?.Hex?.Substring(0, Math.Min(20, status?.Transaction?.Hex?.Length ?? 0))}...");
+                Console.WriteLine($"[ARK→BTC] Mine round {i}: Boltz status = {status?.Status}");
             }
             catch (Exception ex)
             {
