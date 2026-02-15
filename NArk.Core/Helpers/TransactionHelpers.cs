@@ -248,7 +248,8 @@ public static class TransactionHelpers
         public async Task<PSBT> ConstructAndSubmitArkTransaction(
             IReadOnlyCollection<ArkCoin> arkCoins,
             ArkTxOut[] arkOutputs,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            TxOut? assetPacketOutput = null)
         {
             if (arkOutputs.Any(o => o.Type is not ArkTxOutType.Vtxo))
                 throw new InvalidOperationException();
@@ -264,8 +265,12 @@ public static class TransactionHelpers
                 }
             }
 
+            TxOut[] allOutputs = assetPacketOutput is not null
+                ? [.. arkOutputs, assetPacketOutput]
+                : [.. arkOutputs];
+
             var (arkTx, checkpoints) =
-                await ConstructArkTransaction(arkCoins, [.. arkOutputs], serverInfo, cancellationToken);
+                await ConstructArkTransaction(arkCoins, allOutputs, serverInfo, cancellationToken);
             await SubmitArkTransaction(arkCoins, arkTx, checkpoints, cancellationToken);
 
             foreach (var spentCoins in arkCoins.GroupBy(c => c.WalletIdentifier))
