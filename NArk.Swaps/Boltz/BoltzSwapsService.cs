@@ -1,9 +1,11 @@
+using System.Text.Json;
 using BTCPayServer.Lightning;
 using NArk.Abstractions.Extensions;
 using NArk.Core.Contracts;
 using NArk.Core.Extensions;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
+using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Core.Transport;
@@ -21,6 +23,8 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     {
         return val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
     }
+
+    // Submarine Swaps
 
     public async Task<SubmarineSwapResult> CreateSubmarineSwap(BOLT11PaymentRequest invoice, OutputDescriptor sender,
         CancellationToken cancellationToken = default)
@@ -64,13 +68,15 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         return new SubmarineSwapResult(vhtlcContract, response, address);
     }
 
+    // Reverse Swaps
+
     public async Task<ReverseSwapResult> CreateReverseSwap(CreateInvoiceParams createInvoiceRequest,
         OutputDescriptor receiver,
         CancellationToken cancellationToken = default)
     {
         var extractedReceiver = receiver.Extract();
 
-        // Get operator terms 
+        // Get operator terms
         var operatorTerms = await clientTransport.GetServerInfoAsync(cancellationToken);
 
         //TODO: deterministic hash somehow instead?
@@ -150,5 +156,131 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
 
 
         return new ReverseSwapResult(vhtlcContract, response, preimageHash);
+    }
+
+    // Chain Swaps
+
+    /// <summary>
+    /// Creates a BTC→ARK chain swap.
+    /// Customer pays BTC on-chain → store receives Ark VTXOs.
+    /// </summary>
+    public async Task<ChainSwapResult> CreateBtcToArkSwapAsync(
+        long amountSats,
+        OutputDescriptor claimDescriptor,
+        CancellationToken ct = default)
+    {
+        var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
+        var extractedClaim = claimDescriptor.Extract();
+        var claimPubKeyHex = (extractedClaim.PubKey?.ToBytes() ?? extractedClaim.XOnlyPubKey.ToBytes())
+            .ToHexStringLower();
+
+        var preimage = RandomUtils.GetBytes(32);
+        var preimageHash = Hashes.SHA256(preimage);
+        var ephemeralKey = new Key();
+
+        var request = new ChainRequest
+        {
+            From = "BTC",
+            To = "ARK",
+            PreimageHash = Encoders.Hex.EncodeData(preimageHash),
+            ClaimPublicKey = claimPubKeyHex,
+            RefundPublicKey = Encoders.Hex.EncodeData(ephemeralKey.PubKey.ToBytes()),
+            ServerLockAmount = amountSats
+        };
+
+        var response = await boltzClient.CreateChainSwapAsync(request, ct);
+
+        if (response.ClaimDetails == null)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing claim details (Ark side). Raw: {SerializeChainResponse(response)}");
+
+        if (response.LockupDetails == null)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing lockup details (BTC side). Raw: {SerializeChainResponse(response)}");
+
+        var claimDetails = response.ClaimDetails;
+        var timeouts = claimDetails.TimeoutBlockHeights ?? claimDetails.Timeouts;
+
+        // The VHTLC sender is fulmine (the Boltz sidecar wallet). Its key comes from claimDetails.serverPublicKey,
+        // which is distinct from the Ark operator's signer key used as the VHTLC server.
+        if (string.IsNullOrEmpty(claimDetails.ServerPublicKey))
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing serverPublicKey in ARK claim details. Raw: {SerializeChainResponse(response)}");
+
+        var senderDescriptor = KeyExtensions.ParseOutputDescriptor(claimDetails.ServerPublicKey, operatorTerms.Network);
+
+        if (timeouts == null)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing timeouts in ARK claim details. Raw: {SerializeChainResponse(response)}");
+
+        var vhtlcContract = new VHTLCContract(
+            server: operatorTerms.SignerKey,
+            sender: senderDescriptor,
+            receiver: claimDescriptor,
+            preimage: preimage,
+            refundLocktime: new LockTime(timeouts.Refund),
+            unilateralClaimDelay: ParseSequence(timeouts.UnilateralClaim),
+            unilateralRefundDelay: ParseSequence(timeouts.UnilateralRefund),
+            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver)
+        );
+
+        // Validate address match
+        var computedAddress = vhtlcContract.GetArkAddress()
+            .ToString(operatorTerms.Network.ChainName == ChainName.Mainnet);
+        if (computedAddress != claimDetails.LockupAddress)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: ARK address mismatch. Computed {computedAddress}, Boltz expects {claimDetails.LockupAddress}");
+
+        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey, vhtlcContract);
+    }
+
+    /// <summary>
+    /// Creates an ARK→BTC chain swap.
+    /// User sends Ark VTXOs → receives BTC on-chain.
+    /// </summary>
+    public async Task<ChainSwapResult> CreateArkToBtcSwapAsync(
+        long amountSats,
+        string refundPubKeyHex,
+        CancellationToken ct = default)
+    {
+        await clientTransport.GetServerInfoAsync(ct);
+
+        var preimage = RandomUtils.GetBytes(32);
+        var preimageHash = Hashes.SHA256(preimage);
+        var ephemeralKey = new Key();
+
+        var request = new ChainRequest
+        {
+            From = "ARK",
+            To = "BTC",
+            PreimageHash = Encoders.Hex.EncodeData(preimageHash),
+            ClaimPublicKey = Encoders.Hex.EncodeData(ephemeralKey.PubKey.ToBytes()),
+            RefundPublicKey = refundPubKeyHex,
+            UserLockAmount = amountSats
+        };
+
+        var response = await boltzClient.CreateChainSwapAsync(request, ct);
+
+        if (response.LockupDetails == null)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing lockup details (Ark side). Raw: {SerializeChainResponse(response)}");
+
+        if (response.ClaimDetails == null)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing claim details (BTC side). Raw: {SerializeChainResponse(response)}");
+
+        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey);
+    }
+
+    // Chain Swap Serialization
+
+    public static string SerializeChainResponse(ChainResponse response)
+    {
+        return JsonSerializer.Serialize(response);
+    }
+
+    public static ChainResponse? DeserializeChainResponse(string json)
+    {
+        return JsonSerializer.Deserialize<ChainResponse>(json);
     }
 }
