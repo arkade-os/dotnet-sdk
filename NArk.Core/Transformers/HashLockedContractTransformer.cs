@@ -30,6 +30,6 @@ public class HashLockedContractTransformer(IWalletProvider walletProvider) : ICo
     {
         var contractObj = contract as HashLockedArkPaymentContract;
         return new ArkCoin(walletIdentifier, contractObj!, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, contractObj!.User ?? throw new InvalidOperationException("User is required for claim script generation"),
-            contractObj!.CreateClaimScript(), new WitScript(Op.GetPushOp(contractObj.Preimage)), null, null, vtxo.Swept);
+            contractObj!.CreateClaimScript(), new WitScript(Op.GetPushOp(contractObj.Preimage)), null, null, vtxo.Swept, assets: vtxo.Assets);
     }
 }

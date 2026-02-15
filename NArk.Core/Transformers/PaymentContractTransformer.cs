@@ -29,6 +29,6 @@ public class PaymentContractTransformer(IWalletProvider walletProvider) : IContr
     {
         var paymentContract = (contract as ArkPaymentContract)!;
         return new ArkCoin(walletIdentifier, contract, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, paymentContract.User ?? throw new InvalidOperationException("User is required for claim script generation"),
-            paymentContract.CollaborativePath(), null, null, null, vtxo.Swept);
+            paymentContract.CollaborativePath(), null, null, null, vtxo.Swept, assets: vtxo.Assets);
     }
 }
