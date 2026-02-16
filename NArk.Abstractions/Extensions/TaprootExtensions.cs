@@ -1,38 +1,24 @@
-using System.Reflection;
 using NBitcoin;
 
 namespace NArk.Abstractions.Extensions;
 
 public static class TaprootExtensions
 {
-    private static T? Property<T>(this object obj, string propertyName) where T : class =>
-        (T?)obj?.GetType()?.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(obj);
-
-    private static List<TaprootNodeInfo?> Branch(this TaprootBuilder builder) =>
-        builder.Property<List<TaprootNodeInfo?>>("Branch")
-            ?? throw new ArgumentException("TapRootBuilder Branch was not found");
-
     /// <summary>
-	/// Creates a TaprootBuilder using an algorithm similar to the AssembleTaprootScriptTree from the Bitcoin Core implementation.
-	/// This builds a balanced binary tree by pairing leaves sequentially instead of using weight-based pairing.
+	/// Builds a balanced binary tree from TapScript leaves, similar to AssembleTaprootScriptTree from Bitcoin Core.
+	/// Pairs leaves sequentially instead of using weight-based pairing.
 	/// </summary>
 	/// <param name="leaves">The TapScript leaves to include in the tree</param>
-	/// <returns>A TaprootBuilder with the constructed tree</returns>
-	public static TaprootBuilder WithTree(this TapScript[] leaves)
+	/// <returns>The root TaprootNodeInfo of the constructed tree</returns>
+	public static TaprootNodeInfo BuildTree(this TapScript[] leaves)
     {
         ArgumentNullException.ThrowIfNull(leaves);
         switch (leaves.Length)
         {
             case 0:
                 throw new ArgumentException("Leaves has 0 length.", nameof(leaves));
-            // If there's only a single leaf, that becomes our root
             case 1:
-                {
-                    var singleLeafNode = TaprootNodeInfo.NewLeaf(leaves[0]);
-                    var builder = new TaprootBuilder();
-                    builder.Branch().Add(singleLeafNode);
-                    return builder;
-                }
+                return TaprootNodeInfo.NewLeaf(leaves[0]);
         }
 
         // Create initial branches by pairing sequential leaves
@@ -55,18 +41,11 @@ public static class TaprootExtensions
             branches.Add(TaprootNodeInfo.NewLeaf(leaves[i]) + TaprootNodeInfo.NewLeaf(leaves[i + 1]));
         }
 
-        // In this second phase, we'll merge all the leaf branches we have one
-        // by one until we have our final root.
+        // Merge all the leaf branches one by one until we have the final root.
         while (branches.Count != 0)
         {
-            // When we only have a single branch left, then that becomes
-            // our root.
             if (branches.Count == 1)
-            {
-                var builder = new TaprootBuilder();
-                builder.Branch().Add(branches.Single()!);
-                return builder;
-            }
+                return branches.Single()!;
 
             var left = branches[0]!;
             var right = branches[1]!;
