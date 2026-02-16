@@ -44,7 +44,7 @@ public static class BtcHtlcScripts
         var taprootInternalKey = new TaprootInternalPubKey(internalKey.ToBytes());
 
         // Try [claim, refund] order first (standard Boltz ordering)
-        var spendInfo = new TapScript[] { claimLeaf, refundLeaf }.WithTree().Finalize(taprootInternalKey);
+        var spendInfo = TaprootSpendInfo.FromNodeInfo(taprootInternalKey, new TapScript[] { claimLeaf, refundLeaf }.BuildTree());
 
         // If we have an expected address, validate and try alternative ordering if needed
         if (expectedAddress != null && network != null)
@@ -56,7 +56,7 @@ public static class BtcHtlcScripts
             }
 
             Console.WriteLine($"[BtcHtlcScripts] [claim, refund] order mismatch, trying [refund, claim]...");
-            var altSpendInfo = new TapScript[] { refundLeaf, claimLeaf }.WithTree().Finalize(taprootInternalKey);
+            var altSpendInfo = TaprootSpendInfo.FromNodeInfo(taprootInternalKey, new TapScript[] { refundLeaf, claimLeaf }.BuildTree());
             if (ValidateAddress(altSpendInfo, expectedAddress, network))
             {
                 Console.WriteLine($"[BtcHtlcScripts] Address validated with [refund, claim] order");
