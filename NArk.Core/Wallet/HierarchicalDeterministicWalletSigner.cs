@@ -5,7 +5,7 @@ using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NBitcoin.Secp256k1.Musig;
 
-namespace NArk.Storage.EfCore.Wallet;
+namespace NArk.Core.Wallet;
 
 public class HierarchicalDeterministicWalletSigner(ArkWalletInfo wallet) : IArkadeWalletSigner
 {

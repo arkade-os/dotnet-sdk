@@ -6,7 +6,6 @@ using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Storage.EfCore.Storage;
-using NArk.Storage.EfCore.Wallet;
 using NArk.Swaps.Abstractions;
 
 namespace NArk.Storage.EfCore.Hosting;
@@ -14,8 +13,9 @@ namespace NArk.Storage.EfCore.Hosting;
 public static class StorageServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers all Ark EF Core storage implementations and wallet infrastructure.
+    /// Registers all Ark EF Core storage implementations.
     /// The consumer's TDbContext must call modelBuilder.ConfigureArkEntities() in OnModelCreating.
+    /// For wallet provider registration, use NArk.Core.Wallet.DefaultWalletProvider separately.
     /// </summary>
     public static IServiceCollection AddArkEfCoreStorage<TDbContext>(
         this IServiceCollection services,
@@ -46,9 +46,6 @@ public static class StorageServiceCollectionExtensions
 
         services.AddSingleton<EfCoreWalletStorage>();
         services.AddSingleton<IWalletStorage>(sp => sp.GetRequiredService<EfCoreWalletStorage>());
-
-        // Wallet provider
-        services.AddSingleton<IWalletProvider, DefaultWalletProvider>();
 
         return services;
     }

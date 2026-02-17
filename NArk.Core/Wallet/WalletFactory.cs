@@ -1,13 +1,12 @@
 using NArk.Abstractions;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Wallets;
-using NArk.Core;
 using NArk.Core.Extensions;
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using NBitcoin.Secp256k1;
 
-namespace NArk.Storage.EfCore.Wallet;
+namespace NArk.Core.Wallet;
 
 /// <summary>
 /// Factory for creating wallet info records from secrets (nsec or mnemonic).

@@ -2,14 +2,13 @@ using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Wallets;
-using NArk.Core;
 using NArk.Core.Contracts;
 using NArk.Core.Enums;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
 
-namespace NArk.Storage.EfCore.Wallet;
+namespace NArk.Core.Wallet;
 
 public class SingleKeyAddressProvider(
     IClientTransport transport,

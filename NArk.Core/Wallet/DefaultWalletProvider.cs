@@ -4,7 +4,7 @@ using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Transport;
 
-namespace NArk.Storage.EfCore.Wallet;
+namespace NArk.Core.Wallet;
 
 /// <summary>
 /// Default implementation of IWalletProvider using SDK wallet infrastructure.
