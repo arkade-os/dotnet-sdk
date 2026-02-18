@@ -101,7 +101,7 @@ var boltzDb = postgres
 
 var nbxplorer =
     builder
-        .AddContainer("nbxplorer", "nicolasdorier/nbxplorer", "2.5.30-1")
+        .AddContainer("nbxplorer", "nicolasdorier/nbxplorer", "2.6.0")
         .WithContainerNetworkAlias("nbxplorer")
         .WithHttpEndpoint(32838, 32838, "http")
         .WithEnvironment("NBXPLORER_NETWORK", "regtest")
@@ -126,7 +126,7 @@ var nbxplorer =
 
 var arkWallet =
     builder
-        .AddContainer("ark-wallet", "ghcr.io/arkade-os/arkd-wallet", "v0.8.10")
+        .AddContainer("ark-wallet", "ghcr.io/arkade-os/arkd-wallet", "v0.9.0-rc.0")
         .WithContainerName("ark-wallet")
         .WithContainerNetworkAlias("ark-wallet")
         .WaitFor(bitcoin)
@@ -140,7 +140,7 @@ var arkWallet =
 
 var ark =
     builder
-        .AddContainer("ark", "ghcr.io/arkade-os/arkd", "v0.8.10")
+        .AddContainer("ark", "ghcr.io/arkade-os/arkd", "v0.9.0-rc.0")
         .WithContainerName("ark")
         .WaitFor(bitcoin)
         .WaitFor(arkdDb)
