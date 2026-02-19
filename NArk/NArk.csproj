@@ -3,7 +3,7 @@
     <PropertyGroup>
         <TargetFramework>net8.0</TargetFramework>
         <IncludeBuildOutput>false</IncludeBuildOutput>
-        <IncludeContentInPack>false</IncludeContentInPack>
+        <PackageDescription>Meta-package for the Ark protocol .NET SDK. Pulls in NArk.Core (spending, batches, VTXO sync, wallets) and NArk.Swaps (Boltz integration).</PackageDescription>
     </PropertyGroup>
 
     <ItemGroup>

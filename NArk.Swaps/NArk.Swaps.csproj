@@ -5,6 +5,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <WarningsAsErrors>nullable</WarningsAsErrors>
+        <PackageDescription>Boltz swap integration for the Ark protocol .NET SDK. Enables BTC-to-Ark and Ark-to-BTC submarine and chain swaps.</PackageDescription>
     </PropertyGroup>
 
     <ItemGroup>

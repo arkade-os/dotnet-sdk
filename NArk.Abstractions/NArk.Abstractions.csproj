@@ -5,6 +5,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <WarningsAsErrors>nullable</WarningsAsErrors>
+        <PackageDescription>Interfaces and domain types for the Ark protocol .NET SDK. Includes storage abstractions, wallet interfaces, and core domain records (ArkCoin, ArkVtxo, ArkContract, ArkAddress).</PackageDescription>
     </PropertyGroup>
 
     <ItemGroup>
