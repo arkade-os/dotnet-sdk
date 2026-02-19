@@ -5,6 +5,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <WarningsAsErrors>nullable</WarningsAsErrors>
+        <PackageDescription>Core services for the Ark protocol .NET SDK. Includes spending, batch management, VTXO synchronization, sweeping, wallet infrastructure, and gRPC transport.</PackageDescription>
     </PropertyGroup>
 
     <ItemGroup>
