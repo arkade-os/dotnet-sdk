@@ -16,6 +16,7 @@ using NArk.Core.Helpers;
 using NArk.Core.Models;
 using NArk.Core.Models.Options;
 using NArk.Core.Transport;
+using NArk.Core.Assets;
 using NArk.Core.Extensions;
 using NBitcoin;
 using NBitcoin.Secp256k1;
@@ -437,11 +438,107 @@ public class IntentGenerationService(
         var message = JsonSerializer.Serialize(msg);
         var deleteMessage = JsonSerializer.Serialize(deleteMsg);
 
+        // Build asset packet if any input coins carry assets.
+        // This OP_RETURN output is appended to the register intent only (not the delete intent).
+        // arkd calls LeafTxPacket() on this packet during RegisterIntent to store the
+        // batch-leaf-form asset data, which will be embedded in the vtxo tree leaf tx.
+        IReadOnlyCollection<TxOut>? registerOutputs = outs?.Cast<TxOut>().ToArray();
+        var assetPacketTxOut = BuildIntentAssetPacket(inputCoins, outs);
+        if (assetPacketTxOut != null)
+        {
+            var outputList = registerOutputs?.ToList() ?? [];
+            outputList.Add(assetPacketTxOut);
+            registerOutputs = outputList;
+        }
+
         return (
-            await CreateIntent(message, network, inputCoins.ToArray(), outs?.Cast<TxOut>().ToArray(), cancellationToken),
+            await CreateIntent(message, network, inputCoins.ToArray(), registerOutputs, cancellationToken),
             await CreateIntent(deleteMessage, network, inputCoins.ToArray(), null, cancellationToken),
             message,
             deleteMessage);
+    }
+
+    /// <summary>
+    /// Builds an asset packet OP_RETURN TxOut for an intent proof PSBT.
+    /// Input vin indices are offset by +1 because the BIP322 toSpend reference occupies
+    /// input[0] in the intent proof transaction. Asset outputs reference the explicit
+    /// output indices from <paramref name="outputs"/>; any remaining asset change goes
+    /// to vout=0 (the send-to-self output).
+    /// </summary>
+    private static TxOut? BuildIntentAssetPacket(
+        IReadOnlyCollection<ArkCoin> inputCoins,
+        IReadOnlyCollection<ArkTxOut>? outputs)
+    {
+        var coinList = inputCoins.ToList();
+
+        // Collect asset inputs with +1 vin offset for the BIP322 fake input at index 0
+        var assetInputsByAssetId = new Dictionary<string, List<(ushort vin, ulong amount)>>();
+        for (var i = 0; i < coinList.Count; i++)
+        {
+            if (coinList[i].Assets is not { Count: > 0 } assets) continue;
+            foreach (var asset in assets)
+            {
+                if (!assetInputsByAssetId.ContainsKey(asset.AssetId))
+                    assetInputsByAssetId[asset.AssetId] = [];
+                // +1: intent proof input[0] is the fake toSpend reference
+                assetInputsByAssetId[asset.AssetId].Add(((ushort)(i + 1), asset.Amount));
+            }
+        }
+
+        if (assetInputsByAssetId.Count == 0)
+            return null;
+
+        // Collect explicit asset outputs from ArkTxOut.Assets (if any)
+        var assetOutputsByAssetId = new Dictionary<string, List<(ushort vout, ulong amount)>>();
+        if (outputs != null)
+        {
+            var outList = outputs.ToList();
+            for (var i = 0; i < outList.Count; i++)
+            {
+                if (outList[i].Assets is not { Count: > 0 } assets) continue;
+                foreach (var asset in assets)
+                {
+                    if (!assetOutputsByAssetId.ContainsKey(asset.AssetId))
+                        assetOutputsByAssetId[asset.AssetId] = [];
+                    assetOutputsByAssetId[asset.AssetId].Add(((ushort)i, asset.Amount));
+                }
+            }
+        }
+
+        var groups = new List<AssetGroup>();
+        foreach (var (assetIdStr, inputs) in assetInputsByAssetId)
+        {
+            var assetId = AssetId.FromString(assetIdStr);
+            var groupInputs = inputs.Select(x => AssetInput.Create(x.vin, x.amount)).ToList();
+
+            var totalIn = inputs.Aggregate(0UL, (sum, x) => sum + x.amount);
+
+            // Start with explicit outputs for this asset
+            var groupOutputs = assetOutputsByAssetId.GetValueOrDefault(assetIdStr)?
+                .Select(x => AssetOutput.Create(x.vout, x.amount))
+                .ToList() ?? [];
+
+            // Assign remaining asset amount to vout=0 (send-to-self output)
+            var totalExplicitOut = groupOutputs.Aggregate(0UL, (sum, o) => sum + o.Amount);
+            var remaining = totalIn - totalExplicitOut;
+            if (remaining > 0)
+            {
+                var existingIdx = groupOutputs.FindIndex(o => o.Vout == 0);
+                if (existingIdx >= 0)
+                {
+                    var existing = groupOutputs[existingIdx];
+                    groupOutputs[existingIdx] = AssetOutput.Create(0, existing.Amount + remaining);
+                }
+                else
+                {
+                    groupOutputs.Add(AssetOutput.Create(0, remaining));
+                }
+            }
+
+            groups.Add(AssetGroup.Create(assetId, null, groupInputs, groupOutputs, []));
+        }
+
+        return Packet.Create(groups).ToTxOut();
     }
 
     public async ValueTask DisposeAsync()
