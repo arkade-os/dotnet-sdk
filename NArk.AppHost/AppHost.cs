@@ -126,7 +126,7 @@ var nbxplorer =
 
 var arkWallet =
     builder
-        .AddContainer("ark-wallet", "ghcr.io/arkade-os/arkd-wallet", "v0.9.0-rc.0")
+        .AddContainer("ark-wallet", "ghcr.io/arkade-os/arkd-wallet", "v0.9.0-rc.1")
         .WithContainerName("ark-wallet")
         .WithContainerNetworkAlias("ark-wallet")
         .WaitFor(bitcoin)
@@ -140,7 +140,7 @@ var arkWallet =
 
 var ark =
     builder
-        .AddContainer("ark", "ghcr.io/arkade-os/arkd", "v0.9.0-rc.0")
+        .AddContainer("ark", "ghcr.io/arkade-os/arkd", "v0.9.0-rc.1")
         .WithContainerName("ark")
         .WaitFor(bitcoin)
         .WaitFor(arkdDb)
