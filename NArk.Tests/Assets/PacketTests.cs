@@ -6,24 +6,82 @@ namespace NArk.Tests.Assets;
 [TestFixture]
 public class PacketTests
 {
-    private static readonly string ValidTxidHex = "0102030405060708091011121314151617181920212223242526272829303132";
-
+    // Fixture: "issuance of self-controlled asset"
     [Test]
-    public void SimpleTransfer_SerializeAndParse_RoundTrips()
+    public void Issuance_SelfControlled_SerializesToExpected()
     {
-        var assetId = AssetId.Create(ValidTxidHex, 0);
-        var inputs = new[] { AssetInput.Create(0, 100) };
-        var outputs = new[] { AssetOutput.Create(0, 50), AssetOutput.Create(1, 50) };
-        var group = AssetGroup.Create(assetId, null, inputs, outputs, []);
-
+        var controlRef = AssetRef.FromGroupIndex(0);
+        var outputs = new[] { AssetOutput.Create(0, 21000000) };
+        var group = AssetGroup.Create(null, controlRef, [], outputs, []);
         var packet = Packet.Create([group]);
-        var txOut = packet.ToTxOut();
+        Assert.That(ToHex(packet.Serialize()),
+            Is.EqualTo("6a1241524b0001020200000001010000c0de810a"));
+    }
 
-        // Parse back
-        var restored = Packet.FromScript(txOut.ScriptPubKey);
+    // Fixture: "issuance of many assets controlled by a single one"
+    [Test]
+    public void Issuance_ManyControlled_SerializesToExpected()
+    {
+        var group0 = AssetGroup.Create(null, AssetRef.FromGroupIndex(3), [],
+            [AssetOutput.Create(1, 100)],
+            [AssetMetadata.Create("ticker", "TEST")]);
+
+        var group1 = AssetGroup.Create(null, AssetRef.FromGroupIndex(3), [],
+            [AssetOutput.Create(1, 300)],
+            [AssetMetadata.Create("ticker", "TEST2")]);
+
+        var group2 = AssetGroup.Create(null, AssetRef.FromGroupIndex(3), [],
+            [AssetOutput.Create(0, 2100)],
+            [AssetMetadata.Create("ticker", "TEST3")]);
+
+        var group3 = AssetGroup.Create(null, null, [],
+            [AssetOutput.Create(2, 1)],
+            [AssetMetadata.Create("ticker", "TEST3"), AssetMetadata.Create("desc", "control_asset")]);
+
+        var packet = Packet.Create([group0, group1, group2, group3]);
+        Assert.That(ToHex(packet.Serialize()),
+            Is.EqualTo("6a4c7641524b00040602030001067469636b657204544553540001010100640602030001067469636b65720554455354320001010100ac020602030001067469636b65720554455354330001010000b4100402067469636b657205544553543304646573630d636f6e74726f6c5f6173736574000101020001"));
+    }
+
+    // Fixture: deserialization from script hex
+    [Test]
+    public void FromScript_ParsesFixtureScript()
+    {
+        var scriptHex = "6a4c7641524b00040602030001067469636b657204544553540001010100640602030001067469636b65720554455354320001010100ac020602030001067469636b65720554455354330001010000b4100402067469636b657205544553543304646573630d636f6e74726f6c5f6173736574000101020001";
+        var script = new Script(Convert.FromHexString(scriptHex));
+        var packet = Packet.FromScript(script);
+        Assert.That(packet.Groups, Has.Count.EqualTo(4));
+        Assert.That(packet.Groups[0].IsIssuance, Is.True);
+        Assert.That(packet.Groups[0].ControlAsset!.GroupIndex, Is.EqualTo(3));
+        Assert.That(packet.Groups[3].Metadata, Has.Count.EqualTo(2));
+    }
+
+    // Fixture: leafTxPacket "convert inputs to type intent"
+    [Test]
+    public void LeafTxPacket_ConvertsInputsToIntent()
+    {
+        var scriptHex = "6a4c7641524b00040602030001067469636b657204544553540001010100640602030001067469636b65720554455354320001010100ac020602030001067469636b65720554455354330001010000b4100402067469636b657205544553543304646573630d636f6e74726f6c5f6173736574000101020001";
+        var script = new Script(Convert.FromHexString(scriptHex));
+        var packet = Packet.FromScript(script);
+
+        var intentTxid = Convert.FromHexString("09aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        var leafPacket = packet.LeafTxPacket(intentTxid);
+
+        var expectedHex = "6a4d060141524b00040602030001067469636b65720454455354010209aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000001010100640602030001067469636b6572055445535432010209aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000001010100ac020602030001067469636b6572055445535433010209aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000001010000b4100402067469636b657205544553543304646573630d636f6e74726f6c5f6173736574010209aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000101020001";
+        Assert.That(ToHex(leafPacket.Serialize()), Is.EqualTo(expectedHex));
+    }
+
+    // Round-trip tests
+    [Test]
+    public void SimpleTransfer_RoundTrips()
+    {
+        var assetId = AssetId.Create("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
+        var group = AssetGroup.Create(assetId, null,
+            [AssetInput.Create(0, 100)],
+            [AssetOutput.Create(0, 50), AssetOutput.Create(1, 50)], []);
+        var packet = Packet.Create([group]);
+        var restored = Packet.FromScript(packet.ToTxOut().ScriptPubKey);
         Assert.That(restored.Groups, Has.Count.EqualTo(1));
-        Assert.That(restored.Groups[0].Inputs, Has.Count.EqualTo(1));
-        Assert.That(restored.Groups[0].Outputs, Has.Count.EqualTo(2));
         Assert.That(restored.Groups[0].Inputs[0].Amount, Is.EqualTo(100));
         Assert.That(restored.Groups[0].Outputs[0].Amount, Is.EqualTo(50));
     }
@@ -31,12 +89,9 @@ public class PacketTests
     [Test]
     public void IsAssetPacket_ValidScript_ReturnsTrue()
     {
-        var assetId = AssetId.Create(ValidTxidHex, 0);
+        var assetId = AssetId.Create("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
         var group = AssetGroup.Create(assetId, null, [AssetInput.Create(0, 1)], [AssetOutput.Create(0, 1)], []);
-        var packet = Packet.Create([group]);
-        var txOut = packet.ToTxOut();
-
-        Assert.That(Packet.IsAssetPacket(txOut.ScriptPubKey), Is.True);
+        Assert.That(Packet.IsAssetPacket(Packet.Create([group]).ToTxOut().ScriptPubKey), Is.True);
     }
 
     [Test]
@@ -55,37 +110,12 @@ public class PacketTests
     [Test]
     public void TxOut_HasZeroAmount()
     {
-        var assetId = AssetId.Create(ValidTxidHex, 0);
+        var assetId = AssetId.Create("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
         var group = AssetGroup.Create(assetId, null, [AssetInput.Create(0, 1)], [AssetOutput.Create(0, 1)], []);
-        var packet = Packet.Create([group]);
-        var txOut = packet.ToTxOut();
-
-        Assert.That(txOut.Value, Is.EqualTo(Money.Zero));
+        Assert.That(Packet.Create([group]).ToTxOut().Value, Is.EqualTo(Money.Zero));
     }
 
-    [Test]
-    public void MultipleGroups_RoundTrips()
-    {
-        var assetId1 = AssetId.Create(ValidTxidHex, 0);
-        var assetId2 = AssetId.Create(ValidTxidHex, 1);
-
-        var group1 = AssetGroup.Create(assetId1, null,
-            [AssetInput.Create(0, 100)],
-            [AssetOutput.Create(0, 100)], []);
-
-        var group2 = AssetGroup.Create(assetId2, null,
-            [AssetInput.Create(1, 200)],
-            [AssetOutput.Create(1, 200)], []);
-
-        var packet = Packet.Create([group1, group2]);
-        var txOut = packet.ToTxOut();
-
-        var restored = Packet.FromScript(txOut.ScriptPubKey);
-        Assert.That(restored.Groups, Has.Count.EqualTo(2));
-        Assert.That(restored.Groups[0].AssetId!.GroupIndex, Is.EqualTo(0));
-        Assert.That(restored.Groups[1].AssetId!.GroupIndex, Is.EqualTo(1));
-    }
-
+    // Fixture: invalid
     [Test]
     public void EmptyGroups_Throws()
     {
@@ -95,21 +125,18 @@ public class PacketTests
     [Test]
     public void InvalidControlAssetGroupIndex_Throws()
     {
-        var controlRef = AssetRef.FromGroupIndex(5); // out of range
-        var group = new AssetGroup(null, controlRef, [], [AssetOutput.Create(0, 1)], []);
+        var group = new AssetGroup(null, AssetRef.FromGroupIndex(1), [], [AssetOutput.Create(0, 1)], []);
         Assert.Throws<ArgumentException>(() => Packet.Create([group]));
     }
 
     [Test]
     public void Script_ContainsArkMagic()
     {
-        var assetId = AssetId.Create(ValidTxidHex, 0);
+        var assetId = AssetId.Create("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
         var group = AssetGroup.Create(assetId, null, [AssetInput.Create(0, 1)], [AssetOutput.Create(0, 1)], []);
-        var packet = Packet.Create([group]);
-        var scriptBytes = packet.Serialize();
-
-        // The script should contain the ARK magic bytes somewhere in the data push
-        var hex = Convert.ToHexString(scriptBytes).ToLowerInvariant();
-        Assert.That(hex, Does.Contain("41524b00")); // ARK + marker
+        var hex = ToHex(Packet.Create([group]).Serialize());
+        Assert.That(hex, Does.Contain("41524b00"));
     }
+
+    private static string ToHex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
 }
