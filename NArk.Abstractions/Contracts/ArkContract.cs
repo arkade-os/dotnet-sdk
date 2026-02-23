@@ -24,8 +24,8 @@ public abstract class ArkContract(OutputDescriptor server)
 
     public virtual TaprootSpendInfo GetTaprootSpendInfo()
     {
-        var builder = GetTapScriptList().WithTree();
-        return builder.Finalize(new TaprootInternalPubKey(Constants.UnspendableKey.ToECXOnlyPubKey().ToBytes()));
+        var internalKey = new TaprootInternalPubKey(Constants.UnspendableKey.ToECXOnlyPubKey().ToBytes());
+        return TaprootSpendInfo.FromNodeInfo(internalKey, GetTapScriptList().BuildTree());
     }
 
     public virtual TapScript[] GetTapScriptList()

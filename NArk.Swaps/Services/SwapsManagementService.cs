@@ -18,7 +18,9 @@ using NArk.Swaps.Abstractions;
 using NArk.Swaps.Extensions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
+using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Restore;
+using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Models;
@@ -42,6 +44,7 @@ public class SwapsManagementService : IAsyncDisposable
     private readonly IContractStorage _contractStorage;
     private readonly ISafetyService _safetyService;
     private readonly BoltzSwapService _boltzService;
+    private readonly ChainSwapMusigSession _chainSwapMusig;
     private readonly BoltzClient _boltzClient;
     private readonly IChainTimeProvider _chainTimeProvider;
     private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
@@ -91,6 +94,7 @@ public class SwapsManagementService : IAsyncDisposable
             _boltzClient,
             _clientTransport
         );
+        _chainSwapMusig = new ChainSwapMusigSession(_boltzClient);
         _transactionBuilder =
             new TransactionHelpers.ArkTransactionBuilder(clientTransport, safetyService, walletProvider, intentStorage);
 
@@ -233,8 +237,8 @@ public class SwapsManagementService : IAsyncDisposable
                 }
                 _swapIdsToScript[swap.SwapId] = swap.ContractScript;
 
-                // There's nothing after refunded, ignore...
-                if (swap.Status is ArkSwapStatus.Refunded) continue;
+                // Terminal states: nothing to do
+                if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled) continue;
 
                 // If not refunded and status is refundable, start a coop refund
                 if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
@@ -246,6 +250,27 @@ public class SwapsManagementService : IAsyncDisposable
                         swap with { Status = ArkSwapStatus.Failed, UpdatedAt = DateTimeOffset.Now };
                     await RequestRefundCooperatively(newSwap, cancellationToken);
                 }
+
+                // For ARK→BTC chain swaps: try to claim BTC when server has locked
+                if (swap.SwapType is ArkSwapType.ChainArkToBtc &&
+                    IsChainSwapClaimableStatus(swapStatus.Status))
+                {
+                    await TryClaimBtcForChainSwap(swap, cancellationToken);
+                }
+
+                // For BTC→ARK chain swaps: provide cooperative cross-signature so Boltz
+                // can claim our BTC lockup via key-path (more efficient than script-path).
+                // This is non-critical — Boltz can eventually claim via script-path with preimage.
+                if (swap.SwapType is ArkSwapType.ChainBtcToArk &&
+                    swapStatus.Status is "transaction.claim.pending")
+                {
+                    await TrySignBoltzBtcClaim(swap, cancellationToken);
+                }
+
+                // Re-read swap — claim handlers may have updated status to terminal
+                var updatedSwaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
+                swap = updatedSwaps.FirstOrDefault() ?? swap;
+                if (swap.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded) continue;
 
                 var newStatus = Map(swapStatus.Status);
 
@@ -391,12 +416,24 @@ public class SwapsManagementService : IAsyncDisposable
             "invoice.failedToPay" or "invoice.expired" or "swap.expired" or "transaction.failed"
                 or "transaction.refunded" =>
                 ArkSwapStatus.Failed,
-            "transaction.mempool" => ArkSwapStatus.Pending,
-            "transaction.confirmed" or "invoice.settled" or "transaction.claimed" => ArkSwapStatus.Settled,
+            "transaction.mempool" or "transaction.confirmed" => ArkSwapStatus.Pending,
+            "invoice.settled" or "transaction.claimed" => ArkSwapStatus.Settled,
+            // Chain swap specific statuses
+            "transaction.server.mempool" or "transaction.server.confirmed"
+                or "transaction.claim.pending" => ArkSwapStatus.Pending,
+            "transaction.lockupFailed" => ArkSwapStatus.Failed,
             _ => ArkSwapStatus.Unknown
         };
     }
 
+    /// <summary>
+    /// Checks if a chain swap status indicates the server has locked funds and we can claim.
+    /// Used for ARK→BTC where we claim BTC ourselves.
+    /// </summary>
+    private static bool IsChainSwapClaimableStatus(string status)
+    {
+        return status is "transaction.server.mempool" or "transaction.server.confirmed";
+    }
 
     private async Task DoStatusCheck(HashSet<string> swapsIds, CancellationToken cancellationToken)
     {
@@ -588,6 +625,338 @@ public class SwapsManagementService : IAsyncDisposable
             ), cancellationToken);
 
         return revSwap.Swap.Invoice;
+    }
+
+    // Chain Swaps
+
+    /// <summary>
+    /// Initiates a BTC→ARK chain swap. Customer pays BTC on-chain, store receives Ark VTXOs.
+    /// Returns the BTC lockup address where the customer should send BTC.
+    /// </summary>
+    public async Task<(string BtcAddress, string SwapId, long ExpectedLockupSats)> InitiateBtcToArkChainSwap(
+        string walletId,
+        long amountSats,
+        CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation("Initiating BTC→ARK chain swap for wallet {WalletId}, amount={Amount}",
+            walletId, amountSats);
+
+        var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
+        var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
+
+        var result = await _boltzService.CreateBtcToArkSwapAsync(
+            amountSats, claimDescriptor, cancellationToken);
+
+        var btcAddress = result.Swap.LockupDetails?.LockupAddress
+            ?? throw new InvalidOperationException("Missing BTC lockup address");
+
+        // Import VHTLC contract for sweeper to claim when VTXOs appear.
+        var contract = result.Contract!;
+        await _contractService.ImportContract(walletId, contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
+            cancellationToken: cancellationToken);
+        var contractScript = contract.GetArkAddress().ScriptPubKey.ToHex();
+
+        var swap = new ArkSwap(
+            result.Swap.Id,
+            walletId,
+            ArkSwapType.ChainBtcToArk,
+            "",
+            amountSats,
+            contractScript,
+            btcAddress,
+            ArkSwapStatus.Pending,
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            Convert.ToHexString(result.PreimageHash).ToLowerInvariant()
+        )
+        {
+            Metadata = new Dictionary<string, string>
+            {
+                [SwapMetadata.Preimage] = Convert.ToHexString(result.Preimage).ToLowerInvariant(),
+                [SwapMetadata.EphemeralKey] = Convert.ToHexString(result.EphemeralBtcKey.ToBytes()).ToLowerInvariant(),
+                [SwapMetadata.BoltzResponse] = BoltzSwapService.SerializeChainResponse(result.Swap),
+                [SwapMetadata.BtcAddress] = btcAddress
+            }
+        };
+
+        await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
+
+        var expectedLockupSats = result.Swap.LockupDetails!.Amount;
+        _logger?.LogInformation("BTC→ARK chain swap {SwapId} created, BTC lockup: {BtcAddress}, expected: {Amount} sats",
+            result.Swap.Id, btcAddress, expectedLockupSats);
+
+        return (btcAddress, result.Swap.Id, expectedLockupSats);
+    }
+
+    /// <summary>
+    /// Initiates an ARK→BTC chain swap. User sends Ark VTXOs, receives BTC on-chain.
+    /// </summary>
+    public async Task<string> InitiateArkToBtcChainSwap(
+        string walletId,
+        long amountSats,
+        BitcoinAddress btcDestination,
+        CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation("Initiating ARK→BTC chain swap for wallet {WalletId}, amount={Amount}, dest={Dest}",
+            walletId, amountSats, btcDestination);
+
+        var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
+        var refundDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
+
+        // Extract pub key hex for Boltz API
+        var extractedRefund = OutputDescriptorHelpers.Extract(refundDescriptor);
+        var refundPubKeyHex = Convert.ToHexString(
+            extractedRefund.PubKey?.ToBytes() ?? extractedRefund.XOnlyPubKey.ToBytes()).ToLowerInvariant();
+
+        var result = await _boltzService.CreateArkToBtcSwapAsync(
+            amountSats, refundPubKeyHex, cancellationToken);
+
+        // Parse the Ark lockup address (Boltz's fulmine created the VHTLC)
+        var arkLockupAddressStr = result.Swap.LockupDetails!.LockupAddress;
+        var arkAddress = ArkAddress.Parse(arkLockupAddressStr);
+
+        var swap = new ArkSwap(
+            result.Swap.Id,
+            walletId,
+            ArkSwapType.ChainArkToBtc,
+            "", // No invoice for chain swaps
+            amountSats,
+            arkLockupAddressStr, // Store ARK lockup address as identifier
+            arkLockupAddressStr,
+            ArkSwapStatus.Pending,
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            Convert.ToHexString(result.PreimageHash).ToLowerInvariant()
+        )
+        {
+            Metadata = new Dictionary<string, string>
+            {
+                [SwapMetadata.Preimage] = Convert.ToHexString(result.Preimage).ToLowerInvariant(),
+                [SwapMetadata.EphemeralKey] = Convert.ToHexString(result.EphemeralBtcKey.ToBytes()).ToLowerInvariant(),
+                [SwapMetadata.BoltzResponse] = BoltzSwapService.SerializeChainResponse(result.Swap),
+                [SwapMetadata.BtcAddress] = btcDestination.ToString()
+            }
+        };
+
+        await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
+
+        // Auto-pay: send Ark VTXOs to the lockup address
+        try
+        {
+            var lockupAmount = result.Swap.LockupDetails?.Amount ?? amountSats;
+            await _spendingService.Spend(walletId,
+                [new ArkTxOut(ArkTxOutType.Vtxo, lockupAmount, arkAddress)], cancellationToken);
+        }
+        catch (Exception e)
+        {
+            await _swapsStorage.SaveSwap(walletId,
+                swap with { Status = ArkSwapStatus.Failed, FailReason = e.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
+                cancellationToken);
+            throw;
+        }
+
+        _logger?.LogInformation("ARK→BTC chain swap {SwapId} created, Ark locked", result.Swap.Id);
+        return result.Swap.Id;
+    }
+
+    /// <summary>
+    /// Attempts cooperative MuSig2 claim of BTC for an ARK→BTC chain swap.
+    /// Called when Boltz has locked BTC and we need to claim it.
+    /// </summary>
+    private async Task TryClaimBtcForChainSwap(ArkSwap swap, CancellationToken cancellationToken)
+    {
+        if (swap.SwapType != ArkSwapType.ChainArkToBtc)
+            return;
+
+        var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
+        var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
+        var preimageHex = swap.Get(SwapMetadata.Preimage);
+        var btcAddress = swap.Get(SwapMetadata.BtcAddress);
+
+        if (string.IsNullOrEmpty(ephemeralKeyHex) ||
+            string.IsNullOrEmpty(boltzResponseJson) ||
+            string.IsNullOrEmpty(preimageHex) ||
+            string.IsNullOrEmpty(btcAddress))
+        {
+            _logger?.LogWarning("Swap {SwapId}: missing chain swap metadata for BTC claim", swap.SwapId);
+            return;
+        }
+
+        try
+        {
+            var response = BoltzSwapService.DeserializeChainResponse(boltzResponseJson);
+            if (response == null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: failed to deserialize Boltz response", swap.SwapId);
+                return;
+            }
+
+            var claimDetails = response.ClaimDetails;
+            if (claimDetails?.SwapTree == null || claimDetails.ServerPublicKey == null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: no BTC claim details (swapTree or serverPublicKey is null)", swap.SwapId);
+                return;
+            }
+
+            var ephemeralKey = new Key(Convert.FromHexString(ephemeralKeyHex));
+            var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
+            var userPubKey = ecPrivKey.CreatePubKey();
+            var boltzPubKey = ECPubKey.Create(Convert.FromHexString(claimDetails.ServerPublicKey));
+
+            var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+
+            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
+                claimDetails.SwapTree, userPubKey, boltzPubKey,
+                claimDetails.LockupAddress, serverInfo.Network);
+            var btcDest = BitcoinAddress.Create(btcAddress, serverInfo.Network);
+
+            // Get the lockup transaction from Boltz's status response
+            var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, cancellationToken);
+            if (swapStatus?.Transaction?.Hex == null)
+            {
+                _logger?.LogDebug("Swap {SwapId}: lockup tx hex not yet available", swap.SwapId);
+                return;
+            }
+
+            // Parse the lockup tx and find the output matching the HTLC address
+            var lockupTx = Transaction.Parse(swapStatus.Transaction.Hex, serverInfo.Network);
+            var lockupScript = BitcoinAddress.Create(claimDetails.LockupAddress, serverInfo.Network).ScriptPubKey;
+            var vout = -1;
+            for (var i = 0; i < lockupTx.Outputs.Count; i++)
+            {
+                if (lockupTx.Outputs[i].ScriptPubKey == lockupScript)
+                {
+                    vout = i;
+                    break;
+                }
+            }
+
+            if (vout < 0)
+            {
+                _logger?.LogWarning("Swap {SwapId}: no output matching HTLC address {Address}", swap.SwapId, claimDetails.LockupAddress);
+                return;
+            }
+
+            var outpoint = new OutPoint(lockupTx.GetHash(), vout);
+            var prevOut = lockupTx.Outputs[vout];
+
+            // Build unsigned claim tx
+            var feeSats = 250L;
+            var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, feeSats);
+
+            Transaction signedTx;
+            try
+            {
+                _logger?.LogInformation("Swap {SwapId}: attempting MuSig2 cooperative BTC claim", swap.SwapId);
+                signedTx = await _chainSwapMusig.CooperativeClaimAsync(
+                    swap.SwapId, preimageHex, unsignedClaimTx, prevOut, 0,
+                    ecPrivKey, boltzPubKey, spendInfo, cancellationToken);
+            }
+            catch (Exception coopEx)
+            {
+                _logger?.LogWarning(coopEx, "Swap {SwapId}: MuSig2 cooperative claim failed, falling back to script-path", swap.SwapId);
+
+                // Fallback: script-path claim with preimage
+                var claimLeaf = BtcHtlcScripts.GetClaimLeaf(claimDetails.SwapTree);
+                var preimageBytes = Convert.FromHexString(preimageHex);
+                BtcTransactionBuilder.SignScriptPathClaim(
+                    unsignedClaimTx, 0, prevOut, spendInfo, claimLeaf,
+                    preimageBytes, ephemeralKey);
+                signedTx = unsignedClaimTx;
+            }
+
+            // Broadcast the signed claim transaction
+            var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(
+                new BroadcastRequest { Hex = signedTx.ToHex() }, cancellationToken);
+
+            _logger?.LogInformation("Swap {SwapId}: BTC claimed! txid={TxId}", swap.SwapId, broadcastResult.Id);
+
+            await _swapsStorage.SaveSwap(swap.WalletId,
+                swap with { Status = ArkSwapStatus.Settled, UpdatedAt = DateTimeOffset.UtcNow },
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Swap {SwapId}: error claiming BTC", swap.SwapId);
+        }
+    }
+
+    /// <summary>
+    /// Provides a cooperative MuSig2 cross-signature for a BTC→ARK chain swap so Boltz
+    /// can claim the user's BTC lockup via efficient key-path spend.
+    /// Called when status is transaction.claim.pending (ARK VTXOs already claimed by sweeper).
+    /// Non-critical: if this fails, Boltz can still claim via script-path with preimage.
+    /// </summary>
+    private async Task TrySignBoltzBtcClaim(ArkSwap swap, CancellationToken cancellationToken)
+    {
+        if (swap.SwapType != ArkSwapType.ChainBtcToArk)
+            return;
+
+        // Only cross-sign once — avoid sending duplicate signatures on repeated polls
+        if (swap.Get(SwapMetadata.CrossSigned) == "true")
+            return;
+
+        var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
+        var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
+
+        if (string.IsNullOrEmpty(ephemeralKeyHex) || string.IsNullOrEmpty(boltzResponseJson))
+        {
+            _logger?.LogWarning("Swap {SwapId}: missing chain swap metadata for cooperative BTC claim signing", swap.SwapId);
+            return;
+        }
+
+        try
+        {
+            var response = BoltzSwapService.DeserializeChainResponse(boltzResponseJson);
+            if (response == null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: failed to deserialize Boltz response for cross-signing", swap.SwapId);
+                return;
+            }
+
+            // For BTC→ARK, the BTC lockup details contain the swap tree and server public key
+            var lockupDetails = response.LockupDetails;
+            if (lockupDetails?.SwapTree == null || lockupDetails.ServerPublicKey == null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: no BTC lockup details (swapTree or serverPublicKey is null)", swap.SwapId);
+                return;
+            }
+
+            var ephemeralKey = new Key(Convert.FromHexString(ephemeralKeyHex));
+            var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
+            var userPubKey = ecPrivKey.CreatePubKey();
+            var boltzPubKey = ECPubKey.Create(Convert.FromHexString(lockupDetails.ServerPublicKey));
+
+            var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+
+            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
+                lockupDetails.SwapTree, userPubKey, boltzPubKey,
+                lockupDetails.LockupAddress, serverInfo.Network);
+
+            _logger?.LogInformation("Swap {SwapId}: providing cooperative MuSig2 cross-signature for Boltz BTC claim", swap.SwapId);
+            await _chainSwapMusig.CrossSignBoltzClaimAsync(
+                swap.SwapId, ecPrivKey, boltzPubKey, spendInfo, cancellationToken);
+
+            _logger?.LogInformation("Swap {SwapId}: cooperative cross-signature sent successfully", swap.SwapId);
+
+            // Mark as cross-signed to avoid sending duplicate signatures
+            var metadata = new Dictionary<string, string>(swap.Metadata ?? [])
+            {
+                [SwapMetadata.CrossSigned] = "true"
+            };
+            await _swapsStorage.SaveSwap(swap.WalletId,
+                swap with { Metadata = metadata, UpdatedAt = DateTimeOffset.UtcNow },
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Non-critical: Boltz can still claim via script-path with the preimage
+            _logger?.LogWarning(ex, "Swap {SwapId}: cooperative cross-signing failed (non-critical, Boltz will use script-path)", swap.SwapId);
+        }
     }
 
     // Swap Restoration

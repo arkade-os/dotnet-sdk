@@ -41,7 +41,8 @@ var bitcoin =
             return new ExecuteCommandResult() { Success = true };
         })
         .WithVolume("nark-bitcoind", target: "/data/.bitcoin")
-        .WithContainerFiles("/data/.bitcoin/", "Assets/bitcoin.conf");
+        .WithContainerFiles("/data/.bitcoin/", "Assets/bitcoin.conf")
+        .WithArgs("-datadir=/data/.bitcoin", "-minrelaytxfee=0", "-mintxfee=0", "-paytxfee=0.00002");
 
 var electrs =
     builder
@@ -117,6 +118,7 @@ var nbxplorer =
             "User ID=postgres;Host=postgres;Port=5432;Application Name=nbxplorer;MaxPoolSize=20;Database=nbxplorer")
         .WithEnvironment("NBXPLORER_EXPOSERPC", "1")
         .WithEnvironment("NBXPLORER_NOAUTH", "1")
+        .WithEnvironment("NBXPLORER_NOWARMUP", "1")
         .WithVolume("nark-nbxplorer", "/datadir")
         .WithHttpHealthCheck("/health", 200, "http")
         .WaitFor(nbxplorerDb)
@@ -533,7 +535,7 @@ tlsextradomain=lnd")
 
     var boltz =
         builder
-            .AddContainer("boltz", "boltz/boltz", "ark")
+            .AddContainer("boltz", "boltz/boltz", "latest")
             .WithContainerName("boltz")
             .WithContainerNetworkAlias("boltz")
             .WithEndpoint(9000, 9000, protocol: ProtocolType.Tcp, name: "grpc")
