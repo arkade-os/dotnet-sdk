@@ -78,36 +78,32 @@ public class AssetTests
 
         var serverInfo = await alice.clientTransport.GetServerInfoAsync();
 
-        // Alice sends all 1000 asset units to Bob using explicit coin selection
-        // to ensure correct input ordering for the asset packet.
+        // Alice sends 400 asset units to Bob (keeping 600 as change).
+        // Use the auto coin selection overload — it adds extra BTC for the asset change output.
         var spendingService = new SpendingService(
             alice.vtxoStorage, alice.contracts, alice.walletProvider,
             aliceCoinService, alice.contractService, alice.clientTransport,
             new NArk.Core.CoinSelector.DefaultCoinSelector(), alice.safetyService, aliceIntentStorage);
 
-        var aliceCoins = await spendingService.GetAvailableCoins(alice.walletIdentifier);
-
-        // Find the coin carrying the asset
-        var assetCoin = aliceCoins.First(c =>
-            c.Assets is { Count: > 0 } assets && assets.Any(a => a.AssetId == assetId));
-
-        // Send all 1000 units to Bob with explicit inputs (single asset coin).
-        // Using explicit inputs avoids coin selector ordering issues with asset packets.
         await spendingService.Spend(alice.walletIdentifier,
-            [assetCoin],
         [
             new ArkTxOut(ArkTxOutType.Vtxo, serverInfo.Dust, bobAddress)
             {
-                Assets = [new ArkTxOutAsset(assetId, 1000)]
+                Assets = [new ArkTxOutAsset(assetId, 400)]
             }
         ]);
 
         // Poll until Bob receives the asset VTXO
         await PollUntilAssetVtxo(bob, assetId, TimeSpan.FromSeconds(30));
 
-        // Verify Bob has 1000 units
+        // Verify Bob has 400 units
         var bobBalance = await GetAssetBalance(bob.vtxoStorage, assetId);
-        Assert.That(bobBalance, Is.EqualTo(1000UL), "Bob should have 1000 asset units");
+        Assert.That(bobBalance, Is.EqualTo(400UL), "Bob should have 400 asset units");
+
+        // Verify Alice has 600 units (asset change)
+        await PollUntilAssetBalance(alice, assetId, 600, TimeSpan.FromSeconds(30));
+        var aliceBalance = await GetAssetBalance(alice.vtxoStorage, assetId);
+        Assert.That(aliceBalance, Is.EqualTo(600UL), "Alice should have 600 asset units (change)");
     }
 
     [Test, Order(3)]
@@ -217,20 +213,16 @@ public class AssetTests
     }
 
     [Test, Order(5)]
-    [Explicit("Controlled issuance + reissuance requires IssueAsync to support creating both " +
-              "control and main asset in one transaction (Go SDK NewControlAsset pattern). " +
-              "The current SDK issues them separately, and AssetRef.FromId is not yet " +
-              "compatible with arkd v0.9.0-rc.1 for controlled initial issuance.")]
-    public async Task CanIssueControlledAssetAndReissue()
+    [Explicit("AssetRef.FromId for controlled initial issuance is not yet " +
+              "compatible with arkd v0.9.0-rc.1")]
+    public async Task CanIssueAssetWithControlAsset()
     {
         var app = SharedArkInfrastructure.App;
         var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
 
         var (assetManager, _, _) = CreateAssetServices(walletDetails);
 
-        // Step 1: Issue control asset + main asset in a single issuance.
-        // The Go SDK supports NewControlAsset which issues both at once. Our SDK issues
-        // them separately. Issue the control asset first (amount=1).
+        // Issue control asset (amount=1)
         var controlResult = await assetManager.IssueAsync(walletDetails.walletIdentifier,
             new IssuanceParams(Amount: 1));
         var controlAssetId = controlResult.AssetId;
@@ -239,29 +231,58 @@ public class AssetTests
         // Poll until control VTXO appears
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
 
-        // Verify control asset exists
+        // Issue main asset with controlAssetId referencing the control
+        var mainResult = await assetManager.IssueAsync(walletDetails.walletIdentifier,
+            new IssuanceParams(Amount: 1000, ControlAssetId: controlAssetId));
+        var mainAssetId = mainResult.AssetId;
+        Assert.That(mainAssetId, Is.Not.Null.And.Not.Empty, "Main AssetId should be non-empty");
+
+        // Poll until main asset VTXO appears
+        await PollUntilAssetVtxo(walletDetails, mainAssetId, TimeSpan.FromSeconds(30));
+
+        // Verify both assets exist
         var controlDetails = await walletDetails.clientTransport.GetAssetDetailsAsync(controlAssetId);
         Assert.That(controlDetails.Supply, Is.EqualTo(1UL), "Control asset supply should be 1");
 
-        // Step 2: Reissue new supply using the control asset as authorization.
-        // The reissuance builds a packet containing:
-        // - A passthrough group that transfers the control asset from input to output (proves ownership)
-        // - A reissuance group referencing the control asset ID with new outputs (adds supply)
+        var mainDetails = await walletDetails.clientTransport.GetAssetDetailsAsync(mainAssetId);
+        Assert.That(mainDetails.Supply, Is.EqualTo(1000UL), "Main asset supply should be 1000");
+        Assert.That(mainDetails.ControlAssetId, Is.EqualTo(controlAssetId),
+            "Main asset should reference the control asset");
+    }
+
+    [Test, Order(6)]
+    [Explicit("Reissuance with control asset passthrough is not yet " +
+              "compatible with arkd v0.9.0-rc.1")]
+    public async Task CanReissueAssetWithControlAsset()
+    {
+        var app = SharedArkInfrastructure.App;
+        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+
+        var (assetManager, _, _) = CreateAssetServices(walletDetails);
+
+        // Issue control asset (amount=1)
+        var controlResult = await assetManager.IssueAsync(walletDetails.walletIdentifier,
+            new IssuanceParams(Amount: 1));
+        var controlAssetId = controlResult.AssetId;
+
+        // Poll until control VTXO appears
+        await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
+
+        // Reissue 500 units using the control asset as authorization
         var reissueTxId = await assetManager.ReissueAsync(walletDetails.walletIdentifier,
             new ReissuanceParams(controlAssetId, 500));
         Assert.That(reissueTxId, Is.Not.Null.And.Not.Empty, "Reissuance tx should return a valid txid");
 
-        // Poll until the newly reissued asset VTXO appears
+        // Poll until the reissued asset VTXO appears
         await Task.Delay(1000);
         await PollAllScripts(walletDetails);
 
-        // Step 3: Verify control asset still has supply=1 after passthrough
+        // Verify control asset supply remains 1 after passthrough
         var controlDetailsAfter = await walletDetails.clientTransport.GetAssetDetailsAsync(controlAssetId);
         Assert.That(controlDetailsAfter.Supply, Is.EqualTo(1UL),
             "Control asset supply should remain 1 after reissuance");
 
-        // Step 4: Reissue again to prove repeated reissuance works.
-        // Re-poll to pick up the control asset's new VTXO from the passthrough.
+        // Reissue again to prove repeated reissuance works
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
 
         var reissueTxId2 = await assetManager.ReissueAsync(walletDetails.walletIdentifier,
@@ -271,13 +292,13 @@ public class AssetTests
         await Task.Delay(1000);
         await PollAllScripts(walletDetails);
 
-        // Control asset still supply=1
+        // Verify control asset still has supply=1
         var controlDetailsFinal = await walletDetails.clientTransport.GetAssetDetailsAsync(controlAssetId);
         Assert.That(controlDetailsFinal.Supply, Is.EqualTo(1UL),
             "Control asset supply should remain 1 after second reissuance");
     }
 
-    [Test, Order(6)]
+    [Test, Order(7)]
     [Explicit("GetAssetDetailsAsync returns InvalidProtocolBufferException when the asset has metadata — " +
               "the client proto for AssetMetadata is incompatible with arkd v0.9.0-rc.1 response encoding")]
     public async Task CanIssueAssetWithMetadata()

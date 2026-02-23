@@ -165,6 +165,46 @@ public static class TransactionHelpers
             var tx = arkTx.BuildPSBT(false, PSBTVersion.PSBTv0);
             var gtx = tx.GetGlobalTransaction();
             gtx.Outputs.Add(new TxOut(Money.Zero, p2A));
+
+            // NBitcoin's TransactionBuilder may reorder inputs (e.g. by amount) even
+            // with ShuffleInputs=false. If asset packets are present, their input
+            // indices (vin) must match the actual PSBT input order, not the original
+            // coin order used when building the packet. Remap if needed.
+            var coinList = coins.ToList();
+            var inputRemapping = new Dictionary<ushort, ushort>();
+            var needsRemap = false;
+            for (var origIdx = 0; origIdx < coinList.Count; origIdx++)
+            {
+                var cpOutpoint = checkpointCoins[origIdx].Outpoint;
+                for (var psbtIdx = 0; psbtIdx < gtx.Inputs.Count; psbtIdx++)
+                {
+                    if (gtx.Inputs[psbtIdx].PrevOut != cpOutpoint) continue;
+                    inputRemapping[(ushort)origIdx] = (ushort)psbtIdx;
+                    if (psbtIdx != origIdx) needsRemap = true;
+                    break;
+                }
+            }
+
+            if (needsRemap)
+            {
+                for (var i = 0; i < gtx.Outputs.Count; i++)
+                {
+                    if (!Assets.Packet.IsAssetPacket(gtx.Outputs[i].ScriptPubKey)) continue;
+                    var packet = Assets.Packet.FromScript(gtx.Outputs[i].ScriptPubKey);
+                    var remappedGroups = packet.Groups.Select(g =>
+                        Assets.AssetGroup.Create(
+                            g.AssetId, g.ControlAsset,
+                            g.Inputs.Select(inp =>
+                                Assets.AssetInput.Create(inputRemapping.GetValueOrDefault(inp.Vin, inp.Vin), inp.Amount))
+                                .ToList(),
+                            g.Outputs, g.Metadata)).ToList();
+                    var remappedTxOut = Assets.Packet.Create(remappedGroups).ToTxOut();
+                    gtx.Outputs[i].ScriptPubKey = remappedTxOut.ScriptPubKey;
+                    gtx.Outputs[i].Value = remappedTxOut.Value;
+                    break;
+                }
+            }
+
             tx = PSBT.FromTransaction(gtx, serverInfo.Network, PSBTVersion.PSBTv0);
             arkTx.UpdatePSBT(tx);
 
