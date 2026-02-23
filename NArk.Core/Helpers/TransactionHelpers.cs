@@ -119,6 +119,8 @@ public static class TransactionHelpers
             arkTx.SetVersion(3);
             arkTx.SetFeeWeight(0);
             arkTx.DustPrevention = false;
+            arkTx.ShuffleInputs = false;
+            arkTx.ShuffleOutputs = false;
             // arkTx.Send(p2a, Money.Zero);
             arkTx.AddCoins(checkpointCoins);
 

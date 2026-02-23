@@ -105,6 +105,8 @@ public class AssetManager(
                 cancellationToken: cancellationToken);
 
             // Derive AssetId from {txHash, groupIndex=0}
+            // txHash.ToString() returns hex in reversed (display) byte order, which is the standard
+            // format used by the Ark protocol for asset IDs
             var assetId = AssetId.Create(txHash.ToString(), 0);
             return new IssuanceResult(txHash.ToString(), assetId.ToString());
         }
@@ -188,16 +190,12 @@ public class AssetManager(
 
             var outputs = outputsList.ToArray();
 
-            // Build the packet with two groups:
-            // Group 0: issuance — new asset, controlled by group 1
-            // Group 1: passthrough — transfers the control asset from input to output
-            var issuanceGroup = AssetGroup.Create(
-                assetId: null,
-                controlAsset: AssetRef.FromGroupIndex(1),
-                inputs: [],
-                outputs: [AssetOutput.Create(0, parameters.Amount)],
-                metadata: []);
-
+            // Build the packet with two groups, following the Go SDK pattern:
+            // Group 0: passthrough — transfers the control asset from input to output (proves ownership)
+            // Group 1: reissuance — references the control asset ID, has no inputs, adds new output
+            //
+            // The server validates that the control asset referenced in group 1 is present
+            // as an input in the same transaction (via group 0's passthrough).
             var passthroughGroup = AssetGroup.Create(
                 assetId: AssetId.FromString(parameters.AssetId),
                 controlAsset: null,
@@ -205,7 +203,14 @@ public class AssetManager(
                 outputs: [AssetOutput.Create(1, controlAsset.Amount)],
                 metadata: []);
 
-            var packet = Packet.Create([issuanceGroup, passthroughGroup]);
+            var reissuanceGroup = AssetGroup.Create(
+                assetId: AssetId.FromString(parameters.AssetId),
+                controlAsset: null,
+                inputs: [],
+                outputs: [AssetOutput.Create(0, parameters.Amount)],
+                metadata: []);
+
+            var packet = Packet.Create([passthroughGroup, reissuanceGroup]);
 
             // Submit the transaction
             var transactionBuilder =
@@ -365,7 +370,8 @@ public class AssetManager(
         var contractByScript =
             (await contractStorage.GetContracts(walletIds: [walletId], scripts: scripts,
                 cancellationToken: cancellationToken))
-            .ToDictionary(entity => entity.Script);
+            .GroupBy(entity => entity.Script)
+            .ToDictionary(g => g.Key, g => g.First());
         var vtxosByContracts = vtxos.GroupBy(v => contractByScript[v.Script]);
 
         HashSet<ArkCoin> coins = [];

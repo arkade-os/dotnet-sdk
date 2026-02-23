@@ -83,12 +83,16 @@ public class SpendingService(
             var needsChange = change >= serverInfo.Dust ||
                               (change > 0L && (hasExplicitSubdustOutput + 1) <= TransactionHelpers.MaxOpReturnOutputs);
 
+            // Also need a change output when inputs carry assets not fully consumed by outputs
+            if (!needsChange && HasAssetChange(inputs, outputs))
+                needsChange = true;
+
             if (needsChange)
             {
                 // Pass input contracts for potential descriptor recycling (avoids HD index bloat)
                 // set inactive so that the postspend event polls and not have a contract constantly listening
                 var inputContracts = inputs.Select(i => i.Contract).ToArray();
-                changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf, 
+                changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf,
                     inputContracts, cancellationToken: cancellationToken, activityState:ContractActivityState.Inactive)).GetArkAddress();
             }
 
@@ -145,7 +149,8 @@ public class SpendingService(
         var contractByScript =
             (await contractStorage.GetContracts(walletIds: [walletId], scripts: scripts,
                 cancellationToken: cancellationToken))
-            .ToDictionary(entity => entity.Script);
+            .GroupBy(entity => entity.Script)
+            .ToDictionary(g => g.Key, g => g.First());
         var vtxosByContracts =
             vtxos
                 .GroupBy(v => contractByScript[v.Script]);
@@ -186,10 +191,15 @@ public class SpendingService(
 
         var coins = await GetAvailableCoins(walletId, cancellationToken);
 
-        // Extract asset requirements from outputs for asset-aware coin selection
+        // Extract asset requirements from outputs for asset-aware coin selection.
+        // When assets are involved, we may need an extra dust output for asset change,
+        // so add dust to the BTC target to ensure the coin selector picks enough funds.
         var assetRequirements = ExtractAssetRequirements(outputs);
+        Money btcTarget = assetRequirements.Count > 0
+            ? Money.Satoshis(outputsSumInSatoshis) + serverInfo.Dust  // extra dust for potential asset change output
+            : Money.Satoshis(outputsSumInSatoshis);
         var selectedCoins = assetRequirements.Count > 0
-            ? coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, assetRequirements, serverInfo.Dust,
+            ? coinSelector.SelectCoins([.. coins], btcTarget, assetRequirements, serverInfo.Dust,
                 hasExplicitSubdustOutput)
             : coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
                 hasExplicitSubdustOutput);
@@ -205,6 +215,11 @@ public class SpendingService(
             ArkAddress? changeAddress = null;
             var needsChange = change >= serverInfo.Dust ||
                               (change > 0L && (hasExplicitSubdustOutput + 1) <= TransactionHelpers.MaxOpReturnOutputs);
+
+            // Also need a change output when inputs carry assets that aren't fully consumed
+            // by the explicit outputs, so asset change has a dedicated output to land on.
+            if (!needsChange && HasAssetChange(selectedCoins.ToList(), outputs))
+                needsChange = true;
 
             if (needsChange)
             {
@@ -227,7 +242,6 @@ public class SpendingService(
             {
                 outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
             }
-
             // Build asset packet if any inputs or outputs carry assets
             var assetPacketOutput = BuildAssetPacket(selectedCoins, outputs);
 
@@ -255,6 +269,36 @@ public class SpendingService(
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Checks whether the selected inputs carry asset amounts that are not fully consumed
+    /// by the explicit output assets. When true, a separate change output is required.
+    /// </summary>
+    private static bool HasAssetChange(IReadOnlyCollection<ArkCoin> inputs, ArkTxOut[] outputs)
+    {
+        // Sum asset amounts per assetId across inputs
+        var inputAssets = new Dictionary<string, ulong>();
+        foreach (var coin in inputs)
+        {
+            if (coin.Assets is not { Count: > 0 } assets) continue;
+            foreach (var asset in assets)
+                inputAssets[asset.AssetId] = inputAssets.GetValueOrDefault(asset.AssetId) + asset.Amount;
+        }
+
+        if (inputAssets.Count == 0) return false;
+
+        // Sum asset amounts per assetId across outputs
+        var outputAssets = new Dictionary<string, ulong>();
+        foreach (var output in outputs)
+        {
+            if (output.Assets is not { Count: > 0 } assets) continue;
+            foreach (var asset in assets)
+                outputAssets[asset.AssetId] = outputAssets.GetValueOrDefault(asset.AssetId) + asset.Amount;
+        }
+
+        // Any input asset not fully consumed means there is asset change
+        return inputAssets.Any(kv => kv.Value > outputAssets.GetValueOrDefault(kv.Key));
     }
 
     private static List<AssetRequirement> ExtractAssetRequirements(ArkTxOut[] outputs)
@@ -331,7 +375,18 @@ public class SpendingService(
             var assetChange = totalIn - totalOut;
             if (assetChange > 0)
             {
-                groupOutputs.Add(AssetOutput.Create(changeOutputIndex, (ulong)assetChange));
+                // Check if an explicit asset output already targets the change vout;
+                // if so, merge the change amount into that entry to avoid duplicate vout.
+                var existingIdx = groupOutputs.FindIndex(o => o.Vout == changeOutputIndex);
+                if (existingIdx >= 0)
+                {
+                    var existing = groupOutputs[existingIdx];
+                    groupOutputs[existingIdx] = AssetOutput.Create(changeOutputIndex, existing.Amount + (ulong)assetChange);
+                }
+                else
+                {
+                    groupOutputs.Add(AssetOutput.Create(changeOutputIndex, (ulong)assetChange));
+                }
             }
 
             groups.Add(AssetGroup.Create(assetId, null, groupInputs, groupOutputs, []));
