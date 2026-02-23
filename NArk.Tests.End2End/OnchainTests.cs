@@ -10,6 +10,7 @@ using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.VTXOs;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 
@@ -53,10 +54,18 @@ public class OnchainTests
         var contractService = arkHost.Services.GetRequiredService<IContractService>();
         var wallet = arkHost.Services.GetRequiredService<InMemoryWalletProvider>();
         var intentStorage = arkHost.Services.GetRequiredService<IIntentStorage>();
+        var vtxoStorage = arkHost.Services.GetRequiredService<IVtxoStorage>();
 
         var fp1 = await wallet.CreateTestWallet();
         var fp2 = await wallet.CreateTestWallet();
         var contract = await contractService.DeriveContract(fp1, NextContractPurpose.Receive, cancellationToken: CancellationToken.None);
+
+        var fundedTcs = new TaskCompletionSource();
+        vtxoStorage.VtxosChanged += (_, vtxo) =>
+        {
+            if (!vtxo.IsSpent() && vtxo.Amount == 50000UL)
+                fundedTcs.TrySetResult();
+        };
 
         await Cli.Wrap("docker")
             .WithArguments([
@@ -64,6 +73,8 @@ public class OnchainTests
                 "50000", "--password", "secret"
             ])
             .ExecuteBufferedAsync();
+
+        await fundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
         var destination =
             new TaprootAddress(

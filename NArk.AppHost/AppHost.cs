@@ -101,7 +101,7 @@ var boltzDb = postgres
 
 var nbxplorer =
     builder
-        .AddContainer("nbxplorer", "nicolasdorier/nbxplorer", "2.5.30-1")
+        .AddContainer("nbxplorer", "nicolasdorier/nbxplorer", "2.6.0")
         .WithContainerNetworkAlias("nbxplorer")
         .WithHttpEndpoint(32838, 32838, "http")
         .WithEnvironment("NBXPLORER_NETWORK", "regtest")
@@ -126,7 +126,7 @@ var nbxplorer =
 
 var arkWallet =
     builder
-        .AddContainer("ark-wallet", "ghcr.io/arkade-os/arkd-wallet", "v0.8.10")
+        .AddContainer("ark-wallet", "ghcr.io/arkade-os/arkd-wallet", "v0.9.0-rc.1")
         .WithContainerName("ark-wallet")
         .WithContainerNetworkAlias("ark-wallet")
         .WaitFor(bitcoin)
@@ -140,7 +140,7 @@ var arkWallet =
 
 var ark =
     builder
-        .AddContainer("ark", "ghcr.io/arkade-os/arkd", "v0.8.10")
+        .AddContainer("ark", "ghcr.io/arkade-os/arkd", "v0.9.0-rc.1")
         .WithContainerName("ark")
         .WaitFor(bitcoin)
         .WaitFor(arkdDb)
@@ -207,12 +207,15 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
     var walletUnlockProcess =
         await Cli.Wrap("docker")
             .WithArguments(["exec", "-t", "ark", "arkd", "wallet", "unlock", "--password", "secret"])
+            .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(cancellationToken);
 
-    if (!walletUnlockProcess.IsSuccess)
+    if (!walletUnlockProcess.IsSuccess &&
+        !walletUnlockProcess.StandardOutput.Contains("already unlocked") &&
+        !walletUnlockProcess.StandardError.Contains("already unlocked"))
     {
-        logger.LogCritical(
-            "Wallet unlock failed, output = {stdOut}, error = {stdErr}",
+        logger.LogWarning(
+            "Wallet unlock returned non-zero (may be auto-unlocked via env), output = {stdOut}, error = {stdErr}",
             walletUnlockProcess.StandardOutput,
             walletUnlockProcess.StandardError
         );
