@@ -30,6 +30,10 @@
     </ItemGroup>
 
     <ItemGroup>
+        <AssemblyAttribute Include="NUnit.Framework.NonParallelizableAttribute" />
+    </ItemGroup>
+
+    <ItemGroup>
       <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
       <ProjectReference Include="..\NArk.AppHost\NArk.AppHost.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
