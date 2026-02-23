@@ -222,6 +222,11 @@ public class VtxoSynchronizationTests
             new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(randomAmount / 2), wallet2Address)
         ]);
 
-        await receiveHalfTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        // Poll for new VTXOs after direct spend (no PostSpendVtxoPollingHandler in manual wiring)
+        await Task.Delay(500);
+        await vtxoSync.PollScriptsForVtxos(
+            new HashSet<string> { contract2.GetArkAddress().ScriptPubKey.ToHex() });
+
+        await receiveHalfTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
     }
 }

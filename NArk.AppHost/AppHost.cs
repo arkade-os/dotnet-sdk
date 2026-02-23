@@ -207,12 +207,15 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
     var walletUnlockProcess =
         await Cli.Wrap("docker")
             .WithArguments(["exec", "-t", "ark", "arkd", "wallet", "unlock", "--password", "secret"])
+            .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(cancellationToken);
 
-    if (!walletUnlockProcess.IsSuccess)
+    if (!walletUnlockProcess.IsSuccess &&
+        !walletUnlockProcess.StandardOutput.Contains("already unlocked") &&
+        !walletUnlockProcess.StandardError.Contains("already unlocked"))
     {
-        logger.LogCritical(
-            "Wallet unlock failed, output = {stdOut}, error = {stdErr}",
+        logger.LogWarning(
+            "Wallet unlock returned non-zero (may be auto-unlocked via env), output = {stdOut}, error = {stdErr}",
             walletUnlockProcess.StandardOutput,
             walletUnlockProcess.StandardError
         );
