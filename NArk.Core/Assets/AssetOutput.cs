@@ -2,10 +2,12 @@ namespace NArk.Core.Assets;
 
 /// <summary>
 /// An output in an asset group, referencing a transaction output (vout) and amount.
-/// Binary layout: [2B vout LE][varint amount]
+/// Binary layout: [0x01 type][2B vout LE][varint amount]
 /// </summary>
 public class AssetOutput
 {
+    private const byte TypeLocal = 0x01;
+
     public ushort Vout { get; }
     public ulong Amount { get; }
 
@@ -26,7 +28,17 @@ public class AssetOutput
     {
         if (reader.Remaining < 2)
             throw new ArgumentException("invalid asset output vout length");
-        var vout = reader.ReadUint16LE();
+
+        var type = reader.ReadByte();
+        if (type == 0x00)
+            throw new ArgumentException("output type unspecified");
+        if (type != TypeLocal)
+            throw new ArgumentException("unknown asset output type");
+
+        ushort vout;
+        try { vout = reader.ReadUint16LE(); }
+        catch { throw new ArgumentException("invalid asset output vout length"); }
+
         var amount = reader.ReadVarInt();
         var output = new AssetOutput(vout, amount);
         output.Validate();
@@ -42,6 +54,7 @@ public class AssetOutput
 
     public void SerializeTo(BufferWriter writer)
     {
+        writer.WriteByte(TypeLocal);
         writer.WriteUint16LE(Vout);
         writer.WriteVarInt(Amount);
     }

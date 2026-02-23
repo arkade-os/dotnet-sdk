@@ -6,7 +6,7 @@ namespace NArk.Core.Assets;
 ///   [1B presence flags]
 ///   [if 0x01: 34B AssetId]
 ///   [if 0x02: AssetRef (variable)]
-///   [if 0x04: varint mdCount + Metadata[] sorted desc by key]
+///   [if 0x04: varint mdCount + Metadata[]]
 ///   [varint inputCount][AssetInput...]
 ///   [varint outputCount][AssetOutput...]
 /// </summary>
@@ -107,8 +107,17 @@ public class AssetGroup
             output.SerializeTo(writer);
     }
 
+    public AssetGroup ToBatchLeafAssetGroup(byte[] intentTxid)
+    {
+        var leafInput = AssetInput.CreateIntent(intentTxid, 0, 0);
+        return new AssetGroup(AssetId, ControlAsset, [leafInput], Outputs, Metadata);
+    }
+
     public void Validate()
     {
+        if (Inputs.Count == 0 && Outputs.Count == 0)
+            throw new ArgumentException("empty asset group");
+
         if (IsIssuance)
         {
             if (Inputs.Count != 0)
@@ -119,16 +128,36 @@ public class AssetGroup
             if (ControlAsset is not null)
                 throw new ArgumentException("only issuance can have a control asset");
         }
+
+        if (Inputs.Count > 1)
+        {
+            var firstType = Inputs[0].Type;
+            if (Inputs.Any(i => i.Type != firstType))
+                throw new ArgumentException("asset inputs must be of the same type");
+
+            var vins = new HashSet<ushort>();
+            foreach (var input in Inputs)
+            {
+                if (!vins.Add(input.Vin))
+                    throw new ArgumentException("duplicated inputs vin");
+            }
+        }
+
+        if (Outputs.Count > 1)
+        {
+            var vouts = new HashSet<ushort>();
+            foreach (var output in Outputs)
+            {
+                if (!vouts.Add(output.Vout))
+                    throw new ArgumentException("duplicated output vout");
+            }
+        }
     }
 
-    /// <summary>
-    /// Metadata is sorted by key in descending order before serialization (matching TS/Go).
-    /// </summary>
     private static void SerializeMetadataList(IReadOnlyList<AssetMetadata> metadata, BufferWriter writer)
     {
         writer.WriteVarInt((ulong)metadata.Count);
-        var sorted = metadata.OrderByDescending(m => m.KeyString, StringComparer.Ordinal).ToList();
-        foreach (var m in sorted)
+        foreach (var m in metadata)
             m.SerializeTo(writer);
     }
 

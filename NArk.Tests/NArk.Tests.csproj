@@ -33,4 +33,8 @@
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+      <Content Include="Assets\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
 </Project>

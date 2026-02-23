@@ -70,11 +70,12 @@ public class AssetOutputTests
     [Test]
     public void Serialization_Format()
     {
-        // vout=1 (LE: 0x01, 0x00), amount=100 (varint: 0x64)
+        // type=0x01 (local), vout=1 (LE: 0x01, 0x00), amount=100 (varint: 0x64)
         var output = AssetOutput.Create(1, 100);
         var bytes = output.Serialize();
-        Assert.That(bytes[0], Is.EqualTo(0x01)); // vout low
-        Assert.That(bytes[1], Is.EqualTo(0x00)); // vout high
-        Assert.That(bytes[2], Is.EqualTo(0x64)); // amount = 100
+        Assert.That(bytes[0], Is.EqualTo(0x01)); // type byte
+        Assert.That(bytes[1], Is.EqualTo(0x01)); // vout low
+        Assert.That(bytes[2], Is.EqualTo(0x00)); // vout high
+        Assert.That(bytes[3], Is.EqualTo(0x64)); // amount = 100
     }
 }

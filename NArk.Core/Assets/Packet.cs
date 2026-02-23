@@ -145,5 +145,15 @@ public class Packet
         return packetData;
     }
 
+    /// <summary>
+    /// Converts this packet into a batch leaf packet by replacing all group inputs
+    /// with a single Intent input referencing the given intent txid.
+    /// </summary>
+    public Packet LeafTxPacket(byte[] intentTxid)
+    {
+        var leafGroups = Groups.Select(g => g.ToBatchLeafAssetGroup(intentTxid)).ToList();
+        return new Packet(leafGroups);
+    }
+
     public override string ToString() => Convert.ToHexString(Serialize()).ToLowerInvariant();
 }

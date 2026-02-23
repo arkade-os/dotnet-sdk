@@ -5,36 +5,62 @@ namespace NArk.Tests.Assets;
 [TestFixture]
 public class AssetRefTests
 {
-    private static readonly string ValidTxidHex = "0102030405060708091011121314151617181920212223242526272829303132";
-
+    // Fixture: newAssetRefFromId
     [Test]
-    public void ByID_SerializesWithPrefix01()
+    public void FromId_SerializesToExpected()
     {
-        var assetId = AssetId.Create(ValidTxidHex, 0);
+        var assetId = AssetId.Create("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 42);
         var assetRef = AssetRef.FromId(assetId);
-        var bytes = assetRef.Serialize();
-        Assert.That(bytes[0], Is.EqualTo(0x01)); // ByID type
-        Assert.That(bytes.Length, Is.EqualTo(35)); // 1 + 34
+        Assert.That(assetRef.ToString(),
+            Is.EqualTo("01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2a00"));
+    }
+
+    // Fixture: newAssetRefFromGroup
+    [TestCase((ushort)0, "020000", TestName = "zero index")]
+    [TestCase((ushort)5, "020500", TestName = "random index")]
+    [TestCase((ushort)65535, "02ffff", TestName = "max index")]
+    public void FromGroupIndex_SerializesToExpected(ushort index, string expectedHex)
+    {
+        var assetRef = AssetRef.FromGroupIndex(index);
+        Assert.That(assetRef.ToString(), Is.EqualTo(expectedHex));
+    }
+
+    // Fixture: invalid
+    [Test]
+    public void FromBytes_EmptyRef_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => AssetRef.FromBytes(Array.Empty<byte>()));
     }
 
     [Test]
-    public void ByGroup_SerializesWithPrefix02()
+    public void FromBytes_UnspecifiedType_Throws()
     {
-        var assetRef = AssetRef.FromGroupIndex(3);
-        var bytes = assetRef.Serialize();
-        Assert.That(bytes[0], Is.EqualTo(0x02)); // ByGroup type
-        Assert.That(bytes.Length, Is.EqualTo(3)); // 1 + 2
-        Assert.That(bytes[1], Is.EqualTo(0x03)); // index LE low byte
-        Assert.That(bytes[2], Is.EqualTo(0x00)); // index LE high byte
+        var ex = Assert.Throws<ArgumentException>(() =>
+            AssetRef.FromBytes(Convert.FromHexString("000005")));
+        Assert.That(ex!.Message, Does.Contain("unspecified"));
+    }
+
+    [Test]
+    public void FromBytes_UnknownType_Throws()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            AssetRef.FromBytes(Convert.FromHexString("030005")));
+        Assert.That(ex!.Message, Does.Contain("unknown"));
+    }
+
+    [Test]
+    public void FromBytes_InvalidLength_Throws()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            AssetRef.FromBytes(Convert.FromHexString("0200")));
     }
 
     [Test]
     public void ByID_RoundTrips()
     {
-        var assetId = AssetId.Create(ValidTxidHex, 7);
+        var assetId = AssetId.Create("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 7);
         var original = AssetRef.FromId(assetId);
-        var bytes = original.Serialize();
-        var restored = AssetRef.FromBytes(bytes);
+        var restored = AssetRef.FromBytes(original.Serialize());
         Assert.That(restored.Type, Is.EqualTo(AssetRefType.ByID));
         Assert.That(restored.AssetId!.GroupIndex, Is.EqualTo(7));
     }
@@ -43,8 +69,7 @@ public class AssetRefTests
     public void ByGroup_RoundTrips()
     {
         var original = AssetRef.FromGroupIndex(42);
-        var bytes = original.Serialize();
-        var restored = AssetRef.FromBytes(bytes);
+        var restored = AssetRef.FromBytes(original.Serialize());
         Assert.That(restored.Type, Is.EqualTo(AssetRefType.ByGroup));
         Assert.That(restored.GroupIndex, Is.EqualTo(42));
     }

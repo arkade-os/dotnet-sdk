@@ -67,7 +67,7 @@ public class AssetGroupTests
     }
 
     [Test]
-    public void WithMetadata_SerializesInDescendingKeyOrder()
+    public void WithMetadata_PreservesInsertionOrder()
     {
         var assetId = AssetId.Create(ValidTxidHex, 0);
         var meta = new[]
@@ -85,10 +85,10 @@ public class AssetGroupTests
         var restored = AssetGroup.FromReader(reader);
 
         Assert.That(restored.Metadata, Has.Count.EqualTo(3));
-        // Deserialized order should be desc: zeta, beta, alpha
-        Assert.That(restored.Metadata[0].KeyString, Is.EqualTo("zeta"));
-        Assert.That(restored.Metadata[1].KeyString, Is.EqualTo("beta"));
-        Assert.That(restored.Metadata[2].KeyString, Is.EqualTo("alpha"));
+        // Metadata follows insertion order per spec (no implicit sorting)
+        Assert.That(restored.Metadata[0].KeyString, Is.EqualTo("alpha"));
+        Assert.That(restored.Metadata[1].KeyString, Is.EqualTo("zeta"));
+        Assert.That(restored.Metadata[2].KeyString, Is.EqualTo("beta"));
     }
 
     [Test]
