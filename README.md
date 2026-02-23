@@ -154,6 +154,102 @@ var txId = await spendingService.Spend(
     outputs: [new ArkTxOut(recipientAddress, Money.Satoshis(5_000))]);
 ```
 
+## Assets
+
+The SDK supports issuing, transferring, and burning assets on Ark. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Ark transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
+
+### Issuance
+
+Use `IAssetManager` to create new assets:
+
+```csharp
+var result = await assetManager.IssueAsync(walletId,
+    new IssuanceParams(Amount: 1000));
+
+// result.AssetId  — the unique asset identifier
+// result.ArkTxId  — the Ark transaction that created it
+```
+
+Issue with metadata:
+
+```csharp
+var result = await assetManager.IssueAsync(walletId,
+    new IssuanceParams(
+        Amount: 1000,
+        Metadata: new Dictionary<string, string>
+        {
+            { "name", "My Token" },
+            { "ticker", "MTK" },
+            { "decimals", "8" }
+        }));
+```
+
+### Controlled Issuance & Reissuance
+
+A control asset acts as a minting key — only the holder can issue more supply:
+
+```csharp
+// Issue a control asset (amount=1, acts as the minting authority)
+var control = await assetManager.IssueAsync(walletId,
+    new IssuanceParams(Amount: 1));
+
+// Issue a token controlled by that asset
+var token = await assetManager.IssueAsync(walletId,
+    new IssuanceParams(Amount: 1000, ControlAssetId: control.AssetId));
+
+// Reissue more supply later (requires holding the control asset)
+await assetManager.ReissueAsync(walletId,
+    new ReissuanceParams(control.AssetId, Amount: 500));
+```
+
+### Transfer
+
+Asset transfers use the standard `SpendingService.Spend()` with `ArkTxOut.Assets`:
+
+```csharp
+await spendingService.Spend(walletId,
+[
+    new ArkTxOut(ArkTxOutType.Vtxo, serverInfo.Dust, recipientAddress)
+    {
+        Assets = [new ArkTxOutAsset(assetId, 400)]
+    }
+]);
+// Automatic coin selection handles BTC fees and asset change.
+// Sender retains remaining units (e.g. 600 of 1000) as asset change.
+```
+
+### Burn
+
+Reduce the circulating supply of an asset:
+
+```csharp
+await assetManager.BurnAsync(walletId,
+    new BurnParams(assetId, Amount: 400));
+// Remaining 600 units are returned as change
+```
+
+### Querying Assets
+
+Check asset balances from local VTXO storage:
+
+```csharp
+var coins = await spendingService.GetAvailableCoins(walletId);
+foreach (var coin in coins.Where(c => c.Assets is { Count: > 0 }))
+{
+    foreach (var asset in coin.Assets!)
+        Console.WriteLine($"Asset {asset.AssetId}: {asset.Amount} units");
+}
+```
+
+Query asset details from the Ark server:
+
+```csharp
+var details = await transport.GetAssetDetailsAsync(assetId);
+// details.Supply — total circulating supply
+// details.AssetId — the asset identifier
+// details.Metadata — key-value metadata (if set during issuance)
+```
+
 ## Collaborative Exits (On-chain)
 
 Move funds from Ark back to the Bitcoin base layer:
