@@ -1,6 +1,7 @@
 using CliWrap;
 using CliWrap.Buffered;
 using BTCPayServer.Lightning;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NArk.Blockchain.NBXplorer;
 using NArk.Core.Fees;
@@ -167,6 +168,9 @@ public class SwapManagementServiceTests
                 new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
             ]);
 
+        using var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        var logger = loggerFactory.CreateLogger<SwapsManagementService>();
+
         await using var swapMgr = new SwapsManagementService(
             new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
                 testingPrerequisite.walletProvider,
@@ -174,12 +178,14 @@ public class SwapManagementServiceTests
                 testingPrerequisite.contractService, testingPrerequisite.clientTransport, new DefaultCoinSelector(), testingPrerequisite.safetyService, intentStorage),
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider,
-            swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts, testingPrerequisite.safetyService, intentStorage, boltzClient, chainTimeProvider);
+            swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts, testingPrerequisite.safetyService, intentStorage, boltzClient, chainTimeProvider,
+            logger);
 
         var refundedSwapTcs = new TaskCompletionSource();
 
         swapStorage.SwapsChanged += (sender, swap) =>
         {
+            Console.WriteLine($"[CoOpRefund] SwapsChanged: {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
             if (swap.Status == ArkSwapStatus.Refunded)
                 refundedSwapTcs.TrySetResult();
         };
@@ -194,11 +200,33 @@ public class SwapManagementServiceTests
             false,
             CancellationToken.None
         );
+        Console.WriteLine($"[CoOpRefund] Swap created: {swapId}");
 
         // wait for invoice to expire
+        Console.WriteLine("[CoOpRefund] Waiting 30s for invoice to expire...");
         await Task.Delay(TimeSpan.FromSeconds(30));
 
+        Console.WriteLine("[CoOpRefund] Paying expired swap...");
         await swapMgr.PayExistingSubmarineSwap(testingPrerequisite.walletIdentifier, swapId, CancellationToken.None);
+        Console.WriteLine("[CoOpRefund] Payment sent, waiting for cooperative refund...");
+
+        // Poll Boltz status periodically for diagnostics
+        _ = Task.Run(async () =>
+        {
+            for (var i = 0; i < 12; i++)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10));
+                try
+                {
+                    var status = await boltzClient.GetSwapStatusAsync(swapId, CancellationToken.None);
+                    Console.WriteLine($"[CoOpRefund] Poll {i}: Boltz status = {status?.Status}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CoOpRefund] Poll {i}: error = {ex.Message}");
+                }
+            }
+        });
 
         await refundedSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
     }
