@@ -9,10 +9,10 @@ namespace NArk.Tests.End2End.Common;
 public static class FulmineLiquidityHelper
 {
     /// <summary>
-    /// Polls Fulmine's balance, triggering settle + block mining until ARK VTXOs are available.
+    /// Polls Fulmine's balance, triggering settle + block mining until ARK VTXOs reach the minimum.
     /// Call this after Boltz is healthy but before tests that create BTC→ARK or reverse swaps.
     /// </summary>
-    public static async Task EnsureArkLiquidity(DistributedApplication app, int maxAttempts = 15)
+    public static async Task EnsureArkLiquidity(DistributedApplication app, long minBalance = 200_000, int maxAttempts = 30)
     {
         var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
         var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
@@ -24,23 +24,8 @@ public static class FulmineLiquidityHelper
                 var balanceJson = await fulmineHttp.GetStringAsync("/api/v1/balance");
                 var balance = JsonNode.Parse(balanceJson)?["amount"];
                 var arkBalance = long.TryParse(balance?.ToString(), out var b) ? b : 0;
-                Console.WriteLine($"[FulmineLiquidity] ARK balance: {arkBalance} sats (attempt {attempt})");
-                if (arkBalance > 0)
-                {
-                    // Log Boltz pair limits for diagnostics
-                    try
-                    {
-                        var boltzProxy = app.GetEndpoint("boltz-proxy", "api");
-                        var boltzHttp = new HttpClient { BaseAddress = new Uri(boltzProxy.ToString()) };
-                        var pairsJson = await boltzHttp.GetStringAsync("/v2/swap/reverse");
-                        Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs at setup: {pairsJson}");
-                    }
-                    catch (Exception pairsEx)
-                    {
-                        Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs query failed at setup: {pairsEx.Message}");
-                    }
-                    return;
-                }
+                Console.WriteLine($"[FulmineLiquidity] ARK balance: {arkBalance} sats (attempt {attempt}, need {minBalance})");
+                if (arkBalance >= minBalance) return;
             }
             catch (Exception ex)
             {
@@ -52,10 +37,10 @@ public static class FulmineLiquidityHelper
 
             for (var i = 0; i < 3; i++)
                 await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromSeconds(3));
         }
 
-        Console.WriteLine("[FulmineLiquidity] WARNING: Fulmine still has no ARK balance after all attempts");
+        Console.WriteLine($"[FulmineLiquidity] WARNING: Fulmine balance still below {minBalance} after all attempts");
     }
 
     /// <summary>
