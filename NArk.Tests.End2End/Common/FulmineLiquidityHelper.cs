@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Aspire.Hosting;
 
@@ -9,10 +10,10 @@ namespace NArk.Tests.End2End.Common;
 public static class FulmineLiquidityHelper
 {
     /// <summary>
-    /// Polls Fulmine's balance, triggering block mining + settle until ARK VTXOs reach the minimum.
+    /// Ensures Fulmine has enough ARK VTXOs by funding its boarding address, mining, and settling.
     /// Call this after Boltz is healthy but before tests that create BTC→ARK or reverse swaps.
     /// </summary>
-    public static async Task EnsureArkLiquidity(DistributedApplication app, long minBalance = 200_000, int maxAttempts = 30)
+    public static async Task EnsureArkLiquidity(DistributedApplication app, long minBalance = 200_000, int maxAttempts = 20)
     {
         var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
         var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
@@ -23,19 +24,23 @@ public static class FulmineLiquidityHelper
             Console.WriteLine($"[FulmineLiquidity] ARK balance: {arkBalance} sats (attempt {attempt}, need {minBalance})");
             if (arkBalance >= minBalance) return;
 
-            // Mine blocks FIRST to confirm any pending boarding UTXOs,
-            // THEN settle — arkd requires confirmed inputs.
-            for (var i = 0; i < 3; i++)
-                await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+            // Fund Fulmine's boarding address with fresh BTC each attempt
+            await FundFulmineBoarding(app, fulmineHttp);
 
+            // Mine blocks to confirm the boarding UTXO (arkd requires confirmed inputs)
+            for (var i = 0; i < 6; i++)
+                await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+            await Task.Delay(TimeSpan.FromSeconds(2));
+
+            // Now settle — boarding UTXO is confirmed
             try { await fulmineHttp.GetAsync("/api/v1/settle"); }
             catch { /* settle may fail if nothing to settle yet */ }
 
             // Wait for the arkd batch round to process the settle intent
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromSeconds(10));
 
             // Mine the batch commitment tx
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < 6; i++)
                 await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
             await Task.Delay(TimeSpan.FromSeconds(3));
         }
@@ -46,9 +51,9 @@ public static class FulmineLiquidityHelper
 
     /// <summary>
     /// Retries an async operation that may fail with "insufficient liquidity",
-    /// triggering block mining + Fulmine settle between attempts.
+    /// re-funding Fulmine and settling between attempts.
     /// </summary>
-    public static async Task<T> RetryWithSettle<T>(DistributedApplication app, Func<Task<T>> action, int maxAttempts = 10)
+    public static async Task<T> RetryWithSettle<T>(DistributedApplication app, Func<Task<T>> action, int maxAttempts = 5)
     {
         var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
         var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
@@ -64,15 +69,17 @@ public static class FulmineLiquidityHelper
                 var balance = await GetFulmineArkBalance(fulmineHttp);
                 Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity. Fulmine ARK balance: {balance} sats");
 
-                // Mine blocks FIRST (confirm boarding UTXOs), THEN settle
-                for (var i = 0; i < 3; i++)
+                // Re-fund and settle
+                await FundFulmineBoarding(app, fulmineHttp);
+
+                for (var i = 0; i < 6; i++)
                     await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+                await Task.Delay(TimeSpan.FromSeconds(2));
 
                 try { await fulmineHttp.GetAsync("/api/v1/settle"); } catch { }
 
-                // Wait for batch round + mine commitment tx
-                await Task.Delay(TimeSpan.FromSeconds(5));
-                for (var i = 0; i < 3; i++)
+                await Task.Delay(TimeSpan.FromSeconds(10));
+                for (var i = 0; i < 6; i++)
                     await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
                 await Task.Delay(TimeSpan.FromSeconds(3));
 
@@ -84,17 +91,46 @@ public static class FulmineLiquidityHelper
     }
 
     /// <summary>
-    /// Gets Fulmine's offchain (ARK VTXO) balance in sats.
-    /// The REST API returns { "offchain": N, "onchain": N, "total": N }.
+    /// Sends 1 BTC to Fulmine's boarding address via the chopsticks faucet.
+    /// </summary>
+    private static async Task FundFulmineBoarding(DistributedApplication app, HttpClient fulmineHttp)
+    {
+        try
+        {
+            var addressJson = await fulmineHttp.GetStringAsync("/api/v1/address");
+            var arkAddress = JsonNode.Parse(addressJson)?["address"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(arkAddress))
+            {
+                Console.WriteLine("[FulmineLiquidity] Could not get Fulmine address");
+                return;
+            }
+
+            var onchainAddress = new Uri(arkAddress).AbsolutePath;
+            Console.WriteLine($"[FulmineLiquidity] Funding boarding address: {onchainAddress}");
+
+            var chopsticksEndpoint = app.GetEndpoint("chopsticks", "http");
+            var response = await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
+            {
+                amount = 1,
+                address = onchainAddress
+            });
+            Console.WriteLine($"[FulmineLiquidity] Faucet response: {response.StatusCode}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FulmineLiquidity] Funding failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Gets Fulmine's ARK VTXO balance in sats.
     /// </summary>
     private static async Task<long> GetFulmineArkBalance(HttpClient fulmineHttp)
     {
         try
         {
             var balanceJson = await fulmineHttp.GetStringAsync("/api/v1/balance");
-            Console.WriteLine($"[FulmineLiquidity] Raw balance response: {balanceJson}");
             var parsed = JsonNode.Parse(balanceJson);
-            // Try REST fields first (offchain/onchain/total), fall back to gRPC field (amount)
             var balance = parsed?["offchain"] ?? parsed?["amount"];
             return long.TryParse(balance?.ToString(), out var b) ? b : 0;
         }
