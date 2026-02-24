@@ -9,7 +9,7 @@ namespace NArk.Tests.End2End.Common;
 public static class FulmineLiquidityHelper
 {
     /// <summary>
-    /// Polls Fulmine's balance, triggering settle + block mining until ARK VTXOs reach the minimum.
+    /// Polls Fulmine's balance, triggering block mining + settle until ARK VTXOs reach the minimum.
     /// Call this after Boltz is healthy but before tests that create BTC→ARK or reverse swaps.
     /// </summary>
     public static async Task EnsureArkLiquidity(DistributedApplication app, long minBalance = 200_000, int maxAttempts = 30)
@@ -19,40 +19,39 @@ public static class FulmineLiquidityHelper
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            try
-            {
-                var balanceJson = await fulmineHttp.GetStringAsync("/api/v1/balance");
-                var balance = JsonNode.Parse(balanceJson)?["amount"];
-                var arkBalance = long.TryParse(balance?.ToString(), out var b) ? b : 0;
-                Console.WriteLine($"[FulmineLiquidity] ARK balance: {arkBalance} sats (attempt {attempt}, need {minBalance})");
-                if (arkBalance >= minBalance) return;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[FulmineLiquidity] Balance check failed (attempt {attempt}): {ex.Message}");
-            }
+            var arkBalance = await GetFulmineArkBalance(fulmineHttp);
+            Console.WriteLine($"[FulmineLiquidity] ARK balance: {arkBalance} sats (attempt {attempt}, need {minBalance})");
+            if (arkBalance >= minBalance) return;
+
+            // Mine blocks FIRST to confirm any pending boarding UTXOs,
+            // THEN settle — arkd requires confirmed inputs.
+            for (var i = 0; i < 3; i++)
+                await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
 
             try { await fulmineHttp.GetAsync("/api/v1/settle"); }
             catch { /* settle may fail if nothing to settle yet */ }
 
+            // Wait for the arkd batch round to process the settle intent
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            // Mine the batch commitment tx
             for (var i = 0; i < 3; i++)
                 await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
             await Task.Delay(TimeSpan.FromSeconds(3));
         }
 
-        Console.WriteLine($"[FulmineLiquidity] WARNING: Fulmine balance still below {minBalance} after all attempts");
+        var finalBalance = await GetFulmineArkBalance(fulmineHttp);
+        Console.WriteLine($"[FulmineLiquidity] WARNING: Fulmine balance {finalBalance} still below {minBalance} after all attempts");
     }
 
     /// <summary>
     /// Retries an async operation that may fail with "insufficient liquidity",
-    /// triggering Fulmine settle + block mining between attempts.
+    /// triggering block mining + Fulmine settle between attempts.
     /// </summary>
     public static async Task<T> RetryWithSettle<T>(DistributedApplication app, Func<Task<T>> action, int maxAttempts = 10)
     {
         var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
         var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
-        var boltzProxy = app.GetEndpoint("boltz-proxy", "api");
-        var boltzHttp = new HttpClient { BaseAddress = new Uri(boltzProxy.ToString()) };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -62,36 +61,47 @@ public static class FulmineLiquidityHelper
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("insufficient liquidity"))
             {
-                // Diagnostic: query Fulmine balance and Boltz reverse pairs limits
-                try
-                {
-                    var balanceJson = await fulmineHttp.GetStringAsync("/api/v1/balance");
-                    Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity. Fulmine balance: {balanceJson}");
-                }
-                catch (Exception balEx)
-                {
-                    Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity. Fulmine balance query failed: {balEx.Message}");
-                }
+                var balance = await GetFulmineArkBalance(fulmineHttp);
+                Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity. Fulmine ARK balance: {balance} sats");
 
-                try
-                {
-                    var pairsJson = await boltzHttp.GetStringAsync("/v2/swap/reverse");
-                    Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs: {pairsJson}");
-                }
-                catch (Exception pairsEx)
-                {
-                    Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs query failed: {pairsEx.Message}");
-                }
-
-                try { await fulmineHttp.GetAsync("/api/v1/settle"); } catch { }
+                // Mine blocks FIRST (confirm boarding UTXOs), THEN settle
                 for (var i = 0; i < 3; i++)
                     await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+
+                try { await fulmineHttp.GetAsync("/api/v1/settle"); } catch { }
+
+                // Wait for batch round + mine commitment tx
                 await Task.Delay(TimeSpan.FromSeconds(5));
+                for (var i = 0; i < 3; i++)
+                    await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+                await Task.Delay(TimeSpan.FromSeconds(3));
 
                 if (attempt == maxAttempts - 1) throw;
             }
         }
 
         throw new InvalidOperationException("Unreachable");
+    }
+
+    /// <summary>
+    /// Gets Fulmine's offchain (ARK VTXO) balance in sats.
+    /// The REST API returns { "offchain": N, "onchain": N, "total": N }.
+    /// </summary>
+    private static async Task<long> GetFulmineArkBalance(HttpClient fulmineHttp)
+    {
+        try
+        {
+            var balanceJson = await fulmineHttp.GetStringAsync("/api/v1/balance");
+            Console.WriteLine($"[FulmineLiquidity] Raw balance response: {balanceJson}");
+            var parsed = JsonNode.Parse(balanceJson);
+            // Try REST fields first (offchain/onchain/total), fall back to gRPC field (amount)
+            var balance = parsed?["offchain"] ?? parsed?["amount"];
+            return long.TryParse(balance?.ToString(), out var b) ? b : 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FulmineLiquidity] Balance check failed: {ex.Message}");
+            return 0;
+        }
     }
 }
