@@ -138,35 +138,12 @@ public class ChainSwapTests
         // Create BTC→ARK chain swap — Boltz needs ARK liquidity from Fulmine.
         // Fulmine's settle is async and may not have completed yet, so retry
         // with settle trigger + block mining between attempts.
-        var fulmineEndpoint = _app.GetEndpoint("boltz-fulmine", "api");
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
-
-        (string btcAddress, string swapId, long expectedLockupSats) swapResult = default;
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            try
-            {
-                swapResult = await swapMgr.InitiateBtcToArkChainSwap(
-                    testingPrerequisite.walletIdentifier,
-                    50000,
-                    CancellationToken.None
-                );
-                Console.WriteLine($"[BTC→ARK] Swap created on attempt {attempt}");
-                break;
-            }
-            catch (HttpRequestException ex) when (ex.Message.Contains("insufficient liquidity"))
-            {
-                Console.WriteLine($"[BTC→ARK] Attempt {attempt}: insufficient liquidity, triggering settle + mining");
-                try { await fulmineHttp.GetAsync("/api/v1/settle"); } catch { }
-                for (var i = 0; i < 3; i++)
-                    await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
-                await Task.Delay(TimeSpan.FromSeconds(5));
-
-                if (attempt == 9) throw;
-            }
-        }
-
-        var (btcAddress, swapId, expectedLockupSats) = swapResult;
+        var (btcAddress, swapId, expectedLockupSats) = await FulmineLiquidityHelper.RetryWithSettle(_app, () =>
+            swapMgr.InitiateBtcToArkChainSwap(
+                testingPrerequisite.walletIdentifier,
+                50000,
+                CancellationToken.None
+            ));
 
         var btcAmount = (expectedLockupSats / 100_000_000m).ToString("0.########");
         Console.WriteLine($"[BTC→ARK] Swap created: {swapId}, BTC lockup: {btcAddress}, expected: {expectedLockupSats} sats ({btcAmount} BTC)");

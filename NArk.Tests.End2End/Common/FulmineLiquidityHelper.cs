@@ -42,4 +42,34 @@ public static class FulmineLiquidityHelper
 
         Console.WriteLine("[FulmineLiquidity] WARNING: Fulmine still has no ARK balance after all attempts");
     }
+
+    /// <summary>
+    /// Retries an async operation that may fail with "insufficient liquidity",
+    /// triggering Fulmine settle + block mining between attempts.
+    /// </summary>
+    public static async Task<T> RetryWithSettle<T>(DistributedApplication app, Func<Task<T>> action, int maxAttempts = 10)
+    {
+        var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
+        var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                return await action();
+            }
+            catch (HttpRequestException ex) when (ex.Message.Contains("insufficient liquidity"))
+            {
+                Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity, triggering settle + mining");
+                try { await fulmineHttp.GetAsync("/api/v1/settle"); } catch { }
+                for (var i = 0; i < 3; i++)
+                    await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+                await Task.Delay(TimeSpan.FromSeconds(5));
+
+                if (attempt == maxAttempts - 1) throw;
+            }
+        }
+
+        throw new InvalidOperationException("Unreachable");
+    }
 }

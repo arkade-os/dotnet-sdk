@@ -158,11 +158,12 @@ public class SwapManagementServiceTests
         };
 
         await swapMgr.StartAsync(CancellationToken.None);
-        var invoice = await swapMgr.InitiateReverseSwap(
-            testingPrerequisite.walletIdentifier,
-            new CreateInvoiceParams(LightMoney.Satoshis(50000), "Test", TimeSpan.FromHours(1)),
-            CancellationToken.None
-        );
+        var invoice = await FulmineLiquidityHelper.RetryWithSettle(_app, () =>
+            swapMgr.InitiateReverseSwap(
+                testingPrerequisite.walletIdentifier,
+                new CreateInvoiceParams(LightMoney.Satoshis(50000), "Test", TimeSpan.FromHours(1)),
+                CancellationToken.None
+            ));
 
         // Until Aspire has a way to run commands with parameters :(
         await Cli.Wrap("docker")
@@ -262,11 +263,12 @@ public class SwapManagementServiceTests
         await swapMgr.StartAsync(CancellationToken.None);
 
         // Create a reverse swap (this creates a swap on Boltz that we can restore later)
-        var invoice = await swapMgr.InitiateReverseSwap(
-            testingPrerequisite.walletIdentifier,
-            new CreateInvoiceParams(LightMoney.Satoshis(50000), "Test Restore", TimeSpan.FromHours(1)),
-            CancellationToken.None
-        );
+        var invoice = await FulmineLiquidityHelper.RetryWithSettle(_app, () =>
+            swapMgr.InitiateReverseSwap(
+                testingPrerequisite.walletIdentifier,
+                new CreateInvoiceParams(LightMoney.Satoshis(50000), "Test Restore", TimeSpan.FromHours(1)),
+                CancellationToken.None
+            ));
         Assert.That(invoice, Is.Not.Null);
 
         // Verify the swap was created
