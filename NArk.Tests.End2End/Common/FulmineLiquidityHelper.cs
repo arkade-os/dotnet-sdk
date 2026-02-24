@@ -25,7 +25,22 @@ public static class FulmineLiquidityHelper
                 var balance = JsonNode.Parse(balanceJson)?["amount"];
                 var arkBalance = long.TryParse(balance?.ToString(), out var b) ? b : 0;
                 Console.WriteLine($"[FulmineLiquidity] ARK balance: {arkBalance} sats (attempt {attempt})");
-                if (arkBalance > 0) return;
+                if (arkBalance > 0)
+                {
+                    // Log Boltz pair limits for diagnostics
+                    try
+                    {
+                        var boltzProxy = app.GetEndpoint("boltz-proxy", "api");
+                        var boltzHttp = new HttpClient { BaseAddress = new Uri(boltzProxy.ToString()) };
+                        var pairsJson = await boltzHttp.GetStringAsync("/v2/swap/reverse");
+                        Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs at setup: {pairsJson}");
+                    }
+                    catch (Exception pairsEx)
+                    {
+                        Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs query failed at setup: {pairsEx.Message}");
+                    }
+                    return;
+                }
             }
             catch (Exception ex)
             {
@@ -51,6 +66,8 @@ public static class FulmineLiquidityHelper
     {
         var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
         var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
+        var boltzProxy = app.GetEndpoint("boltz-proxy", "api");
+        var boltzHttp = new HttpClient { BaseAddress = new Uri(boltzProxy.ToString()) };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -60,7 +77,27 @@ public static class FulmineLiquidityHelper
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("insufficient liquidity"))
             {
-                Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity, triggering settle + mining");
+                // Diagnostic: query Fulmine balance and Boltz reverse pairs limits
+                try
+                {
+                    var balanceJson = await fulmineHttp.GetStringAsync("/api/v1/balance");
+                    Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity. Fulmine balance: {balanceJson}");
+                }
+                catch (Exception balEx)
+                {
+                    Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity. Fulmine balance query failed: {balEx.Message}");
+                }
+
+                try
+                {
+                    var pairsJson = await boltzHttp.GetStringAsync("/v2/swap/reverse");
+                    Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs: {pairsJson}");
+                }
+                catch (Exception pairsEx)
+                {
+                    Console.WriteLine($"[FulmineLiquidity] Boltz reverse pairs query failed: {pairsEx.Message}");
+                }
+
                 try { await fulmineHttp.GetAsync("/api/v1/settle"); } catch { }
                 for (var i = 0; i < 3; i++)
                     await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
