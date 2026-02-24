@@ -42,19 +42,7 @@ var bitcoin =
         })
         .WithVolume("nark-bitcoind", target: "/data/.bitcoin")
         .WithContainerFiles("/data/.bitcoin/", "Assets/bitcoin.conf")
-        .WithArgs("-datadir=/data/.bitcoin", "-minrelaytxfee=0", "-mintxfee=0", "-paytxfee=0.00002")
-        .OnResourceReady(async (_, _, cancellationToken) =>
-        {
-            // Create the default wallet (needed for sendtoaddress/generate)
-            await Cli.Wrap("docker")
-                .WithArguments(["exec", "bitcoin", "bitcoin-cli", "createwallet", ""])
-                .WithValidation(CommandResultValidation.None)
-                .ExecuteBufferedAsync(cancellationToken);
-            // Mine 101 blocks to mature coinbase outputs so the wallet has spendable funds
-            await Cli.Wrap("docker")
-                .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "-generate", "101"])
-                .ExecuteBufferedAsync(cancellationToken);
-        });
+        .WithArgs("-datadir=/data/.bitcoin", "-minrelaytxfee=0", "-mintxfee=0", "-paytxfee=0.00002");
 
 var electrs =
     builder
@@ -193,9 +181,23 @@ var ark =
         .WithVolume("nark-ark", "/app/data")
         .OnResourceReady(StartArkResource)
         .WithHttpEndpoint(7070, 7070, name: "arkd");
+// Ensure the Bitcoin Core default wallet exists and has mature coinbase outputs for sendtoaddress.
+// Safe to call multiple times — createwallet is idempotent (suppressed), generate just adds more blocks.
+async Task EnsureBitcoinWalletFunded(CancellationToken cancellationToken)
+{
+    await Cli.Wrap("docker")
+        .WithArguments(["exec", "bitcoin", "bitcoin-cli", "createwallet", ""])
+        .WithValidation(CommandResultValidation.None)
+        .ExecuteBufferedAsync(cancellationToken);
+    await Cli.Wrap("docker")
+        .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "-generate", "101"])
+        .ExecuteBufferedAsync(cancellationToken);
+}
+
 async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, CancellationToken cancellationToken)
 {
     await Task.Delay(TimeSpan.FromSeconds(5));
+    await EnsureBitcoinWalletFunded(cancellationToken);
 
     var logger = @event.Services.GetRequiredService<ILogger<NArk_AppHost>>();
 
@@ -334,6 +336,7 @@ restcors=*")
         CancellationToken cancellationToken)
     {
         await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken);
+        await EnsureBitcoinWalletFunded(cancellationToken);
         var addressResponse = await Cli.Wrap("docker")
             .WithArguments(["exec", "boltz-lnd", "lncli", "--network=regtest", "newaddress", "p2wkh"])
             .ExecuteBufferedAsync(cancellationToken);
