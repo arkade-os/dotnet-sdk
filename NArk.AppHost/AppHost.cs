@@ -606,9 +606,9 @@ swapTaproot = 10080
 [[currencies]]
 symbol = ""BTC""
 network = ""bitcoinRegtest""
-minWalletBalance = 10000000
-minLocalBalance = 10000000
-minRemoteBalance = 10000000
+minWalletBalance = 0
+minLocalBalance = 0
+minRemoteBalance = 0
 maxSwapAmount = 4294967
 minSwapAmount = 50000
 maxZeroConfAmount = 100000
