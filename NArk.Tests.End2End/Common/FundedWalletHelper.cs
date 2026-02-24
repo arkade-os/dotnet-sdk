@@ -51,12 +51,17 @@ internal static class FundedWalletHelper
 
         // Pay a random amount to the contract address
         const int randomAmount = 500000;
-        await Cli.Wrap("docker")
+        var sendResult = await Cli.Wrap("docker")
             .WithArguments([
-                "exec", "-t", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
+                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
                 randomAmount.ToString(), "--password", "secret"
             ])
+            .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync();
+
+        if (!sendResult.IsSuccess)
+            throw new InvalidOperationException(
+                $"ark send failed (exit={sendResult.ExitCode}): stdout={sendResult.StandardOutput}, stderr={sendResult.StandardError}");
 
         await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
