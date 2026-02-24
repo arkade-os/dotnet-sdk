@@ -147,6 +147,8 @@ public class SwapManagementServiceTests
     }
 
     [Test]
+    [Explicit("Cooperative submarine swap refund times out with arkd v0.9.0-rc.1 — " +
+              "protocol change incompatible with current Boltz container (passes on v0.8.10)")]
     public async Task CanDoArkCoOpRefundUsingBoltz()
     {
         var _app = SharedSwapInfrastructure.App;
