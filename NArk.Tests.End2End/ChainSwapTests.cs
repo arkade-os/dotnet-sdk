@@ -1,5 +1,4 @@
 using System.Net.Http.Json;
-using System.Text.Json.Nodes;
 using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
@@ -57,33 +56,7 @@ public class ChainSwapTests
             await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
 
         // Ensure Fulmine has settled ARK VTXOs — required for BTC→ARK chain swaps.
-        // The AppHost's OnResourceReady triggers settle but it's async and needs blocks
-        // mined afterward to complete the Ark batch round.
-        var fulmineEndpoint = _app.GetEndpoint("boltz-fulmine", "api");
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
-
-        for (var attempt = 0; attempt < 15; attempt++)
-        {
-            try
-            {
-                var balanceJson = await fulmineHttp.GetStringAsync("/api/v1/balance");
-                var balance = JsonNode.Parse(balanceJson)?["amount"];
-                var arkBalance = long.TryParse(balance?.ToString(), out var b) ? b : 0;
-                Console.WriteLine($"[Setup] Fulmine ARK balance: {arkBalance} sats (attempt {attempt})");
-                if (arkBalance > 0) break;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Setup] Fulmine balance check failed (attempt {attempt}): {ex.Message}");
-            }
-
-            try { await fulmineHttp.GetAsync("/api/v1/settle"); }
-            catch { /* settle may fail if nothing to settle yet */ }
-
-            for (var i = 0; i < 3; i++)
-                await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
-            await Task.Delay(TimeSpan.FromSeconds(5));
-        }
+        await FulmineLiquidityHelper.EnsureArkLiquidity(_app);
     }
 
     [OneTimeTearDown]

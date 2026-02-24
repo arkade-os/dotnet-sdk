@@ -26,7 +26,6 @@ public class SwapManagementServiceTests
     private DistributedApplication _app;
 
     [OneTimeSetUp]
-    
     public async Task StartDependencies()
     {
         var builder = await DistributedApplicationTestingBuilder
@@ -40,7 +39,9 @@ public class SwapManagementServiceTests
         await _app.StartAsync(CancellationToken.None);
         var waitForBoltzHealthTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         await _app.ResourceNotifications.WaitForResourceHealthyAsync("boltz", waitForBoltzHealthTimeout.Token);
-        await Task.Delay(TimeSpan.FromSeconds(5)); //Boltz being boltz.... :(
+
+        // Ensure Fulmine has settled ARK VTXOs — required for reverse swaps.
+        await FulmineLiquidityHelper.EnsureArkLiquidity(_app);
     }
 
     [OneTimeTearDown]
