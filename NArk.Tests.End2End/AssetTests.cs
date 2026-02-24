@@ -136,8 +136,6 @@ public class AssetTests
     }
 
     [Test, Order(4)]
-    [Explicit("Assets do not yet survive batch settlement in arkd v0.9.0-rc.1 — " +
-              "the batch round produces new VTXOs without asset annotations")]
     public async Task AssetsSurviveBatchSettlement()
     {
         var app = SharedArkInfrastructure.App;
@@ -157,7 +155,7 @@ public class AssetTests
         var preBatchBalance = await GetAssetBalance(walletDetails.vtxoStorage, assetId);
         Assert.That(preBatchBalance, Is.EqualTo(1000UL), "Pre-batch asset balance should be 1000");
 
-        // Set up batch round services (same pattern as BatchSessionTests)
+        // Set up batch round services (same sequential pattern as BatchSessionTests)
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, app.GetEndpoint("nbxplorer", "http"));
         var intentStorage = new InMemoryIntentStorage();
 
@@ -170,16 +168,33 @@ public class AssetTests
                 ThresholdHeight = 2000
             }));
 
+        var newIntentTcs = new TaskCompletionSource();
+        var newSubmittedIntentTcs = new TaskCompletionSource();
         var newSuccessBatch = new TaskCompletionSource();
+        var batchFailedTcs = new TaskCompletionSource<string>();
         intentStorage.IntentChanged += (_, intent) =>
         {
-            if (intent.State == ArkIntentState.BatchSucceeded)
-                newSuccessBatch.TrySetResult();
+            switch (intent.State)
+            {
+                case ArkIntentState.WaitingToSubmit:
+                    newIntentTcs.TrySetResult();
+                    break;
+                case ArkIntentState.WaitingForBatch:
+                    newSubmittedIntentTcs.TrySetResult();
+                    break;
+                case ArkIntentState.BatchSucceeded:
+                    newSuccessBatch.TrySetResult();
+                    break;
+                case ArkIntentState.BatchFailed:
+                    batchFailedTcs.TrySetResult(intent.CancellationReason ?? "unknown");
+                    break;
+            }
         };
 
         var intentGenerationOptions = new OptionsWrapper<IntentGenerationServiceOptions>(
             new IntentGenerationServiceOptions { PollInterval = TimeSpan.FromHours(5) });
 
+        // Step 1: Generate intent (includes asset packet OP_RETURN)
         await using var intentGeneration = new IntentGenerationService(
             walletDetails.clientTransport,
             new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
@@ -187,11 +202,15 @@ public class AssetTests
             walletDetails.safetyService, walletDetails.contracts, walletDetails.vtxoStorage,
             scheduler, intentGenerationOptions);
         await intentGeneration.StartAsync(CancellationToken.None);
+        await newIntentTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
 
+        // Step 2: Sync intent to arkd
         await using var intentSync = new IntentSynchronizationService(
             intentStorage, walletDetails.clientTransport, walletDetails.safetyService);
         await intentSync.StartAsync(CancellationToken.None);
+        await newSubmittedIntentTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
 
+        // Step 3: Participate in batch round
         await using var batchManager = new BatchManagementService(
             intentStorage, walletDetails.clientTransport, walletDetails.vtxoStorage,
             walletDetails.contracts, walletDetails.walletProvider, coinService,
@@ -199,8 +218,18 @@ public class AssetTests
             Array.Empty<IEventHandler<PostBatchSessionEvent>>());
         await batchManager.StartAsync(CancellationToken.None);
 
-        // Wait for the batch round to succeed
-        await newSuccessBatch.Task.WaitAsync(TimeSpan.FromMinutes(2));
+        // Wait for either batch success or failure
+        var completedTask = await Task.WhenAny(
+            newSuccessBatch.Task,
+            batchFailedTcs.Task);
+
+        if (completedTask == batchFailedTcs.Task)
+        {
+            var reason = await batchFailedTcs.Task;
+            Assert.Fail($"Batch failed: {reason}");
+        }
+
+        await newSuccessBatch.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Give vtxo sync a moment to pick up post-batch VTXOs
         await Task.Delay(2000);

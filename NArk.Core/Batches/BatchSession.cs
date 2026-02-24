@@ -311,6 +311,13 @@ public class BatchSession(
         for (int i = 0; i < intentOutputs.Count; i++)
         {
             var output = intentOutputs[i];
+
+            // Skip OP_RETURN outputs (e.g. asset packets) — they are metadata,
+            // not spendable VTXOs. arkd transforms the asset packet via LeafTxPacket()
+            // so the leaf OP_RETURN will have different content than the intent proof.
+            if (output.ScriptPubKey.IsUnspendable)
+                continue;
+
             var isOnchain = onchainIndexes.Contains(i);
 
             if (isOnchain)
