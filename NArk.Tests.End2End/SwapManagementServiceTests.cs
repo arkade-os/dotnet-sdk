@@ -1,8 +1,6 @@
-using System.Net.Http.Json;
-using Aspire.Hosting;
-using BTCPayServer.Lightning;
 using CliWrap;
 using CliWrap.Buffered;
+using BTCPayServer.Lightning;
 using Microsoft.Extensions.Options;
 using NArk.Blockchain.NBXplorer;
 using NArk.Core.Fees;
@@ -24,56 +22,11 @@ namespace NArk.Tests.End2End.Swaps;
 
 public class SwapManagementServiceTests
 {
-    private DistributedApplication _app;
-
-    [OneTimeSetUp]
-    public async Task StartDependencies()
-    {
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: [],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
-
-        // Start dependencies
-        _app = await builder.BuildAsync();
-        await _app.StartAsync(CancellationToken.None);
-        var waitForBoltzHealthTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        await _app.ResourceNotifications.WaitForResourceHealthyAsync("boltz", waitForBoltzHealthTimeout.Token);
-
-        // Fund the Bitcoin Core default wallet so Boltz's minWalletBalance check passes.
-        var addrResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
-            .ExecuteBufferedAsync();
-        var walletAddr = addrResult.StandardOutput.Trim();
-
-        var chopsticksEndpoint = _app.GetEndpoint("chopsticks", "http");
-        await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
-        {
-            amount = 1,
-            address = walletAddr
-        });
-
-        // Mine blocks to confirm funding txs and allow OnResourceReady callbacks
-        // (including Fulmine settle) to complete via batch rounds.
-        for (var i = 0; i < 6; i++)
-            await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
-
-        // Ensure Fulmine has settled ARK VTXOs — required for reverse swaps.
-        await FulmineLiquidityHelper.EnsureArkLiquidity(_app);
-    }
-
-    [OneTimeTearDown]
-    public async Task StopDependencies()
-    {
-        await _app.StopAsync();
-        await _app.DisposeAsync();
-    }
-
     [Test]
 
     public async Task CanPayInvoiceWithArkUsingBoltz()
     {
+        var _app = SharedSwapInfrastructure.App;
         var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
@@ -118,6 +71,7 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanReceiveArkFundsUsingReverseSwap()
     {
+        var _app = SharedSwapInfrastructure.App;
         var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
@@ -195,6 +149,7 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanDoArkCoOpRefundUsingBoltz()
     {
+        var _app = SharedSwapInfrastructure.App;
         var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
@@ -251,6 +206,7 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanRestoreSwapsFromBoltz()
     {
+        var _app = SharedSwapInfrastructure.App;
         var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
@@ -324,5 +280,4 @@ public class SwapManagementServiceTests
         var swapsAfterRestore = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
         Assert.That(swapsAfterRestore, Has.Count.GreaterThanOrEqualTo(1));
     }
-
 }

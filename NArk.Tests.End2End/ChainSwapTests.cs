@@ -1,5 +1,3 @@
-using System.Net.Http.Json;
-using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
 using Microsoft.Extensions.Options;
@@ -23,52 +21,10 @@ namespace NArk.Tests.End2End.Swaps;
 
 public class ChainSwapTests
 {
-    private DistributedApplication _app;
-
-    [OneTimeSetUp]
-    public async Task StartDependencies()
-    {
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: [],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
-
-        _app = await builder.BuildAsync();
-        await _app.StartAsync(CancellationToken.None);
-        var waitForBoltzHealthTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        await _app.ResourceNotifications.WaitForResourceHealthyAsync("boltz", waitForBoltzHealthTimeout.Token);
-
-        // Fund the Bitcoin Core default wallet so Boltz's minWalletBalance check passes.
-        var addrResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
-            .ExecuteBufferedAsync();
-        var walletAddr = addrResult.StandardOutput.Trim();
-
-        var chopsticksEndpoint = _app.GetEndpoint("chopsticks", "http");
-        await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
-        {
-            amount = 1,
-            address = walletAddr
-        });
-
-        for (var i = 0; i < 6; i++)
-            await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
-
-        // Ensure Fulmine has settled ARK VTXOs — required for BTC→ARK chain swaps.
-        await FulmineLiquidityHelper.EnsureArkLiquidity(_app);
-    }
-
-    [OneTimeTearDown]
-    public async Task StopDependencies()
-    {
-        await _app.StopAsync();
-        await _app.DisposeAsync();
-    }
-
     [Test]
     public async Task CanDoBtcToArkChainSwap()
     {
+        var _app = SharedSwapInfrastructure.App;
         var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
@@ -190,6 +146,7 @@ public class ChainSwapTests
     [Test]
     public async Task CanDoArkToBtcChainSwap()
     {
+        var _app = SharedSwapInfrastructure.App;
         var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
         var boltzWs = _app.GetEndpoint("boltz", "ws");
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
