@@ -11,6 +11,7 @@ using NArk.Core.Helpers;
 using NArk.Core.Models;
 using NArk.Core.Scripts;
 using NArk.Core.Transport;
+using NArk.Core.Assets;
 using NArk.Core.Extensions;
 using NBitcoin;
 using NBitcoin.DataEncoders;
@@ -308,15 +309,20 @@ public class BatchSession(
                 .Select((output, idx) => new { Output = output, Tx = leaf, Index = idx }))
             .ToList();
 
+        Packet? intentAssetPacket = null;
+
         for (int i = 0; i < intentOutputs.Count; i++)
         {
             var output = intentOutputs[i];
 
-            // Skip OP_RETURN outputs (e.g. asset packets) — they are metadata,
-            // not spendable VTXOs. arkd transforms the asset packet via LeafTxPacket()
-            // so the leaf OP_RETURN will have different content than the intent proof.
+            // Asset packet OP_RETURN — arkd transforms it via LeafTxPacket() so the raw
+            // bytes differ. Collect it here and validate against the leaf packet below.
             if (output.ScriptPubKey.IsUnspendable)
+            {
+                if (Packet.IsAssetPacket(output.ScriptPubKey))
+                    intentAssetPacket = Packet.FromScript(output.ScriptPubKey);
                 continue;
+            }
 
             var isOnchain = onchainIndexes.Contains(i);
 
@@ -349,6 +355,70 @@ public class BatchSession(
                 }
             }
         }
+
+        // Validate the transformed asset packet in the leaf tx preserves asset outputs.
+        // arkd's LeafTxPacket() replaces Local inputs with Intent inputs but preserves
+        // the outputs (vout, amount) and AssetId for each group.
+        if (intentAssetPacket != null)
+            ValidateLeafAssetPacket(intentAssetPacket, vtxoLeaves);
+    }
+
+    /// <summary>
+    /// Verifies that a VTXO tree leaf contains a transformed asset packet whose
+    /// asset outputs match those declared in the intent's asset packet.
+    /// </summary>
+    private static void ValidateLeafAssetPacket(Packet intentPacket, List<PSBT> vtxoLeaves)
+    {
+        foreach (var leaf in vtxoLeaves)
+        {
+            var leafTx = leaf.GetGlobalTransaction();
+            foreach (var leafOut in leafTx.Outputs)
+            {
+                if (!leafOut.ScriptPubKey.IsUnspendable)
+                    continue;
+                if (!Packet.IsAssetPacket(leafOut.ScriptPubKey))
+                    continue;
+
+                var leafPacket = Packet.FromScript(leafOut.ScriptPubKey);
+                if (AssetPacketOutputsMatch(intentPacket, leafPacket))
+                    return;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "No VTXO tree leaf contains a transformed asset packet matching the intent's " +
+            "asset outputs. Assets may not be preserved in this batch settlement.");
+    }
+
+    /// <summary>
+    /// Compares two asset packets by their group AssetIds and output distributions.
+    /// Ignores inputs (which change from Local to Intent during LeafTxPacket transform).
+    /// </summary>
+    private static bool AssetPacketOutputsMatch(Packet intent, Packet leaf)
+    {
+        if (intent.Groups.Count != leaf.Groups.Count)
+            return false;
+
+        for (var i = 0; i < intent.Groups.Count; i++)
+        {
+            var ig = intent.Groups[i];
+            var lg = leaf.Groups[i];
+
+            if (ig.AssetId?.ToString() != lg.AssetId?.ToString())
+                return false;
+
+            if (ig.Outputs.Count != lg.Outputs.Count)
+                return false;
+
+            for (var j = 0; j < ig.Outputs.Count; j++)
+            {
+                if (ig.Outputs[j].Vout != lg.Outputs[j].Vout ||
+                    ig.Outputs[j].Amount != lg.Outputs[j].Amount)
+                    return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
