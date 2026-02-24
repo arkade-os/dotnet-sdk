@@ -34,17 +34,22 @@ public static class FulmineLiquidityHelper
                 await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
             await Task.Delay(TimeSpan.FromSeconds(2));
 
+            // Log raw balance after mining (to see if onchain increased)
+            await LogRawBalance(fulmineHttp, "after-mine");
+
             // Now settle — boarding UTXO is confirmed
-            try { await fulmineHttp.GetAsync("/api/v1/settle"); }
-            catch { /* settle may fail if nothing to settle yet */ }
+            await SettleWithLogging(fulmineHttp);
 
             // Wait for the arkd batch round to process the settle intent
-            await Task.Delay(TimeSpan.FromSeconds(10));
+            await Task.Delay(TimeSpan.FromSeconds(15));
 
             // Mine the batch commitment tx
             for (var i = 0; i < 6; i++)
                 await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
             await Task.Delay(TimeSpan.FromSeconds(3));
+
+            // Log balance after full cycle
+            await LogRawBalance(fulmineHttp, "after-settle-cycle");
         }
 
         var finalBalance = await GetFulmineArkBalance(fulmineHttp);
@@ -78,12 +83,14 @@ public static class FulmineLiquidityHelper
                     await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
                 await Task.Delay(TimeSpan.FromSeconds(2));
 
-                try { await fulmineHttp.GetAsync("/api/v1/settle"); } catch { }
+                await LogRawBalance(fulmineHttp, $"retry-{attempt}-after-mine");
+                await SettleWithLogging(fulmineHttp);
 
-                await Task.Delay(TimeSpan.FromSeconds(10));
+                await Task.Delay(TimeSpan.FromSeconds(15));
                 for (var i = 0; i < 6; i++)
                     await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
                 await Task.Delay(TimeSpan.FromSeconds(3));
+                await LogRawBalance(fulmineHttp, $"retry-{attempt}-after-settle-cycle");
 
                 if (attempt == maxAttempts - 1) throw;
             }
@@ -138,6 +145,33 @@ public static class FulmineLiquidityHelper
         {
             Console.WriteLine($"[FulmineLiquidity] Balance check failed: {ex.Message}");
             return 0;
+        }
+    }
+
+    private static async Task LogRawBalance(HttpClient fulmineHttp, string label)
+    {
+        try
+        {
+            var raw = await fulmineHttp.GetStringAsync("/api/v1/balance");
+            Console.WriteLine($"[FulmineLiquidity] {label} raw balance: {raw}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FulmineLiquidity] {label} balance check failed: {ex.Message}");
+        }
+    }
+
+    private static async Task SettleWithLogging(HttpClient fulmineHttp)
+    {
+        try
+        {
+            var resp = await fulmineHttp.GetAsync("/api/v1/settle");
+            var body = await resp.Content.ReadAsStringAsync();
+            Console.WriteLine($"[FulmineLiquidity] settle response: {resp.StatusCode} body={body}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FulmineLiquidity] settle failed: {ex.Message}");
         }
     }
 }
