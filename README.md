@@ -1,6 +1,6 @@
 # NArk .NET SDK
 
-A .NET SDK for building applications on the [Ark protocol](https://ark-protocol.org) — a Bitcoin layer-2 that enables instant, low-cost off-chain transactions using virtual UTXOs (VTXOs).
+A .NET SDK for building applications on [Arkade](https://arkadeos.com) — a Bitcoin virtual execution layer that enables instant, low-cost, programmable off-chain transactions using virtual UTXOs (VTXOs).
 
 [![NuGet](https://img.shields.io/nuget/v/NArk.svg)](https://www.nuget.org/packages/NArk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
