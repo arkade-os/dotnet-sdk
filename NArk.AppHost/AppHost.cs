@@ -477,7 +477,7 @@ tlsextradomain=lnd")
 
     var boltzFulmine =
         builder
-            .AddContainer("boltz-fulmine", "ghcr.io/arklabshq/fulmine", "v0.3.10")
+            .AddContainer("boltz-fulmine", "ghcr.io/arklabshq/fulmine", "v0.3.15")
             .WithContainerName("boltz-fulmine")
             .WithContainerNetworkAlias("boltz-fulmine")
             .WithEnvironment("FULMINE_ARK_SERVER", "http://ark:7070")
