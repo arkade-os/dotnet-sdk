@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
@@ -38,8 +39,22 @@ public class ChainSwapTests
         var waitForBoltzHealthTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         await _app.ResourceNotifications.WaitForResourceHealthyAsync("boltz", waitForBoltzHealthTimeout.Token);
 
-        // Ensure Bitcoin Core default wallet has mature coinbase funds for Boltz chain swaps.
-        // Mine enough blocks so coinbase outputs pass the 100-block maturity requirement.
+        // Fund the Bitcoin Core default wallet so Boltz's minWalletBalance check passes.
+        // Mining creates coinbase outputs that need 100-block maturity, so we also send
+        // a regular transaction via the faucet for immediate spendability.
+        var addrResult = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
+            .ExecuteBufferedAsync();
+        var walletAddr = addrResult.StandardOutput.Trim();
+
+        var chopsticksEndpoint = _app.GetEndpoint("chopsticks", "http");
+        await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
+        {
+            amount = 1,
+            address = walletAddr
+        });
+
+        // Mine blocks to confirm the faucet tx and mature coinbase outputs
         for (var i = 0; i < 6; i++)
             await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
         await Task.Delay(TimeSpan.FromSeconds(5));
