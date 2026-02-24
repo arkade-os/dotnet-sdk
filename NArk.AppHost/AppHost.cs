@@ -42,7 +42,19 @@ var bitcoin =
         })
         .WithVolume("nark-bitcoind", target: "/data/.bitcoin")
         .WithContainerFiles("/data/.bitcoin/", "Assets/bitcoin.conf")
-        .WithArgs("-datadir=/data/.bitcoin", "-minrelaytxfee=0", "-mintxfee=0", "-paytxfee=0.00002");
+        .WithArgs("-datadir=/data/.bitcoin", "-minrelaytxfee=0", "-mintxfee=0", "-paytxfee=0.00002")
+        .OnResourceReady(async (_, _, cancellationToken) =>
+        {
+            // Create the default wallet (needed for sendtoaddress/generate)
+            await Cli.Wrap("docker")
+                .WithArguments(["exec", "bitcoin", "bitcoin-cli", "createwallet", ""])
+                .WithValidation(CommandResultValidation.None)
+                .ExecuteBufferedAsync(cancellationToken);
+            // Mine 101 blocks to mature coinbase outputs so the wallet has spendable funds
+            await Cli.Wrap("docker")
+                .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "-generate", "101"])
+                .ExecuteBufferedAsync(cancellationToken);
+        });
 
 var electrs =
     builder
