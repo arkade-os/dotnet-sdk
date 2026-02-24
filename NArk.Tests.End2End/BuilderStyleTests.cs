@@ -55,7 +55,7 @@ public class BuilderStyleTests
 
         await Cli.Wrap("docker")
             .WithArguments([
-                "exec", "-t", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
+                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
                 "50000", "--password", "secret"
             ])
             .ExecuteBufferedAsync();

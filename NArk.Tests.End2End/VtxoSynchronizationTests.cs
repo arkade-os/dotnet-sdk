@@ -68,7 +68,7 @@ public class VtxoSynchronizationTests
 
         await Cli.Wrap("docker")
             .WithArguments([
-                "exec", "-t", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
+                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
                 randomAmount.ToString(), "--password", "secret"
             ])
             .ExecuteBufferedAsync();
@@ -131,7 +131,7 @@ public class VtxoSynchronizationTests
         var randomAmount = RandomNumberGenerator.GetInt32((int)info.Dust.Satoshi, 100000);
         await Cli.Wrap("docker")
             .WithArguments([
-                "exec", "-t", "ark", "ark", "send", "--to", contractAddress.ToString(false),
+                "exec", "ark", "ark", "send", "--to", contractAddress.ToString(false),
                 "--amount", randomAmount.ToString(), "--password", "secret"
             ])
             .ExecuteBufferedAsync();
@@ -197,7 +197,7 @@ public class VtxoSynchronizationTests
 
         await Cli.Wrap("docker")
             .WithArguments([
-                "exec", "-t", "ark", "ark", "send", "--to", wallet1Address.ToString(false),
+                "exec", "ark", "ark", "send", "--to", wallet1Address.ToString(false),
                 "--amount", randomAmount.ToString(), "--password", "secret"
             ])
             .ExecuteBufferedAsync();
