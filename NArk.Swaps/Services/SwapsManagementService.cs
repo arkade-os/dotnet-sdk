@@ -331,6 +331,17 @@ public class SwapsManagementService : IAsyncDisposable
             throw new InvalidOperationException("Failed to parse VHTLC contract for refund");
         }
 
+        // Poll arkd directly for VTXOs at the swap script.
+        // The VtxoSynchronizationService may not have received them yet if
+        // its gRPC stream was restarted during the Spend call (the change-address
+        // DeriveContract fires ActiveScriptsChanged, restarting the subscription,
+        // and the batch-round event can be lost between the old and new streams).
+        await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                           new HashSet<string> { swap.ContractScript }, cancellationToken))
+        {
+            await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
+        }
+
         // Get VTXOs for this contract
         var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript],
             cancellationToken: cancellationToken);

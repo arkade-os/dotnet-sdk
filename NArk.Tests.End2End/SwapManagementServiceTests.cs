@@ -210,24 +210,6 @@ public class SwapManagementServiceTests
         await swapMgr.PayExistingSubmarineSwap(testingPrerequisite.walletIdentifier, swapId, CancellationToken.None);
         Console.WriteLine("[CoOpRefund] Payment sent, waiting for cooperative refund...");
 
-        // Poll Boltz status periodically for diagnostics
-        _ = Task.Run(async () =>
-        {
-            for (var i = 0; i < 12; i++)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(10));
-                try
-                {
-                    var status = await boltzClient.GetSwapStatusAsync(swapId, CancellationToken.None);
-                    Console.WriteLine($"[CoOpRefund] Poll {i}: Boltz status = {status?.Status}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[CoOpRefund] Poll {i}: error = {ex.Message}");
-                }
-            }
-        });
-
         await refundedSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
     }
 
