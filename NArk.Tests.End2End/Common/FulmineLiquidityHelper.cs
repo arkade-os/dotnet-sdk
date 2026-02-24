@@ -1,6 +1,8 @@
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Aspire.Hosting;
+using CliWrap;
+using CliWrap.Buffered;
 
 namespace NArk.Tests.End2End.Common;
 
@@ -25,7 +27,7 @@ public static class FulmineLiquidityHelper
             if (arkBalance >= minBalance) return;
 
             // Fund Fulmine's boarding address with fresh BTC each attempt
-            await FundFulmineBoarding(app, fulmineHttp);
+            await FundFulmineBoarding(fulmineHttp);
 
             // Mine blocks to confirm the boarding UTXO (arkd requires confirmed inputs)
             for (var i = 0; i < 6; i++)
@@ -70,7 +72,7 @@ public static class FulmineLiquidityHelper
                 Console.WriteLine($"[FulmineLiquidity] Attempt {attempt}: insufficient liquidity. Fulmine ARK balance: {balance} sats");
 
                 // Re-fund and settle
-                await FundFulmineBoarding(app, fulmineHttp);
+                await FundFulmineBoarding(fulmineHttp);
 
                 for (var i = 0; i < 6; i++)
                     await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
@@ -91,9 +93,10 @@ public static class FulmineLiquidityHelper
     }
 
     /// <summary>
-    /// Sends 1 BTC to Fulmine's boarding address via the chopsticks faucet.
+    /// Sends 1 BTC to Fulmine's boarding address via bitcoin-cli sendtoaddress.
+    /// Uses Docker exec to call Bitcoin Core directly (chopsticks faucet is inaccessible from test runner).
     /// </summary>
-    private static async Task FundFulmineBoarding(DistributedApplication app, HttpClient fulmineHttp)
+    private static async Task FundFulmineBoarding(HttpClient fulmineHttp)
     {
         try
         {
@@ -108,13 +111,10 @@ public static class FulmineLiquidityHelper
             var onchainAddress = new Uri(arkAddress).AbsolutePath;
             Console.WriteLine($"[FulmineLiquidity] Funding boarding address: {onchainAddress}");
 
-            var chopsticksEndpoint = app.GetEndpoint("chopsticks", "http");
-            var response = await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
-            {
-                amount = 1,
-                address = onchainAddress
-            });
-            Console.WriteLine($"[FulmineLiquidity] Faucet response: {response.StatusCode}");
+            var result = await Cli.Wrap("docker")
+                .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, "1"])
+                .ExecuteBufferedAsync();
+            Console.WriteLine($"[FulmineLiquidity] sendtoaddress txid: {result.StandardOutput.Trim()}");
         }
         catch (Exception ex)
         {
