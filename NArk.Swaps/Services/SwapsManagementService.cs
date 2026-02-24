@@ -54,7 +54,7 @@ public class SwapsManagementService : IAsyncDisposable
     private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
 
     private HashSet<string> _swapsIdToWatch = [];
-    private readonly ConcurrentDictionary<string, string> _swapIdsToScript = [];
+    private readonly ConcurrentDictionary<string, string> _scriptToSwapId = [];
 
     private Task? _cacheTask;
     private Task? _routinePollTask;
@@ -109,7 +109,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         try
         {
-            if (_swapIdsToScript.TryGetValue(e.Script, out var id))
+            if (_scriptToSwapId.TryGetValue(e.Script, out var id))
             {
                 _triggerChannel.Writer.TryWrite($"id:{id}");
             }
@@ -235,7 +235,7 @@ public class SwapsManagementService : IAsyncDisposable
                     _logger?.LogWarning("Swap {SwapId}: not found in storage", idToPoll);
                     continue;
                 }
-                _swapIdsToScript[swap.SwapId] = swap.ContractScript;
+                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
 
                 // Terminal states: nothing to do
                 if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled) continue;
@@ -249,6 +249,10 @@ public class SwapsManagementService : IAsyncDisposable
                     var newSwap =
                         swap with { Status = ArkSwapStatus.Failed, UpdatedAt = DateTimeOffset.Now };
                     await RequestRefundCooperatively(newSwap, cancellationToken);
+                    // Don't map status to Failed below — if refund succeeded, status is already
+                    // Refunded in storage; if it returned early (e.g. VTXOs not yet available
+                    // due to batch round race), keep the swap Pending so routine polls retry.
+                    continue;
                 }
 
                 // For ARK→BTC chain swaps: try to claim BTC when server has locked
@@ -289,7 +293,7 @@ public class SwapsManagementService : IAsyncDisposable
                 {
                     _logger?.LogInformation("Swap {SwapId}: terminal state {Status}, removing from watch list",
                         idToPoll, swapWithNewStatus.Status);
-                    _swapIdsToScript.Remove(swapWithNewStatus.SwapId, out _);
+                    _scriptToSwapId.Remove(swapWithNewStatus.ContractScript, out _);
                     _swapsIdToWatch.Remove(swapWithNewStatus.SwapId);
                 }
             }
