@@ -172,7 +172,7 @@ var ark =
         .WithCommand("create-note", "Create Note", async ctx =>
             {
                 var noteOutput = await Cli.Wrap("docker")
-                    .WithArguments(["exec", "-t", "ark", "arkd", "note", "--amount", "1000000"])
+                    .WithArguments(["exec", "ark", "arkd", "note", "--amount", "1000000"])
                     .ExecuteBufferedAsync(ctx.CancellationToken);
                 var note = noteOutput.StandardOutput.Trim();
                 return new ExecuteCommandResult() { Success = true, ErrorMessage = note };
@@ -189,7 +189,7 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
 
     var walletCreationProcess =
         await Cli.Wrap("docker")
-            .WithArguments(["exec", "-t", "ark", "arkd", "wallet", "create", "--password", "secret"])
+            .WithArguments(["exec", "ark", "arkd", "wallet", "create", "--password", "secret"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(cancellationToken);
 
@@ -206,7 +206,7 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
 
     var walletUnlockProcess =
         await Cli.Wrap("docker")
-            .WithArguments(["exec", "-t", "ark", "arkd", "wallet", "unlock", "--password", "secret"])
+            .WithArguments(["exec", "ark", "arkd", "wallet", "unlock", "--password", "secret"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(cancellationToken);
 
@@ -226,7 +226,7 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
     {
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         var walletStatus = await Cli.Wrap("docker")
-            .WithArguments(["exec", "-t", "ark", "arkd", "wallet", "status"])
+            .WithArguments(["exec", "ark", "arkd", "wallet", "status"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(cancellationToken);
         returnCode = walletStatus.ExitCode;
@@ -235,7 +235,7 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
     var arkInit =
         await Cli.Wrap("docker")
             .WithArguments([
-                "exec", "-t", "ark", "ark", "init", "--password", "secret", "--server-url", "localhost:7070",
+                "exec", "ark", "ark", "init", "--password", "secret", "--server-url", "localhost:7070",
                 "--explorer", "http://chopsticks:3000"
             ])
             .ExecuteBufferedAsync(cancellationToken);
@@ -251,23 +251,24 @@ async Task StartArkResource(ContainerResource cr, ResourceReadyEvent @event, Can
 
     var walletAddress =
         await Cli.Wrap("docker")
-            .WithArguments(["exec", "-t", "ark", "arkd", "wallet", "address"])
+            .WithArguments(["exec", "ark", "arkd", "wallet", "address"])
             .ExecuteBufferedAsync(cancellationToken);
 
     var address = walletAddress.StandardOutput.Trim();
-    var chopsticksEndpoint = await chopsticks.GetEndpoint("http", null!).GetValueAsync(cancellationToken);
-    await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
-    {
-        amount = 10,
-        address = address
-    }, cancellationToken: cancellationToken);
+    await Cli.Wrap("docker")
+        .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", address, "10"])
+        .ExecuteBufferedAsync(cancellationToken);
+    // Mine blocks to confirm the funding transaction (chopsticks faucet did this automatically)
+    await Cli.Wrap("docker")
+        .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "-generate", "6"])
+        .ExecuteBufferedAsync(cancellationToken);
 
     var noteOutput = await Cli.Wrap("docker")
-        .WithArguments(["exec", "-t", "ark", "arkd", "note", "--amount", "3000000"])
+        .WithArguments(["exec", "ark", "arkd", "note", "--amount", "3000000"])
         .ExecuteBufferedAsync(cancellationToken);
     var note = noteOutput.StandardOutput.Trim();
     await Cli.Wrap("docker")
-        .WithArguments(["exec", "-t", "ark", "ark", "redeem-notes", "-n", note, "--password", "secret"])
+        .WithArguments(["exec", "ark", "ark", "redeem-notes", "-n", note, "--password", "secret"])
         .ExecuteBufferedAsync(cancellationToken);
 }
 
@@ -328,12 +329,13 @@ restcors=*")
         var address =
             (JsonSerializer.Deserialize<JsonObject>(addressResponse.StandardOutput)?["address"]?.GetValue<string>()
              ?? throw new InvalidOperationException("Boltz-LND bootup failed...")).Trim();
-        var chopsticksEndpoint = await chopsticks.GetEndpoint("http", null!).GetValueAsync(cancellationToken);
-        await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
-        {
-            amount = 4,
-            address = address
-        }, cancellationToken: cancellationToken);
+        await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", address, "4"])
+            .ExecuteBufferedAsync(cancellationToken);
+        // Mine blocks to confirm the funding transaction
+        await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "-generate", "6"])
+            .ExecuteBufferedAsync(cancellationToken);
 
         var walletBalanceResponse =
             await Cli.Wrap("docker")
@@ -523,12 +525,13 @@ tlsextradomain=lnd")
             .Trim();
         var onchainAddress = new Uri(address).AbsolutePath;
 
-        var chopsticksEndpoint = await chopsticks.GetEndpoint("http", null!).GetValueAsync(cancellationToken);
-        await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
-        {
-            amount = 1,
-            address = onchainAddress
-        }, cancellationToken: cancellationToken);
+        await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, "1"])
+            .ExecuteBufferedAsync(cancellationToken);
+        // Mine blocks to confirm the funding transaction
+        await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "-generate", "6"])
+            .ExecuteBufferedAsync(cancellationToken);
 
         await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
 
