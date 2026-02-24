@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json.Nodes;
 using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
@@ -27,25 +28,41 @@ public class SharedSwapInfrastructure
         var waitForBoltzHealthTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         await App.ResourceNotifications.WaitForResourceHealthyAsync("boltz", waitForBoltzHealthTimeout.Token);
 
+        var chopsticksEndpoint = App.GetEndpoint("chopsticks", "http");
+
         // Fund the Bitcoin Core default wallet so Boltz's minWalletBalance check passes.
         var addrResult = await Cli.Wrap("docker")
             .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
             .ExecuteBufferedAsync();
         var walletAddr = addrResult.StandardOutput.Trim();
-
-        var chopsticksEndpoint = App.GetEndpoint("chopsticks", "http");
         await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
         {
             amount = 1,
             address = walletAddr
         });
 
-        // Mine blocks to confirm funding txs and allow OnResourceReady callbacks
+        // Send additional BTC to Fulmine's boarding address so it has enough ARK liquidity
+        // for all swap tests (reverse swaps, chain swaps, etc.)
+        var fulmineEndpoint = App.GetEndpoint("boltz-fulmine", "api");
+        var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
+        var addressJson = await fulmineHttp.GetStringAsync("/api/v1/address");
+        var arkAddress = JsonNode.Parse(addressJson)?["address"]?.GetValue<string>()
+                         ?? throw new InvalidOperationException("Could not get Fulmine address");
+        var onchainAddress = new Uri(arkAddress).AbsolutePath;
+        Console.WriteLine($"[SwapInfra] Funding Fulmine boarding address: {onchainAddress}");
+
+        await new HttpClient().PostAsJsonAsync($"{chopsticksEndpoint}/faucet", new
+        {
+            amount = 5,
+            address = onchainAddress
+        });
+
+        // Mine blocks to confirm all funding txs and allow OnResourceReady callbacks
         // (including Fulmine settle) to complete via batch rounds.
-        for (var i = 0; i < 6; i++)
+        for (var i = 0; i < 10; i++)
             await App.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
 
-        // Ensure Fulmine has settled ARK VTXOs — required for reverse swaps and BTC→ARK chain swaps.
+        // Ensure Fulmine has settled enough ARK VTXOs for all swap tests.
         await FulmineLiquidityHelper.EnsureArkLiquidity(App);
     }
 
