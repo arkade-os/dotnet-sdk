@@ -50,7 +50,7 @@ public record ArkNetworkConfig(
         ArkUri: "http://localhost:7070",
         ArkadeWalletUri: "http://localhost:3002",
         BoltzUri: "http://localhost:9069/",
-        ExplorerUri: null);
+        ExplorerUri: "http://localhost:7080");
 
 }
 

@@ -21,7 +21,11 @@ public partial class GrpcClientTransport
                 {
                     Index = 0,
                     Size = 1000
-                }
+                },
+                PendingOnly = false,
+                Before = 0,
+                After = 0,
+                
             };
 
             GetVtxosResponse? response = null;
