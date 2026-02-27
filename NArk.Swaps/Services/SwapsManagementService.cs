@@ -407,10 +407,6 @@ public class SwapsManagementService : IAsyncDisposable
 
             await _swapsStorage.SaveSwap(newSwap.WalletId, newSwap, cancellationToken);
             _logger?.LogInformation("Swap {SwapId}: cooperative refund completed successfully", swap.SwapId);
-
-            await using var @lock =
-                await _safetyService.LockKeyAsync($"contract::{contract.GetArkAddress().ScriptPubKey.ToHex()}",
-                    cancellationToken);
         }
         catch (Exception ex)
         {
@@ -420,6 +416,21 @@ public class SwapsManagementService : IAsyncDisposable
                 refundAddress.ToEntity(swap.WalletId, activityState: ContractActivityState.Inactive),
                 cancellationToken);
             throw;
+        }
+
+        // Synchronization barrier: wait until any concurrent operation using
+        // this contract key completes before returning. Runs outside the
+        // try/catch so cancellation during disposal doesn't incorrectly
+        // trigger refund-failure recovery.
+        try
+        {
+            await using var @lock =
+                await _safetyService.LockKeyAsync($"contract::{contract.GetArkAddress().ScriptPubKey.ToHex()}",
+                    cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // Refund already succeeded — cancellation during disposal is benign.
         }
     }
 

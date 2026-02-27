@@ -12,7 +12,7 @@
       <PackageReference Include="Cel" Version="0.3.2" />
       <PackageReference Include="NBitcoin" Version="9.0.4" />
       <PackageReference Include="NBitcoin.Secp256k1" Version="3.2.0" />
-      <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
+      <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.0" />
       <!-- From NArk.Blockchain.NBXplorer -->
       <PackageReference Include="NBXplorer.Client" Version="5.0.5" />
       <!-- From NArk.Safety.AsyncKeyedLock -->
@@ -25,8 +25,8 @@
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       </PackageReference>
       <!-- From NArk.Hosting -->
-      <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
-      <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
+      <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
+      <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
     </ItemGroup>
 
     <ItemGroup>
