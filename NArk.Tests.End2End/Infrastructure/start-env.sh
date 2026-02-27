@@ -9,8 +9,15 @@ NIGIRI_REPO="${SCRIPT_DIR}/nigiri"
 NIGIRI="${NIGIRI_REPO}/build/nigiri-linux-amd64"
 NIGIRI_BRANCH="bump-arkd"
 
-# Add nigiri build dir to PATH so nigiri can find itself during setup
-export PATH="${NIGIRI_REPO}/build:${PATH}"
+# Add nigiri to PATH so nigiri can find itself during setup (e.g. ark wallet funding)
+# The build output is nigiri-linux-amd64, but nigiri looks for "nigiri" in PATH
+ensure_nigiri_in_path() {
+  local build_dir="${NIGIRI_REPO}/build"
+  if [ -f "${build_dir}/nigiri-linux-amd64" ] && [ ! -f "${build_dir}/nigiri" ]; then
+    ln -sf nigiri-linux-amd64 "${build_dir}/nigiri"
+  fi
+  export PATH="${build_dir}:${PATH}"
+}
 
 log() {
   local msg="$1"
@@ -235,6 +242,9 @@ elif [ "$CLEAN" = true ]; then
 else
   log "Nigiri found: $($NIGIRI --version)"
 fi
+
+# Ensure nigiri is in PATH (binary is named nigiri-linux-amd64, needs "nigiri" symlink)
+ensure_nigiri_in_path
 
 # Clean volumes if requested
 if [ "$CLEAN" = true ]; then
