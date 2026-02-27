@@ -149,6 +149,19 @@ service ArkService {
       }
     };
   }
+
+  rpc UpdateStreamTopics(UpdateStreamTopicsRequest) returns (UpdateStreamTopicsResponse) {
+    option (meshapi.gateway.http) = {
+      post: "/v1/batch/updateTopics"
+      body: "*"
+    };
+  }
+
+  rpc GetIntent(GetIntentRequest) returns (GetIntentResponse) {
+    option (meshapi.gateway.http) = {
+      get: "/v1/intent"
+    };
+  }
 }
 
 message GetInfoRequest {}
@@ -239,6 +252,7 @@ message GetEventStreamResponse {
     TreeSignatureEvent tree_signature = 8;
     TreeNoncesEvent tree_nonces = 9;
     Heartbeat heartbeat = 10;
+    StreamStartedEvent stream_started = 11;
   }
 }
 
@@ -267,6 +281,29 @@ message GetPendingTxResponse {
   repeated PendingTx pending_txs = 1;
 }
 
+message ModifyTopics {
+  repeated string add_topics = 1;
+  repeated string remove_topics = 2;
+}
+
+message OverwriteTopics {
+  repeated string topics = 1;
+}
+
+message UpdateStreamTopicsRequest {
+  string stream_id = 1;
+  oneof topics_change {
+    ModifyTopics modify = 2;
+    OverwriteTopics overwrite = 3;
+  }
+}
+
+message UpdateStreamTopicsResponse {
+  repeated string topics_added = 1;
+  repeated string topics_removed = 2;
+  repeated string all_topics = 3;
+}
+
 message GetTransactionsStreamRequest {}
 message GetTransactionsStreamResponse {
   oneof data {
@@ -274,4 +311,14 @@ message GetTransactionsStreamResponse {
     TxNotification ark_tx = 2;
     Heartbeat heartbeat = 3;
   }
+}
+
+message GetIntentRequest {
+  oneof filter {
+      string txid = 1;
+    }
+}
+
+message GetIntentResponse {
+  Intent intent = 1;
 }

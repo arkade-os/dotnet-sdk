@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Ark.V1;
 using NArk.Core.Transport.Models;
 
@@ -11,9 +12,16 @@ public partial class GrpcClientTransport
         var response = await _indexerServiceClient.GetAssetAsync(request, cancellationToken: cancellationToken);
 
         Dictionary<string, string>? metadata = null;
-        if (response.Metadata.Count > 0)
+        if (!string.IsNullOrEmpty(response.Metadata))
         {
-            metadata = response.Metadata.ToDictionary(m => m.Key, m => m.Value);
+            try
+            {
+                metadata = JsonSerializer.Deserialize<Dictionary<string, string>>(response.Metadata);
+            }
+            catch (JsonException)
+            {
+                // If metadata is not valid JSON key-value pairs, ignore it
+            }
         }
 
         return new ArkAssetDetails(
