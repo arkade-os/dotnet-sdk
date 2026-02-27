@@ -9,6 +9,9 @@ NIGIRI_REPO="${SCRIPT_DIR}/nigiri"
 NIGIRI="${NIGIRI_REPO}/build/nigiri-linux-amd64"
 NIGIRI_BRANCH="bump-arkd"
 
+# Add nigiri build dir to PATH so nigiri can find itself during setup
+export PATH="${NIGIRI_REPO}/build:${PATH}"
+
 log() {
   local msg="$1"
   local green="\033[0;32m"
