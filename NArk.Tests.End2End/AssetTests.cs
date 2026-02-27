@@ -218,10 +218,15 @@ public class AssetTests
             Array.Empty<IEventHandler<PostBatchSessionEvent>>());
         await batchManager.StartAsync(CancellationToken.None);
 
-        // Wait for either batch success or failure
+        // Wait for either batch success or failure (with timeout to avoid hanging CI)
+        var timeoutTask = Task.Delay(TimeSpan.FromMinutes(3));
         var completedTask = await Task.WhenAny(
             newSuccessBatch.Task,
-            batchFailedTcs.Task);
+            batchFailedTcs.Task,
+            timeoutTask);
+
+        if (completedTask == timeoutTask)
+            Assert.Fail("Batch settlement timed out after 3 minutes");
 
         if (completedTask == batchFailedTcs.Task)
         {
