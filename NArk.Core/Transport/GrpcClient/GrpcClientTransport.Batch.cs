@@ -93,6 +93,7 @@ public partial class GrpcClientTransport
                     yield return new TreeNoncesEvent(e.TreeNonces.Id, e.TreeNonces.Nonces.ToDictionary(), e.TreeNonces.Topic, e.TreeNonces.Txid);
                     break;
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.Heartbeat:
+                case Ark.V1.GetEventStreamResponse.EventOneofCase.StreamStarted:
                     break;
                 default:
                     throw new ArgumentOutOfRangeException();
