@@ -289,9 +289,9 @@ fi
 
 
 # this is technically already handled in nigiri start
-nigiri ark init  --password secret --server-url localhost:7070 --explorer http://chopsticks:3000
-nigiri faucet $(nigiri ark receive | jq -r ".onchain_address") 2
-nigiri ark redeem-notes -n $(nigiri arkd note --amount 100000000) --password secret
+$NIGIRI ark init  --password secret --server-url localhost:7070 --explorer http://chopsticks:3000
+$NIGIRI faucet $($NIGIRI ark receive | jq -r ".onchain_address") 2
+$NIGIRI ark redeem-notes -n $($NIGIRI arkd note --amount 100000000) --password secret
 
 # 7. Setup Fulmine wallet
 setup_fulmine_wallet
