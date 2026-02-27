@@ -15,8 +15,8 @@ public class SharedArkInfrastructure
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         try
         {
-            var response = await http.GetAsync($"{ArkdEndpoint}/health");
-            response.EnsureSuccessStatusCode();
+            // arkd doesn't have a /health endpoint; just verify it's reachable
+            await http.GetAsync($"{ArkdEndpoint}/v1/info");
         }
         catch (Exception ex)
         {
