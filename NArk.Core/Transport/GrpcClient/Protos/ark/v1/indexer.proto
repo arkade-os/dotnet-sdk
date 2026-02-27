@@ -180,20 +180,15 @@ message GetVtxoTreeLeavesResponse {
 }
 
 message GetVtxosRequest {
-  // Either specify a list of vtxo scripts.
   repeated string scripts = 1;
-  // Or specify a list of vtxo outpoints. The 2 filters are mutually exclusive.
   repeated string outpoints = 2;
-  // Retrieve only spendable vtxos
   bool spendable_only = 3;
-  // Retrieve only spent vtxos.
   bool spent_only = 4;
-  // Retrieve only recoverable vtxos (notes, subdust or swept vtxos).
-  // The 3 filters are mutually exclusive,
   bool recoverable_only = 5;
   IndexerPageRequest page = 6;
-  // Include only spent vtxos that are not finalized.
   bool pending_only = 7;
+  int64 after = 8;
+  int64 before = 9;
 }
 message GetVtxosResponse {
   repeated IndexerVtxo vtxos = 1;
@@ -225,7 +220,7 @@ message GetAssetRequest {
 message GetAssetResponse {
   string asset_id = 1;
   string supply = 2;
-  repeated AssetMetadata metadata = 3;
+  string metadata = 3;
   string control_asset = 4;
 }
 

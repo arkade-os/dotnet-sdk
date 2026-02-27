@@ -242,8 +242,6 @@ public class AssetTests
     }
 
     [Test, Order(5)]
-    [Explicit("AssetRef.FromId for controlled initial issuance is not yet " +
-              "compatible with arkd v0.9.0-rc.1")]
     public async Task CanIssueAssetWithControlAsset()
     {
         var app = SharedArkInfrastructure.App;
@@ -280,8 +278,6 @@ public class AssetTests
     }
 
     [Test, Order(6)]
-    [Explicit("Reissuance with control asset passthrough is not yet " +
-              "compatible with arkd v0.9.0-rc.1")]
     public async Task CanReissueAssetWithControlAsset()
     {
         var app = SharedArkInfrastructure.App;
@@ -328,8 +324,6 @@ public class AssetTests
     }
 
     [Test, Order(7)]
-    [Explicit("GetAssetDetailsAsync returns InvalidProtocolBufferException when the asset has metadata — " +
-              "the client proto for AssetMetadata is incompatible with arkd v0.9.0-rc.1 response encoding")]
     public async Task CanIssueAssetWithMetadata()
     {
         var app = SharedArkInfrastructure.App;
