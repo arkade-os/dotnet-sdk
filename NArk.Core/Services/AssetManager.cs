@@ -40,38 +40,9 @@ public class AssetManager(
 
         var coins = await GetAvailableCoins(walletId, cancellationToken);
 
-        // When issuing with a control asset, include the control asset VTXO as an input
-        // and pass it through so the server can verify ownership via group index reference.
-        ArkCoin? controlCoin = null;
-        if (parameters.ControlAssetId is not null)
-        {
-            controlCoin = coins.FirstOrDefault(c =>
-                c.Assets is { Count: > 0 } assets &&
-                assets.Any(a => a.AssetId == parameters.ControlAssetId));
-            if (controlCoin is null)
-                throw new InvalidOperationException(
-                    $"No VTXO found carrying control asset {parameters.ControlAssetId} in wallet {walletId}");
-        }
-
-        // Select BTC carrier coins. When we have a control asset, we need extra dust
-        // for the control asset passthrough output.
+        // Select BTC carrier coins for the new asset output
         var btcCoins = coins.Where(c => c.Assets is null or { Count: 0 }).ToList();
-        var dustNeeded = controlCoin is not null ? serverInfo.Dust * 2 : serverInfo.Dust;
-        var controlCoinBtc = controlCoin?.TxOut.Value ?? Money.Zero;
-        var btcToSelect = dustNeeded - controlCoinBtc;
-
-        List<ArkCoin> selectedCoins;
-        if (btcToSelect > Money.Zero)
-        {
-            var btcSelected = coinSelector.SelectCoins(btcCoins, btcToSelect, serverInfo.Dust, 0);
-            selectedCoins = controlCoin is not null
-                ? [controlCoin, .. btcSelected]
-                : [.. btcSelected];
-        }
-        else
-        {
-            selectedCoins = [controlCoin!];
-        }
+        var selectedCoins = coinSelector.SelectCoins(btcCoins, serverInfo.Dust, serverInfo.Dust, 0).ToList();
 
         try
         {
@@ -82,20 +53,9 @@ public class AssetManager(
 
             var outputsList = new List<ArkTxOut> { assetOutput };
 
-            // When using a control asset, add a passthrough output for the control asset
-            if (controlCoin is not null)
-            {
-                var inputContracts = selectedCoins.Select(c => c.Contract).ToArray();
-                var controlPassthroughContract = await contractService.DeriveContract(walletId,
-                    NextContractPurpose.SendToSelf, inputContracts, cancellationToken: cancellationToken);
-                outputsList.Add(new ArkTxOut(ArkTxOutType.Vtxo, serverInfo.Dust,
-                    controlPassthroughContract.GetArkAddress()));
-            }
-
             // Build BTC change output if needed
             var totalIn = selectedCoins.Sum(c => c.TxOut.Value);
-            var btcUsedForOutputs = Money.Satoshis(outputsList.Sum(o => o.Value));
-            var change = totalIn - btcUsedForOutputs;
+            var change = totalIn - serverInfo.Dust;
 
             if (change >= serverInfo.Dust)
             {
@@ -113,45 +73,19 @@ public class AssetManager(
                 .Select(kv => AssetMetadata.Create(kv.Key, kv.Value))
                 .ToList() ?? [];
 
-            var groups = new List<AssetGroup>();
+            // Single issuance group. When controlled, reference the control asset by ID —
+            // arkd looks it up in its database to verify it exists as a prior issuance.
+            // No passthrough group needed; the control asset VTXO is not consumed.
+            var issuanceGroup = AssetGroup.Create(
+                assetId: null,
+                controlAsset: parameters.ControlAssetId is not null
+                    ? AssetRef.FromId(AssetId.FromString(parameters.ControlAssetId))
+                    : null,
+                inputs: [],
+                outputs: [AssetOutput.Create(0, parameters.Amount)],
+                metadata: metadata);
 
-            if (controlCoin is not null)
-            {
-                // Find the input index of the control coin
-                var controlInputIndex = (ushort)selectedCoins.IndexOf(controlCoin);
-                var controlAsset = controlCoin.Assets!.First(a => a.AssetId == parameters.ControlAssetId);
-
-                // Group 0: passthrough of the control asset (proves ownership)
-                var passthroughGroup = AssetGroup.Create(
-                    assetId: AssetId.FromString(parameters.ControlAssetId!),
-                    controlAsset: null,
-                    inputs: [AssetInput.Create(controlInputIndex, controlAsset.Amount)],
-                    outputs: [AssetOutput.Create(1, controlAsset.Amount)],
-                    metadata: []);
-                groups.Add(passthroughGroup);
-
-                // Group 1: issuance referencing the passthrough group by index
-                var issuanceGroup = AssetGroup.Create(
-                    assetId: null,
-                    controlAsset: AssetRef.FromGroupIndex(0),
-                    inputs: [],
-                    outputs: [AssetOutput.Create(0, parameters.Amount)],
-                    metadata: metadata);
-                groups.Add(issuanceGroup);
-            }
-            else
-            {
-                // Simple issuance without control asset
-                var issuanceGroup = AssetGroup.Create(
-                    assetId: null,
-                    controlAsset: null,
-                    inputs: [],
-                    outputs: [AssetOutput.Create(0, parameters.Amount)],
-                    metadata: metadata);
-                groups.Add(issuanceGroup);
-            }
-
-            var packet = Packet.Create(groups);
+            var packet = Packet.Create([issuanceGroup]);
 
             // Submit the transaction
             var transactionBuilder =
@@ -168,10 +102,8 @@ public class AssetManager(
                 new PostCoinsSpendActionEvent([.. selectedCoins], txHash, tx, ActionState.Successful, null),
                 cancellationToken: cancellationToken);
 
-            // Derive AssetId from {txHash, issuanceGroupIndex}
-            // When there's a control asset, the issuance group is at index 1 (after passthrough)
-            var issuanceGroupIndex = controlCoin is not null ? (ushort)1 : (ushort)0;
-            var assetId = AssetId.Create(txHash.ToString(), issuanceGroupIndex);
+            // Derive AssetId from {txHash, groupIndex=0} — always the first (and only) group
+            var assetId = AssetId.Create(txHash.ToString(), 0);
             return new IssuanceResult(txHash.ToString(), assetId.ToString());
         }
         catch (Exception ex)
@@ -194,55 +126,24 @@ public class AssetManager(
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
         var coins = await GetAvailableCoins(walletId, cancellationToken);
 
-        // Find a coin carrying the control asset
-        var controlCoin = coins.FirstOrDefault(c =>
-            c.Assets is { Count: > 0 } assets &&
-            assets.Any(a => a.AssetId == parameters.AssetId));
-
-        if (controlCoin is null)
-            throw new InvalidOperationException(
-                $"No VTXO found carrying control asset {parameters.AssetId} in wallet {walletId}");
-
-        var controlAsset = controlCoin.Assets!.First(a => a.AssetId == parameters.AssetId);
-
-        // We need BTC for: new asset output + control passthrough output
-        var btcNeeded = serverInfo.Dust * 2;
-        var selectedCoins = new List<ArkCoin> { controlCoin };
-
-        if (controlCoin.TxOut.Value < btcNeeded)
-        {
-            var additionalCoins = coins
-                .Where(c => c != controlCoin && (c.Assets is null or { Count: 0 }))
-                .ToList();
-            var extraCoins = coinSelector.SelectCoins(additionalCoins,
-                btcNeeded - controlCoin.TxOut.Value, serverInfo.Dust, 0);
-            selectedCoins.AddRange(extraCoins);
-        }
+        // Select BTC carrier coins for the new asset output
+        var btcCoins = coins.Where(c => c.Assets is null or { Count: 0 }).ToList();
+        var selectedCoins = coinSelector.SelectCoins(btcCoins, serverInfo.Dust, serverInfo.Dust, 0).ToList();
 
         try
         {
-            var totalIn = selectedCoins.Sum(c => c.TxOut.Value);
-            var controlInputIndex = (ushort)0; // control coin is always first
-
-            // Build outputs:
-            // vout 0: new asset carrier (receives the newly issued asset)
-            // vout 1: control asset passthrough (returns the control asset to self)
-            // vout 2: BTC change (if any)
+            // Derive a receive contract for the new asset carrier output
             var assetContract = await contractService.DeriveContract(walletId, NextContractPurpose.Receive,
                 cancellationToken: cancellationToken);
             var newAssetOutput = new ArkTxOut(ArkTxOutType.Vtxo, serverInfo.Dust, assetContract.GetArkAddress());
 
-            var inputContracts = selectedCoins.Select(c => c.Contract).ToArray();
-            var controlPassthroughContract = await contractService.DeriveContract(walletId,
-                NextContractPurpose.SendToSelf, inputContracts, cancellationToken: cancellationToken);
-            var controlPassthroughOutput = new ArkTxOut(ArkTxOutType.Vtxo, serverInfo.Dust,
-                controlPassthroughContract.GetArkAddress());
+            var outputsList = new List<ArkTxOut> { newAssetOutput };
 
-            var outputsList = new List<ArkTxOut> { newAssetOutput, controlPassthroughOutput };
-
-            var change = totalIn - serverInfo.Dust * 2;
+            var totalIn = selectedCoins.Sum(c => c.TxOut.Value);
+            var change = totalIn - serverInfo.Dust;
             if (change >= serverInfo.Dust)
             {
+                var inputContracts = selectedCoins.Select(c => c.Contract).ToArray();
                 var changeContract = await contractService.DeriveContract(walletId, NextContractPurpose.SendToSelf,
                     inputContracts, cancellationToken: cancellationToken);
                 outputsList.Add(new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change),
@@ -251,24 +152,17 @@ public class AssetManager(
 
             var outputs = outputsList.ToArray();
 
-            // Build the packet with two groups:
-            // Group 0: passthrough — transfers the control asset from input to output (proves ownership)
-            // Group 1: controlled issuance — references group 0 by index to authorize new asset creation
-            var passthroughGroup = AssetGroup.Create(
-                assetId: AssetId.FromString(parameters.AssetId),
-                controlAsset: null,
-                inputs: [AssetInput.Create(controlInputIndex, controlAsset.Amount)],
-                outputs: [AssetOutput.Create(1, controlAsset.Amount)],
-                metadata: []);
-
+            // Single issuance group referencing the control asset by ID.
+            // arkd verifies the control asset exists as a prior issuance in its database.
+            // The control asset VTXO is not consumed — it remains available for future reissuances.
             var issuanceGroup = AssetGroup.Create(
                 assetId: null,
-                controlAsset: AssetRef.FromGroupIndex(0),
+                controlAsset: AssetRef.FromId(AssetId.FromString(parameters.AssetId)),
                 inputs: [],
                 outputs: [AssetOutput.Create(0, parameters.Amount)],
                 metadata: []);
 
-            var packet = Packet.Create([passthroughGroup, issuanceGroup]);
+            var packet = Packet.Create([issuanceGroup]);
 
             // Submit the transaction
             var transactionBuilder =
