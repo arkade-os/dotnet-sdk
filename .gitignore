@@ -63,3 +63,4 @@ nunit-*.xml
 CLAUDE.md
 nul
 docs/plans
+NArk.Tests.End2End/Infrastructure/nigiri
