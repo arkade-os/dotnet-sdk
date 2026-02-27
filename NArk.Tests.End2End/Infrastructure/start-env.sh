@@ -270,6 +270,13 @@ $NIGIRI start --ark --ln || {
   fi
 }
 
+# Set minrelaytxfee=0 so Boltz low-fee transactions are accepted by Bitcoin Core
+log "Configuring Bitcoin Core to accept low-fee transactions..."
+docker exec bitcoin sh -c 'printf "\nminrelaytxfee=0.0\n" >> /data/.bitcoin/bitcoin.conf'
+docker restart bitcoin
+sleep 3
+log "✓ Bitcoin Core restarted with minrelaytxfee=0"
+
 # Use docker-compose.ark.yml for custom ark configuration
 log "Pulling latest custom Ark stack images..."
 docker compose -f docker-compose.ark.yml pull
