@@ -1,5 +1,5 @@
-using System.Text.Json;
 using Ark.V1;
+using NArk.Core.Assets;
 using NArk.Core.Transport.Models;
 
 namespace NArk.Transport.GrpcClient;
@@ -16,11 +16,12 @@ public partial class GrpcClientTransport
         {
             try
             {
-                metadata = JsonSerializer.Deserialize<Dictionary<string, string>>(response.Metadata);
+                var mdList = MetadataList.FromString(response.Metadata);
+                metadata = mdList.Items.ToDictionary(m => m.KeyString, m => m.ValueString);
             }
-            catch (JsonException)
+            catch (ArgumentException)
             {
-                // If metadata is not valid JSON key-value pairs, ignore it
+                // If metadata is not valid hex-encoded binary, ignore it
             }
         }
 
