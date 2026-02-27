@@ -270,6 +270,15 @@ $NIGIRI start --ark --ln || {
   fi
 }
 
+# Set minrelaytxfee=0 and mintxfee=0 so Boltz low-fee transactions are accepted by Bitcoin Core.
+# minrelaytxfee controls mempool relay policy; mintxfee controls the wallet's own minimum fee rate
+# (defaults to 1 sat/vB in Bitcoin Core v30+). Both must be zero for Boltz's 0.2 sat/vB lockup txs.
+log "Configuring Bitcoin Core to accept low-fee transactions..."
+docker exec bitcoin sh -c 'printf "\nminrelaytxfee=0.0\nmintxfee=0.0\n" >> /data/.bitcoin/bitcoin.conf'
+docker restart bitcoin
+sleep 3
+log "✓ Bitcoin Core restarted with minrelaytxfee=0 and mintxfee=0"
+
 # Use docker-compose.ark.yml for custom ark configuration
 log "Pulling latest custom Ark stack images..."
 docker compose -f docker-compose.ark.yml pull
