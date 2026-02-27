@@ -1,12 +1,13 @@
-using Aspire.Hosting;
 using CliWrap;
 using CliWrap.Buffered;
 using NArk.Core.Contracts;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
+using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transport;
 using NArk.Transport.GrpcClient;
+
 namespace NArk.Tests.End2End.Common;
 
 internal static class FundedWalletHelper
@@ -15,12 +16,12 @@ internal static class FundedWalletHelper
             string walletIdentifier,
             InMemoryVtxoStorage vtxoStorage, ContractService contractService, InMemoryContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync)>
-        GetFundedWallet(DistributedApplication app)
+        GetFundedWallet()
     {
         var receivedFirstVtxoTcs = new TaskCompletionSource();
         var vtxoStorage = new InMemoryVtxoStorage();
         vtxoStorage.VtxosChanged += (sender, args) => receivedFirstVtxoTcs.TrySetResult();
-        var clientTransport = new GrpcClientTransport(app.GetEndpoint("ark", "arkd").ToString());
+        var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
 
         var info = await clientTransport.GetServerInfoAsync();
 

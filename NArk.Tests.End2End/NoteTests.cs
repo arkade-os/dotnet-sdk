@@ -6,6 +6,7 @@ using NArk.Hosting;
 using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
+using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 
@@ -16,11 +17,10 @@ public class NoteTests
     [Test]
     public async Task CanCompleteBatchWithOnlyOneNote()
     {
-        var app = SharedArkInfrastructure.App;
         var arkHost =
             Host.CreateDefaultBuilder([])
             .AddArk()
-            .OnCustomGrpcArk(app.GetEndpoint("ark", "arkd").ToString())
+            .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
             .WithSafetyService<AsyncSafetyService>()
             .WithIntentStorage<InMemoryIntentStorage>()
             .WithIntentScheduler<SimpleIntentScheduler>()
@@ -32,7 +32,7 @@ public class NoteTests
             .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
             {
                 o.Network = Network.RegTest;
-                o.Uri = app.GetEndpoint("nbxplorer", "http");
+                o.Uri = SharedArkInfrastructure.NbxplorerEndpoint;
             }))
             .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
             {
@@ -48,15 +48,14 @@ public class NoteTests
         var wallet = arkHost.Services.GetRequiredService<InMemoryWalletProvider>();
         var intentStorage = arkHost.Services.GetRequiredService<IIntentStorage>();
 
-        var noteCommandResult =
-            await app.ResourceCommands.ExecuteCommandAsync("ark", "create-note");
+        var note = await DockerHelper.CreateArkNote();
 
-        if (!noteCommandResult.Success || noteCommandResult.ErrorMessage is null)
+        if (string.IsNullOrEmpty(note))
             throw new Exception("Note creation failed!");
 
         var fp = await wallet.CreateTestWallet();
 
-        await contractService.ImportContract(fp, ArkNoteContract.Parse(noteCommandResult.ErrorMessage));
+        await contractService.ImportContract(fp, ArkNoteContract.Parse(note));
 
         var gotBatchTcs = new TaskCompletionSource();
 

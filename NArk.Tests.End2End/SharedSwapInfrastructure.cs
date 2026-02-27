@@ -1,45 +1,49 @@
-using Aspire.Hosting;
-using CliWrap;
-using CliWrap.Buffered;
 using NArk.Tests.End2End.Common;
+using NArk.Tests.End2End.Core;
 
 namespace NArk.Tests.End2End.Swaps;
 
 [SetUpFixture]
 public class SharedSwapInfrastructure
 {
-    public static DistributedApplication App { get; private set; } = null!;
+    public static readonly Uri BoltzEndpoint = new("http://localhost:9069");
+    public static readonly Uri BoltzWsEndpoint = new("ws://localhost:9004");
+    public static readonly Uri FulmineEndpoint = new("http://localhost:7003");
 
     [OneTimeSetUp]
     public async Task GlobalSetup()
     {
         ThreadPool.SetMinThreads(50, 50);
 
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: [],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
-        App = await builder.BuildAsync();
-        await App.StartAsync(CancellationToken.None);
-        var waitForBoltzHealthTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        await App.ResourceNotifications.WaitForResourceHealthyAsync("boltz", waitForBoltzHealthTimeout.Token);
+        // Health-check arkd + boltz
+        foreach (var (name, url) in new[]
+                 {
+                     ("arkd", $"{SharedArkInfrastructure.ArkdEndpoint}/health"),
+                     ("boltz", $"{BoltzEndpoint}/version")
+                 })
+        {
+            try
+            {
+                var response = await http.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail(
+                    $"{name} not running. Start infrastructure with:\n" +
+                    "  cd NArk.Tests.End2End/Infrastructure && ./start-env.sh\n" +
+                    "  (Windows: wsl bash ./start-env.sh)\n\n" +
+                    $"Health check failed: {ex.Message}");
+            }
+        }
 
-        // Mine blocks to confirm any pending txs from OnResourceReady callbacks
-        // and mature coinbase outputs for bitcoin-cli sendtoaddress.
+        // Mine blocks to confirm any pending txs and mature coinbase outputs
         for (var i = 0; i < 6; i++)
-            await App.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+            await DockerHelper.MineBlocks();
 
-        // Ensure Fulmine has enough ARK VTXOs for all swap tests.
-        // This funds the boarding address via bitcoin-cli, mines, settles, and repeats until balance is sufficient.
-        await FulmineLiquidityHelper.EnsureArkLiquidity(App);
-    }
-
-    [OneTimeTearDown]
-    public async Task GlobalTeardown()
-    {
-        await App.StopAsync();
-        await App.DisposeAsync();
+        // Ensure Fulmine has enough ARK VTXOs for all swap tests
+        await FulmineLiquidityHelper.EnsureArkLiquidity();
     }
 }

@@ -1,32 +1,30 @@
-using Aspire.Hosting;
-
 namespace NArk.Tests.End2End.Core;
 
 [SetUpFixture]
 public class SharedArkInfrastructure
 {
-    public static DistributedApplication App { get; private set; } = null!;
+    public static readonly Uri ArkdEndpoint = new("http://localhost:7070");
+    public static readonly Uri NbxplorerEndpoint = new("http://localhost:32838");
+    public static readonly Uri ChopsticksEndpoint = new("http://localhost:3000");
 
     [OneTimeSetUp]
     public async Task GlobalSetup()
     {
         ThreadPool.SetMinThreads(50, 50);
 
-        var builder = await DistributedApplicationTestingBuilder
-            .CreateAsync<Projects.NArk_AppHost>(
-                args: ["--noswap"],
-                configureBuilder: (appOptions, _) => { appOptions.AllowUnsecuredTransport = true; }
-            );
-
-        App = await builder.BuildAsync();
-        await App.StartAsync(CancellationToken.None);
-        await App.ResourceNotifications.WaitForResourceHealthyAsync("ark", CancellationToken.None);
-    }
-
-    [OneTimeTearDown]
-    public async Task GlobalTeardown()
-    {
-        await App.StopAsync();
-        await App.DisposeAsync();
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        try
+        {
+            var response = await http.GetAsync($"{ArkdEndpoint}/health");
+            response.EnsureSuccessStatusCode();
+        }
+        catch (Exception ex)
+        {
+            Assert.Fail(
+                "Ark infrastructure not running. Start it with:\n" +
+                "  cd NArk.Tests.End2End/Infrastructure && ./start-env.sh\n" +
+                "  (Windows: wsl bash ./start-env.sh)\n\n" +
+                $"Health check failed: {ex.Message}");
+        }
     }
 }

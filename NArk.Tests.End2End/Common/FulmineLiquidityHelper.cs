@@ -1,8 +1,5 @@
-using System.Net.Http.Json;
 using System.Text.Json.Nodes;
-using Aspire.Hosting;
-using CliWrap;
-using CliWrap.Buffered;
+using NArk.Tests.End2End.Swaps;
 
 namespace NArk.Tests.End2End.Common;
 
@@ -15,10 +12,9 @@ public static class FulmineLiquidityHelper
     /// Ensures Fulmine has enough ARK VTXOs by funding its boarding address, mining, and settling.
     /// Call this after Boltz is healthy but before tests that create BTC→ARK or reverse swaps.
     /// </summary>
-    public static async Task EnsureArkLiquidity(DistributedApplication app, long minBalance = 200_000, int maxAttempts = 20)
+    public static async Task EnsureArkLiquidity(long minBalance = 200_000, int maxAttempts = 20)
     {
-        var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
+        var fulmineHttp = new HttpClient { BaseAddress = new Uri(SharedSwapInfrastructure.FulmineEndpoint.ToString()) };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -31,7 +27,7 @@ public static class FulmineLiquidityHelper
 
             // Mine blocks to confirm the boarding UTXO (arkd requires confirmed inputs)
             for (var i = 0; i < 6; i++)
-                await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+                await DockerHelper.MineBlocks();
             await Task.Delay(TimeSpan.FromSeconds(2));
 
             // Log raw balance after mining (to see if onchain increased)
@@ -45,7 +41,7 @@ public static class FulmineLiquidityHelper
 
             // Mine the batch commitment tx
             for (var i = 0; i < 6; i++)
-                await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+                await DockerHelper.MineBlocks();
             await Task.Delay(TimeSpan.FromSeconds(3));
 
             // Log balance after full cycle
@@ -60,10 +56,9 @@ public static class FulmineLiquidityHelper
     /// Retries an async operation that may fail with "insufficient liquidity",
     /// re-funding Fulmine and settling between attempts.
     /// </summary>
-    public static async Task<T> RetryWithSettle<T>(DistributedApplication app, Func<Task<T>> action, int maxAttempts = 5)
+    public static async Task<T> RetryWithSettle<T>(Func<Task<T>> action, int maxAttempts = 5)
     {
-        var fulmineEndpoint = app.GetEndpoint("boltz-fulmine", "api");
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(fulmineEndpoint.ToString()) };
+        var fulmineHttp = new HttpClient { BaseAddress = new Uri(SharedSwapInfrastructure.FulmineEndpoint.ToString()) };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -80,7 +75,7 @@ public static class FulmineLiquidityHelper
                 await FundFulmineBoarding(fulmineHttp);
 
                 for (var i = 0; i < 6; i++)
-                    await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+                    await DockerHelper.MineBlocks();
                 await Task.Delay(TimeSpan.FromSeconds(2));
 
                 await LogRawBalance(fulmineHttp, $"retry-{attempt}-after-mine");
@@ -88,7 +83,7 @@ public static class FulmineLiquidityHelper
 
                 await Task.Delay(TimeSpan.FromSeconds(15));
                 for (var i = 0; i < 6; i++)
-                    await app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+                    await DockerHelper.MineBlocks();
                 await Task.Delay(TimeSpan.FromSeconds(3));
                 await LogRawBalance(fulmineHttp, $"retry-{attempt}-after-settle-cycle");
 
@@ -118,10 +113,9 @@ public static class FulmineLiquidityHelper
             var onchainAddress = new Uri(arkAddress).AbsolutePath;
             Console.WriteLine($"[FulmineLiquidity] Funding boarding address: {onchainAddress}");
 
-            var result = await Cli.Wrap("docker")
-                .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, "1"])
-                .ExecuteBufferedAsync();
-            Console.WriteLine($"[FulmineLiquidity] sendtoaddress txid: {result.StandardOutput.Trim()}");
+            var output = await DockerHelper.Exec("bitcoin",
+                ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, "1"]);
+            Console.WriteLine($"[FulmineLiquidity] sendtoaddress txid: {output.Trim()}");
         }
         catch (Exception ex)
         {
