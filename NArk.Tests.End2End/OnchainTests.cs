@@ -21,11 +21,10 @@ public class OnchainTests
     [Test]
     public async Task CanParticipateInBatchWithColabExit()
     {
-        var app = SharedArkInfrastructure.App;
         var arkHost =
             Host.CreateDefaultBuilder([])
                 .AddArk()
-                .OnCustomGrpcArk(app.GetEndpoint("ark", "arkd").ToString())
+                .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
                 .WithSafetyService<AsyncSafetyService>()
                 .WithIntentStorage<InMemoryIntentStorage>()
                 .WithIntentScheduler<SimpleIntentScheduler>()
@@ -37,7 +36,7 @@ public class OnchainTests
                 .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
                 {
                     o.Network = Network.RegTest;
-                    o.Uri = app.GetEndpoint("nbxplorer", "http");
+                    o.Uri = SharedArkInfrastructure.NbxplorerEndpoint;
                 }))
                 // Prevent usual intents from getting in the way
                 .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>

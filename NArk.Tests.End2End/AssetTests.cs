@@ -30,8 +30,7 @@ public class AssetTests
     [Test, Order(1)]
     public async Task CanIssueAsset()
     {
-        var app = SharedArkInfrastructure.App;
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
         var (assetManager, _, _) = CreateAssetServices(walletDetails);
 
@@ -54,12 +53,10 @@ public class AssetTests
     [Test, Order(2)]
     public async Task CanTransferAssetBetweenWallets()
     {
-        var app = SharedArkInfrastructure.App;
-
         // Fund Alice
-        var alice = await FundedWalletHelper.GetFundedWallet(app);
+        var alice = await FundedWalletHelper.GetFundedWallet();
         // Fund Bob
-        var bob = await FundedWalletHelper.GetFundedWallet(app);
+        var bob = await FundedWalletHelper.GetFundedWallet();
 
         var (aliceAssetManager, aliceCoinService, aliceIntentStorage) = CreateAssetServices(alice);
 
@@ -109,8 +106,7 @@ public class AssetTests
     [Test, Order(3)]
     public async Task CanBurnAsset()
     {
-        var app = SharedArkInfrastructure.App;
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
         var (assetManager, _, _) = CreateAssetServices(walletDetails);
 
@@ -138,8 +134,7 @@ public class AssetTests
     [Test, Order(4)]
     public async Task AssetsSurviveBatchSettlement()
     {
-        var app = SharedArkInfrastructure.App;
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
         var (assetManager, coinService, _) = CreateAssetServices(walletDetails);
 
@@ -156,7 +151,7 @@ public class AssetTests
         Assert.That(preBatchBalance, Is.EqualTo(1000UL), "Pre-batch asset balance should be 1000");
 
         // Set up batch round services (same sequential pattern as BatchSessionTests)
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, app.GetEndpoint("nbxplorer", "http"));
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var intentStorage = new InMemoryIntentStorage();
 
         var scheduler = new SimpleIntentScheduler(
@@ -249,8 +244,7 @@ public class AssetTests
     [Test, Order(5)]
     public async Task CanIssueAssetWithControlAsset()
     {
-        var app = SharedArkInfrastructure.App;
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
         var (assetManager, _, _) = CreateAssetServices(walletDetails);
 
@@ -285,8 +279,7 @@ public class AssetTests
     [Test, Order(6)]
     public async Task CanReissueAssetWithControlAsset()
     {
-        var app = SharedArkInfrastructure.App;
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
         var (assetManager, _, _) = CreateAssetServices(walletDetails);
 
@@ -331,8 +324,7 @@ public class AssetTests
     [Test, Order(7)]
     public async Task CanIssueAssetWithMetadata()
     {
-        var app = SharedArkInfrastructure.App;
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
         var (assetManager, _, _) = CreateAssetServices(walletDetails);
 
