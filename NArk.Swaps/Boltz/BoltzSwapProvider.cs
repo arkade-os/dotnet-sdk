@@ -150,22 +150,6 @@ public class BoltzSwapProvider : ISwapProvider
         return Task.CompletedTask;
     }
 
-    public Task<SwapResult> CreateSwapAsync(CreateSwapRequest request, CancellationToken ct)
-    {
-        // BoltzSwapProvider does not implement the generic CreateSwapAsync — the router
-        // calls the legacy typed methods on SwapsManagementService directly.
-        // This satisfies the interface contract for future use.
-        throw new NotSupportedException(
-            "BoltzSwapProvider does not implement generic CreateSwapAsync. " +
-            "Use the typed methods on SwapsManagementService instead.");
-    }
-
-    public Task RefundSwapAsync(string walletId, string swapId, CancellationToken ct)
-    {
-        // Refunds are handled automatically via status polling
-        throw new NotSupportedException("Boltz refunds are handled automatically via status monitoring.");
-    }
-
     public async Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct)
     {
         var isReverse = route.Source.Network == SwapNetwork.Lightning;

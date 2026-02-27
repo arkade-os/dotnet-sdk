@@ -11,9 +11,6 @@ public interface ISwapProvider : IAsyncDisposable
     Task StartAsync(string walletId, CancellationToken ct);
     Task StopAsync(CancellationToken ct);
 
-    Task<SwapResult> CreateSwapAsync(CreateSwapRequest request, CancellationToken ct);
-    Task RefundSwapAsync(string walletId, string swapId, CancellationToken ct);
-
     Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct);
     Task<SwapQuote> GetQuoteAsync(SwapRoute route, long amount, CancellationToken ct);
 
