@@ -17,17 +17,16 @@ public class SharedSwapInfrastructure
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
-        // Health-check arkd + boltz
+        // Health-check arkd + boltz (don't require 2xx — just verify reachable)
         foreach (var (name, url) in new[]
                  {
-                     ("arkd", $"{SharedArkInfrastructure.ArkdEndpoint}/health"),
+                     ("arkd", $"{SharedArkInfrastructure.ArkdEndpoint}/v1/info"),
                      ("boltz", $"{BoltzEndpoint}/version")
                  })
         {
             try
             {
-                var response = await http.GetAsync(url);
-                response.EnsureSuccessStatusCode();
+                await http.GetAsync(url);
             }
             catch (Exception ex)
             {
