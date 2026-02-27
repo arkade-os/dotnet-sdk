@@ -12,6 +12,7 @@ using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
 using NArk.Tests.End2End.Common;
+using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
 using NBitcoin;
@@ -24,15 +25,12 @@ public class ChainSwapTests
     [Test]
     public async Task CanDoBtcToArkChainSwap()
     {
-        var _app = SharedSwapInfrastructure.App;
-        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
-        var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var options =
@@ -94,7 +92,7 @@ public class ChainSwapTests
         // Create BTC→ARK chain swap — Boltz needs ARK liquidity from Fulmine.
         // Fulmine's settle is async and may not have completed yet, so retry
         // with settle trigger + block mining between attempts.
-        var (btcAddress, swapId, expectedLockupSats) = await FulmineLiquidityHelper.RetryWithSettle(_app, () =>
+        var (btcAddress, swapId, expectedLockupSats) = await FulmineLiquidityHelper.RetryWithSettle(() =>
             swapMgr.InitiateBtcToArkChainSwap(
                 testingPrerequisite.walletIdentifier,
                 50000,
@@ -116,7 +114,7 @@ public class ChainSwapTests
         // Mine blocks periodically so Boltz confirms the BTC lockup, locks ARK, and we claim
         for (var i = 0; i < 15; i++)
         {
-            await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+            await DockerHelper.MineBlocks();
 
             // Poll Boltz status directly to trace progress
             try
@@ -146,15 +144,12 @@ public class ChainSwapTests
     [Test]
     public async Task CanDoArkToBtcChainSwap()
     {
-        var _app = SharedSwapInfrastructure.App;
-        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
-        var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
@@ -207,7 +202,7 @@ public class ChainSwapTests
         // Mine blocks periodically so Boltz sees the Ark lockup, locks BTC, and we MuSig2-claim
         for (var i = 0; i < 15; i++)
         {
-            await _app.ResourceCommands.ExecuteCommandAsync("bitcoin", "generate-blocks");
+            await DockerHelper.MineBlocks();
 
             try
             {

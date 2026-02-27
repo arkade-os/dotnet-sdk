@@ -14,6 +14,7 @@ using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
 using NArk.Tests.End2End.Common;
+using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
 using NBitcoin;
@@ -27,17 +28,14 @@ public class SwapManagementServiceTests
 
     public async Task CanPayInvoiceWithArkUsingBoltz()
     {
-        var _app = SharedSwapInfrastructure.App;
-        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
-        var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
             [new PaymentContractTransformer(testingPrerequisite.walletProvider), new HashLockedContractTransformer(testingPrerequisite.walletProvider)]);
         await using var swapMgr = new SwapsManagementService(
@@ -60,8 +58,7 @@ public class SwapManagementServiceTests
         await swapMgr.StartAsync(CancellationToken.None);
         await swapMgr.InitiateSubmarineSwap(
             testingPrerequisite.walletIdentifier,
-            BOLT11PaymentRequest.Parse((await _app.ResourceCommands.ExecuteCommandAsync("lnd", "create-long-invoice"))
-                .ErrorMessage!, Network.RegTest),
+            BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(expirySecs: 0), Network.RegTest),
             true,
             CancellationToken.None
         );
@@ -72,15 +69,12 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanReceiveArkFundsUsingReverseSwap()
     {
-        var _app = SharedSwapInfrastructure.App;
-        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
-        var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var options =
@@ -132,7 +126,7 @@ public class SwapManagementServiceTests
         };
 
         await swapMgr.StartAsync(CancellationToken.None);
-        var invoice = await FulmineLiquidityHelper.RetryWithSettle(_app, () =>
+        var invoice = await FulmineLiquidityHelper.RetryWithSettle(() =>
             swapMgr.InitiateReverseSwap(
                 testingPrerequisite.walletIdentifier,
                 new CreateInvoiceParams(LightMoney.Satoshis(50000), "Test", TimeSpan.FromHours(1)),
@@ -150,17 +144,14 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanDoArkCoOpRefundUsingBoltz()
     {
-        var _app = SharedSwapInfrastructure.App;
-        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
-        var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
             [
                 new PaymentContractTransformer(testingPrerequisite.walletProvider),
@@ -192,8 +183,7 @@ public class SwapManagementServiceTests
 
         await swapMgr.StartAsync(CancellationToken.None);
 
-        var invoice = (await _app.ResourceCommands.ExecuteCommandAsync("lnd", "create-invoice"))
-            .ErrorMessage!;
+        var invoice = await DockerHelper.CreateLndInvoice();
         var swapId = await swapMgr.InitiateSubmarineSwap(
             testingPrerequisite.walletIdentifier,
             BOLT11PaymentRequest.Parse(invoice, Network.RegTest),
@@ -216,15 +206,12 @@ public class SwapManagementServiceTests
     [Test]
     public async Task CanRestoreSwapsFromBoltz()
     {
-        var _app = SharedSwapInfrastructure.App;
-        var boltzProxy = _app.GetEndpoint("boltz-proxy", "api");
-        var boltzWs = _app.GetEndpoint("boltz", "ws");
-        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet(_app);
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, _app.GetEndpoint("nbxplorer", "http"));
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = new InMemorySwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = boltzProxy.ToString(), WebsocketUrl = boltzWs.ToString() }));
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = new InMemoryIntentStorage();
 
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
@@ -248,7 +235,7 @@ public class SwapManagementServiceTests
         await swapMgr.StartAsync(CancellationToken.None);
 
         // Create a reverse swap (this creates a swap on Boltz that we can restore later)
-        var invoice = await FulmineLiquidityHelper.RetryWithSettle(_app, () =>
+        var invoice = await FulmineLiquidityHelper.RetryWithSettle(() =>
             swapMgr.InitiateReverseSwap(
                 testingPrerequisite.walletIdentifier,
                 new CreateInvoiceParams(LightMoney.Satoshis(50000), "Test Restore", TimeSpan.FromHours(1)),

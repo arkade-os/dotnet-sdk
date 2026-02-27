@@ -9,7 +9,6 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Aspire.Hosting.Testing" Version="13.1.0" />
         <PackageReference Include="CliWrap" Version="3.10.0" />
         <PackageReference Include="coverlet.collector" Version="6.0.4" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
@@ -24,8 +23,6 @@
     <ItemGroup>
         <Using Include="System.Net" />
         <Using Include="Microsoft.Extensions.DependencyInjection" />
-        <Using Include="Aspire.Hosting.ApplicationModel" />
-        <Using Include="Aspire.Hosting.Testing" />
         <Using Include="NUnit.Framework" />
     </ItemGroup>
 
@@ -35,7 +32,6 @@
 
     <ItemGroup>
       <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
-      <ProjectReference Include="..\NArk.AppHost\NArk.AppHost.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
     </ItemGroup>

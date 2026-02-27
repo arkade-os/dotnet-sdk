@@ -18,11 +18,10 @@ public class BuilderStyleTests
     [Test]
     public async Task CanParticipateInBatchSessionBuilderStyle()
     {
-        var app = SharedArkInfrastructure.App;
         var arkHost =
             Host.CreateDefaultBuilder([])
             .AddArk()
-            .OnCustomGrpcArk(app.GetEndpoint("ark", "arkd").ToString())
+            .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
             .WithSafetyService<AsyncSafetyService>()
             .WithIntentStorage<InMemoryIntentStorage>()
             .WithIntentScheduler<SimpleIntentScheduler>()
@@ -34,7 +33,7 @@ public class BuilderStyleTests
             .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
             {
                 o.Network = Network.RegTest;
-                o.Uri = app.GetEndpoint("nbxplorer", "http");
+                o.Uri = SharedArkInfrastructure.NbxplorerEndpoint;
             }))
             .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
             {

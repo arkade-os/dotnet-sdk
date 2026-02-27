@@ -22,10 +22,9 @@ public class BatchSessionTests
     [Test]
     public async Task CanDoFullBatchSessionUsingGeneratedIntent()
     {
-        var app = SharedArkInfrastructure.App;
-        var walletDetails = await FundedWalletHelper.GetFundedWallet(app);
+        var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, app.GetEndpoint("nbxplorer", "http"));
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
             [new PaymentContractTransformer(walletDetails.walletProvider), new HashLockedContractTransformer(walletDetails.walletProvider)]);
 
