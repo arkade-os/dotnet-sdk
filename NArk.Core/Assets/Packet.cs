@@ -97,8 +97,9 @@ public class Packet
         for (var i = 0; i < count; i++)
             groups.Add(AssetGroup.FromReader(reader));
 
-        if (reader.Remaining > 0)
-            throw new ArgumentException($"invalid packet length, left {reader.Remaining} unknown bytes to read");
+        // Trailing bytes are tolerated per the TLV spec – unknown TLV
+        // fields may be appended by newer protocol versions and must be
+        // ignored by older parsers (forward-compatibility).
 
         var packet = new Packet(groups);
         packet.Validate();

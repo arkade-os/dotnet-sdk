@@ -138,5 +138,44 @@ public class PacketTests
         Assert.That(hex, Does.Contain("41524b00"));
     }
 
+    /// <summary>
+    /// Trailing TLV bytes after the known asset groups must be silently
+    /// ignored so that older parsers stay forward-compatible with newer
+    /// protocol versions that may append additional TLV fields.
+    /// See: arkade-os/arkd#945
+    /// </summary>
+    [Test]
+    public void FromScript_ToleratesTrailingTlvBytes()
+    {
+        // Start with a known-good self-controlled issuance packet.
+        var controlRef = AssetRef.FromGroupIndex(0);
+        var outputs = new[] { AssetOutput.Create(0, 21000000) };
+        var group = AssetGroup.Create(null, controlRef, [], outputs, []);
+        var goodPacket = Packet.Create([group]);
+
+        // Serialize normally, then append arbitrary trailing bytes to the
+        // OP_RETURN push data to simulate a newer TLV-encoded payload.
+        var goodTxOut = goodPacket.ToTxOut();
+        var ops = goodTxOut.ScriptPubKey.ToOps().ToList();
+        var pushData = ops[1].PushData;
+        var extended = new byte[pushData.Length + 6];
+        Array.Copy(pushData, 0, extended, 0, pushData.Length);
+        // Append fake trailing TLV: type=0xFF, length=3, value=0xDE,0xAD,0x01
+        extended[pushData.Length]     = 0xFF;
+        extended[pushData.Length + 1] = 0x03;
+        extended[pushData.Length + 2] = 0xDE;
+        extended[pushData.Length + 3] = 0xAD;
+        extended[pushData.Length + 4] = 0x01;
+        extended[pushData.Length + 5] = 0x42;
+
+        var script = new Script(OpcodeType.OP_RETURN, Op.GetPushOp(extended));
+
+        // Must parse without throwing.
+        var parsed = Packet.FromScript(script);
+        Assert.That(parsed.Groups, Has.Count.EqualTo(1));
+        Assert.That(parsed.Groups[0].IsIssuance, Is.True);
+        Assert.That(parsed.Groups[0].Outputs[0].Amount, Is.EqualTo(21000000));
+    }
+
     private static string ToHex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
 }
