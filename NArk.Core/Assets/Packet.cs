@@ -149,6 +149,10 @@ public class Packet
         var tlvData = payload.AsSpan(AssetConstants.ArkadeMagic.Length);
 
         // Scan for the asset marker byte — it may not be the first record.
+        // Prefer non-empty candidates: a 0x00 byte embedded in another record's
+        // value may accidentally parse as count=0 (empty packet). If that happens
+        // we save it as a fallback and keep scanning for a non-empty match.
+        byte[]? emptyFallback = null;
         for (var i = 0; i < tlvData.Length; i++)
         {
             if (tlvData[i] != AssetConstants.MarkerAssetPayload)
@@ -160,14 +164,25 @@ public class Packet
 
             try
             {
-                ParseAssetGroups(new BufferReader(candidate));
-                return candidate;
+                var groups = ParseAssetGroups(new BufferReader(candidate));
+                if (groups.Count > 0)
+                {
+                    // Non-empty: this is definitely the real asset marker.
+                    return candidate;
+                }
+                // count=0: could be a genuine empty asset record, or a false
+                // positive from a 0x00 byte inside a preceding TLV record's value.
+                // Save as fallback and keep scanning for a non-empty record.
+                emptyFallback ??= candidate;
             }
             catch
             {
                 // False positive — 0x00 byte is part of another record.
             }
         }
+
+        if (emptyFallback != null)
+            return emptyFallback;
 
         throw new ArgumentException("asset marker not found in TLV stream");
     }

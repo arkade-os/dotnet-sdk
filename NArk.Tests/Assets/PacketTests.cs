@@ -178,6 +178,48 @@ public class PacketTests
     }
 
     /// <summary>
+    /// A preceding TLV record whose value byte is 0x00 creates a false
+    /// "0x00 0x00" sequence. The scanner must prefer the non-empty candidate
+    /// (real asset data) over the empty count=0 parse from the false marker.
+    /// </summary>
+    [Test]
+    public void FromScript_FalseMarkerEmbeddedInPrecedingTlvRecord()
+    {
+        // Start with a known-good self-controlled issuance packet.
+        var controlRef = AssetRef.FromGroupIndex(0);
+        var outputs = new[] { AssetOutput.Create(0, 21000000) };
+        var group = AssetGroup.Create(null, controlRef, [], outputs, []);
+        var goodPacket = Packet.Create([group]);
+
+        // Serialize and extract the raw OP_RETURN push data.
+        var goodTxOut = goodPacket.ToTxOut();
+        var ops = goodTxOut.ScriptPubKey.ToOps().ToList();
+        var pushData = ops[1].PushData;
+
+        // pushData = "ARK" + 0x00 + <asset groups>
+        // Inject: "ARK" + 0x02 0x00 + 0x00 + <asset groups>
+        // The 0x02 0x00 is a fake TLV record whose value byte is 0x00,
+        // creating a false marker before the real 0x00 asset marker.
+        var magic = pushData[..3]; // "ARK"
+        var assetRecord = pushData[3..]; // 0x00 + groups
+
+        var fakeTlv = new byte[] { 0x02, 0x00 }; // type=0x02, value=0x00
+        var injected = new byte[magic.Length + fakeTlv.Length + assetRecord.Length];
+        magic.CopyTo(injected, 0);
+        fakeTlv.CopyTo(injected, magic.Length);
+        assetRecord.CopyTo(injected, magic.Length + fakeTlv.Length);
+
+        var injectedScript = new Script(OpcodeType.OP_RETURN, Op.GetPushOp(injected));
+
+        Assert.That(Packet.IsAssetPacket(injectedScript), Is.True);
+
+        var parsed = Packet.FromScript(injectedScript);
+        Assert.That(parsed.Groups, Has.Count.EqualTo(1));
+        Assert.That(parsed.Groups[0].IsIssuance, Is.True);
+        Assert.That(parsed.Groups[0].Outputs[0].Amount, Is.EqualTo(21000000));
+    }
+
+    /// <summary>
     /// The asset marker (0x00) may appear at any position in the TLV stream
     /// after the ARK magic, not necessarily first. For example an Introspector
     /// record (type 0x01) could precede the asset data.
