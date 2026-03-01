@@ -177,5 +177,47 @@ public class PacketTests
         Assert.That(parsed.Groups[0].Outputs[0].Amount, Is.EqualTo(21000000));
     }
 
+    /// <summary>
+    /// The asset marker (0x00) may appear at any position in the TLV stream
+    /// after the ARK magic, not necessarily first. For example an Introspector
+    /// record (type 0x01) could precede the asset data.
+    /// </summary>
+    [Test]
+    public void FromScript_ArbitraryTlvRecordOrder()
+    {
+        // Start with a known-good self-controlled issuance packet.
+        var controlRef = AssetRef.FromGroupIndex(0);
+        var outputs = new[] { AssetOutput.Create(0, 21000000) };
+        var group = AssetGroup.Create(null, controlRef, [], outputs, []);
+        var goodPacket = Packet.Create([group]);
+
+        // Serialize and extract the raw OP_RETURN push data.
+        var goodTxOut = goodPacket.ToTxOut();
+        var ops = goodTxOut.ScriptPubKey.ToOps().ToList();
+        var pushData = ops[1].PushData;
+
+        // pushData = "ARK" + 0x00 + <asset groups>
+        // Rearrange to: "ARK" + 0x01 0xCA 0xFE + 0x00 + <asset groups>
+        var magic = pushData[..3]; // "ARK"
+        var assetRecord = pushData[3..]; // 0x00 + groups
+
+        var fakeIntrospector = new byte[] { 0x01, 0xCA, 0xFE };
+        var reordered = new byte[magic.Length + fakeIntrospector.Length + assetRecord.Length];
+        magic.CopyTo(reordered, 0);
+        fakeIntrospector.CopyTo(reordered, magic.Length);
+        assetRecord.CopyTo(reordered, magic.Length + fakeIntrospector.Length);
+
+        var reorderedScript = new Script(OpcodeType.OP_RETURN, Op.GetPushOp(reordered));
+
+        // Must still recognize as valid asset packet.
+        Assert.That(Packet.IsAssetPacket(reorderedScript), Is.True);
+
+        // Must parse without throwing and produce the same group.
+        var parsed = Packet.FromScript(reorderedScript);
+        Assert.That(parsed.Groups, Has.Count.EqualTo(1));
+        Assert.That(parsed.Groups[0].IsIssuance, Is.True);
+        Assert.That(parsed.Groups[0].Outputs[0].Amount, Is.EqualTo(21000000));
+    }
+
     private static string ToHex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
 }

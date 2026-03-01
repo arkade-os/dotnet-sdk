@@ -92,20 +92,34 @@ public class Packet
 
     private static Packet FromReader(BufferReader reader)
     {
-        var count = (int)reader.ReadVarInt();
-        var groups = new List<AssetGroup>(count);
-        for (var i = 0; i < count; i++)
-            groups.Add(AssetGroup.FromReader(reader));
-
-        // Trailing bytes are tolerated per the TLV spec – unknown TLV
-        // fields may be appended by newer protocol versions and must be
-        // ignored by older parsers (forward-compatibility).
-
+        var groups = ParseAssetGroups(reader);
         var packet = new Packet(groups);
         packet.Validate();
         return packet;
     }
 
+    /// <summary>
+    /// Structurally parse asset groups from a BufferReader without logical
+    /// validation (e.g. group index bounds). Used by the trial-parse scanner
+    /// to distinguish real asset markers from identical byte values inside
+    /// other records.
+    /// </summary>
+    private static List<AssetGroup> ParseAssetGroups(BufferReader reader)
+    {
+        var count = (int)reader.ReadVarInt();
+        var groups = new List<AssetGroup>(count);
+        for (var i = 0; i < count; i++)
+            groups.Add(AssetGroup.FromReader(reader));
+        return groups;
+    }
+
+    /// <summary>
+    /// Extract asset packet bytes from an OP_RETURN script.
+    /// The TLV stream after the ARK magic may contain records in any order.
+    /// The asset record is identified by the MarkerAssetPayload (0x00) type
+    /// byte. The function scans for the marker and trial-parses to distinguish
+    /// real markers from identical byte values embedded inside other records.
+    /// </summary>
     private static byte[] ExtractRawPacketFromScript(Script script)
     {
         var ops = script.ToOps().ToList();
@@ -132,18 +146,30 @@ public class Packet
                     $"invalid magic prefix, got {Convert.ToHexString(payload[..AssetConstants.ArkadeMagic.Length]).ToLowerInvariant()} want {Convert.ToHexString(AssetConstants.ArkadeMagic).ToLowerInvariant()}");
         }
 
-        // Verify marker
-        var marker = payload[AssetConstants.ArkadeMagic.Length];
-        if (marker != AssetConstants.MarkerAssetPayload)
-            throw new ArgumentException($"invalid asset marker, got {marker} want {AssetConstants.MarkerAssetPayload}");
+        var tlvData = payload.AsSpan(AssetConstants.ArkadeMagic.Length);
 
-        var packetData = new byte[payload.Length - AssetConstants.ArkadeMagic.Length - 1];
-        Array.Copy(payload, AssetConstants.ArkadeMagic.Length + 1, packetData, 0, packetData.Length);
+        // Scan for the asset marker byte — it may not be the first record.
+        for (var i = 0; i < tlvData.Length; i++)
+        {
+            if (tlvData[i] != AssetConstants.MarkerAssetPayload)
+                continue;
 
-        if (packetData.Length == 0)
-            throw new ArgumentException("missing packet data");
+            var candidate = tlvData.Slice(i + 1).ToArray();
+            if (candidate.Length == 0)
+                continue;
 
-        return packetData;
+            try
+            {
+                ParseAssetGroups(new BufferReader(candidate));
+                return candidate;
+            }
+            catch
+            {
+                // False positive — 0x00 byte is part of another record.
+            }
+        }
+
+        throw new ArgumentException("asset marker not found in TLV stream");
     }
 
     /// <summary>
