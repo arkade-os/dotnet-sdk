@@ -8,8 +8,9 @@ public static class AssetConstants
     public const byte MaskAssetId = 0x01;
     public const byte MaskControlAsset = 0x02;
     public const byte MaskMetadata = 0x04;
-    public static readonly byte[] ArkadeMagic = [0x41, 0x52, 0x4B]; // "ARK"
-    public const byte MarkerAssetPayload = 0x00;
+    /// <summary>ArkadeMagic moved to <see cref="Extension.ArkadeMagic"/>.</summary>
+    [Obsolete("Use Extension.ArkadeMagic instead")]
+    public static readonly byte[] ArkadeMagic = Extension.ArkadeMagic;
 }
 
 public enum AssetInputType : byte { Unspecified = 0, Local = 1, Intent = 2 }

@@ -1,7 +1,5 @@
-using System.Text;
 using System.Text.Json;
 using NArk.Core.Assets;
-using NBitcoin;
 
 namespace NArk.Tests.Assets;
 
@@ -139,7 +137,7 @@ public class FixtureTests
         foreach (var tc in fixture.GetProperty("valid").GetProperty("newPacket").EnumerateArray())
         {
             var name = tc.GetProperty("name").GetString()!;
-            var expectedScript = tc.GetProperty("expectedScript").GetString()!;
+            var expected = tc.GetProperty("expected").GetString()!;
 
             var groups = new List<AssetGroup>();
             foreach (var asset in tc.GetProperty("assets").EnumerateArray())
@@ -168,14 +166,13 @@ public class FixtureTests
             }
 
             var packet = Packet.Create(groups);
-            var serialized = Convert.ToHexString(packet.Serialize()).ToLowerInvariant();
-            Assert.That(serialized, Is.EqualTo(expectedScript), $"Packet fixture '{name}' serialization mismatch");
+            var serialized = ToHex(packet.SerializePacketData());
+            Assert.That(serialized, Is.EqualTo(expected), $"Packet fixture '{name}' serialization mismatch");
 
-            // Round-trip: parse script and re-serialize
-            var script = Script.FromBytesUnsafe(Convert.FromHexString(expectedScript));
-            var restored = Packet.FromScript(script);
-            var reserialized = Convert.ToHexString(restored.Serialize()).ToLowerInvariant();
-            Assert.That(reserialized, Is.EqualTo(expectedScript), $"Packet fixture '{name}' round-trip mismatch");
+            // Round-trip: parse raw packet hex and re-serialize
+            var restored = Packet.FromString(expected);
+            var reserialized = ToHex(restored.SerializePacketData());
+            Assert.That(reserialized, Is.EqualTo(expected), $"Packet fixture '{name}' round-trip mismatch");
         }
     }
 
@@ -190,13 +187,14 @@ public class FixtureTests
             var intentTxid = tc.GetProperty("intentTxid").GetString()!;
             var expectedLeafHex = tc.GetProperty("expectedLeafTxPacket").GetString()!;
 
-            var script = Script.FromBytesUnsafe(Convert.FromHexString(scriptHex));
-            var packet = Packet.FromScript(script);
+            var packet = Packet.FromString(scriptHex);
             var leafPacket = packet.LeafTxPacket(Convert.FromHexString(intentTxid));
-            var leafSerialized = Convert.ToHexString(leafPacket.Serialize()).ToLowerInvariant();
+            var leafSerialized = ToHex(leafPacket.SerializePacketData());
             Assert.That(leafSerialized, Is.EqualTo(expectedLeafHex), $"LeafTxPacket fixture '{name}' mismatch");
         }
     }
 
     #endregion
+
+    private static string ToHex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
 }

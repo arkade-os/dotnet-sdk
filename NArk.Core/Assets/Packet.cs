@@ -3,12 +3,16 @@ using NBitcoin;
 namespace NArk.Core.Assets;
 
 /// <summary>
-/// A collection of AssetGroups serialized into an OP_RETURN output.
-/// Wire format: OP_RETURN &lt;push: [ARK magic 0x41524B][0x00 marker][varint groupCount][AssetGroup...]&gt;
+/// A collection of AssetGroups representing the asset packet (type 0x00) inside an Extension.
+/// Raw wire format: varint(groupCount) + AssetGroup...
 /// </summary>
-public class Packet
+public class Packet : IExtensionPacket
 {
+    public const byte PacketTypeId = 0;
+
     public IReadOnlyList<AssetGroup> Groups { get; }
+
+    byte IExtensionPacket.PacketType => PacketTypeId;
 
     private Packet(IReadOnlyList<AssetGroup> groups)
     {
@@ -22,47 +26,59 @@ public class Packet
         return packet;
     }
 
-    public static Packet FromScript(Script script)
+    /// <summary>
+    /// Parses a Packet from raw bytes (varint groupCount + groups).
+    /// No OP_RETURN/magic/marker prefix expected.
+    /// </summary>
+    public static Packet FromBytes(byte[] data)
     {
-        var rawPacket = ExtractRawPacketFromScript(script);
-        var reader = new BufferReader(rawPacket);
+        var reader = new BufferReader(data);
         return FromReader(reader);
     }
 
-    public static bool IsAssetPacket(Script script)
+    /// <summary>
+    /// Parses a Packet from a hex-encoded string of raw packet bytes.
+    /// </summary>
+    public static Packet FromString(string hex)
     {
+        if (string.IsNullOrEmpty(hex))
+            throw new ArgumentException("missing packet data");
+        byte[] data;
         try
         {
-            ExtractRawPacketFromScript(script);
-            return true;
+            data = Convert.FromHexString(hex);
         }
-        catch
+        catch (FormatException)
         {
-            return false;
+            throw new ArgumentException("invalid packet format, must be hex");
         }
+        return FromBytes(data);
     }
 
     /// <summary>
-    /// Returns an OP_RETURN TxOut with amount=0 containing the serialized packet.
+    /// Parses a Packet from an OP_RETURN script by delegating to Extension.
     /// </summary>
-    public TxOut ToTxOut()
+    public static Packet FromScript(Script script)
     {
-        var data = SerializePacketData();
-        var payload = new byte[AssetConstants.ArkadeMagic.Length + 1 + data.Length];
-        Array.Copy(AssetConstants.ArkadeMagic, 0, payload, 0, AssetConstants.ArkadeMagic.Length);
-        payload[AssetConstants.ArkadeMagic.Length] = AssetConstants.MarkerAssetPayload;
-        Array.Copy(data, 0, payload, AssetConstants.ArkadeMagic.Length + 1, data.Length);
-
-        var script = new Script(OpcodeType.OP_RETURN, Op.GetPushOp(payload));
-        return new TxOut(Money.Zero, script);
+        var ext = Extension.FromScript(script);
+        return ext.GetAssetPacket()
+            ?? throw new ArgumentException("no asset packet found in extension");
     }
 
     /// <summary>
-    /// Returns the full OP_RETURN script bytes.
+    /// Returns the full OP_RETURN script bytes (wrapped in an Extension).
     /// </summary>
     public byte[] Serialize()
     {
-        return ToTxOut().ScriptPubKey.ToBytes();
+        return new Extension([this]).Serialize();
+    }
+
+    /// <summary>
+    /// Returns an OP_RETURN TxOut with amount=0 (wrapped in an Extension).
+    /// </summary>
+    public TxOut ToTxOut()
+    {
+        return new Extension([this]).ToTxOut();
     }
 
     public void Validate()
@@ -81,7 +97,10 @@ public class Packet
         }
     }
 
-    private byte[] SerializePacketData()
+    /// <summary>
+    /// Serializes the raw packet data (varint groupCount + groups). No wrapper.
+    /// </summary>
+    public byte[] SerializePacketData()
     {
         var writer = new BufferWriter();
         writer.WriteVarInt((ulong)Groups.Count);
@@ -105,46 +124,6 @@ public class Packet
         return packet;
     }
 
-    private static byte[] ExtractRawPacketFromScript(Script script)
-    {
-        var ops = script.ToOps().ToList();
-        if (ops.Count == 0 || ops[0].Code != OpcodeType.OP_RETURN)
-            throw new ArgumentException("OP_RETURN not found in output script");
-
-        // Concatenate all data pushes after OP_RETURN
-        using var ms = new MemoryStream();
-        for (var i = 1; i < ops.Count; i++)
-        {
-            if (ops[i].PushData is { } pushData)
-                ms.Write(pushData, 0, pushData.Length);
-        }
-        var payload = ms.ToArray();
-
-        if (payload.Length < AssetConstants.ArkadeMagic.Length + 1)
-            throw new ArgumentException("invalid OP_RETURN data");
-
-        // Verify magic prefix
-        for (var i = 0; i < AssetConstants.ArkadeMagic.Length; i++)
-        {
-            if (payload[i] != AssetConstants.ArkadeMagic[i])
-                throw new ArgumentException(
-                    $"invalid magic prefix, got {Convert.ToHexString(payload[..AssetConstants.ArkadeMagic.Length]).ToLowerInvariant()} want {Convert.ToHexString(AssetConstants.ArkadeMagic).ToLowerInvariant()}");
-        }
-
-        // Verify marker
-        var marker = payload[AssetConstants.ArkadeMagic.Length];
-        if (marker != AssetConstants.MarkerAssetPayload)
-            throw new ArgumentException($"invalid asset marker, got {marker} want {AssetConstants.MarkerAssetPayload}");
-
-        var packetData = new byte[payload.Length - AssetConstants.ArkadeMagic.Length - 1];
-        Array.Copy(payload, AssetConstants.ArkadeMagic.Length + 1, packetData, 0, packetData.Length);
-
-        if (packetData.Length == 0)
-            throw new ArgumentException("missing packet data");
-
-        return packetData;
-    }
-
     /// <summary>
     /// Converts this packet into a batch leaf packet by replacing all group inputs
     /// with a single Intent input referencing the given intent txid.
@@ -155,5 +134,8 @@ public class Packet
         return new Packet(leafGroups);
     }
 
-    public override string ToString() => Convert.ToHexString(Serialize()).ToLowerInvariant();
+    /// <summary>
+    /// Returns the hex-encoded representation of the raw packet data.
+    /// </summary>
+    public override string ToString() => Convert.ToHexString(SerializePacketData()).ToLowerInvariant();
 }

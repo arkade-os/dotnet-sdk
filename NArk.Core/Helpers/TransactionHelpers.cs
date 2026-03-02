@@ -189,8 +189,10 @@ public static class TransactionHelpers
             {
                 for (var i = 0; i < gtx.Outputs.Count; i++)
                 {
-                    if (!Assets.Packet.IsAssetPacket(gtx.Outputs[i].ScriptPubKey)) continue;
-                    var packet = Assets.Packet.FromScript(gtx.Outputs[i].ScriptPubKey);
+                    if (!Assets.Extension.IsExtension(gtx.Outputs[i].ScriptPubKey)) continue;
+                    var ext = Assets.Extension.FromScript(gtx.Outputs[i].ScriptPubKey);
+                    var packet = ext.GetAssetPacket();
+                    if (packet is null) continue;
                     var remappedGroups = packet.Groups.Select(g =>
                         Assets.AssetGroup.Create(
                             g.AssetId, g.ControlAsset,
