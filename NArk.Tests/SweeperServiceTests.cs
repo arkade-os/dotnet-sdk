@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Intents;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Contracts;
 using NArk.Core.Events;
@@ -24,6 +25,7 @@ public class SweeperServiceTests
     private ICoinService _coinService = null!;
     private IContractStorage _contractStorage = null!;
     private ISpendingService _spendingService = null!;
+    private IIntentStorage _intentStorage = null!;
     private IChainTimeProvider _chainTimeProvider = null!;
 
     private static readonly TimeHeight CurrentTime = new(DateTimeOffset.UtcNow, 800_000);
@@ -41,6 +43,7 @@ public class SweeperServiceTests
         _contractStorage = Substitute.For<IContractStorage>();
         _coinService = Substitute.For<ICoinService>();
         _spendingService = Substitute.For<ISpendingService>();
+        _intentStorage = Substitute.For<IIntentStorage>();
         _chainTimeProvider = Substitute.For<IChainTimeProvider>();
 
         _chainTimeProvider.GetChainTime(Arg.Any<CancellationToken>())
@@ -181,6 +184,7 @@ public class SweeperServiceTests
             _coinService,
             _contractStorage,
             _spendingService,
+            _intentStorage,
             options,
             _chainTimeProvider,
             Array.Empty<IEventHandler<PostSweepActionEvent>>());

@@ -99,7 +99,7 @@ public class ChainSwapTests
         await using var sweepMgr = new SweeperService(
             [new SwapSweepPolicy()], testingPrerequisite.vtxoStorage,
             coinService, testingPrerequisite.contracts,
-            spendingService,
+            spendingService, intentStorage,
             new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions()
             { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider);
         await sweepMgr.StartAsync(CancellationToken.None);
