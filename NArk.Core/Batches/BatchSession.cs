@@ -319,8 +319,8 @@ public class BatchSession(
             // bytes differ. Collect it here and validate against the leaf packet below.
             if (output.ScriptPubKey.IsUnspendable)
             {
-                if (Packet.IsAssetPacket(output.ScriptPubKey))
-                    intentAssetPacket = Packet.FromScript(output.ScriptPubKey);
+                if (Extension.IsExtension(output.ScriptPubKey))
+                    intentAssetPacket = Extension.FromScript(output.ScriptPubKey).GetAssetPacket();
                 continue;
             }
 
@@ -376,10 +376,11 @@ public class BatchSession(
             {
                 if (!leafOut.ScriptPubKey.IsUnspendable)
                     continue;
-                if (!Packet.IsAssetPacket(leafOut.ScriptPubKey))
+                if (!Extension.IsExtension(leafOut.ScriptPubKey))
                     continue;
 
-                var leafPacket = Packet.FromScript(leafOut.ScriptPubKey);
+                var leafPacket = Extension.FromScript(leafOut.ScriptPubKey).GetAssetPacket();
+                if (leafPacket is null) continue;
                 if (AssetPacketOutputsMatch(intentPacket, leafPacket))
                     return;
             }
