@@ -137,6 +137,16 @@ public class PacketTests
     }
 
     [Test]
+    public void DuplicateAssetId_Throws()
+    {
+        var assetId = AssetId.Create("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
+        var group1 = AssetGroup.Create(assetId, null, [AssetInput.Create(0, 100)], [AssetOutput.Create(0, 100)], []);
+        var group2 = AssetGroup.Create(assetId, null, [AssetInput.Create(0, 100)], [AssetOutput.Create(1, 100)], []);
+        var ex = Assert.Throws<ArgumentException>(() => Packet.Create([group1, group2]));
+        Assert.That(ex!.Message, Does.Contain("duplicate asset group for asset"));
+    }
+
+    [Test]
     public void ToString_ReturnsRawPacketHex()
     {
         var controlRef = AssetRef.FromGroupIndex(0);

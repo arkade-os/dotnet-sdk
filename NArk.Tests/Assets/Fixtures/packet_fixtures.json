@@ -67,6 +67,50 @@
                     }
                 ],
                 "expectedError": "invalid control asset group index"
+            },
+            {
+                "name": "duplicate asset group",
+                "assets": [
+                    {
+                        "assetId": {
+                            "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "index": 0
+                        },
+                        "inputs": [
+                            {
+                                "type": "local",
+                                "vin": 0,
+                                "amount": 100
+                            }
+                        ],
+                        "outputs": [
+                            {
+                                "vout": 0,
+                                "amount": 100
+                            }
+                        ]
+                    },
+                    {
+                        "assetId": {
+                            "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "index": 0
+                        },
+                        "inputs": [
+                            {
+                                "type": "local",
+                                "vin": 0,
+                                "amount": 100
+                            }
+                        ],
+                        "outputs": [
+                            {
+                                "vout": 1,
+                                "amount": 100
+                            }
+                        ]
+                    }
+                ],
+                "expectedError": "duplicate asset group for asset aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000"
             }
         ],
         "newPacketFromString": [

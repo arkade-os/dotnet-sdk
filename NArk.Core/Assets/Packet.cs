@@ -86,8 +86,16 @@ public class Packet : IExtensionPacket
         if (Groups.Count == 0)
             throw new ArgumentException("missing assets");
 
+        var seenAssetIds = new HashSet<string>();
         foreach (var group in Groups)
         {
+            if (group.AssetId is { } aid)
+            {
+                var key = aid.ToString();
+                if (!seenAssetIds.Add(key))
+                    throw new ArgumentException($"duplicate asset group for asset {key}");
+            }
+
             if (group.ControlAsset is { Type: AssetRefType.ByGroup } controlRef
                 && controlRef.GroupIndex >= Groups.Count)
             {
