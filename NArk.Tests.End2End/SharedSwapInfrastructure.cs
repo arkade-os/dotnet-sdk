@@ -56,31 +56,34 @@ public class SharedSwapInfrastructure
     private static async Task WaitForBoltzPairs(HttpClient http)
     {
         var maxAttempts = 60;
+        string lastResponse = "";
         for (var i = 1; i <= maxAttempts; i++)
         {
             try
             {
-                var pairs = await http.GetFromJsonAsync<SubmarinePairsResponse>($"{BoltzEndpoint}/v2/swap/submarine");
+                var response = await http.GetAsync($"{BoltzEndpoint}/v2/swap/submarine");
+                lastResponse = await response.Content.ReadAsStringAsync();
+                var pairs = System.Text.Json.JsonSerializer.Deserialize<SubmarinePairsResponse>(lastResponse);
                 if (pairs?.ARK?.BTC != null)
                 {
                     TestContext.Progress.WriteLine($"Boltz ARK/BTC pairs ready (attempt {i})");
                     return;
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Boltz returns error JSON when LND isn't connected yet
+                lastResponse = $"Exception: {ex.Message} | Response: {lastResponse}";
             }
 
+            if (i % 10 == 1 || i == maxAttempts)
+                TestContext.Progress.WriteLine($"Waiting for Boltz LND connectivity... (attempt {i}/{maxAttempts}): {lastResponse}");
+
             if (i < maxAttempts)
-            {
-                TestContext.Progress.WriteLine($"Waiting for Boltz LND connectivity... (attempt {i}/{maxAttempts})");
                 await Task.Delay(TimeSpan.FromSeconds(2));
-            }
         }
 
         Assert.Fail(
-            "Boltz did not report ARK/BTC pairs within 2 minutes. " +
-            "LND may not be connected. Check boltz-lnd container logs.");
+            $"Boltz did not report ARK/BTC pairs within 2 minutes. " +
+            $"Last response: {lastResponse}");
     }
 }
