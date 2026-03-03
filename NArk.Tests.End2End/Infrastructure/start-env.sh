@@ -321,6 +321,33 @@ setup_lnd_wallet
 
 setup_arkd_fees
 
+# Restart boltz so it reconnects to boltz-lnd (now fully initialized with wallet).
+# Boltz doesn't auto-reconnect to LND after a failed initial connection, so the
+# restart forces it to pick up the ready LND instance and load ARK/BTC pairs.
+log "Restarting Boltz to reconnect to boltz-lnd..."
+docker restart boltz
+sleep 5
+
+# Verify Boltz has ARK/BTC pairs
+log "Verifying Boltz ARK/BTC pairs..."
+max_attempts=30
+attempt=1
+while [ $attempt -le $max_attempts ]; do
+  pairs=$(curl -s http://localhost:9069/v2/swap/submarine 2>/dev/null || echo "{}")
+  if echo "$pairs" | grep -q '"ARK"'; then
+    log "✓ Boltz ARK/BTC pairs loaded successfully"
+    break
+  fi
+  log "Waiting for Boltz pairs... (attempt $attempt/$max_attempts)"
+  sleep 2
+  ((attempt++))
+done
+
+if [ $attempt -gt $max_attempts ]; then
+  log "ERROR: Boltz ARK/BTC pairs not available after restart"
+  exit 1
+fi
+
 log "✅ Development environment ready."
 log "\nServices available at:\n"
 log "Ark wallet: http://localhost:6060"
