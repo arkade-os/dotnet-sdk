@@ -290,17 +290,17 @@ docker compose -f docker-compose.ark.yml up -d
 # 6. Setup and unlock arkd wallet
 container="ark"
 
-# Wait for arkd to be ready
+# Wait for arkd gRPC to be ready (health endpoint may respond before gRPC is serving)
 log "Waiting for arkd to be ready..."
 max_attempts=30
 attempt=1
 while [ $attempt -le $max_attempts ]; do
-  if curl -s http://localhost:7070/health >/dev/null 2>&1; then
-    log "arkd is ready!"
+  if $NIGIRI ark init --password secret --server-url localhost:7070 --explorer http://chopsticks:3000 2>/dev/null; then
+    log "✓ arkd wallet initialized"
     break
   fi
   log "Waiting for arkd... (attempt $attempt/$max_attempts)"
-  sleep 2
+  sleep 3
   ((attempt++))
 done
 
@@ -309,9 +309,6 @@ if [ $attempt -gt $max_attempts ]; then
   exit 1
 fi
 
-
-# this is technically already handled in nigiri start
-$NIGIRI ark init  --password secret --server-url localhost:7070 --explorer http://chopsticks:3000
 $NIGIRI faucet $($NIGIRI ark receive | jq -r ".onchain_address") 2
 $NIGIRI ark redeem-notes -n $($NIGIRI arkd note --amount 100000000) --password secret
 
