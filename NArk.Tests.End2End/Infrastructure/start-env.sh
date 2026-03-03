@@ -321,9 +321,29 @@ setup_lnd_wallet
 
 setup_arkd_fees
 
-# Restart boltz so it reconnects to boltz-lnd (now fully initialized with wallet).
-# Boltz doesn't auto-reconnect to LND after a failed initial connection, so the
-# restart forces it to pick up the ready LND instance and load ARK/BTC pairs.
+# Wait for boltz-lnd wallet to be fully ready before restarting Boltz.
+# The BTCPay LND image auto-creates its wallet on first start, which takes 2-5s.
+# Boltz tries to connect at startup and permanently fails if the wallet isn't ready.
+log "Waiting for boltz-lnd wallet to be ready..."
+max_attempts=30
+attempt=1
+while [ $attempt -le $max_attempts ]; do
+  if docker exec boltz-lnd lncli --network=regtest getinfo >/dev/null 2>&1; then
+    log "✓ boltz-lnd wallet is ready"
+    break
+  fi
+  log "boltz-lnd wallet not ready yet (attempt $attempt/$max_attempts)"
+  sleep 2
+  ((attempt++))
+done
+
+if [ $attempt -gt $max_attempts ]; then
+  log "ERROR: boltz-lnd wallet failed to initialize"
+  exit 1
+fi
+
+# Restart boltz so it reconnects to the now-ready boltz-lnd.
+# Boltz doesn't auto-reconnect to LND after a failed initial connection.
 log "Restarting Boltz to reconnect to boltz-lnd..."
 docker restart boltz
 sleep 5
