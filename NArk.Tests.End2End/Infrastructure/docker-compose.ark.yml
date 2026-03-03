@@ -166,7 +166,7 @@ services:
         zmqpubrawtx = "tcp://bitcoin:28333"
         zmqpubrawblock = "tcp://bitcoin:28332"
 
-        [currencies.lnd]
+        [[currencies.lnds]]
         host = "boltz-lnd"
         port = 10009
         certpath = "/home/boltz/.lnd/tls.cert"
