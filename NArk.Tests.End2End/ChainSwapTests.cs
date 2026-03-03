@@ -69,7 +69,7 @@ public class ChainSwapTests
             coinService, testingPrerequisite.contracts,
             spendingService, intentStorage,
             new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions()
-            { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider);
+            { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider, []);
         await sweepMgr.StartAsync(CancellationToken.None);
 
         await using var swapMgr = new SwapsManagementService(

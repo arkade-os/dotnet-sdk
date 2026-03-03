@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
@@ -23,7 +22,8 @@ using NBitcoin.Crypto;
 namespace NArk.Core.Services;
 
 /// <summary>
-/// Service for managing Ark intents with automatic submission, event monitoring, and batch participation
+/// Service for managing Ark intents with automatic submission, event monitoring, and batch participation.
+/// Uses a single persistent gRPC event stream with dynamic topic updates via UpdateStreamTopics.
 /// </summary>
 public class BatchManagementService(
     IIntentStorage intentStorage,
@@ -37,26 +37,20 @@ public class BatchManagementService(
     ILogger<BatchManagementService>? logger = null)
     : IAsyncDisposable
 {
-    private record BatchSessionWithConnection(
-        Connection Connection,
-        BatchSession BatchSession
-    );
-
     private record Connection(
         Task ConnectionTask,
         CancellationTokenSource CancellationTokenSource
     );
 
-    // Polling intervals
     private static readonly TimeSpan EventStreamRetryDelay = TimeSpan.FromSeconds(5);
 
     private readonly ConcurrentDictionary<string, ArkIntent> _activeIntents = new();
-    private readonly ConcurrentDictionary<string, BatchSessionWithConnection> _activeBatchSessions = new();
+    private readonly ConcurrentDictionary<string, BatchSession> _activeBatchSessions = new();
+    private readonly ConcurrentDictionary<string, HashSet<string>> _batchIdToIntentIds = new();
 
-    private Connection? _sharedMainConnection;
-    private readonly SemaphoreSlim _connectionManipulationSemaphore = new(1, 1);
-
-    private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
+    private string? _streamId;
+    private Connection? _streamConnection;
+    private readonly SemaphoreSlim _topicUpdateSemaphore = new(1, 1);
 
     private CancellationTokenSource? _serviceCts;
     private bool _disposed;
@@ -64,62 +58,205 @@ public class BatchManagementService(
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _serviceCts = new CancellationTokenSource();
-        // Load existing WaitingForBatch intents and start a shared event stream
         await LoadActiveIntentsAsync(cancellationToken);
-        _ = RunSharedEventStreamController(_serviceCts.Token);
-        await _triggerChannel.Writer.WriteAsync("STARTUP", cancellationToken);
+
+        var streamCts = CancellationTokenSource.CreateLinkedTokenSource(_serviceCts.Token);
+        _streamConnection = new Connection(
+            RunSingleEventStreamAsync(streamCts.Token),
+            streamCts
+        );
+
         intentStorage.IntentChanged += OnIntentChanged;
     }
 
     private void OnIntentChanged(object? sender, ArkIntent intent)
     {
-        // Only trigger stream update if:
-        // 1. A new intent is ready for batch (WaitingForBatch with IntentId)
-        // 2. An intent was cancelled/completed and should be removed
-        // Don't trigger for state changes within a batch (BatchInProgress updates)
         if (intent.State == ArkIntentState.WaitingForBatch && intent.IntentId is not null)
         {
-            // New intent ready - check if we already know about it
-            if (!_activeIntents.ContainsKey(intent.IntentId))
+            if (_activeIntents.TryAdd(intent.IntentId, intent))
             {
-                _triggerChannel.Writer.TryWrite("INTENT_ADDED");
+                var topics = GetTopicsForIntent(intent);
+                _ = UpdateTopicsAsync(addTopics: topics);
             }
         }
         else if (intent.State is ArkIntentState.Cancelled or ArkIntentState.BatchFailed or ArkIntentState.BatchSucceeded)
         {
-            // Intent completed - remove from tracking if present
-            if (intent.IntentId is not null && _activeIntents.ContainsKey(intent.IntentId))
+            if (intent.IntentId is not null && _activeIntents.TryRemove(intent.IntentId, out var removed))
             {
-                _triggerChannel.Writer.TryWrite("INTENT_COMPLETED");
+                var topics = GetTopicsForIntent(removed);
+                _ = UpdateTopicsAsync(removeTopics: topics);
             }
         }
-        // Don't trigger for WaitingToSubmit (not yet ready) or BatchInProgress (already tracking)
     }
 
-    private async Task RunSharedEventStreamController(CancellationToken cancellationToken)
+    private async Task UpdateTopicsAsync(string[]? addTopics = null, string[]? removeTopics = null)
     {
-        await foreach (var triggerReason in _triggerChannel.Reader.ReadAllAsync(cancellationToken))
+        await _topicUpdateSemaphore.WaitAsync();
+        try
         {
-            logger?.LogDebug("Received trigger in EventStreamController: {TriggerReason}", triggerReason);
-            await _connectionManipulationSemaphore.WaitAsync(cancellationToken);
+            if (_streamId is null)
+            {
+                logger?.LogDebug("Stream not yet started, skipping topic update");
+                return;
+            }
+
+            await clientTransport.UpdateStreamTopicsAsync(_streamId, addTopics, removeTopics);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(0, ex, "Failed to update stream topics");
+        }
+        finally
+        {
+            _topicUpdateSemaphore.Release();
+        }
+    }
+
+    private async Task RunSingleEventStreamAsync(CancellationToken cancellationToken)
+    {
+        logger?.LogDebug("BatchManagementService: Single event stream starting");
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
             try
             {
-                await LoadActiveIntentsAsync(cancellationToken, false);
-                var cancellationTokenSourceForMain = new CancellationTokenSource();
-                if (_sharedMainConnection is not null)
-                    await _sharedMainConnection.CancellationTokenSource.CancelAsync();
-                _sharedMainConnection = new Connection(
-                    RunMainSharedEventStreamAsync(cancellationTokenSourceForMain.Token),
-                    cancellationTokenSourceForMain
-                );
+                _streamId = null;
+                var topics = GetAllTopics();
+
+                // Even with no topics, open the stream so we can add topics dynamically
+                // via UpdateStreamTopics when new intents arrive
+
+                await foreach (var eventResponse in clientTransport.GetEventStreamAsync(
+                                   new GetEventStreamRequest(topics), cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await ProcessEventAsync(eventResponse, cancellationToken);
+                }
             }
-            finally
+            catch (OperationCanceledException)
             {
-                _connectionManipulationSemaphore.Release();
+                // Normal shutdown
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested ||
+                                       ex.InnerException is OperationCanceledException)
+            {
+                // Cancellation during gRPC call
+            }
+            catch (Exception ex)
+            {
+                logger?.LogError(0, ex, "Error in event stream, restarting in {Seconds} seconds",
+                    EventStreamRetryDelay.TotalSeconds);
+                _streamId = null;
+                await Task.Delay(EventStreamRetryDelay, cancellationToken);
             }
         }
     }
 
+    private async Task ProcessEventAsync(BatchEvent eventResponse, CancellationToken cancellationToken)
+    {
+        switch (eventResponse)
+        {
+            case StreamStartedEvent streamStarted:
+                _streamId = streamStarted.StreamId;
+                logger?.LogDebug("Event stream started with ID {StreamId}", _streamId);
+                break;
+
+            case BatchStartedEvent batchStarted:
+                await HandleBatchStartedForAllIntentsAsync(batchStarted, CancellationToken.None);
+                break;
+
+            // Route batch-specific events to the appropriate session(s)
+            case BatchFailedEvent or BatchFinalizedEvent or BatchFinalizationEvent
+                or TreeTxEvent or TreeSigningStartedEvent or TreeNoncesEvent
+                or TreeNoncesAggregatedEvent or TreeSignatureEvent:
+            {
+                var batchId = GetBatchId(eventResponse);
+                if (batchId is not null)
+                    await RouteToBatchSessionsAsync(batchId, eventResponse, cancellationToken);
+                break;
+            }
+        }
+    }
+
+    private static string? GetBatchId(BatchEvent evt) => evt switch
+    {
+        TreeTxEvent e => e.Id,
+        TreeSigningStartedEvent e => e.Id,
+        TreeNoncesEvent e => e.Id,
+        TreeNoncesAggregatedEvent e => e.Id,
+        TreeSignatureEvent e => e.Id,
+        BatchFinalizationEvent e => e.Id,
+        BatchFinalizedEvent e => e.Id,
+        BatchFailedEvent e => e.Id,
+        _ => null
+    };
+
+    private async Task RouteToBatchSessionsAsync(string batchId, BatchEvent eventResponse,
+        CancellationToken cancellationToken)
+    {
+        if (!_batchIdToIntentIds.TryGetValue(batchId, out var intentIds))
+            return;
+
+        string[] ids;
+        lock (intentIds)
+        {
+            ids = intentIds.ToArray();
+        }
+
+        foreach (var intentId in ids)
+        {
+            if (!_activeBatchSessions.TryGetValue(intentId, out var session))
+                continue;
+
+            if (!_activeIntents.TryGetValue(intentId, out var intent))
+                continue;
+
+            try
+            {
+                var isComplete = await session.ProcessEventAsync(eventResponse, cancellationToken);
+                if (isComplete)
+                {
+                    CleanupBatchSession(intentId, batchId);
+                }
+
+                switch (eventResponse)
+                {
+                    case BatchFailedEvent batchFailed when batchFailed.Id == intent.BatchId:
+                        await HandleBatchFailedAsync(intent, batchFailed, cancellationToken);
+                        CleanupBatchSession(intentId, batchId);
+                        _activeIntents.TryRemove(intentId, out _);
+                        _ = UpdateTopicsAsync(removeTopics: GetTopicsForIntent(intent));
+                        break;
+
+                    case BatchFinalizedEvent batchFinalized when batchFinalized.Id == intent.BatchId:
+                        await HandleBatchFinalizedAsync(intent, batchFinalized, cancellationToken);
+                        CleanupBatchSession(intentId, batchId);
+                        _activeIntents.TryRemove(intentId, out _);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                await HandleBatchExceptionAsync(intent, ex, cancellationToken);
+                CleanupBatchSession(intentId, batchId);
+            }
+        }
+    }
+
+    private void CleanupBatchSession(string intentId, string batchId)
+    {
+        _activeBatchSessions.TryRemove(intentId, out _);
+
+        if (_batchIdToIntentIds.TryGetValue(batchId, out var intentIds))
+        {
+            lock (intentIds)
+            {
+                intentIds.Remove(intentId);
+                if (intentIds.Count == 0)
+                    _batchIdToIntentIds.TryRemove(batchId, out _);
+            }
+        }
+    }
 
     #region Private Methods
 
@@ -129,7 +266,6 @@ public class BatchManagementService(
         var allActiveIntents = await intentStorage.GetIntents(states: activeStates, cancellationToken: cancellationToken);
 
         // Group intents by their VTXOs to detect duplicates
-        // An intent's VTXOs are stored in IntentVtxos (list of outpoints)
         var vtxoToIntents = new Dictionary<string, List<ArkIntent>>();
         foreach (var intent in allActiveIntents)
         {
@@ -150,11 +286,9 @@ public class BatchManagementService(
                 "Found {Count} VTXOs with multiple active intents - cleaning up duplicates",
                 duplicateVtxos.Count);
 
-            // For each VTXO with duplicates, keep only the most recent intent (by UpdatedAt)
             var intentsToCancel = new HashSet<string>();
             foreach (var (vtxoKey, intents) in duplicateVtxos)
             {
-                // Sort by UpdatedAt descending, keep the first (most recent), cancel the rest
                 var sorted = intents.OrderByDescending(i => i.UpdatedAt).ToList();
                 for (int i = 1; i < sorted.Count; i++)
                 {
@@ -162,7 +296,6 @@ public class BatchManagementService(
                 }
             }
 
-            // Cancel the duplicate intents
             foreach (var intentTxId in intentsToCancel)
             {
                 var intent = allActiveIntents.First(i => i.IntentTxId == intentTxId);
@@ -179,7 +312,6 @@ public class BatchManagementService(
                 await intentStorage.SaveIntent(cancelledIntent.WalletId, cancelledIntent, cancellationToken);
             }
 
-            // Remove cancelled intents from the list
             allActiveIntents = allActiveIntents.Where(i => !intentsToCancel.Contains(i.IntentTxId)).ToList();
         }
 
@@ -191,12 +323,8 @@ public class BatchManagementService(
                 continue;
             }
 
-            // Cancel all BatchInProgress intents on startup. Batch sessions are never carried
-            // over across restarts, so any BatchInProgress intent is definitively stale.
-            // The next generation cycle will create a fresh intent if needed.
             if (firstRun && intent.State == ArkIntentState.BatchInProgress)
             {
-                // If the intent has a commitment tx, the batch actually succeeded — fix the state
                 if (intent.CommitmentTransactionId is not null)
                 {
                     logger?.LogInformation(
@@ -239,65 +367,6 @@ public class BatchManagementService(
         await intentStorage.SaveIntent(newValue.WalletId, newValue, cancellationToken);
     }
 
-    private async Task RunMainSharedEventStreamAsync(CancellationToken cancellationToken)
-    {
-        logger?.LogDebug("BatchManagementService: Main shared event stream started");
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                // Build topics from all active intents (VTXOs + cosigner public keys)
-                var vtxoTopics = _activeIntents.Values
-                    .SelectMany(intent => intent.IntentVtxos
-                        .Select(iv => $"{iv.Hash}:{iv.N}"));
-
-                var cosignerTopics = _activeIntents.Values
-                    .SelectMany(intent => ExtractCosignerKeys(intent.RegisterProofMessage));
-
-                var topics =
-                    vtxoTopics.Concat(cosignerTopics).ToHashSet();
-
-                // If we have no topic to listen for, jump out.
-                if (topics.Count is 0) return;
-
-                await foreach (var eventResponse in clientTransport.GetEventStreamAsync(
-                                   new GetEventStreamRequest(topics.ToArray()), cancellationToken))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    await ProcessSharedEventForAllIntentsAsync(eventResponse, CancellationToken.None);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // ignored - normal shutdown
-            }
-            catch (Exception ex) when (cancellationToken.IsCancellationRequested ||
-                                       ex.InnerException is OperationCanceledException)
-            {
-                // Cancellation was requested or inner exception is cancellation (e.g., gRPC cancelled call)
-                // This is expected during shutdown, don't log as error
-            }
-            catch (Exception ex)
-            {
-                logger?.LogError(0, ex, "Error in shared event stream, restarting in {Seconds} seconds",
-                    EventStreamRetryDelay.TotalSeconds);
-                await Task.Delay(EventStreamRetryDelay, cancellationToken);
-            }
-        }
-    }
-
-    private async Task ProcessSharedEventForAllIntentsAsync(BatchEvent eventResponse,
-        CancellationToken cancellationToken)
-    {
-        // Handle BatchStarted event first - check all intents at once
-        if (eventResponse is BatchStartedEvent batchStartedEvent)
-        {
-            await HandleBatchStartedForAllIntentsAsync(batchStartedEvent, cancellationToken);
-        }
-    }
-
     private async Task HandleBatchExceptionAsync(ArkIntent intent, Exception ex, CancellationToken cancellationToken)
     {
         await SaveToStorage(intent.IntentId!, GetNewIntent, cancellationToken);
@@ -321,16 +390,10 @@ public class BatchManagementService(
         }
     }
 
-    private void TriggerStreamUpdate()
-    {
-        _triggerChannel.Writer.TryWrite("STREAM_UPDATE_REQUESTED");
-    }
-
     private async Task HandleBatchStartedForAllIntentsAsync(
         BatchStartedEvent batchEvent,
         CancellationToken cancellationToken)
     {
-        // Build a map of intent ID hashes to IDs for efficient lookup
         var intentHashMap = new Dictionary<string, string>();
         foreach (var (intentId, _) in _activeIntents)
         {
@@ -340,7 +403,6 @@ public class BatchManagementService(
             intentHashMap[intentIdHashStr] = intentId;
         }
 
-        // Find all our intents that are included in this batch
         var selectedIntentIds = new List<string>();
         foreach (var intentIdHash in batchEvent.IntentIdHashes)
         {
@@ -351,11 +413,8 @@ public class BatchManagementService(
         }
 
         if (selectedIntentIds.Count == 0)
-        {
-            return; // None of our intents in this batch
-        }
+            return;
 
-        // Load all VTXOs and contracts for selected intents in one efficient query
         var walletIds = selectedIntentIds
             .Select(id => _activeIntents.TryGetValue(id, out var intent) ? intent.WalletId : null)
             .Where(wid => wid != null)
@@ -364,15 +423,10 @@ public class BatchManagementService(
             .ToArray();
 
         if (walletIds.Length == 0)
-        {
             return;
-        }
-
-        // Get spendable coins for all wallets, filtered by the specific VTXOs locked in intents
 
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
 
-        // Confirm registration and create batch sessions for all selected intents
         foreach (var intentId in selectedIntentIds)
         {
             if (!_activeIntents.TryGetValue(intentId, out var intent) || _activeBatchSessions.ContainsKey(intentId))
@@ -380,8 +434,7 @@ public class BatchManagementService(
 
             try
             {
-                _ = RunConnectionForIntent(intentId, intent, serverInfo, batchEvent,
-                    CancellationToken.None);
+                await SetupBatchSessionAsync(intentId, intent, serverInfo, batchEvent, CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -390,16 +443,16 @@ public class BatchManagementService(
         }
     }
 
-    private async Task RunConnectionForIntent(string intentId, ArkIntent intent, ArkServerInfo serverInfo,
-        BatchStartedEvent batchEvent,  CancellationToken cancellationToken)
+    private async Task SetupBatchSessionAsync(string intentId, ArkIntent intent, ArkServerInfo serverInfo,
+        BatchStartedEvent batchEvent, CancellationToken cancellationToken)
     {
-        logger?.LogInformation("BatchManagementService: start dedicated connection for intent {IntentId}", intentId);
-        
+        logger?.LogInformation("BatchManagementService: setting up batch session for intent {IntentId}", intentId);
+
         try
         {
             HashSet<ArkCoin> spendableCoins = [];
             var vtxos = await vtxoStorage.GetVtxos(
-                outpoints:intent.IntentVtxos,
+                outpoints: intent.IntentVtxos,
                 includeSpent: true,
                 walletIds: [intent.WalletId],
                 cancellationToken: cancellationToken);
@@ -425,14 +478,12 @@ public class BatchManagementService(
                         outpoint, intentId);
                     throw new InvalidOperationException(
                         $"Contract for VTXO {outpoint} not found in storage for intent {intentId}");
-                    
                 }
                 spendableCoins.Add(
-                    await coinService.GetCoin(contract,vtxo, cancellationToken)
+                    await coinService.GetCoin(contract, vtxo, cancellationToken)
                 );
             }
 
-            // Create and initialize a batch session
             var session = new BatchSession(
                 clientTransport,
                 walletProvider,
@@ -445,27 +496,18 @@ public class BatchManagementService(
 
             await session.InitializeAsync(cancellationToken);
 
-            // Store the session so events can be passed to it
+            // Register session before confirming — events arrive on the single stream immediately
+            _activeBatchSessions[intentId] = session;
 
-            await _connectionManipulationSemaphore.WaitAsync(cancellationToken);
-            var sessionCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var batchIntentIds = _batchIdToIntentIds.GetOrAdd(batchEvent.Id, _ => new HashSet<string>());
+            lock (batchIntentIds)
+            {
+                batchIntentIds.Add(intentId);
+            }
+
             try
             {
-                // Start the dedicated event stream BEFORE confirming registration.
-                // After ConfirmRegistration, the server immediately sends batch events
-                // (TreeTx, TreeSigningStarted, etc.). The stream must already be open
-                // to receive them — gRPC server-side streaming only delivers to connected streams.
-                _activeBatchSessions[intentId] = new BatchSessionWithConnection(
-                    new Connection(
-                        HandleBatchEvents(intentId, intent, session, sessionCancellationTokenSource.Token),
-                        sessionCancellationTokenSource
-                    ),
-                    session
-                );
-
-                await clientTransport.ConfirmRegistrationAsync(
-                    intentId,
-                    cancellationToken: sessionCancellationTokenSource.Token);
+                await clientTransport.ConfirmRegistrationAsync(intentId, cancellationToken: cancellationToken);
 
                 await SaveToStorage(intentId, arkIntent =>
                     (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
@@ -473,93 +515,17 @@ public class BatchManagementService(
                         BatchId = batchEvent.Id,
                         State = ArkIntentState.BatchInProgress,
                         UpdatedAt = DateTimeOffset.UtcNow
-                    }, sessionCancellationTokenSource.Token);
+                    }, cancellationToken);
             }
             catch
             {
-                // Clean up the stream we started before the failure
-                try { await sessionCancellationTokenSource.CancelAsync(); }
-                catch { /* already cancelled or disposed */ }
-                _activeBatchSessions.TryRemove(intentId, out _);
+                CleanupBatchSession(intentId, batchEvent.Id);
                 throw;
-            }
-            finally
-            {
-                _connectionManipulationSemaphore.Release();
             }
         }
         catch (Exception ex)
         {
             await HandleBatchExceptionAsync(intent, ex, cancellationToken);
-        }
-    }
-
-    private async Task HandleBatchEvents(string intentId, ArkIntent oldIntent, BatchSession session,
-        CancellationToken cancellationToken)
-    {
-        // Build topics from all active intents (VTXOs + cosigner public keys)
-        var vtxoTopics = oldIntent.IntentVtxos
-            .Select(iv => $"{iv.Hash}:{iv.N}");
-
-        var cosignerTopics = ExtractCosignerKeys(oldIntent.RegisterProofMessage);
-
-        var topics =
-            vtxoTopics.Concat(cosignerTopics).ToHashSet();
-
-
-        await foreach (var eventResponse in clientTransport.GetEventStreamAsync(
-                           new GetEventStreamRequest([..topics]), cancellationToken))
-        {
-            if (!_activeIntents.TryGetValue(intentId, out var intent))
-                return;
-            try
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var isComplete =
-                    await session.ProcessEventAsync(eventResponse, cancellationToken);
-                if (isComplete)
-                {
-                    _activeBatchSessions.TryRemove(intentId, out _);
-                    TriggerStreamUpdate();
-                }
-
-                // Handle events that affect this intent
-                switch (eventResponse)
-                {
-                    case BatchFailedEvent batchFailedEvent:
-                        if (batchFailedEvent.Id == intent.BatchId)
-                        {
-                            // Mark as BatchFailed and done - no auto-retry
-                            // The VTXOs become available for new intents via Send flow or scheduler
-                            await HandleBatchFailedAsync(intent, batchFailedEvent, cancellationToken);
-                            _activeBatchSessions.TryRemove(intentId, out _);
-                            _activeIntents.TryRemove(intentId, out _);
-                            TriggerStreamUpdate();
-                        }
-
-                        break;
-
-                    case BatchFinalizedEvent batchFinalized:
-                        if (batchFinalized.Id == intent.BatchId)
-                        {
-                            // Note: HandleBatchFinalizedAsync calls SaveToStorage which triggers OnIntentChanged.
-                            // OnIntentChanged will write to _triggerChannel because the intent is still in
-                            // _activeIntents at that point. We remove from _activeIntents AFTER to ensure
-                            // the trigger is sent, then the trigger handler will reload and see the new state.
-                            await HandleBatchFinalizedAsync(intent, batchFinalized, cancellationToken);
-                            _activeBatchSessions.TryRemove(intentId, out _);
-                            _activeIntents.TryRemove(intentId, out _);
-                            // Note: TriggerStreamUpdate() removed - OnIntentChanged handles this now
-                        }
-
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                await HandleBatchExceptionAsync(oldIntent, ex, cancellationToken);
-            }
         }
     }
 
@@ -572,20 +538,26 @@ public class BatchManagementService(
         }
         catch (Exception)
         {
-            // If we can't parse the message, return empty
             return [];
         }
     }
 
-    /// <summary>
-    /// Handles a batch failure by marking the intent as failed.
-    ///
-    /// <para>The intent stays in <see cref="ArkIntentState.BatchFailed"/> state permanently.
-    /// The VTXOs become available again for new intents via the Send flow or scheduler.</para>
-    ///
-    /// <para><b>Note:</b> We no longer auto-retry failed intents. If the user wants to retry,
-    /// they can create a new intent which will automatically cancel this failed one.</para>
-    /// </summary>
+    private static string[] GetTopicsForIntent(ArkIntent intent)
+    {
+        var vtxoTopics = intent.IntentVtxos
+            .Select(iv => $"{iv.Hash}:{iv.N}");
+        var cosignerTopics = ExtractCosignerKeys(intent.RegisterProofMessage);
+        return vtxoTopics.Concat(cosignerTopics).ToArray();
+    }
+
+    private string[] GetAllTopics()
+    {
+        return _activeIntents.Values
+            .SelectMany(GetTopicsForIntent)
+            .Distinct()
+            .ToArray();
+    }
+
     private async Task HandleBatchFailedAsync(
         ArkIntent intent,
         BatchFailedEvent batchEvent,
@@ -595,14 +567,11 @@ public class BatchManagementService(
             ? $"Batch failed: {batchEvent.Reason}"
             : "Batch failed";
 
-        // Just mark as failed and done - no auto-retry
-        // Keep BatchId for tracking/debugging
         await SaveToStorage(intent.IntentId!, arkIntent =>
             (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
             {
                 State = ArkIntentState.BatchFailed,
                 CancellationReason = reason,
-                // Keep BatchId for tracking
                 UpdatedAt = DateTimeOffset.UtcNow
             }, cancellationToken);
 
@@ -620,7 +589,7 @@ public class BatchManagementService(
             (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
             {
                 State = ArkIntentState.BatchSucceeded,
-                CancellationReason = null, // Clear any previous failure reason on success
+                CancellationReason = null,
                 CommitmentTransactionId = finalizedEvent.CommitmentTxId,
                 UpdatedAt = DateTimeOffset.UtcNow
             }, cancellationToken);
@@ -638,7 +607,6 @@ public class BatchManagementService(
         if (_disposed)
             return;
 
-        // Unsubscribe from intent changes first to prevent new triggers during disposal
         intentStorage.IntentChanged -= OnIntentChanged;
 
         try
@@ -651,85 +619,39 @@ public class BatchManagementService(
             logger?.LogDebug(0, ex, "Service CancellationTokenSource already disposed during cleanup");
         }
 
-        await _connectionManipulationSemaphore.WaitAsync();
         try
         {
-            foreach (var (connection, _) in _activeBatchSessions.Values)
+            if (_streamConnection is not null)
             {
-                try
-                {
-                    await connection.CancellationTokenSource.CancelAsync();
-                }
-                catch (ObjectDisposedException)
-                {
-                }
+                try { await _streamConnection.CancellationTokenSource.CancelAsync(); }
+                catch (ObjectDisposedException) { }
 
-                try
-                {
-                    await connection.ConnectionTask;
-                }
-                catch (Exception ex)
-                {
-                    logger?.LogDebug(0, ex, "Session connection task completed with error during disposal");
-                }
+                try { await _streamConnection.ConnectionTask; }
+                catch (Exception ex) { logger?.LogDebug(0, ex, "Stream task completed with error during disposal"); }
 
-                try
-                {
-                    connection.CancellationTokenSource.Dispose();
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-            }
-
-            try
-            {
-                if (_sharedMainConnection is not null)
-                    await _sharedMainConnection.CancellationTokenSource.CancelAsync();
-            }
-            catch (ObjectDisposedException ex)
-            {
-                logger?.LogDebug(0, ex, "Main Connection CancellationTokenSource already disposed");
-            }
-
-            try
-            {
-                if (_sharedMainConnection is not null)
-                    await _sharedMainConnection.ConnectionTask;
-            }
-            catch (Exception ex)
-            {
-                logger?.LogDebug(0, ex, "Main task completed with error during disposal");
-            }
-
-            try
-            {
-                _sharedMainConnection?.CancellationTokenSource.Dispose();
-            }
-            catch (ObjectDisposedException ex)
-            {
-                logger?.LogDebug(0, ex,
-                    "Main connection CancellationTokenSource already disposed during cleanup");
+                try { _streamConnection.CancellationTokenSource.Dispose(); }
+                catch (ObjectDisposedException) { }
             }
         }
-        finally
+        catch (Exception ex)
         {
-            _connectionManipulationSemaphore.Release();
+            logger?.LogDebug(0, ex, "Error during stream connection cleanup");
         }
 
         try
         {
-            _connectionManipulationSemaphore.Dispose();
+            _topicUpdateSemaphore.Dispose();
         }
         catch (ObjectDisposedException ex)
         {
-            logger?.LogDebug(0, ex, "Connection manipulation semaphore already disposed during cleanup");
+            logger?.LogDebug(0, ex, "Topic update semaphore already disposed during cleanup");
         }
 
         _serviceCts?.Dispose();
 
         _activeIntents.Clear();
         _activeBatchSessions.Clear();
+        _batchIdToIntentIds.Clear();
 
         _disposed = true;
     }

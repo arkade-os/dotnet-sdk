@@ -23,4 +23,5 @@ public interface IClientTransport
     Task ConfirmRegistrationAsync(string intentId, CancellationToken cancellationToken);
     IAsyncEnumerable<BatchEvent> GetEventStreamAsync(GetEventStreamRequest req, CancellationToken cancellationToken);
     Task<ArkAssetDetails> GetAssetDetailsAsync(string assetId, CancellationToken cancellationToken = default);
+    Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default);
 }

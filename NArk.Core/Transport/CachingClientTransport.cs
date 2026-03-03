@@ -153,4 +153,7 @@ public class CachingClientTransport : IClientTransport
 
     public Task<ArkAssetDetails> GetAssetDetailsAsync(string assetId, CancellationToken cancellationToken = default)
         => _inner.GetAssetDetailsAsync(assetId, cancellationToken);
+
+    public Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default)
+        => _inner.UpdateStreamTopicsAsync(streamId, addTopics, removeTopics, cancellationToken);
 }

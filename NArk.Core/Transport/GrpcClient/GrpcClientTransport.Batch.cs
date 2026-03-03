@@ -53,6 +53,18 @@ public partial class GrpcClientTransport
         }, cancellationToken: cancellationToken);
     }
 
+    public async Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default)
+    {
+        var request = new Ark.V1.UpdateStreamTopicsRequest
+        {
+            StreamId = streamId,
+            Modify = new Ark.V1.ModifyTopics()
+        };
+        if (addTopics is not null) request.Modify.AddTopics.AddRange(addTopics);
+        if (removeTopics is not null) request.Modify.RemoveTopics.AddRange(removeTopics);
+        await _serviceClient.UpdateStreamTopicsAsync(request, cancellationToken: cancellationToken);
+    }
+
     public async IAsyncEnumerable<BatchEvent> GetEventStreamAsync(GetEventStreamRequest req, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var response = _serviceClient.GetEventStream(new Ark.V1.GetEventStreamRequest() { Topics = { req.Topics } }, cancellationToken: cancellationToken);
@@ -92,8 +104,10 @@ public partial class GrpcClientTransport
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.TreeNonces:
                     yield return new TreeNoncesEvent(e.TreeNonces.Id, e.TreeNonces.Nonces.ToDictionary(), e.TreeNonces.Topic, e.TreeNonces.Txid);
                     break;
-                case Ark.V1.GetEventStreamResponse.EventOneofCase.Heartbeat:
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.StreamStarted:
+                    yield return new StreamStartedEvent(e.StreamStarted.Id);
+                    break;
+                case Ark.V1.GetEventStreamResponse.EventOneofCase.Heartbeat:
                     break;
                 default:
                     throw new ArgumentOutOfRangeException();
