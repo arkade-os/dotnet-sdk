@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Intents;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Enums;
 using NArk.Core.Events;
@@ -19,35 +20,12 @@ public class SweeperService(
     ICoinService coinService,
     IContractStorage contractStorage,
     ISpendingService spendingService,
+    IIntentStorage intentStorage,
     IOptions<SweeperServiceOptions> options,
     IChainTimeProvider chainTimeProvider,
     IEnumerable<IEventHandler<PostSweepActionEvent>> postSweepHandlers,
     ILogger<SweeperService>? logger = null) : IAsyncDisposable
 {
-    public SweeperService(
-        IEnumerable<ISweepPolicy> policies,
-        IVtxoStorage vtxoStorage,
-        ICoinService coinService,
-        IContractStorage contractStorage,
-        ISpendingService spendingService,
-        IOptions<SweeperServiceOptions> options,
-        IChainTimeProvider chainTimeProvider,
-        ILogger<SweeperService> logger)
-            : this(policies, vtxoStorage, coinService, contractStorage, spendingService, options, chainTimeProvider, [], logger)
-    {
-    }
-
-    public SweeperService(
-        IEnumerable<ISweepPolicy> policies,
-        IVtxoStorage vtxoStorage,
-        ICoinService coinService,
-        IContractStorage contractStorage,
-        ISpendingService spendingService,
-        IOptions<SweeperServiceOptions> options,
-        IChainTimeProvider chainTimeProvider)
-        : this(policies, vtxoStorage, coinService, contractStorage, spendingService, options, chainTimeProvider, [], null)
-    {
-    }
 
     private record SweepJobTrigger;
     private record SweepTimerTrigger : SweepJobTrigger;
@@ -197,8 +175,21 @@ public class SweeperService(
     {
         logger?.LogDebug("Starting sweep for {OutpointCount} coins", coinsToSweep.Count);
 
+        // Skip VTXOs registered with arkd via pending batch intents
+        var batchIntents = await intentStorage.GetIntents(
+            walletIds: coinsToSweep.Select(c => c.WalletIdentifier).Distinct().ToArray(),
+            states: [ArkIntentState.WaitingForBatch]);
+        var lockedOutpoints = batchIntents
+            .SelectMany(i => i.IntentVtxos)
+            .ToHashSet();
+
         foreach (var coin in coinsToSweep)
         {
+            if (lockedOutpoints.Contains(coin.Outpoint))
+            {
+                logger?.LogDebug("Sweep skipped for outpoint {Outpoint}: locked by pending intent", coin.Outpoint);
+                continue;
+            }
             try
             {
                 var txId = await spendingService.Spend(coin.WalletIdentifier, [coin], [],

@@ -448,24 +448,13 @@ public class BatchManagementService(
             // Store the session so events can be passed to it
 
             await _connectionManipulationSemaphore.WaitAsync(cancellationToken);
+            var sessionCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             try
             {
-                var sessionCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-                await clientTransport.ConfirmRegistrationAsync(
-                    intentId,
-                    cancellationToken: sessionCancellationTokenSource.Token);
-                
-                // Save state BEFORE starting HandleBatchEvents to ensure BatchId is available
-                // when checking for BatchFailedEvent
-                await SaveToStorage(intentId, arkIntent =>
-                    (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
-                    {
-                        BatchId = batchEvent.Id,
-                        State = ArkIntentState.BatchInProgress,
-                        UpdatedAt = DateTimeOffset.UtcNow
-                    }, sessionCancellationTokenSource.Token);
-
+                // Start the dedicated event stream BEFORE confirming registration.
+                // After ConfirmRegistration, the server immediately sends batch events
+                // (TreeTx, TreeSigningStarted, etc.). The stream must already be open
+                // to receive them — gRPC server-side streaming only delivers to connected streams.
                 _activeBatchSessions[intentId] = new BatchSessionWithConnection(
                     new Connection(
                         HandleBatchEvents(intentId, intent, session, sessionCancellationTokenSource.Token),
@@ -474,7 +463,25 @@ public class BatchManagementService(
                     session
                 );
 
-               
+                await clientTransport.ConfirmRegistrationAsync(
+                    intentId,
+                    cancellationToken: sessionCancellationTokenSource.Token);
+
+                await SaveToStorage(intentId, arkIntent =>
+                    (arkIntent ?? throw new InvalidOperationException("Failed to find intent in cache")) with
+                    {
+                        BatchId = batchEvent.Id,
+                        State = ArkIntentState.BatchInProgress,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    }, sessionCancellationTokenSource.Token);
+            }
+            catch
+            {
+                // Clean up the stream we started before the failure
+                try { await sessionCancellationTokenSource.CancelAsync(); }
+                catch { /* already cancelled or disposed */ }
+                _activeBatchSessions.TryRemove(intentId, out _);
+                throw;
             }
             finally
             {
