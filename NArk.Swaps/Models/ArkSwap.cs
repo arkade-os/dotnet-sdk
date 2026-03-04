@@ -1,4 +1,5 @@
 using NArk.Abstractions.Contracts;
+using NArk.Swaps.Abstractions;
 
 namespace NArk.Swaps.Models;
 
@@ -21,6 +22,8 @@ public record ArkSwap(
     /// Chain swaps store preimage, ephemeral key, Boltz response, BTC address, etc.
     /// </summary>
     public Dictionary<string, string>? Metadata { get; init; }
+    public SwapRoute? Route { get; init; }
+    public string? ProviderId { get; init; }
 }
 
 /// <summary>
