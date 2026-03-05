@@ -129,9 +129,13 @@ public class VtxoSynchronizationService : IAsyncDisposable
             // We already have a stream with this exact script list
             if (newViewOfScripts.SetEquals(_lastViewOfScripts) && _streamTask is not null && !_streamTask.IsCompleted)
             {
-                _logger?.LogDebug("Scripts view unchanged, skipping stream restart");
+                _logger?.LogDebug("UpdateScriptsView: unchanged ({Count} scripts), skipping stream restart", newViewOfScripts.Count);
                 return;
             }
+
+            _logger?.LogInformation("UpdateScriptsView: script set changed from {OldCount} to {NewCount} scripts, restarting stream. New scripts: [{NewScripts}]",
+                _lastViewOfScripts.Count, newViewOfScripts.Count,
+                string.Join(", ", newViewOfScripts.Except(_lastViewOfScripts)));
 
             try
             {
@@ -197,15 +201,51 @@ public class VtxoSynchronizationService : IAsyncDisposable
     /// On-demand polling for specific scripts. Use this to poll inactive contract scripts
     /// or any other scripts that aren't actively tracked.
     /// </summary>
-    public async Task PollScriptsForVtxos(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
+    public async Task<int> PollScriptsForVtxos(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
     {
         if (scripts.Count == 0)
-            return;
+            return 0;
 
-        await foreach (var vtxo in _arkClientTransport.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken))
+        // TODO: remove once arkd fixes multi-script query (https://github.com/arkade-os/arkd/pull/943)
+        const bool pollOneByOne = true;
+
+        _logger?.LogInformation("PollScriptsForVtxos: querying arkd indexer for {Count} scripts (oneByOne={OneByOne}): [{Scripts}]",
+            scripts.Count, pollOneByOne, string.Join(", ", scripts));
+
+        // Log equivalent REST API URL for manual testing (substitute your arkd host:port)
+        var queryParams = string.Join("&", scripts.Select(s => $"scripts={Uri.EscapeDataString(s)}"));
+        _logger?.LogInformation("PollScriptsForVtxos: curl http://localhost:7070/v1/indexer/vtxos?{QueryParams}", queryParams);
+
+        var count = 0;
+
+        if (pollOneByOne)
         {
-            await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
+            foreach (var script in scripts)
+            {
+                var singleSet = new HashSet<string> { script } as IReadOnlySet<string>;
+                _logger?.LogInformation("PollScriptsForVtxos: polling single script {Script}", script);
+                await foreach (var vtxo in _arkClientTransport.GetVtxoByScriptsAsSnapshot(singleSet, cancellationToken))
+                {
+                    count++;
+                    _logger?.LogInformation("PollScriptsForVtxos: got VTXO {Outpoint} script={Script} spent={IsSpent}",
+                        vtxo.OutPoint, vtxo.Script, vtxo.SpentByTransactionId != null);
+                    await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
+                }
+            }
         }
+        else
+        {
+            await foreach (var vtxo in _arkClientTransport.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken))
+            {
+                count++;
+                _logger?.LogInformation("PollScriptsForVtxos: got VTXO {Outpoint} script={Script} spent={IsSpent}",
+                    vtxo.OutPoint, vtxo.Script, vtxo.SpentByTransactionId != null);
+                await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
+            }
+        }
+
+        _logger?.LogInformation("PollScriptsForVtxos: done, {Count} VTXOs returned from arkd", count);
+        return count;
     }
 
     public async ValueTask DisposeAsync()

@@ -46,16 +46,33 @@ public class PostSpendVtxoPollingHandler(
             // to detect the new VTXOs from the spend transaction.
             
 
-            var scripts = @event.ArkCoins.Select(c => c.ScriptPubKey.ToHex())
-                .Concat(@event.Psbt.Outputs.Select(o => o.ScriptPubKey.ToHex()).ToArray()).ToHashSet();
+            var inputScripts = @event.ArkCoins.Select(c => c.ScriptPubKey.ToHex()).ToHashSet();
+            var outputScripts = @event.Psbt.Outputs.Select(o => o.ScriptPubKey.ToHex()).ToHashSet();
+            outputScripts.Remove("51024e73");
 
-            scripts.Remove("51024e73");
-            logger?.LogDebug("Polling {ScriptCount} scripts for VTXOs after spend transaction {TxId}",
-                scripts.Count, @event.TransactionId);
+            var scripts = inputScripts.Union(outputScripts).ToHashSet();
 
-            await vtxoSyncService.PollScriptsForVtxos(scripts, cancellationToken);
+            logger?.LogInformation(
+                "PostSpendVtxoPolling: TxId={TxId}, delay={Delay}ms, inputScripts=[{InputScripts}], outputScripts=[{OutputScripts}]",
+                @event.TransactionId, delay.TotalMilliseconds,
+                string.Join(", ", inputScripts),
+                string.Join(", ", outputScripts));
 
-            logger?.LogInformation("VTXO polling completed after spend transaction {TxId}", @event.TransactionId);
+            // Retry with backoff — arkd's indexer may not have processed the VTXOs yet
+            const int maxAttempts = 5;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                var found = await vtxoSyncService.PollScriptsForVtxos(scripts, cancellationToken);
+                logger?.LogInformation(
+                    "PostSpendVtxoPolling: attempt {Attempt}/{Max} for TxId={TxId}, {Found} VTXOs returned",
+                    attempt, maxAttempts, @event.TransactionId, found);
+
+                if (found > 0)
+                    break;
+
+                if (attempt < maxAttempts)
+                    await Task.Delay(delay, cancellationToken);
+            }
         }
         catch (Exception ex)
         {
