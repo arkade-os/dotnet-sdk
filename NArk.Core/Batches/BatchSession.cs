@@ -293,11 +293,45 @@ public class BatchSession(
             signedForfeits.Add(forfeitTx.ToBase64());
         }
 
-        // Submit all signed forfeit transactions
-        if (signedForfeits.Count > 0)
+        // After the forfeit loop, sign commitment tx for boarding/unrolled inputs
+        string? signedCommitmentTx = null;
+        var boardingCoins = ins.Where(c => c.Unrolled).ToArray();
+        if (boardingCoins.Length > 0)
+        {
+            var commitmentPsbt = PSBT.Parse(finalizationEvent.CommitmentTx, network);
+
+            foreach (var boardingCoin in boardingCoins)
+            {
+                var psbtInput = boardingCoin.FillPsbtInput(commitmentPsbt);
+                if (psbtInput is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Boarding input {boardingCoin.Outpoint} not found in commitment tx");
+                }
+
+                var signer = await walletProvider.GetSignerAsync(
+                    boardingCoin.WalletIdentifier, cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        $"No signer for wallet {boardingCoin.WalletIdentifier}");
+
+                var precomputedData = commitmentPsbt.GetGlobalTransaction()
+                    .PrecomputeTransactionData(
+                        commitmentPsbt.Inputs.Select(i => i.GetTxOut()!).ToArray());
+
+                await PsbtHelpers.SignAndFillPsbt(
+                    signer, boardingCoin, commitmentPsbt,
+                    precomputedData, cancellationToken: cancellationToken);
+            }
+
+            signedCommitmentTx = commitmentPsbt.ToBase64();
+        }
+
+        // Submit all signed forfeit transactions and/or signed commitment tx
+        if (signedForfeits.Count > 0 || signedCommitmentTx is not null)
         {
             await clientTransport.SubmitSignedForfeitTxsAsync(
-                new SubmitSignedForfeitTxsRequest(signedForfeits.ToArray()), cancellationToken);
+                new SubmitSignedForfeitTxsRequest(signedForfeits.ToArray(), signedCommitmentTx),
+                cancellationToken);
         }
     }
 
