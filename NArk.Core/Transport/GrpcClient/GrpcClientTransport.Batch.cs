@@ -39,10 +39,13 @@ public partial class GrpcClientTransport
 
     public async Task SubmitSignedForfeitTxsAsync(SubmitSignedForfeitTxsRequest req, CancellationToken cancellationToken)
     {
-        await _serviceClient.SubmitSignedForfeitTxsAsync(new Ark.V1.SubmitSignedForfeitTxsRequest
+        var grpcReq = new Ark.V1.SubmitSignedForfeitTxsRequest
         {
             SignedForfeitTxs = { req.SignedForfeitTxs }
-        }, cancellationToken: cancellationToken);
+        };
+        if (req.SignedCommitmentTx is not null)
+            grpcReq.SignedCommitmentTx = req.SignedCommitmentTx;
+        await _serviceClient.SubmitSignedForfeitTxsAsync(grpcReq, cancellationToken: cancellationToken);
     }
 
     public async Task ConfirmRegistrationAsync(string intentId, CancellationToken cancellationToken)
