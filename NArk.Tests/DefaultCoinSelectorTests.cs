@@ -235,6 +235,7 @@ public class DefaultCoinSelectorTests
             lockTime: null,
             sequence: new Sequence(1),
             swept: false,
+            unrolled: false,
             assets: assets);
     }
 
@@ -267,6 +268,7 @@ public class DefaultCoinSelectorTests
             spendingConditionWitness: null,
             lockTime: null,
             sequence: new Sequence(1),
-            swept: false);
+            swept: false,
+            unrolled: false);
     }
 }

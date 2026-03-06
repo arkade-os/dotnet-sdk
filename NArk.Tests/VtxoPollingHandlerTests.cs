@@ -292,6 +292,7 @@ public class PostSpendVtxoPollingHandlerTests
             spendingConditionWitness: null,
             lockTime: null,
             sequence: new Sequence(1),
-            swept: false);
+            swept: false,
+            unrolled: false);
     }
 }

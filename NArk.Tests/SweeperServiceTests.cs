@@ -276,7 +276,8 @@ public class SweeperServiceTests
             spendingConditionWitness: null,
             lockTime: null,
             sequence: null,
-            swept: swept);
+            swept: swept,
+            unrolled: false);
     }
 
     private static async IAsyncEnumerable<T> ToAsyncEnumerable<T>(T[] items)

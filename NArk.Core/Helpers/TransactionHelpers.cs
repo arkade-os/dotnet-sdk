@@ -108,7 +108,8 @@ public static class TransactionHelpers
                         coin.SpendingConditionWitness,
                         coin.LockTime,
                         coin.Sequence,
-                        coin.Swept
+                        coin.Swept,
+                        coin.Unrolled
                     )
                 );
             }

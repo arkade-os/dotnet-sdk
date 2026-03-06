@@ -157,6 +157,7 @@ public class IntentGenerationServiceTests
             null,
             null,
             new Sequence(1),
+            false,
             false);
 
         _coinService.GetCoin(Arg.Any<ArkContractEntity>(), Arg.Any<ArkVtxo>(), Arg.Any<CancellationToken>())

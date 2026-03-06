@@ -45,7 +45,7 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTime
             logger?.LogInformation("VHTLC claim: wallet={WalletId}, receiver={Receiver}, sender={Sender}, outpoint={Outpoint}",
                 walletIdentifier, htlc.Receiver, htlc.Sender, vtxo.OutPoint);
             return new ArkCoin(walletIdentifier, htlc, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, htlc.Receiver,
-                htlc.CreateClaimScript(), new WitScript(Op.GetPushOp(htlc.Preimage!)), null, null, vtxo.Swept);
+                htlc.CreateClaimScript(), new WitScript(Op.GetPushOp(htlc.Preimage!)), null, null, vtxo.Swept, vtxo.Unrolled);
         }
 
         var chainTime = await chainTimeProvider.GetChainTime();
@@ -55,7 +55,7 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTime
             logger?.LogInformation("VHTLC refund: wallet={WalletId}, sender={Sender}, receiver={Receiver}, outpoint={Outpoint}, refundLocktime={RefundLocktime}",
                 walletIdentifier, htlc.Sender, htlc.Receiver, vtxo.OutPoint, htlc.RefundLocktime);
             return new ArkCoin(walletIdentifier, htlc, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, htlc.Sender,
-                htlc.CreateRefundWithoutReceiverScript(), null, htlc.RefundLocktime, null, vtxo.Swept);
+                htlc.CreateRefundWithoutReceiverScript(), null, htlc.RefundLocktime, null, vtxo.Swept, vtxo.Unrolled);
         }
 
         throw new InvalidOperationException("CanTransform should've return false for this coin");
