@@ -23,6 +23,7 @@ public class ArkCoin : Coin
         LockTime? lockTime,
         Sequence? sequence,
         bool swept,
+        bool unrolled,
         IReadOnlyList<VtxoAsset>? assets = null) : base(outPoint, txOut)
     {
         //FIXME: every place where this is instantiated, it should check that the coin is unspent
@@ -37,6 +38,7 @@ public class ArkCoin : Coin
         LockTime = lockTime;
         Sequence = sequence;
         Swept = swept;
+        Unrolled = unrolled;
         Assets = assets;
 
         if (sequence is null && spendingScriptBuilder.BuildScript().Contains(OpcodeType.OP_CHECKSEQUENCEVERIFY))
@@ -47,7 +49,7 @@ public class ArkCoin : Coin
 
     public ArkCoin(ArkCoin other) : this(
         other.WalletIdentifier, other.Contract, other.Birth, other.ExpiresAt, other.ExpiresAtHeight, other.Outpoint.Clone(), other.TxOut.Clone(), other.SignerDescriptor,
-        other.SpendingScriptBuilder, other.SpendingConditionWitness?.Clone(), other.LockTime, other.Sequence, other.Swept, other.Assets)
+        other.SpendingScriptBuilder, other.SpendingConditionWitness?.Clone(), other.LockTime, other.Sequence, other.Swept, other.Unrolled, other.Assets)
     {
     }
 
@@ -62,6 +64,7 @@ public class ArkCoin : Coin
     public LockTime? LockTime { get; }
     public Sequence? Sequence { get; }
     public bool Swept { get; }
+    public bool Unrolled { get; }
     public IReadOnlyList<VtxoAsset>? Assets { get; }
 
     public TapScript SpendingScript => SpendingScriptBuilder.Build();
@@ -89,7 +92,7 @@ public class ArkCoin : Coin
 
     public bool RequiresForfeit()
     {
-        return !Swept;
+        return !Swept && !Unrolled;
     }
 
     public PSBTInput? FillPsbtInput(PSBT psbt)

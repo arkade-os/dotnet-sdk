@@ -115,7 +115,7 @@ public class VHTLCContract : ArkContract
             throw new InvalidOperationException("Vtxo is already spent");
         }
         return new ArkCoin(walletIdentifier, this, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, Sender,
-            CreateCooperativeScript(), null, null, null, vtxo.Swept);
+            CreateCooperativeScript(), null, null, null, vtxo.Swept, vtxo.Unrolled);
     }
 
     public static ArkContract? Parse(Dictionary<string, string> contractData, Network network)

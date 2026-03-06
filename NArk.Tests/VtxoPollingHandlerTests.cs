@@ -247,15 +247,29 @@ public class PostSpendVtxoPollingHandlerTests
             State: ActionState.Successful,
             FailReason: null);
 
+        // Return a VTXO so the retry loop breaks after the first attempt
+        var dummyVtxo = new ArkVtxo(
+            Script: "aabb",
+            TransactionId: uint256.One.ToString(),
+            TransactionOutputIndex: 0,
+            Amount: 5000,
+            SpentByTransactionId: null,
+            SettledByTransactionId: null,
+            Swept: false,
+            CreatedAt: DateTimeOffset.UtcNow,
+            ExpiresAt: null,
+            ExpiresAtHeight: null);
+
         _clientTransport.GetVtxoByScriptsAsSnapshot(
                 Arg.Any<IReadOnlySet<string>>(),
                 Arg.Any<CancellationToken>())
-            .Returns(AsyncEnumerable.Empty<ArkVtxo>());
+            .Returns(new[] { dummyVtxo }.ToAsyncEnumerable());
 
         await _handler.HandleAsync(@event);
 
-        // Should poll scripts from both input coins and PSBT outputs
-        _clientTransport.Received(1).GetVtxoByScriptsAsSnapshot(
+        // pollOneByOne=true queries each script individually (1 input + 1 output = 2 calls),
+        // and returning a VTXO ensures the retry loop breaks after the first attempt
+        _clientTransport.Received(2).GetVtxoByScriptsAsSnapshot(
             Arg.Any<IReadOnlySet<string>>(),
             Arg.Any<CancellationToken>());
     }
@@ -292,6 +306,7 @@ public class PostSpendVtxoPollingHandlerTests
             spendingConditionWitness: null,
             lockTime: null,
             sequence: new Sequence(1),
-            swept: false);
+            swept: false,
+            unrolled: false);
     }
 }

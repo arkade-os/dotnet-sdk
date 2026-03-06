@@ -1,3 +1,3 @@
 namespace NArk.Abstractions.Batches;
 
-public record SubmitSignedForfeitTxsRequest(string[] SignedForfeitTxs);
+public record SubmitSignedForfeitTxsRequest(string[] SignedForfeitTxs, string? SignedCommitmentTx = null);

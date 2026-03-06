@@ -112,6 +112,13 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
     {
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
 
+        if (purpose == NextContractPurpose.Boarding)
+        {
+            var desc = await GetNextSigningDescriptor(cancellationToken);
+            var boarding = new ArkBoardingContract(serverInfo.SignerKey, serverInfo.BoardingExit, desc);
+            return (boarding, boarding.ToEntity(_identifier, null, null, activityState));
+        }
+
         // For test wallet, simple recycling from inputs when SendToSelf
         OutputDescriptor? descriptor = null;
         if (purpose == NextContractPurpose.SendToSelf && inputContracts is not null)
