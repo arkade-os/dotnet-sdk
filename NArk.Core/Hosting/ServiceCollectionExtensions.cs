@@ -71,6 +71,7 @@ public static class ServiceCollectionExtensions
         services.AddTransient<IContractTransformer, PaymentContractTransformer>();
         services.AddTransient<IContractTransformer, NoteContractTransformer>();
         services.AddTransient<IContractTransformer, HashLockedContractTransformer>();
+        services.AddTransient<IContractTransformer, BoardingContractTransformer>();
         services.AddSingleton<SpendingService>();
         services.AddSingleton<ISpendingService>(s => s.GetRequiredService<SpendingService>());
         services.AddSingleton<IContractService, ContractService>();
