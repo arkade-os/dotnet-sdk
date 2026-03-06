@@ -34,8 +34,8 @@ public class SharedSwapInfrastructure
             {
                 Assert.Fail(
                     $"{name} not running. Start infrastructure with:\n" +
-                    "  cd NArk.Tests.End2End/Infrastructure && ./start-env.sh\n" +
-                    "  (Windows: wsl bash ./start-env.sh)\n\n" +
+                    "  ./arkade-regtest/start-env.sh\n" +
+                    "  (Windows: wsl bash ./arkade-regtest/start-env.sh)\n\n" +
                     $"Health check failed: {ex.Message}");
             }
         }

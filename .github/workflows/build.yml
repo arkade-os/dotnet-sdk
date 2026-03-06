@@ -46,8 +46,8 @@ jobs:
           go-version: '1.23'
       - name: Start regtest infrastructure
         run: |
-          chmod +x ./NArk.Tests.End2End/Infrastructure/start-env.sh
-          ./NArk.Tests.End2End/Infrastructure/start-env.sh --clean
+          chmod +x ./arkade-regtest/start-env.sh
+          ./arkade-regtest/start-env.sh --clean
         timeout-minutes: 10
       - name: Restore and build
         run: dotnet build
@@ -57,7 +57,7 @@ jobs:
       - name: Collect docker logs on failure
         if: failure()
         run: |
-          docker compose -f NArk.Tests.End2End/Infrastructure/docker-compose.ark.yml logs > /tmp/ark-overlay-logs.txt 2>&1 || true
+          docker compose -f arkade-regtest/docker/docker-compose.ark.yml logs > /tmp/ark-overlay-logs.txt 2>&1 || true
           docker logs ark > /tmp/arkd-logs.txt 2>&1 || true
           docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
@@ -72,5 +72,4 @@ jobs:
       - name: Stop infrastructure
         if: always()
         run: |
-          docker compose -f NArk.Tests.End2End/Infrastructure/docker-compose.ark.yml down --volumes || true
-          ./NArk.Tests.End2End/Infrastructure/nigiri/build/nigiri-linux-amd64 stop --delete || true
+          ./arkade-regtest/clean-env.sh || true

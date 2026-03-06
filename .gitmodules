@@ -1,0 +1,3 @@
+[submodule "arkade-regtest"]
+	path = arkade-regtest
+	url = https://github.com/arklabshq/arkade-regtest.git
