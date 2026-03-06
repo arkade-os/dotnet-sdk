@@ -10,6 +10,7 @@ public class ArkContractParser
     static ArkContractParser()
     {
         Parsers.Add(new GenericArkContractParser(ArkPaymentContract.ContractType, ArkPaymentContract.Parse));
+        Parsers.Add(new GenericArkContractParser(ArkBoardingContract.ContractType, ArkBoardingContract.Parse));
         Parsers.Add(new GenericArkContractParser(HashLockedArkPaymentContract.ContractType, HashLockedArkPaymentContract.Parse));
         Parsers.Add(new GenericArkContractParser(VHTLCContract.ContractType, VHTLCContract.Parse));
         Parsers.Add(new GenericArkContractParser(ArkNoteContract.ContractType, ArkNoteContract.Parse));
