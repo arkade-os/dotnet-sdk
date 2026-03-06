@@ -103,6 +103,8 @@ public class BoardingTests
 
         // --- 6. Manually insert the boarding UTXO as an ArkVtxo (Unrolled: true) ---
         var boardingScriptHex = boardingContract.GetArkAddress().ScriptPubKey.ToHex();
+        // ExpiresAt must be within the scheduler's Threshold (2 hours) to trigger intent generation.
+        // Boarding UTXOs in production would have a real boarding_exit_delay-based expiry.
         var vtxo = new ArkVtxo(
             Script: boardingScriptHex,
             TransactionId: fundingTxid,
@@ -112,7 +114,7 @@ public class BoardingTests
             SettledByTransactionId: null,
             Swept: false,
             CreatedAt: DateTimeOffset.UtcNow,
-            ExpiresAt: DateTimeOffset.UtcNow.AddDays(90),
+            ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
             ExpiresAtHeight: null,
             Unrolled: true);
         await vtxoStorage.UpsertVtxo(vtxo);
