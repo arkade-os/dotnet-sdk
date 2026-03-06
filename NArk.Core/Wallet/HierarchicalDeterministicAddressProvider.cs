@@ -69,7 +69,15 @@ public class HierarchicalDeterministicAddressProvider(
         var info = await transport.GetServerInfoAsync(cancellationToken);
         ArkContract? result = null;
 
-        if (purpose == NextContractPurpose.SendToSelf && sweepDestination is not null)
+        if (purpose == NextContractPurpose.Boarding)
+        {
+            result = new ArkBoardingContract(
+                info.SignerKey,
+                info.BoardingExit,
+                await GetNextSigningDescriptor(cancellationToken)
+            );
+        }
+        else if (purpose == NextContractPurpose.SendToSelf && sweepDestination is not null)
         {
             result = new UnknownArkContract(sweepDestination, info.SignerKey, info.Network.ChainName == ChainName.Mainnet);
             activityState = ContractActivityState.Inactive;

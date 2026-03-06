@@ -54,7 +54,11 @@ public class SingleKeyAddressProvider(
         var info = await transport.GetServerInfoAsync(cancellationToken);
         var signingDescriptor = await GetNextSigningDescriptor(cancellationToken);
         ArkContract? result = null;
-        if (purpose == NextContractPurpose.SendToSelf && sweepingAddress is not null)
+        if (purpose == NextContractPurpose.Boarding)
+        {
+            result = new ArkBoardingContract(info.SignerKey, info.BoardingExit, signingDescriptor);
+        }
+        else if (purpose == NextContractPurpose.SendToSelf && sweepingAddress is not null)
         {
             result = new UnknownArkContract(sweepingAddress, info.SignerKey, info.Network.ChainName == ChainName.Mainnet);
             activityState = ContractActivityState.Inactive;

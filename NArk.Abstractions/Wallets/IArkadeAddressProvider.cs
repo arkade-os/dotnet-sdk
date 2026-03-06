@@ -6,7 +6,8 @@ namespace NArk.Abstractions.Wallets;
 public enum NextContractPurpose
 {
     Receive,
-    SendToSelf
+    SendToSelf,
+    Boarding
 }
 
 public interface IArkadeAddressProvider
