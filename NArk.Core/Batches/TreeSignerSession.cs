@@ -39,7 +39,9 @@ public class TreeSignerSession
         if (_musigContexts != null)
             throw new InvalidOperationException("musig contexts already created");
         _musigContexts = new Dictionary<uint256, MusigContext>();
-        var myPubKey = _descriptor.ToPubKey();
+        var signer = await _walletProvider.GetSignerAsync(_walletId, cancellationToken)
+                     ?? throw new InvalidOperationException("Signer not found");
+        var myPubKey = await signer.GetPubKey(_descriptor, cancellationToken);
         foreach (var g in _graph)
         {
             var tx = g.Root.GetGlobalTransaction();

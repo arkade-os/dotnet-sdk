@@ -67,6 +67,12 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
         return context.Sign(privKey, nonce);
     }
 
+    public async Task<ECPubKey> GetPubKey(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
+    {
+        var privKey = await DerivePrivateKey(descriptor, cancellationToken);
+        return privKey.CreatePubKey();
+    }
+
     public async Task<(ECXOnlyPubKey, SecpSchnorrSignature)> Sign(OutputDescriptor descriptor, uint256 hash, CancellationToken cancellationToken = default)
     {
         var privKey = await DerivePrivateKey(descriptor, cancellationToken);

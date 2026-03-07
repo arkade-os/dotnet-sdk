@@ -28,6 +28,17 @@ public class NSecWalletSigner(ECPrivKey privateKey, ILogger? logger = null) : IA
         return signer;
     }
 
+    public Task<ECPubKey> GetPubKey(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
+    {
+        var descriptorXOnly = descriptor.Extract().XOnlyPubKey;
+        if (!descriptorXOnly.ToBytes().SequenceEqual(_xOnlyPubKey.ToBytes()))
+            throw new InvalidOperationException(
+                $"Descriptor does not belong to this wallet. " +
+                $"DescriptorXOnly={Convert.ToHexString(descriptorXOnly.ToBytes()).ToLowerInvariant()}, " +
+                $"SignerXOnly={Convert.ToHexString(_xOnlyPubKey.ToBytes()).ToLowerInvariant()}");
+        return Task.FromResult(_publicKey);
+    }
+
     public Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context, MusigPrivNonce nonce,
         CancellationToken cancellationToken = default)
     {

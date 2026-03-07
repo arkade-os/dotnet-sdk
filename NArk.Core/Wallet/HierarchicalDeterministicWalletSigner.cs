@@ -17,6 +17,12 @@ public class HierarchicalDeterministicWalletSigner(ArkWalletInfo wallet) : IArka
         return Task.FromResult(ECPrivKey.Create(extKey.Derive(fullPath).PrivateKey.ToBytes()));
     }
 
+    public async Task<ECPubKey> GetPubKey(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
+    {
+        var privKey = await DerivePrivateKey(descriptor);
+        return privKey.CreatePubKey();
+    }
+
     public async Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context, MusigPrivNonce nonce,
         CancellationToken cancellationToken = default)
     {

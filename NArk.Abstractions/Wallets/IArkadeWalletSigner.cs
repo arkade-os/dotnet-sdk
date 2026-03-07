@@ -7,6 +7,11 @@ namespace NArk.Abstractions.Wallets;
 
 public interface IArkadeWalletSigner
 {
+    /// <summary>
+    /// Gets the compressed public key for the given descriptor, preserving parity.
+    /// </summary>
+    Task<ECPubKey> GetPubKey(OutputDescriptor descriptor, CancellationToken cancellationToken = default);
+
     Task<MusigPartialSignature> SignMusig(
         OutputDescriptor descriptor,
         MusigContext context,

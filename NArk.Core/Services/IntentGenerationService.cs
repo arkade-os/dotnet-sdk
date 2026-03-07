@@ -323,10 +323,16 @@ public class IntentGenerationService(
         logger?.LogDebug("Using signing descriptor for wallet {WalletId}: {SigningDescriptor}",
             walletId, singingDescriptor.ToString());
 
+        // Get the signer's actual compressed pubkey (with correct parity) rather than
+        // deriving it from the descriptor, which loses parity through tr() serialization.
+        var signer = await walletProvider.GetSignerAsync(walletId, token)
+                     ?? throw new InvalidOperationException("Signer not found for wallet");
+        var signerPubKey = await signer.GetPubKey(singingDescriptor, token);
+
         var (RegisterTx, Delete, RegisterMessage, DeleteMessage) = await CreateIntents(
             serverInfo.Network,
             new HashSet<ECPubKey>([
-                singingDescriptor.ToPubKey()
+                signerPubKey
             ]),
             intentSpec.ValidFrom,
             intentSpec.ValidUntil,
