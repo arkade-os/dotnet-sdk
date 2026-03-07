@@ -328,6 +328,21 @@ public class IntentGenerationService(
         var signer = await walletProvider.GetSignerAsync(walletId, token)
                      ?? throw new InvalidOperationException("Signer not found for wallet");
         var signerPubKey = await signer.GetPubKey(singingDescriptor, token);
+        var descriptorPubKey = singingDescriptor.ToPubKey();
+
+        logger?.LogInformation(
+            "Intent cosigner key selection for wallet {WalletId}: " +
+            "SignerPubKey={SignerPubKey} (from signer.GetPubKey — actual key with correct parity), " +
+            "DescriptorPubKey={DescriptorPubKey} (from descriptor.ToPubKey — may have wrong parity from tr() roundtrip), " +
+            "ParityMatch={ParityMatch}, " +
+            "SigningDescriptor={SigningDescriptor}, " +
+            "DescriptorSource={DescriptorSource}",
+            walletId,
+            Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(descriptorPubKey.ToBytes()).ToLowerInvariant(),
+            signerPubKey == descriptorPubKey,
+            singingDescriptor.ToString(),
+            coinDescriptors.Length > 0 ? "from existing coin's SignerDescriptor" : "from GetNextSigningDescriptor");
 
         var (RegisterTx, Delete, RegisterMessage, DeleteMessage) = await CreateIntents(
             serverInfo.Network,

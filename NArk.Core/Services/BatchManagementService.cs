@@ -492,7 +492,8 @@ public class BatchManagementService(
                 serverInfo.Network,
                 intent,
                 spendableCoins.ToArray(),
-                batchEvent);
+                batchEvent,
+                logger);
 
             await session.InitializeAsync(cancellationToken);
 

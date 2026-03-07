@@ -1,4 +1,5 @@
-﻿using NArk.Abstractions.Extensions;
+﻿using Microsoft.Extensions.Logging;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Helpers;
@@ -23,8 +24,9 @@ public class TreeSignerSession
     private readonly uint256? _tapsciptMerkleRoot;
     private readonly OutputDescriptor _descriptor;
     private readonly Money _rootSharedOutputAmount;
+    private readonly ILogger? _logger;
 
-    public TreeSignerSession(string walletId, IWalletProvider walletProvider, TxTree tree, uint256? tapsciptMerkleRoot, OutputDescriptor descriptor, Money rootInputAmount)
+    public TreeSignerSession(string walletId, IWalletProvider walletProvider, TxTree tree, uint256? tapsciptMerkleRoot, OutputDescriptor descriptor, Money rootInputAmount, ILogger? logger = null)
     {
         _walletId = walletId;
         _walletProvider = walletProvider;
@@ -32,6 +34,7 @@ public class TreeSignerSession
         _tapsciptMerkleRoot = tapsciptMerkleRoot;
         _descriptor = descriptor;
         _rootSharedOutputAmount = rootInputAmount;
+        _logger = logger;
     }
 
     private async Task CreateMusigContexts(CancellationToken cancellationToken = default)
@@ -39,9 +42,13 @@ public class TreeSignerSession
         if (_musigContexts != null)
             throw new InvalidOperationException("musig contexts already created");
         _musigContexts = new Dictionary<uint256, MusigContext>();
-        var signer = await _walletProvider.GetSignerAsync(_walletId, cancellationToken)
-                     ?? throw new InvalidOperationException("Signer not found");
-        var myPubKey = await signer.GetPubKey(_descriptor, cancellationToken);
+        var myPubKey = _descriptor.ToPubKey();
+
+        _logger?.LogInformation(
+            "CreateMusigContexts: Descriptor={Descriptor}, MyPubKey={MyPubKey} (from descriptor.ToPubKey())",
+            _descriptor.ToString(),
+            Convert.ToHexString(myPubKey.ToBytes()).ToLowerInvariant());
+
         foreach (var g in _graph)
         {
             var tx = g.Root.GetGlobalTransaction();
@@ -52,8 +59,15 @@ public class TreeSignerSession
                 .Select(data => data.Key)
                 .ToArray();
 
+            _logger?.LogInformation(
+                "CreateMusigContexts: txid={Txid}, CosignerKeys=[{CosignerKeys}], MyPubKeyInCosigners={Found}",
+                tx.GetHash(),
+                string.Join(", ", cosignerKeys.Select(k => Convert.ToHexString(k.ToBytes()).ToLowerInvariant())),
+                cosignerKeys.Any(key => key == myPubKey));
+
             if (cosignerKeys.All(key => key != myPubKey))
             {
+                _logger?.LogInformation("CreateMusigContexts: Skipping txid={Txid} — my key not in cosigners", tx.GetHash());
                 continue;
             }
 
@@ -65,6 +79,10 @@ public class TreeSignerSession
 
             // Create MUSIG context with the actual sighash that will be signed
             var musigContext = new MusigContext(cosignerKeys, sighash.ToBytes(), myPubKey);
+            _logger?.LogInformation(
+                "CreateMusigContexts: Created MusigContext for txid={Txid}, AggregateKey={AggKey}",
+                tx.GetHash(),
+                Convert.ToHexString(musigContext.AggregatePubKey.ToBytes()).ToLowerInvariant());
 
             if (_tapsciptMerkleRoot is not null)
             {

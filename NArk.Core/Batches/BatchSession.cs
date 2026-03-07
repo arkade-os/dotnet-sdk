@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
@@ -30,7 +31,8 @@ public class BatchSession(
     Network network,
     ArkIntent arkIntent,
     ArkCoin[] ins,
-    BatchStartedEvent batchStartedEvent)
+    BatchStartedEvent batchStartedEvent,
+    ILogger? logger = null)
 {
     private readonly OutputDescriptor _outputDescriptor = OutputDescriptor.Parse(arkIntent.SignerDescriptor, network);
     private readonly string _batchId = batchStartedEvent.Id;
@@ -164,7 +166,7 @@ public class BatchSession(
 
 
         // Create a signing session
-        var session = new TreeSignerSession(arkIntent.WalletId,walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value);
+        var session = new TreeSignerSession(arkIntent.WalletId,walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value, logger);
 
         // Generate and submit nonces
         var nonces = await session.GetNoncesAsync(cancellationToken);
