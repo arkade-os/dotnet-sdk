@@ -271,8 +271,9 @@ var boardingContract = await contractService.DeriveContract(
     walletId,
     NextContractPurpose.Boarding);
 
-// Display the on-chain P2TR address for the user to deposit to
-var address = boardingContract.GetArkAddress();
+// Get the on-chain P2TR (bc1p...) address for the user to deposit BTC to
+var spendInfo = boardingContract.GetTaprootSpendInfo();
+var onchainAddress = spendInfo.OutputPubKey.GetAddress(network);
 ```
 
 ### 2. Sync On-chain UTXOs (Esplora)
