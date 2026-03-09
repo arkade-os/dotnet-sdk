@@ -255,7 +255,8 @@ public class PostSpendVtxoPollingHandlerTests
         await _handler.HandleAsync(@event);
 
         // Should poll scripts from both input coins and PSBT outputs
-        _clientTransport.Received(1).GetVtxoByScriptsAsSnapshot(
+        // pollOneByOne mode calls once per unique script
+        _clientTransport.Received().GetVtxoByScriptsAsSnapshot(
             Arg.Any<IReadOnlySet<string>>(),
             Arg.Any<CancellationToken>());
     }
