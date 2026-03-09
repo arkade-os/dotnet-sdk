@@ -42,12 +42,23 @@ public class TreeSignerSession
         if (_musigContexts != null)
             throw new InvalidOperationException("musig contexts already created");
         _musigContexts = new Dictionary<uint256, MusigContext>();
-        var myPubKey = _descriptor.ToPubKey();
+
+        // Use the signer's actual pubkey (with correct parity) rather than descriptor.ToPubKey()
+        // which loses parity through tr() serialization roundtrip.
+        // The cosigner keys in the PSBT were registered with the correct-parity key from
+        // signer.GetPubKey() in IntentGenerationService, so we must match that here.
+        var signer = await _walletProvider.GetSignerAsync(_walletId, cancellationToken)
+                     ?? throw new InvalidOperationException("Signer not found for wallet");
+        var myPubKey = await signer.GetPubKey(_descriptor, cancellationToken);
+        var descriptorPubKey = _descriptor.ToPubKey();
 
         _logger?.LogInformation(
-            "CreateMusigContexts: Descriptor={Descriptor}, MyPubKey={MyPubKey} (from descriptor.ToPubKey())",
+            "CreateMusigContexts: Descriptor={Descriptor}, MyPubKey={MyPubKey} (from signer.GetPubKey), " +
+            "DescriptorPubKey={DescriptorPubKey} (from descriptor.ToPubKey), ParityMatch={ParityMatch}",
             _descriptor.ToString(),
-            Convert.ToHexString(myPubKey.ToBytes()).ToLowerInvariant());
+            Convert.ToHexString(myPubKey.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(descriptorPubKey.ToBytes()).ToLowerInvariant(),
+            myPubKey == descriptorPubKey);
 
         foreach (var g in _graph)
         {
