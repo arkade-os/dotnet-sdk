@@ -358,7 +358,7 @@ public class AssetTests
         Assert.That(details.Metadata["decimals"], Is.EqualTo("8"));
     }
 
-    // --- Helper methods ---
+    // --- Helper methods (delegate to shared AssetTestHelpers) ---
 
     private static (AssetManager assetManager, CoinService coinService, InMemoryIntentStorage intentStorage)
         CreateAssetServices(
@@ -366,130 +366,30 @@ public class AssetTests
                 string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
                 ContractService contractService, InMemoryContractStorage contracts,
                 IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails)
-    {
-        var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
-        [
-            new PaymentContractTransformer(walletDetails.walletProvider),
-            new HashLockedContractTransformer(walletDetails.walletProvider)
-        ]);
+        => AssetTestHelpers.CreateAssetServices(walletDetails);
 
-        var intentStorage = new InMemoryIntentStorage();
-
-        var assetManager = new AssetManager(
-            walletDetails.vtxoStorage,
-            walletDetails.contracts,
-            coinService,
-            walletDetails.walletProvider,
-            walletDetails.contractService,
-            walletDetails.clientTransport,
-            new NArk.Core.CoinSelector.DefaultCoinSelector(),
-            walletDetails.safetyService,
-            intentStorage,
-            []);
-
-        return (assetManager, coinService, intentStorage);
-    }
-
-    /// <summary>
-    /// Polls all active contract scripts to pick up new VTXOs.
-    /// Needed because there is no PostSpendVtxoPollingHandler in manual wiring.
-    /// </summary>
-    private static async Task PollAllScripts(
+    private static Task PollAllScripts(
         (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
             string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
             ContractService contractService, InMemoryContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails)
-    {
-        await Task.Delay(500);
-        var allContracts = await walletDetails.contracts.GetContracts(
-            walletIds: [walletDetails.walletIdentifier]);
-        foreach (var contract in allContracts)
-        {
-            await walletDetails.vtxoSync.PollScriptsForVtxos(
-                new HashSet<string> { contract.Script });
-        }
-    }
+        => AssetTestHelpers.PollAllScripts(walletDetails);
 
-    /// <summary>
-    /// Polls all contract scripts repeatedly until an asset VTXO is found or timeout.
-    /// </summary>
-    private static async Task PollUntilAssetVtxo(
+    private static Task PollUntilAssetVtxo(
         (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
             string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
             ContractService contractService, InMemoryContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails,
         string assetId, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            // Check if already present
-            var vtxos = await walletDetails.vtxoStorage.GetVtxos(includeSpent: false);
-            if (vtxos.Any(v => v.Assets is { Count: > 0 } assets &&
-                               assets.Any(a => a.AssetId == assetId)))
-                return;
+        => AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, timeout);
 
-            // Poll each script individually (batching can miss some VTXOs)
-            var allContracts = await walletDetails.contracts.GetContracts(
-                walletIds: [walletDetails.walletIdentifier]);
-            foreach (var contract in allContracts)
-            {
-                await walletDetails.vtxoSync.PollScriptsForVtxos(
-                    new HashSet<string> { contract.Script });
-            }
-
-            await Task.Delay(1000);
-        }
-
-        // Dump diagnostic info about VTXOs and scripts
-        var finalVtxos = await walletDetails.vtxoStorage.GetVtxos(includeSpent: false);
-        var vtxoInfo = string.Join("; ", finalVtxos.Select(v =>
-            $"txid={v.TransactionId}:{v.TransactionOutputIndex} amount={v.Amount} script={v.Script[..20]}... " +
-            $"assets=[{(v.Assets != null ? string.Join(",", v.Assets.Select(a => $"{a.AssetId}:{a.Amount}")) : "none")}]"));
-        var diagContracts = await walletDetails.contracts.GetContracts(
-            walletIds: [walletDetails.walletIdentifier]);
-        var contractInfo = string.Join("; ", diagContracts.Select(c =>
-            $"script={c.Script[..20]}... state={c.ActivityState}"));
-        throw new TimeoutException(
-            $"Timed out waiting for asset VTXO with assetId={assetId}. " +
-            $"VTXOs in storage: [{vtxoInfo}]. " +
-            $"Contracts: [{contractInfo}]");
-    }
-
-    /// <summary>
-    /// Polls all contract scripts repeatedly until the asset balance matches expected value or timeout.
-    /// </summary>
-    private static async Task PollUntilAssetBalance(
+    private static Task PollUntilAssetBalance(
         (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
             string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
             ContractService contractService, InMemoryContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails,
         string assetId, ulong expectedBalance, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            // Check current balance
-            var balance = await GetAssetBalance(walletDetails.vtxoStorage, assetId);
-            if (balance == expectedBalance)
-                return;
-
-            // Poll each script individually (batching can miss some VTXOs)
-            var allContracts = await walletDetails.contracts.GetContracts(
-                walletIds: [walletDetails.walletIdentifier]);
-            foreach (var contract in allContracts)
-            {
-                await walletDetails.vtxoSync.PollScriptsForVtxos(
-                    new HashSet<string> { contract.Script });
-            }
-
-            await Task.Delay(1000);
-        }
-
-        var finalBalance = await GetAssetBalance(walletDetails.vtxoStorage, assetId);
-        throw new TimeoutException(
-            $"Timed out waiting for asset balance. Expected={expectedBalance}, Actual={finalBalance}, AssetId={assetId}");
-    }
+        => AssetTestHelpers.PollUntilAssetBalance(walletDetails, assetId, expectedBalance, timeout);
 
     private static async Task WaitForAssetVtxo(InMemoryVtxoStorage vtxoStorage, string assetId,
         TimeSpan timeout)
@@ -554,13 +454,6 @@ public class AssetTests
         }
     }
 
-    private static async Task<ulong> GetAssetBalance(InMemoryVtxoStorage vtxoStorage, string assetId)
-    {
-        var vtxos = await vtxoStorage.GetVtxos(includeSpent: false);
-        return vtxos
-            .Where(v => v.Assets is { Count: > 0 })
-            .SelectMany(v => v.Assets!)
-            .Where(a => a.AssetId == assetId)
-            .Aggregate(0UL, (sum, a) => sum + a.Amount);
-    }
+    private static Task<ulong> GetAssetBalance(InMemoryVtxoStorage vtxoStorage, string assetId)
+        => AssetTestHelpers.GetAssetBalance(vtxoStorage, assetId);
 }
