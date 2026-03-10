@@ -134,7 +134,7 @@ public class DelegationTests
 
         TestContext.Progress.WriteLine("Watch/Unwatch delegation cycle completed");
 
-        await vtxoSync.StopAsync(CancellationToken.None);
+        await vtxoSync.DisposeAsync();
     }
 
     private record DelegatePubkeyResponse(string? PublicKey);
