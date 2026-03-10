@@ -11,6 +11,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Core.Helpers;
+using NArk.Core.Assets;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
 using NBitcoin;
@@ -152,6 +153,22 @@ public class DelegationMonitorService(
             null, null, null, vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
 
         var intentPsbt = CreateBip322Proof(intentMessage, serverInfo.Network, intentCoin);
+
+        // Build asset packet if the VTXO carries assets — delegation is send-to-self (vout=0)
+        if (vtxo.Assets is { Count: > 0 } vtxoAssets)
+        {
+            var assetInputs = vtxoAssets
+                .Select(a => (a.AssetId, vin: (ushort)1, a.Amount))
+                .ToList();
+            var assetPacketTxOut = AssetPacketBuilder.Build(assetInputs, null, changeVout: 0);
+            if (assetPacketTxOut is not null)
+            {
+                var gtx = intentPsbt.GetGlobalTransaction();
+                gtx.Outputs.Add(assetPacketTxOut);
+                intentPsbt = PSBT.FromTransaction(gtx, serverInfo.Network).UpdateFrom(intentPsbt);
+            }
+        }
+
         var intentGtx = intentPsbt.GetGlobalTransaction();
 
         // Clone intent coin for input[0] (BIP322 toSpend reference) — matches IntentGenerationService pattern

@@ -315,84 +315,31 @@ public class SpendingService(
 
     /// <summary>
     /// Builds an asset packet OP_RETURN TxOut if any inputs or outputs carry assets.
-    /// Groups assets by AssetId, computes input/output mappings, and assigns change to the last output.
+    /// Change assigned to the last output (BTC change position).
     /// </summary>
     private static TxOut? BuildAssetPacket(IReadOnlyCollection<ArkCoin> inputs, ArkTxOut[] outputs)
     {
-        // Collect asset inputs: map (assetId -> list of (inputIndex, amount))
-        var assetInputs = new Dictionary<string, List<(ushort vin, ulong amount)>>();
+        var assetInputTuples = new List<(string assetId, ushort vin, ulong amount)>();
         var inputList = inputs.ToList();
         for (var i = 0; i < inputList.Count; i++)
         {
             if (inputList[i].Assets is not { Count: > 0 } assets) continue;
             foreach (var asset in assets)
-            {
-                if (!assetInputs.ContainsKey(asset.AssetId))
-                    assetInputs[asset.AssetId] = [];
-                assetInputs[asset.AssetId].Add(((ushort)i, asset.Amount));
-            }
+                assetInputTuples.Add((asset.AssetId, (ushort)i, asset.Amount));
         }
 
-        // Collect asset outputs: map (assetId -> list of (outputIndex, amount))
-        var assetOutputs = new Dictionary<string, List<(ushort vout, ulong amount)>>();
+        var assetOutputTuples = new List<(string assetId, ushort vout, ulong amount)>();
         for (var i = 0; i < outputs.Length; i++)
         {
             if (outputs[i].Assets is not { Count: > 0 } assets) continue;
             foreach (var asset in assets)
-            {
-                if (!assetOutputs.ContainsKey(asset.AssetId))
-                    assetOutputs[asset.AssetId] = [];
-                assetOutputs[asset.AssetId].Add(((ushort)i, asset.Amount));
-            }
+                assetOutputTuples.Add((asset.AssetId, (ushort)i, asset.Amount));
         }
 
-        var allAssetIds = new HashSet<string>(assetInputs.Keys);
-        allAssetIds.UnionWith(assetOutputs.Keys);
-
-        if (allAssetIds.Count == 0)
-            return null;
-
-        // Find the change output index (last output, which is where BTC change goes)
         var changeOutputIndex = (ushort)(outputs.Length - 1);
-
-        var groups = new List<AssetGroup>();
-        foreach (var assetIdStr in allAssetIds)
-        {
-            var assetId = AssetId.FromString(assetIdStr);
-            var groupInputs = assetInputs.GetValueOrDefault(assetIdStr)?
-                .Select(x => AssetInput.Create(x.vin, x.amount))
-                .ToList() ?? [];
-
-            var groupOutputs = assetOutputs.GetValueOrDefault(assetIdStr)?
-                .Select(x => AssetOutput.Create(x.vout, x.amount))
-                .ToList() ?? [];
-
-            // Compute asset change and assign to change output
-            var totalIn = assetInputs.GetValueOrDefault(assetIdStr)?
-                .Sum(x => (long)x.amount) ?? 0;
-            var totalOut = assetOutputs.GetValueOrDefault(assetIdStr)?
-                .Sum(x => (long)x.amount) ?? 0;
-            var assetChange = totalIn - totalOut;
-            if (assetChange > 0)
-            {
-                // Check if an explicit asset output already targets the change vout;
-                // if so, merge the change amount into that entry to avoid duplicate vout.
-                var existingIdx = groupOutputs.FindIndex(o => o.Vout == changeOutputIndex);
-                if (existingIdx >= 0)
-                {
-                    var existing = groupOutputs[existingIdx];
-                    groupOutputs[existingIdx] = AssetOutput.Create(changeOutputIndex, existing.Amount + (ulong)assetChange);
-                }
-                else
-                {
-                    groupOutputs.Add(AssetOutput.Create(changeOutputIndex, (ulong)assetChange));
-                }
-            }
-
-            groups.Add(AssetGroup.Create(assetId, null, groupInputs, groupOutputs, []));
-        }
-
-        var packet = Packet.Create(groups);
-        return packet.ToTxOut();
+        return AssetPacketBuilder.Build(
+            assetInputTuples,
+            assetOutputTuples.Count > 0 ? assetOutputTuples : null,
+            changeOutputIndex);
     }
 }

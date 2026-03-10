@@ -518,85 +518,38 @@ public class IntentGenerationService(
 
     /// <summary>
     /// Builds an asset packet OP_RETURN TxOut for an intent proof PSBT.
-    /// Input vin indices are offset by +1 because the BIP322 toSpend reference occupies
-    /// input[0] in the intent proof transaction. Asset outputs reference the explicit
-    /// output indices from <paramref name="outputs"/>; any remaining asset change goes
-    /// to vout=0 (the send-to-self output).
+    /// Input vin indices are offset by +1 because the BIP322 toSpend reference occupies input[0].
+    /// Asset change goes to vout=0 (the send-to-self output).
     /// </summary>
     private static TxOut? BuildIntentAssetPacket(
         IReadOnlyCollection<ArkCoin> inputCoins,
         IReadOnlyCollection<ArkTxOut>? outputs)
     {
+        var assetInputs = new List<(string assetId, ushort vin, ulong amount)>();
         var coinList = inputCoins.ToList();
-
-        // Collect asset inputs with +1 vin offset for the BIP322 fake input at index 0
-        var assetInputsByAssetId = new Dictionary<string, List<(ushort vin, ulong amount)>>();
         for (var i = 0; i < coinList.Count; i++)
         {
             if (coinList[i].Assets is not { Count: > 0 } assets) continue;
             foreach (var asset in assets)
-            {
-                if (!assetInputsByAssetId.ContainsKey(asset.AssetId))
-                    assetInputsByAssetId[asset.AssetId] = [];
-                // +1: intent proof input[0] is the fake toSpend reference
-                assetInputsByAssetId[asset.AssetId].Add(((ushort)(i + 1), asset.Amount));
-            }
+                assetInputs.Add((asset.AssetId, (ushort)(i + 1), asset.Amount));
         }
 
-        if (assetInputsByAssetId.Count == 0)
-            return null;
-
-        // Collect explicit asset outputs from ArkTxOut.Assets (if any)
-        var assetOutputsByAssetId = new Dictionary<string, List<(ushort vout, ulong amount)>>();
-        if (outputs != null)
+        List<(string assetId, ushort vout, ulong amount)>? assetOutputs = null;
+        if (outputs is not null)
         {
+            assetOutputs = [];
             var outList = outputs.ToList();
             for (var i = 0; i < outList.Count; i++)
             {
                 if (outList[i].Assets is not { Count: > 0 } assets) continue;
                 foreach (var asset in assets)
-                {
-                    if (!assetOutputsByAssetId.ContainsKey(asset.AssetId))
-                        assetOutputsByAssetId[asset.AssetId] = [];
-                    assetOutputsByAssetId[asset.AssetId].Add(((ushort)i, asset.Amount));
-                }
-            }
-        }
-
-        var groups = new List<AssetGroup>();
-        foreach (var (assetIdStr, inputs) in assetInputsByAssetId)
-        {
-            var assetId = AssetId.FromString(assetIdStr);
-            var groupInputs = inputs.Select(x => AssetInput.Create(x.vin, x.amount)).ToList();
-
-            var totalIn = inputs.Aggregate(0UL, (sum, x) => sum + x.amount);
-
-            // Start with explicit outputs for this asset
-            var groupOutputs = assetOutputsByAssetId.GetValueOrDefault(assetIdStr)?
-                .Select(x => AssetOutput.Create(x.vout, x.amount))
-                .ToList() ?? [];
-
-            // Assign remaining asset amount to vout=0 (send-to-self output)
-            var totalExplicitOut = groupOutputs.Aggregate(0UL, (sum, o) => sum + o.Amount);
-            var remaining = totalIn - totalExplicitOut;
-            if (remaining > 0)
-            {
-                var existingIdx = groupOutputs.FindIndex(o => o.Vout == 0);
-                if (existingIdx >= 0)
-                {
-                    var existing = groupOutputs[existingIdx];
-                    groupOutputs[existingIdx] = AssetOutput.Create(0, existing.Amount + remaining);
-                }
-                else
-                {
-                    groupOutputs.Add(AssetOutput.Create(0, remaining));
-                }
+                    assetOutputs.Add((asset.AssetId, (ushort)i, asset.Amount));
             }
 
-            groups.Add(AssetGroup.Create(assetId, null, groupInputs, groupOutputs, []));
+            if (assetOutputs.Count == 0) assetOutputs = null;
         }
 
-        return Packet.Create(groups).ToTxOut();
+        return AssetPacketBuilder.Build(assetInputs, assetOutputs, changeVout: 0);
     }
 
     public async ValueTask DisposeAsync()
