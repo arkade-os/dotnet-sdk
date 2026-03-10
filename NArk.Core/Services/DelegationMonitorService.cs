@@ -239,15 +239,7 @@ public class DelegationMonitorService(
             return _delegatePubkey;
 
         var info = await delegatorProvider.GetDelegatorInfoAsync();
-        var hex = info.Pubkey;
-
-        // Handle both 32-byte x-only (64 hex chars) and 33-byte compressed (66 hex chars) formats.
-        // Fulmine may return either. Prepend 02 prefix for x-only keys — parity doesn't matter
-        // since CanDelegate compares via ToXOnlyPubKey() which strips parity.
-        if (hex.Length == 64)
-            hex = "02" + hex;
-
-        _delegatePubkey = ECPubKey.Create(Convert.FromHexString(hex));
+        _delegatePubkey = ECPubKey.Create(Convert.FromHexString(info.Pubkey));
         return _delegatePubkey;
     }
 
