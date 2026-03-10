@@ -92,6 +92,65 @@ setup_arkd_fees() {
   log "✓ arkd intent fees set (1% input fee, 250 sat onchain output fee)"
 }
 
+setup_delegator_wallet() {
+  log "Setting up Fulmine delegator wallet..."
+
+  # Wait for delegator service to be ready
+  max_attempts=15
+  attempt=1
+  while [ $attempt -le $max_attempts ]; do
+    if curl -s http://localhost:7011/api/v1/wallet/status >/dev/null 2>&1; then
+      log "Delegator service is ready!"
+      break
+    fi
+    log "Waiting for delegator service... (attempt $attempt/$max_attempts)"
+    sleep 2
+    ((attempt++))
+  done
+
+  if [ $attempt -gt $max_attempts ]; then
+    log "ERROR: Delegator service failed to start within expected time"
+    exit 1
+  fi
+
+  # Generate seed and create wallet
+  log "Generating delegator seed..."
+  seed_response=$(curl -s -X GET http://localhost:7011/api/v1/wallet/genseed)
+  private_key=$(echo "$seed_response" | jq -r '.nsec')
+  log "Generated delegator key: $private_key"
+
+  log "Creating delegator wallet..."
+  curl -X POST http://localhost:7011/api/v1/wallet/create \
+       -H "Content-Type: application/json" \
+       -d "{\"private_key\": \"$private_key\", \"password\": \"password\", \"server_url\": \"http://ark:7070\"}"
+
+  # Unlock wallet
+  log "Unlocking delegator wallet..."
+  curl -X POST http://localhost:7011/api/v1/wallet/unlock \
+       -H "Content-Type: application/json" \
+       -d '{"password": "password"}'
+
+  # Fund delegator wallet so it can pay batch fees
+  log "Getting delegator address..."
+  local address_response=$(curl -s -X GET http://localhost:7011/api/v1/address)
+  local delegator_address=$(echo "$address_response" | jq -r '.address' | sed 's/bitcoin://' | sed 's/?ark=.*//')
+
+  if [[ "$delegator_address" == "null" || -z "$delegator_address" ]]; then
+    log "ERROR: Failed to get delegator address"
+    exit 1
+  fi
+
+  log "Delegator address: $delegator_address"
+  log "Funding delegator wallet..."
+  $NIGIRI faucet "$delegator_address" 0.01
+  sleep 5
+
+  log "Settling delegator wallet..."
+  curl -X GET http://localhost:7011/api/v1/settle
+
+  log "✓ Delegator wallet setup completed!"
+}
+
 setup_fulmine_wallet() {
   log "Setting up Fulmine wallet..."
   
@@ -312,8 +371,9 @@ fi
 $NIGIRI faucet $($NIGIRI ark receive | jq -r ".onchain_address") 2
 $NIGIRI ark redeem-notes -n $($NIGIRI arkd note --amount 100000000) --password secret
 
-# 7. Setup Fulmine wallet
+# 7. Setup Fulmine wallet and delegator
 setup_fulmine_wallet
+setup_delegator_wallet
 setup_lnd_wallet
 
 setup_arkd_fees
@@ -373,6 +433,7 @@ log "Boltz API: http://localhost:9001"
 log "Boltz WebSocket: ws://localhost:9004"
 log "CORS proxy: http://localhost:9069"
 log "Fulmine: http://localhost:7002"
+log "Fulmine delegator: http://localhost:7011 (gRPC: 7010)"
 log "LND (nigiri): localhost:10009"
 log "boltz-lnd: localhost:10010"
 log "Chopsticks (Bitcoin explorer): http://localhost:3000"

@@ -68,6 +68,24 @@ services:
       - boltz_lnd_datadir:/root/.lnd
     restart: unless-stopped
 
+  fulmine-delegator:
+    image: ghcr.io/arklabshq/fulmine:v0.3.15
+    container_name: fulmine-delegator
+    environment:
+      - FULMINE_ARK_SERVER=http://ark:7070
+      - FULMINE_ESPLORA_URL=http://chopsticks:3000
+      - FULMINE_NO_MACAROONS=true
+      - FULMINE_DISABLE_TELEMETRY=true
+      - FULMINE_UNLOCKER_TYPE=env
+      - FULMINE_UNLOCKER_PASSWORD=password
+      - FULMINE_DELEGATOR_ENABLED=true
+    ports:
+      - 7010:7000
+      - 7011:7001
+    volumes:
+      - fulmine_delegator_datadir:/app/data
+    restart: unless-stopped
+
   nginx-boltz:
     image: nginx:alpine
     container_name: nginx-boltz
@@ -196,6 +214,7 @@ volumes:
   boltz_datadir:
   boltz_lnd_datadir:
   boltz_fulmine_datadir:
+  fulmine_delegator_datadir:
 
 networks:
   default:
