@@ -153,10 +153,21 @@ public class DelegationMonitorService(
 
         var intentPsbt = CreateBip322Proof(intentMessage, serverInfo.Network, intentCoin);
         var intentGtx = intentPsbt.GetGlobalTransaction();
-        var intentPrecomputed = intentGtx.PrecomputeTransactionData(
-            [intentPsbt.Inputs[0].GetTxOut()!, intentCoin.TxOut]);
 
-        // Sign with the intent coin (input index 1, after the BIP322 fake input)
+        // Clone intent coin for input[0] (BIP322 toSpend reference) — matches IntentGenerationService pattern
+        var bip322Coin = new ArkCoin(intentCoin);
+        bip322Coin.TxOut = intentPsbt.Inputs[0].GetTxOut()!;
+        bip322Coin.Outpoint = intentPsbt.Inputs[0].PrevOut;
+
+        var intentPrecomputed = intentGtx.PrecomputeTransactionData(
+            [bip322Coin.TxOut, intentCoin.TxOut]);
+
+        // Reconstruct PSBT from the global tx so both inputs have coin data
+        intentPsbt = PSBT.FromTransaction(intentGtx, serverInfo.Network).UpdateFrom(intentPsbt);
+
+        // Sign both inputs: input[0] = BIP322 toSpend ref, input[1] = real VTXO
+        await PsbtHelpers.SignAndFillPsbt(signer, bip322Coin, intentPsbt, intentPrecomputed,
+            cancellationToken: CancellationToken.None);
         await PsbtHelpers.SignAndFillPsbt(signer, intentCoin, intentPsbt, intentPrecomputed,
             cancellationToken: CancellationToken.None);
 
@@ -228,7 +239,15 @@ public class DelegationMonitorService(
             return _delegatePubkey;
 
         var info = await delegatorProvider.GetDelegatorInfoAsync();
-        _delegatePubkey = ECPubKey.Create(Convert.FromHexString(info.Pubkey));
+        var hex = info.Pubkey;
+
+        // Handle both 32-byte x-only (64 hex chars) and 33-byte compressed (66 hex chars) formats.
+        // Fulmine may return either. Prepend 02 prefix for x-only keys — parity doesn't matter
+        // since CanDelegate compares via ToXOnlyPubKey() which strips parity.
+        if (hex.Length == 64)
+            hex = "02" + hex;
+
+        _delegatePubkey = ECPubKey.Create(Convert.FromHexString(hex));
         return _delegatePubkey;
     }
 
