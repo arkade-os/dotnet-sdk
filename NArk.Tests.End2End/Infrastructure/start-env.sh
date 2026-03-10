@@ -130,10 +130,29 @@ setup_delegator_wallet() {
        -H "Content-Type: application/json" \
        -d '{"password": "password"}'
 
+  # Check wallet status
+  log "Checking delegator wallet status..."
+  local status_response=$(curl -s -X GET http://localhost:7011/api/v1/wallet/status)
+  log "Delegator wallet status: $status_response"
+
   # Fund delegator wallet so it can pay batch fees
   log "Getting delegator address..."
-  local address_response=$(curl -s -X GET http://localhost:7011/api/v1/address)
-  local delegator_address=$(echo "$address_response" | jq -r '.address' | sed 's/bitcoin://' | sed 's/?ark=.*//')
+  max_attempts=5
+  attempt=1
+  local delegator_address=""
+  while [ $attempt -le $max_attempts ]; do
+    local address_response=$(curl -s -X GET http://localhost:7011/api/v1/address)
+    log "Address response (attempt $attempt): $address_response"
+    delegator_address=$(echo "$address_response" | jq -r '.address' | sed 's/bitcoin://' | sed 's/?ark=.*//')
+
+    if [[ "$delegator_address" != "null" && -n "$delegator_address" ]]; then
+      break
+    fi
+
+    log "Address not ready yet (attempt $attempt/$max_attempts), waiting..."
+    sleep 2
+    ((attempt++))
+  done
 
   if [[ "$delegator_address" == "null" || -z "$delegator_address" ]]; then
     log "ERROR: Failed to get delegator address"
