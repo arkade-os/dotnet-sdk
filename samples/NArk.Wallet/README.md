@@ -1,6 +1,6 @@
 # Arkade Wallet — Sample App
 
-A production-quality neo-bank wallet built with the NNark dotnet SDK. Showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and swaps.
+A neo-bank style wallet built with the NNark dotnet SDK. Showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and swaps — running entirely in the browser via Blazor WASM.
 
 ## Architecture
 
@@ -8,17 +8,12 @@ A production-quality neo-bank wallet built with the NNark dotnet SDK. Showcases 
 ┌─────────────────────────────────┐
 │   Blazor WASM (PWA)             │  ← Browser
 │   NArk.Wallet.Client            │
-├─────────────────────────────────┤
-│   REST API + SignalR             │
-├─────────────────────────────────┤
-│   ASP.NET Core Gateway           │  ← Server
-│   NArk.Wallet.Gateway            │
 │   ┌───────────┐ ┌─────────────┐ │
-│   │ NArk SDK  │ │ EF Core     │ │
-│   │ (Core +   │ │ SQLite      │ │
-│   │  Swaps)   │ │ Storage     │ │
-│   └─────┬─────┘ └─────────────┘ │
-│         │ gRPC                   │
+│   │ NArk SDK  │ │ SQLite via  │ │
+│   │ (Core +   │ │ OPFS        │ │
+│   │  Swaps)   │ │ (SqliteWasm │ │
+│   └─────┬─────┘ │  Blazor)    │ │
+│         │ REST   └─────────────┘ │
 └─────────┼───────────────────────┘
           ▼
     ┌──────────┐
@@ -26,11 +21,13 @@ A production-quality neo-bank wallet built with the NNark dotnet SDK. Showcases 
     └──────────┘
 ```
 
-The NNark SDK cannot run in the browser (NBitcoin, gRPC, secp256k1 dependencies), so the gateway hosts the SDK and exposes REST + SignalR APIs to the Blazor WASM frontend.
+The full NNark SDK runs in-browser via WebAssembly. `RestClientTransport` talks directly to arkd's REST API. Storage is persisted in the browser via SQLite over OPFS (Origin Private File System) using [SqliteWasmBlazor](https://github.com/b-straub/SqliteWasmBlazor).
+
+The Gateway is a minimal static file server that serves the Blazor WASM app and sets required COOP/COEP headers for `SharedArrayBuffer` support.
 
 ## Prerequisites
 
-- .NET 8 SDK
+- .NET 10 SDK (preview)
 - An arkd server (defaults to Mutinynet at `https://mutinynet.arkade.sh`)
 
 ## Quick Start
@@ -44,29 +41,18 @@ Open `https://localhost:5001` in your browser.
 
 ## Features Demonstrated
 
-| Feature | SDK Interface | REST Endpoint |
-|---------|--------------|---------------|
-| Create wallet | `WalletFactory`, `IWalletStorage` | `POST /api/wallets` |
-| Get balance | `ISpendingService.GetAvailableCoins` | `GET /api/vtxos/{id}/balance` |
-| List VTXOs | `IVtxoStorage.GetVtxos` | `GET /api/vtxos/{id}` |
-| Send payment | `ISpendingService.Spend` | `POST /api/spend` |
-| Receive addresses | `IArkadeAddressProvider.GetNextContract` | `GET /api/receive/{id}` |
-| List swaps | `ISwapStorage.GetSwaps` | `GET /api/swaps/{id}` |
-| Issue asset | `IAssetManager.IssueAsync` | `POST /api/assets/issue` |
-| Burn asset | `IAssetManager.BurnAsync` | `POST /api/assets/burn` |
-| Real-time events | `IVtxoStorage.VtxosChanged` | SignalR `/hubs/wallet` |
+| Feature | SDK Interface | Client Service Method |
+|---------|--------------|----------------------|
+| Create wallet | `WalletFactory`, `IWalletStorage` | `ArkWalletService.CreateWallet()` |
+| Get balance | `ISpendingService.GetAvailableCoins` | `ArkWalletService.GetBalance()` |
+| List VTXOs | `IVtxoStorage.GetVtxos` | `ArkWalletService.GetVtxos()` |
+| Send payment | `ISpendingService.Spend` | `ArkWalletService.Send()` |
+| Receive addresses | `IArkadeAddressProvider.GetNextContract` | `ArkWalletService.GetReceiveInfo()` |
+| List swaps | `ISwapStorage.GetSwaps` | `ArkWalletService.GetSwaps()` |
+| Issue asset | `IAssetManager.IssueAsync` | `ArkWalletService.IssueAsset()` |
+| Burn asset | `IAssetManager.BurnAsync` | `ArkWalletService.BurnAsset()` |
 
 ## Configuration
-
-Edit `appsettings.json` to change the network:
-
-```json
-{
-  "ConnectionStrings": {
-    "Wallet": "Data Source=arkade-wallet.db"
-  }
-}
-```
 
 To switch networks, modify the `ArkNetworkConfig` in `Program.cs`:
 - `ArkNetworkConfig.Mainnet` — Production
@@ -77,15 +63,16 @@ To switch networks, modify the `ArkNetworkConfig` in `Program.cs`:
 
 ```
 samples/NArk.Wallet/
-├── NArk.Wallet.Shared/     # DTOs shared between gateway and client
-├── NArk.Wallet.Gateway/    # ASP.NET Core server (SDK host)
-│   ├── Data/                # EF Core DbContext
-│   ├── Endpoints/           # REST API endpoints
-│   ├── Hubs/                # SignalR hub
-│   └── Services/            # Gateway services
-└── NArk.Wallet.Client/     # Blazor WASM PWA
+├── NArk.Wallet.Gateway/    # Static file server (COOP/COEP headers)
+│   └── Program.cs           # Minimal host
+└── NArk.Wallet.Client/     # Blazor WASM PWA (full SDK in-browser)
     ├── Pages/               # Route pages (Home, Send, Receive, Swap, Assets)
     ├── Layout/              # App shell with bottom navigation
-    ├── Services/            # API client, state management
+    ├── Services/            # ArkWalletService, WalletDbContext, WasmSafetyService
+    │   ├── ArkWalletService.cs       # Wraps SDK services (replaces REST API client)
+    │   ├── ArkServiceStartup.cs      # Manual IHostedService startup for WASM
+    │   ├── WalletDbContext.cs         # EF Core context with SqliteWasmBlazor
+    │   ├── WasmSafetyService.cs       # In-browser ISafetyService
+    │   └── FallbackChainTimeProvider.cs
     └── wwwroot/             # Static assets, CSS, PWA manifest
 ```
