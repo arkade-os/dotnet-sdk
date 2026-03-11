@@ -13,6 +13,7 @@ using NArk.Core.Transformers;
 using NArk.Core.Transport;
 using NArk.Core.Wallet;
 using NArk.Transport.GrpcClient;
+using NArk.Transport.RestClient;
 using Microsoft.Extensions.Logging;
 
 namespace NArk.Hosting;
@@ -116,6 +117,31 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IClientTransport>(sp =>
         {
             var inner = sp.GetRequiredService<GrpcClientTransport>();
+            var logger = sp.GetService<ILogger<CachingClientTransport>>();
+            return new CachingClientTransport(inner, logger);
+        });
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the Ark network using HTTP/REST + SSE transport instead of gRPC.
+    /// Use this when gRPC is unavailable (e.g., browser WASM, HTTP-only environments).
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="config">The network configuration.</param>
+    public static IServiceCollection AddArkRestTransport(this IServiceCollection services, ArkNetworkConfig config)
+    {
+        // Register the config itself for injection
+        services.AddSingleton(config);
+
+        // Register the REST transport
+        services.AddSingleton(_ => new RestClientTransport(config.ArkUri));
+
+        // Register IClientTransport with caching wrapper as the default
+        services.AddSingleton<IClientTransport>(sp =>
+        {
+            var inner = sp.GetRequiredService<RestClientTransport>();
             var logger = sp.GetService<ILogger<CachingClientTransport>>();
             return new CachingClientTransport(inner, logger);
         });
