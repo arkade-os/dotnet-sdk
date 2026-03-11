@@ -65,8 +65,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1000));
         var assetId = issuance.AssetId;
 
-        // Poll until Alice's VTXO with the asset appears
+        // Poll until Alice's VTXO with the asset appears, then ensure BTC change is synced
         await PollUntilAssetVtxo(alice, assetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(alice);
 
         // Derive a receive contract for Bob
         var bobContract = await bob.contractService.DeriveContract(bob.walletIdentifier,
@@ -115,8 +116,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1000));
         var assetId = issuance.AssetId;
 
-        // Poll until asset VTXO appears
+        // Poll until asset VTXO appears, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Burn 400 units
         var burnTxId = await assetManager.BurnAsync(walletDetails.walletIdentifier,
@@ -254,8 +256,9 @@ public class AssetTests
         var controlAssetId = controlResult.AssetId;
         Assert.That(controlAssetId, Is.Not.Null.And.Not.Empty, "Control AssetId should be non-empty");
 
-        // Poll until control VTXO appears
+        // Poll until control VTXO appears, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Issue main asset with controlAssetId referencing the control
         var mainResult = await assetManager.IssueAsync(walletDetails.walletIdentifier,
