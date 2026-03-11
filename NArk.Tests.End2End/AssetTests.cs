@@ -292,8 +292,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1));
         var controlAssetId = controlResult.AssetId;
 
-        // Poll until control VTXO appears
+        // Poll until control VTXO appears, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Reissue 500 units using the control asset as authorization
         var reissueTxId = await assetManager.ReissueAsync(walletDetails.walletIdentifier,
@@ -311,6 +312,7 @@ public class AssetTests
 
         // Reissue again to prove repeated reissuance works
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         var reissueTxId2 = await assetManager.ReissueAsync(walletDetails.walletIdentifier,
             new ReissuanceParams(controlAssetId, 300));
