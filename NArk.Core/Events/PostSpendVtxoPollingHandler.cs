@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.VTXOs;
 using NArk.Core.Enums;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
@@ -13,6 +14,7 @@ namespace NArk.Core.Events;
 /// </summary>
 public class PostSpendVtxoPollingHandler(
     VtxoSynchronizationService vtxoSyncService,
+    IVtxoStorage vtxoStorage,
     IContractStorage contractStorage,
     IOptions<VtxoPollingOptions> options,
     ILogger<PostSpendVtxoPollingHandler>? logger = null
@@ -74,7 +76,7 @@ public class PostSpendVtxoPollingHandler(
                 if (found > 0)
                 {
                     // Verify input VTXOs are now marked as spent in local storage
-                    var inputVtxos = await vtxoSyncService.GetVtxosByOutpoints(inputOutpoints, cancellationToken);
+                    var inputVtxos = await vtxoStorage.GetVtxos(outpoints: inputOutpoints.ToList(), includeSpent: true, cancellationToken: cancellationToken);
                     var allInputsSpent = inputVtxos.Count > 0 && inputVtxos.All(v => v.IsSpent());
                     if (allInputsSpent)
                         break;

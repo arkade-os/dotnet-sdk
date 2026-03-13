@@ -193,6 +193,7 @@ public class PostSpendVtxoPollingHandlerTests
 
         _handler = new PostSpendVtxoPollingHandler(
             vtxoSyncService,
+            _vtxoStorage,
             _contractStorage,
             _options);
     }

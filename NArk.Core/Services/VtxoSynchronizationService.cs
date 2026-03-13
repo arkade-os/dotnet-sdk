@@ -4,7 +4,6 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Transport;
-using NBitcoin;
 
 namespace NArk.Core.Services;
 
@@ -247,16 +246,6 @@ public class VtxoSynchronizationService : IAsyncDisposable
 
         _logger?.LogInformation("PollScriptsForVtxos: done, {Count} VTXOs returned from arkd", count);
         return count;
-    }
-
-    /// <summary>
-    /// Retrieves VTXOs from local storage by their outpoints (including spent ones).
-    /// </summary>
-    public async Task<IReadOnlyCollection<ArkVtxo>> GetVtxosByOutpoints(
-        IReadOnlyCollection<OutPoint> outpoints, CancellationToken cancellationToken = default)
-    {
-        return await _vtxoStorage.GetVtxos(outpoints: outpoints.ToList(), includeSpent: true,
-            cancellationToken: cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
