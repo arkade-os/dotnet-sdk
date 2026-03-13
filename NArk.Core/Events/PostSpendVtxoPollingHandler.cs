@@ -1,9 +1,9 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NArk.Abstractions.Contracts;
 using NArk.Core.Enums;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
+using NArk.Core.Transport;
 
 namespace NArk.Core.Events;
 
@@ -13,7 +13,7 @@ namespace NArk.Core.Events;
 /// </summary>
 public class PostSpendVtxoPollingHandler(
     VtxoSynchronizationService vtxoSyncService,
-    IContractStorage contractStorage,
+    IClientTransport transport,
     IOptions<VtxoPollingOptions> options,
     ILogger<PostSpendVtxoPollingHandler>? logger = null
 ) : IEventHandler<PostCoinsSpendActionEvent>
@@ -41,12 +41,8 @@ public class PostSpendVtxoPollingHandler(
 
         try
         {
-            // Get ALL contracts for affected wallets (not just active ones).
-            // Sweep destinations are created as Inactive, so we must poll them too
-            // to detect the new VTXOs from the spend transaction.
-            
-
             var inputScripts = @event.ArkCoins.Select(c => c.ScriptPubKey.ToHex()).ToHashSet();
+            var inputOutpoints = @event.ArkCoins.Select(c => c.Outpoint).ToList();
             var outputScripts = @event.Psbt.Outputs.Select(o => o.ScriptPubKey.ToHex()).ToHashSet();
             outputScripts.Remove("51024e73");
 
@@ -58,7 +54,10 @@ public class PostSpendVtxoPollingHandler(
                 string.Join(", ", inputScripts),
                 string.Join(", ", outputScripts));
 
-            // Retry with backoff — arkd's indexer may not have processed the VTXOs yet
+            // Retry with backoff — arkd's indexer may not have processed the VTXOs yet.
+            // We poll all scripts to upsert both input (spent) and output (new) VTXOs,
+            // then use the transport's spent_only filter to verify inputs are marked spent
+            // by arkd before breaking — avoids relying on local storage which may lag.
             const int maxAttempts = 5;
             for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
@@ -68,7 +67,20 @@ public class PostSpendVtxoPollingHandler(
                     attempt, maxAttempts, @event.TransactionId, found);
 
                 if (found > 0)
-                    break;
+                {
+                    // Ask arkd directly: are the input outpoints spent?
+                    var spentCount = 0;
+                    await foreach (var _ in transport.GetVtxosByOutpoints(inputOutpoints, spentOnly: true, cancellationToken))
+                        spentCount++;
+
+                    if (spentCount >= inputOutpoints.Count)
+                        break;
+
+                    logger?.LogInformation(
+                        "PostSpendVtxoPolling: attempt {Attempt}/{Max} for TxId={TxId} — {Spent}/{Total} inputs spent on arkd",
+                        attempt, maxAttempts, @event.TransactionId,
+                        spentCount, inputOutpoints.Count);
+                }
 
                 if (attempt < maxAttempts)
                     await Task.Delay(delay, cancellationToken);

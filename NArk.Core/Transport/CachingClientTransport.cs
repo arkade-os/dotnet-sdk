@@ -4,6 +4,7 @@ using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Transport.Models;
+using NBitcoin;
 
 namespace NArk.Core.Transport;
 
@@ -123,6 +124,9 @@ public class CachingClientTransport : IClientTransport
 
     public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
         => _inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);
+
+    public IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(IReadOnlyCollection<OutPoint> outpoints, bool spentOnly = false, CancellationToken cancellationToken = default)
+        => _inner.GetVtxosByOutpoints(outpoints, spentOnly, cancellationToken);
 
     public Task<string> RegisterIntent(ArkIntent intent, CancellationToken cancellationToken = default)
         => _inner.RegisterIntent(intent, cancellationToken);

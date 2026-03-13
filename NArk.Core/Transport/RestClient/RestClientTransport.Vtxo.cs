@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Web;
 using NArk.Abstractions.VTXOs;
+using NBitcoin;
 
 namespace NArk.Transport.RestClient;
 
@@ -91,6 +92,51 @@ public partial class RestClientTransport
                 }
                 if (changedScripts.Count > 0)
                     yield return changedScripts;
+            }
+        }
+    }
+
+    public async IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(
+        IReadOnlyCollection<OutPoint> outpoints,
+        bool spentOnly = false,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var chunk in outpoints.Chunk(1000))
+        {
+            var pageIndex = 0;
+            int? pageTotal = null;
+
+            while (pageTotal is null || pageIndex < pageTotal)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var query = HttpUtility.ParseQueryString(string.Empty);
+                foreach (var op in chunk)
+                    query.Add("outpoints", $"{op.Hash}:{op.N}");
+                if (spentOnly)
+                    query["spent_only"] = "true";
+                query["page.size"] = "1000";
+                query["page.index"] = pageIndex.ToString();
+
+                var json = await _http.GetFromJsonAsync<JsonElement>(
+                    $"/v1/indexer/vtxos?{query}", JsonOpts, cancellationToken);
+
+                if (json.TryGetProperty("page", out var page))
+                {
+                    pageIndex = page.GetProperty("next").GetInt32();
+                    pageTotal = page.GetProperty("total").GetInt32();
+                }
+                else
+                {
+                    pageTotal = 0;
+                }
+
+                if (!json.TryGetProperty("vtxos", out var vtxosArr)) yield break;
+
+                foreach (var v in vtxosArr.EnumerateArray())
+                {
+                    yield return ParseVtxo(v);
+                }
             }
         }
     }
