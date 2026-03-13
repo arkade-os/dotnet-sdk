@@ -47,6 +47,7 @@ public class PostSpendVtxoPollingHandler(
             
 
             var inputScripts = @event.ArkCoins.Select(c => c.ScriptPubKey.ToHex()).ToHashSet();
+            var inputOutpoints = @event.ArkCoins.Select(c => c.Outpoint).ToHashSet();
             var outputScripts = @event.Psbt.Outputs.Select(o => o.ScriptPubKey.ToHex()).ToHashSet();
             outputScripts.Remove("51024e73");
 
@@ -59,6 +60,9 @@ public class PostSpendVtxoPollingHandler(
                 string.Join(", ", outputScripts));
 
             // Retry with backoff — arkd's indexer may not have processed the VTXOs yet
+            // We must verify that input VTXOs are marked as spent, not just that any VTXO was found.
+            // Breaking early on `found > 0` caused input VTXOs to remain "unspent" locally
+            // when arkd returned the new output VTXOs before updating the spent state of inputs.
             const int maxAttempts = 5;
             for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
@@ -68,7 +72,18 @@ public class PostSpendVtxoPollingHandler(
                     attempt, maxAttempts, @event.TransactionId, found);
 
                 if (found > 0)
-                    break;
+                {
+                    // Verify input VTXOs are now marked as spent in local storage
+                    var inputVtxos = await vtxoSyncService.GetVtxosByOutpoints(inputOutpoints, cancellationToken);
+                    var allInputsSpent = inputVtxos.Count > 0 && inputVtxos.All(v => v.IsSpent());
+                    if (allInputsSpent)
+                        break;
+
+                    logger?.LogInformation(
+                        "PostSpendVtxoPolling: attempt {Attempt}/{Max} for TxId={TxId} — output VTXOs found but {Unspent} input(s) still unspent",
+                        attempt, maxAttempts, @event.TransactionId,
+                        inputVtxos.Count(v => !v.IsSpent()));
+                }
 
                 if (attempt < maxAttempts)
                     await Task.Delay(delay, cancellationToken);
