@@ -27,11 +27,11 @@ public class ChainSwapTests
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var swapStorage = new InMemorySwapStorage();
+        var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var options =
             new OptionsWrapper<IntentGenerationServiceOptions>(
@@ -146,11 +146,11 @@ public class ChainSwapTests
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var swapStorage = new InMemorySwapStorage();
+        var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
             [

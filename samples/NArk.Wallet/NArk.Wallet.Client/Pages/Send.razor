@@ -1,0 +1,119 @@
+@page "/send"
+@inject ArkWalletService Ark
+@inject WalletState State
+@inject NavigationManager Nav
+
+<div class="page-header">
+    <a href="/" class="back-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+    <span class="page-title">Send</span>
+</div>
+
+<div class="px-20">
+    @if (_step == 0)
+    {
+        <!-- Amount Entry -->
+        <div class="amount-display @(_amount == "0" ? "empty" : "")">
+            @_amount<span class="balance-unit">sats</span>
+        </div>
+
+        <p class="text-center text-secondary mb-16" style="font-size:12px;">
+            Available: @FormatSats(State.BalanceSats) sats
+        </p>
+
+        <div class="numpad">
+            @foreach (var key in _numpadKeys)
+            {
+                <button class="numpad-key @(key == "" ? "empty" : "")"
+                        @onclick="() => OnNumpadKey(key)"
+                        disabled="@(key == "")">@key</button>
+            }
+        </div>
+
+        <button class="btn btn-primary btn-full mt-20" @onclick="GoToAddress"
+                disabled="@(_amount == "0")">
+            Next
+        </button>
+    }
+    else if (_step == 1)
+    {
+        <!-- Address Entry -->
+        <p class="text-center mb-16" style="font-size:32px;font-weight:600;">
+            @_amount <span class="balance-unit">sats</span>
+        </p>
+
+        <label class="input-label">Destination Address</label>
+        <input class="input-field" @bind="_address" placeholder="tark1q... or ark1q..." />
+
+        <button class="btn btn-primary btn-full mt-20" @onclick="ConfirmSend"
+                disabled="@(string.IsNullOrWhiteSpace(_address) || _sending)">
+            @(_sending ? "Sending..." : "Send")
+        </button>
+    }
+    else if (_step == 2)
+    {
+        <!-- Success -->
+        <div class="text-center" style="padding:40px 0;">
+            <div style="font-size:48px;margin-bottom:16px;">✓</div>
+            <p style="font-size:20px;font-weight:600;margin-bottom:8px;">Sent!</p>
+            <p class="text-secondary mono" style="font-size:12px;">@_txId</p>
+            <button class="btn btn-secondary mt-24" @onclick="@(() => Nav.NavigateTo("/"))">
+                Back to Home
+            </button>
+        </div>
+    }
+
+    @if (_error is not null)
+    {
+        <p style="color:var(--arkade-red);font-size:13px;margin-top:12px;text-align:center;">@_error</p>
+    }
+</div>
+
+@code {
+    private int _step;
+    private string _amount = "0";
+    private string _address = "";
+    private string? _txId;
+    private string? _error;
+    private bool _sending;
+
+    private readonly string[] _numpadKeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"];
+
+    private void OnNumpadKey(string key)
+    {
+        if (key == "⌫")
+        {
+            _amount = _amount.Length > 1 ? _amount[..^1] : "0";
+        }
+        else if (key != "")
+        {
+            _amount = _amount == "0" ? key : _amount + key;
+        }
+    }
+
+    private void GoToAddress() => _step = 1;
+
+    private async Task ConfirmSend()
+    {
+        if (State.ActiveWalletId is null) return;
+        _sending = true;
+        _error = null;
+
+        try
+        {
+            _txId = await Ark.Send(State.ActiveWalletId, _address, long.Parse(_amount));
+            _step = 2;
+
+            var balance = await Ark.GetBalance(State.ActiveWalletId);
+            State.UpdateBalance(balance);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally { _sending = false; }
+    }
+
+    private static string FormatSats(long sats) => sats.ToString("N0");
+}

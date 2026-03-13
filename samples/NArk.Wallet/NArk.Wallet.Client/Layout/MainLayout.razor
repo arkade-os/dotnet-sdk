@@ -1,0 +1,29 @@
+@inherits LayoutComponentBase
+
+<div class="app-shell">
+    <main class="app-content">
+        @Body
+    </main>
+    <nav class="bottom-nav">
+        <NavLink href="/" Match="NavLinkMatch.All" class="nav-item">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+            <span>Home</span>
+        </NavLink>
+        <NavLink href="/send" class="nav-item">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            <span>Send</span>
+        </NavLink>
+        <NavLink href="/receive" class="nav-item">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+            <span>Receive</span>
+        </NavLink>
+        <NavLink href="/swap" class="nav-item">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+            <span>Swap</span>
+        </NavLink>
+        <NavLink href="/assets" class="nav-item">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M6 12h12"/></svg>
+            <span>Assets</span>
+        </NavLink>
+    </nav>
+</div>

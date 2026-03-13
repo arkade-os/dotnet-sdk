@@ -1,6 +1,9 @@
 using CliWrap;
 using CliWrap.Buffered;
+using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Safety;
+using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Core.Wallet;
@@ -16,34 +19,34 @@ namespace NArk.Tests.End2End.Common;
 
 internal static class FundedWalletHelper
 {
-    internal static async Task<(AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
+    internal static async Task<(ISafetyService safetyService, InMemoryWalletProvider walletProvider,
             string walletIdentifier,
-            InMemoryVtxoStorage vtxoStorage, ContractService contractService, InMemoryContractStorage contracts,
+            IVtxoStorage vtxoStorage, ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync)>
         GetFundedWallet()
     {
+        var safetyService = new AsyncSafetyService();
+        var storage = new TestStorage(safetyService);
+
         var receivedFirstVtxoTcs = new TaskCompletionSource();
-        var vtxoStorage = new InMemoryVtxoStorage();
-        vtxoStorage.VtxosChanged += (sender, args) => receivedFirstVtxoTcs.TrySetResult();
+        storage.VtxoStorage.VtxosChanged += (sender, args) => receivedFirstVtxoTcs.TrySetResult();
         var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
 
         var info = await clientTransport.GetServerInfoAsync();
 
         // Create a new wallet
         var walletProvider = new InMemoryWalletProvider(clientTransport);
-        var contracts = new InMemoryContractStorage();
-        var safetyService = new AsyncSafetyService();
         var fp1 = await walletProvider.CreateTestWallet();
 
         // Start vtxo synchronization service
         var vtxoSync = new VtxoSynchronizationService(
-            vtxoStorage,
+            storage.VtxoStorage,
             clientTransport,
-            [vtxoStorage, contracts]
+            [storage.VtxoStorage, storage.ContractStorage]
         );
         await vtxoSync.StartAsync(CancellationToken.None);
 
-        var contractService = new ContractService(walletProvider, contracts, clientTransport);
+        var contractService = new ContractService(walletProvider, storage.ContractStorage, clientTransport);
 
         // Generate a new payment contract, save to storage
         var signer = await (await walletProvider.GetAddressProviderAsync(fp1))!.GetNextSigningDescriptor();
@@ -70,8 +73,8 @@ internal static class FundedWalletHelper
 
         await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        return (safetyService, walletProvider, fp1, vtxoStorage, contractService, contracts, clientTransport,
-            vtxoSync);
+        return (safetyService, walletProvider, fp1, storage.VtxoStorage, contractService, storage.ContractStorage,
+            clientTransport, vtxoSync);
     }
 
     /// <summary>
@@ -79,16 +82,18 @@ internal static class FundedWalletHelper
     /// <see cref="ArkPaymentContract"/> for Receive/SendToSelf purposes.
     /// Returns the same tuple as <see cref="GetFundedWallet"/> plus the initial delegate contract.
     /// </summary>
-    internal static async Task<(AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
+    internal static async Task<(ISafetyService safetyService, InMemoryWalletProvider walletProvider,
             string walletIdentifier,
-            InMemoryVtxoStorage vtxoStorage, ContractService contractService, InMemoryContractStorage contracts,
+            IVtxoStorage vtxoStorage, ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync,
             ArkDelegateContract delegateContract)>
         GetFundedDelegateWallet(Uri delegatorEndpoint)
     {
+        var safetyService = new AsyncSafetyService();
+        var storage = new TestStorage(safetyService);
+
         var receivedFirstVtxoTcs = new TaskCompletionSource();
-        var vtxoStorage = new InMemoryVtxoStorage();
-        vtxoStorage.VtxosChanged += (sender, args) => receivedFirstVtxoTcs.TrySetResult();
+        storage.VtxoStorage.VtxosChanged += (sender, args) => receivedFirstVtxoTcs.TrySetResult();
         var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
 
         var info = await clientTransport.GetServerInfoAsync();
@@ -100,8 +105,6 @@ internal static class FundedWalletHelper
 
         // Create wallet with DelegatingAddressProvider
         var walletProvider = new InMemoryWalletProvider(clientTransport);
-        var contracts = new InMemoryContractStorage();
-        var safetyService = new AsyncSafetyService();
         var walletId = await walletProvider.CreateTestWallet();
 
         // Wrap the address provider so it produces delegate contracts
@@ -112,13 +115,13 @@ internal static class FundedWalletHelper
 
         // Start vtxo synchronization service
         var vtxoSync = new VtxoSynchronizationService(
-            vtxoStorage,
+            storage.VtxoStorage,
             clientTransport,
-            [vtxoStorage, contracts]
+            [storage.VtxoStorage, storage.ContractStorage]
         );
         await vtxoSync.StartAsync(CancellationToken.None);
 
-        var contractService = new ContractService(walletProvider, contracts, clientTransport);
+        var contractService = new ContractService(walletProvider, storage.ContractStorage, clientTransport);
 
         // Derive a delegate contract (DelegatingAddressProvider converts Payment → Delegate)
         var contract = await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
@@ -140,7 +143,7 @@ internal static class FundedWalletHelper
 
         await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        return (safetyService, walletProvider, walletId, vtxoStorage, contractService, contracts, clientTransport,
-            vtxoSync, delegateContract);
+        return (safetyService, walletProvider, walletId, storage.VtxoStorage, contractService, storage.ContractStorage,
+            clientTransport, vtxoSync, delegateContract);
     }
 }

@@ -16,7 +16,7 @@ using NArk.Core.Services;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
 using NArk.Core.Transport.Models;
-using NArk.Safety.AsyncKeyedLock;
+using NArk.Abstractions.Safety;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Abstractions.VTXOs;
@@ -65,8 +65,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1000));
         var assetId = issuance.AssetId;
 
-        // Poll until Alice's VTXO with the asset appears
+        // Poll until Alice's VTXO with the asset appears, then ensure BTC change is synced
         await PollUntilAssetVtxo(alice, assetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(alice);
 
         // Derive a receive contract for Bob
         var bobContract = await bob.contractService.DeriveContract(bob.walletIdentifier,
@@ -115,8 +116,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1000));
         var assetId = issuance.AssetId;
 
-        // Poll until asset VTXO appears
+        // Poll until asset VTXO appears, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Burn 400 units
         var burnTxId = await assetManager.BurnAsync(walletDetails.walletIdentifier,
@@ -143,8 +145,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1000));
         var assetId = issuance.AssetId;
 
-        // Poll until asset VTXO arrives
+        // Poll until asset VTXO arrives, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Verify the asset exists before batch
         var preBatchBalance = await GetAssetBalance(walletDetails.vtxoStorage, assetId);
@@ -152,7 +155,7 @@ public class AssetTests
 
         // Set up batch round services (same sequential pattern as BatchSessionTests)
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var scheduler = new SimpleIntentScheduler(
             new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
@@ -254,8 +257,9 @@ public class AssetTests
         var controlAssetId = controlResult.AssetId;
         Assert.That(controlAssetId, Is.Not.Null.And.Not.Empty, "Control AssetId should be non-empty");
 
-        // Poll until control VTXO appears
+        // Poll until control VTXO appears, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Issue main asset with controlAssetId referencing the control
         var mainResult = await assetManager.IssueAsync(walletDetails.walletIdentifier,
@@ -288,8 +292,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1));
         var controlAssetId = controlResult.AssetId;
 
-        // Poll until control VTXO appears
+        // Poll until control VTXO appears, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Reissue 500 units using the control asset as authorization
         var reissueTxId = await assetManager.ReissueAsync(walletDetails.walletIdentifier,
@@ -307,6 +312,7 @@ public class AssetTests
 
         // Reissue again to prove repeated reissuance works
         await PollUntilAssetVtxo(walletDetails, controlAssetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         var reissueTxId2 = await assetManager.ReissueAsync(walletDetails.walletIdentifier,
             new ReissuanceParams(controlAssetId, 300));
@@ -360,38 +366,38 @@ public class AssetTests
 
     // --- Helper methods (delegate to shared AssetTestHelpers) ---
 
-    private static (AssetManager assetManager, CoinService coinService, InMemoryIntentStorage intentStorage)
+    private static (AssetManager assetManager, CoinService coinService, IIntentStorage intentStorage)
         CreateAssetServices(
-            (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-                string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-                ContractService contractService, InMemoryContractStorage contracts,
+            (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+                string walletIdentifier, IVtxoStorage vtxoStorage,
+                ContractService contractService, IContractStorage contracts,
                 IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails)
         => AssetTestHelpers.CreateAssetServices(walletDetails);
 
     private static Task PollAllScripts(
-        (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-            string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-            ContractService contractService, InMemoryContractStorage contracts,
+        (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+            string walletIdentifier, IVtxoStorage vtxoStorage,
+            ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails)
         => AssetTestHelpers.PollAllScripts(walletDetails);
 
     private static Task PollUntilAssetVtxo(
-        (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-            string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-            ContractService contractService, InMemoryContractStorage contracts,
+        (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+            string walletIdentifier, IVtxoStorage vtxoStorage,
+            ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails,
         string assetId, TimeSpan timeout)
         => AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, timeout);
 
     private static Task PollUntilAssetBalance(
-        (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-            string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-            ContractService contractService, InMemoryContractStorage contracts,
+        (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+            string walletIdentifier, IVtxoStorage vtxoStorage,
+            ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails,
         string assetId, ulong expectedBalance, TimeSpan timeout)
         => AssetTestHelpers.PollUntilAssetBalance(walletDetails, assetId, expectedBalance, timeout);
 
-    private static async Task WaitForAssetVtxo(InMemoryVtxoStorage vtxoStorage, string assetId,
+    private static async Task WaitForAssetVtxo(IVtxoStorage vtxoStorage, string assetId,
         TimeSpan timeout)
     {
         var tcs = new TaskCompletionSource();
@@ -425,7 +431,7 @@ public class AssetTests
         }
     }
 
-    private static async Task WaitForAssetVtxoBalance(InMemoryVtxoStorage vtxoStorage, string assetId,
+    private static async Task WaitForAssetVtxoBalance(IVtxoStorage vtxoStorage, string assetId,
         ulong expectedBalance, TimeSpan timeout)
     {
         var tcs = new TaskCompletionSource();
@@ -454,6 +460,6 @@ public class AssetTests
         }
     }
 
-    private static Task<ulong> GetAssetBalance(InMemoryVtxoStorage vtxoStorage, string assetId)
+    private static Task<ulong> GetAssetBalance(IVtxoStorage vtxoStorage, string assetId)
         => AssetTestHelpers.GetAssetBalance(vtxoStorage, assetId);
 }

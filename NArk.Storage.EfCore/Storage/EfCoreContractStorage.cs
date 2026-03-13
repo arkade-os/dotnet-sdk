@@ -140,6 +140,7 @@ public class EfCoreContractStorage : IContractStorage
 
         contract.ActivityState = activityState;
         await db.SaveChangesAsync(cancellationToken);
+        ContractsChanged?.Invoke(this, MapToArkContractEntity(contract));
         ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -157,8 +158,10 @@ public class EfCoreContractStorage : IContractStorage
         if (contract == null)
             return false;
 
+        var mapped = MapToArkContractEntity(contract);
         db.Set<ArkWalletContractEntity>().Remove(contract);
         await db.SaveChangesAsync(cancellationToken);
+        ContractsChanged?.Invoke(this, mapped);
         ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -200,6 +203,7 @@ public class EfCoreContractStorage : IContractStorage
 
         foreach (var contract in contracts)
         {
+            ContractsChanged?.Invoke(this, MapToArkContractEntity(contract));
             ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
         }
 

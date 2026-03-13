@@ -1,0 +1,114 @@
+@page "/assets"
+@inject ArkWalletService Ark
+@inject WalletState State
+
+<div class="page-header">
+    <a href="/" class="back-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+    <span class="page-title">Assets</span>
+</div>
+
+<div class="px-20">
+    <!-- Issue New Asset -->
+    <div class="glass-card mb-24">
+        <p style="font-size:15px;font-weight:600;margin-bottom:16px;">Issue New Asset</p>
+
+        <label class="input-label">Amount</label>
+        <input class="input-field mb-12" @bind="_issueAmount" type="number" placeholder="1000" />
+
+        <label class="input-label">Name (optional)</label>
+        <input class="input-field mb-12" @bind="_assetName" placeholder="My Token" />
+
+        <label class="input-label">Control Asset ID (optional)</label>
+        <input class="input-field mb-16" @bind="_controlAssetId" placeholder="Leave empty for new asset" style="font-size:12px;" />
+
+        <button class="btn btn-primary btn-full" @onclick="IssueAsset" disabled="@(_issuing || _issueAmount <= 0)">
+            @(_issuing ? "Issuing..." : "Issue Asset")
+        </button>
+
+        @if (_issueTxId is not null)
+        {
+            <div class="mt-12" style="padding:12px;background:rgba(96,177,138,0.1);border-radius:8px;">
+                <p class="text-green" style="font-size:13px;font-weight:600;">Asset Issued!</p>
+                <p class="mono text-secondary" style="font-size:11px;margin-top:4px;">ID: @_issueAssetId</p>
+                <p class="mono text-secondary" style="font-size:11px;">Tx: @_issueTxId</p>
+            </div>
+        }
+
+        @if (_issueError is not null)
+        {
+            <p style="color:var(--arkade-red);font-size:12px;margin-top:8px;">@_issueError</p>
+        }
+    </div>
+
+    <!-- Asset Portfolio -->
+    <div class="section-header" style="padding:0;">
+        <span class="section-title">Portfolio</span>
+    </div>
+
+    @if (_assets.Count == 0)
+    {
+        <div class="empty-state">
+            <div class="glass-card">
+                <p>No assets yet</p>
+                <p>Issue your first asset above</p>
+            </div>
+        </div>
+    }
+    else
+    {
+        @foreach (var asset in _assets)
+        {
+            <div class="tx-item" style="padding:14px 0;">
+                <div class="tx-icon" style="background:rgba(112,67,244,0.15);color:var(--arkade-purple-light);">◆</div>
+                <div class="tx-details">
+                    <div class="tx-label">@(asset.Name ?? "Unknown Asset")</div>
+                    <div class="tx-meta mono">@asset.AssetId[..16]...</div>
+                </div>
+                <div class="tx-amount positive">@asset.Amount</div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private ulong _issueAmount;
+    private string? _assetName;
+    private string? _controlAssetId;
+    private bool _issuing;
+    private string? _issueTxId;
+    private string? _issueAssetId;
+    private string? _issueError;
+
+    private record IssuedAsset(string AssetId, string? Name, ulong Amount);
+    private List<IssuedAsset> _assets = new();
+
+    private async Task IssueAsset()
+    {
+        if (State.ActiveWalletId is null) return;
+        _issuing = true;
+        _issueError = null;
+        _issueTxId = null;
+        _issueAssetId = null;
+
+        try
+        {
+            var metadata = string.IsNullOrWhiteSpace(_assetName)
+                ? null
+                : new Dictionary<string, string> { ["name"] = _assetName };
+
+            var (txId, assetId) = await Ark.IssueAsset(
+                State.ActiveWalletId,
+                _issueAmount,
+                string.IsNullOrWhiteSpace(_controlAssetId) ? null : _controlAssetId,
+                metadata);
+
+            _issueTxId = txId;
+            _issueAssetId = assetId;
+            _assets.Add(new IssuedAsset(assetId, _assetName, _issueAmount));
+        }
+        catch (Exception ex) { _issueError = ex.Message; }
+        finally { _issuing = false; }
+    }
+}

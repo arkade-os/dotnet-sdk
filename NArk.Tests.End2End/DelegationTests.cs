@@ -166,13 +166,14 @@ public class DelegationTests
         var assetId = issuance.AssetId;
 
         await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+        await AssetTestHelpers.PollAllScripts(walletDetails);
 
         var preBatchBalance = await AssetTestHelpers.GetAssetBalance(wallet.vtxoStorage, assetId);
         Assert.That(preBatchBalance, Is.EqualTo(1000UL), "Pre-batch asset balance should be 1000");
 
         // Set up batch round services
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var scheduler = new SimpleIntentScheduler(
             new DefaultFeeEstimator(wallet.clientTransport, chainTimeProvider),

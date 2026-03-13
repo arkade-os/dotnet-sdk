@@ -7,6 +7,7 @@ using NArk.Core.Services;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
+
 using NBitcoin;
 
 namespace NArk.Tests.End2End.Core;
@@ -24,7 +25,7 @@ public class IntentSchedulerTests
             new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions()
             { Threshold = TimeSpan.FromHours(2), ThresholdHeight = 2000 }));
 
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var options =
             new OptionsWrapper<IntentGenerationServiceOptions>(

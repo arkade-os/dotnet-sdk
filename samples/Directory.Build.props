@@ -1,0 +1,11 @@
+<Project>
+  <!-- Override repo-level settings for sample projects -->
+  <PropertyGroup>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <!-- Remove Nerdbank.GitVersioning from samples -->
+  <ItemGroup>
+    <PackageReference Remove="Nerdbank.GitVersioning" />
+  </ItemGroup>
+</Project>

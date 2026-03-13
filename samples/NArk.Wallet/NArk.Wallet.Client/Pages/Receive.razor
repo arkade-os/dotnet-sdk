@@ -1,0 +1,210 @@
+@page "/receive"
+@inject ArkWalletService Ark
+@inject WalletState State
+@inject IJSRuntime JS
+
+<div class="page-header">
+    <a href="/" class="back-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+    <span class="page-title">Receive</span>
+</div>
+
+<div class="px-20">
+    @if (_loading)
+    {
+        <div class="flex-col gap-12">
+            <div class="skeleton" style="height:68px;border-radius:14px;"></div>
+            <div class="skeleton" style="height:68px;border-radius:14px;"></div>
+            <div class="skeleton" style="height:68px;border-radius:14px;"></div>
+        </div>
+    }
+    else if (_arkAddress is null)
+    {
+        <div class="empty-state">
+            <p>Create a wallet first to receive funds</p>
+        </div>
+    }
+    else if (_selectedMethod is null)
+    {
+        <!-- Step 1: Optional amount entry -->
+        <div class="amount-input-row">
+            <input type="number" @bind="_amountSats" @bind:event="oninput"
+                   placeholder="Amount (optional)" />
+            <span class="unit">sats</span>
+        </div>
+
+        <p class="text-secondary mb-16" style="font-size:13px;">
+            @if (_amountSats > 0)
+            {
+                <text>Choose how to receive @_amountSats.ToString("N0") sats</text>
+            }
+            else
+            {
+                <text>Choose how to receive</text>
+            }
+        </p>
+
+        <!-- Method Cards -->
+        <div class="flex-col gap-12">
+            <!-- Ark Address -->
+            <div class="method-card ark" @onclick="@(() => SelectMethod("ark"))">
+                <div class="method-icon ark">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg>
+                </div>
+                <div class="method-info">
+                    <div class="method-name">Ark Address</div>
+                    <div class="method-desc">Instant, off-chain. Best for Ark-to-Ark.</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-tertiary)"><path d="M9 18l6-6-6-6"/></svg>
+            </div>
+
+            @if (_amountSats > 0)
+            {
+                <!-- With amount: Boltz swap -->
+                <div class="method-card lightning" @onclick="@(() => SelectMethod("swap"))">
+                    <div class="method-icon lightning">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+                    </div>
+                    <div class="method-info">
+                        <div class="method-name">Chain Swap (Boltz)</div>
+                        <div class="method-desc">Receive on-chain BTC, auto-swap into Ark.</div>
+                    </div>
+                    <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
+                </div>
+            }
+            else
+            {
+                <!-- No amount: LNURL placeholder -->
+                <div class="method-card lightning" style="opacity:0.5;cursor:default;">
+                    <div class="method-icon lightning">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg>
+                    </div>
+                    <div class="method-info">
+                        <div class="method-name">Lightning (LNURL)</div>
+                        <div class="method-desc">Coming soon</div>
+                    </div>
+                </div>
+            }
+
+            <!-- Boarding Address -->
+            <div class="method-card onchain" @onclick="@(() => SelectMethod("boarding"))">
+                <div class="method-icon onchain">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg>
+                </div>
+                <div class="method-info">
+                    <div class="method-name">Boarding Address</div>
+                    <div class="method-desc">On-chain Bitcoin. Funds enter Ark after confirmation.</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-tertiary)"><path d="M9 18l6-6-6-6"/></svg>
+            </div>
+        </div>
+    }
+    else
+    {
+        <!-- Step 2: QR + Address Display -->
+        <div class="text-center mb-16">
+            <span class="pill @MethodPill(_selectedMethod)">
+                @MethodLabel(_selectedMethod)
+            </span>
+        </div>
+
+        <div class="qr-container mb-16" style="background:white;border-radius:16px;padding:16px;">
+            <div id="receiveQr" style="width:200px;height:200px;display:flex;align-items:center;justify-content:center;">
+                <div class="skeleton" style="width:200px;height:200px;border-radius:8px;"></div>
+            </div>
+        </div>
+
+        @if (_amountSats > 0)
+        {
+            <p class="text-center mb-12" style="font-size:14px;font-weight:600;">
+                @_amountSats.ToString("N0") <span class="text-secondary" style="font-weight:400;">sats</span>
+            </p>
+        }
+
+        <div class="address-display mb-16">
+            @_displayAddress
+        </div>
+
+        <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" style="flex:1;" @onclick="CopyAddress">
+                @(_copied ? "Copied!" : "Copy Address")
+            </button>
+            <button class="btn btn-secondary" @onclick="@(() => { _selectedMethod = null; _copied = false; })">
+                Back
+            </button>
+        </div>
+    }
+</div>
+
+@code {
+    private string? _arkAddress;
+    private string? _boardingAddress;
+    private string? _selectedMethod;
+    private string? _displayAddress;
+    private long _amountSats;
+    private bool _loading = true;
+    private bool _copied;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (State.ActiveWalletId is not null)
+        {
+            try
+            {
+                var (ark, boarding) = await Ark.GetReceiveInfo(State.ActiveWalletId);
+                _arkAddress = ark;
+                _boardingAddress = boarding;
+            }
+            catch { }
+        }
+        _loading = false;
+    }
+
+    private async Task SelectMethod(string method)
+    {
+        _selectedMethod = method;
+        _displayAddress = method switch
+        {
+            "ark" => _arkAddress,
+            "boarding" => _boardingAddress,
+            "swap" => _boardingAddress,
+            _ => null
+        };
+
+        if (_displayAddress is not null)
+        {
+            StateHasChanged();
+            await Task.Delay(50);
+            await JS.InvokeVoidAsync("arkade.renderQr", "receiveQr", _displayAddress, 200);
+        }
+    }
+
+    private async Task CopyAddress()
+    {
+        if (_displayAddress is not null)
+        {
+            await JS.InvokeVoidAsync("arkade.copyToClipboard", _displayAddress);
+            _copied = true;
+            StateHasChanged();
+            await Task.Delay(2000);
+            _copied = false;
+        }
+    }
+
+    private static string MethodPill(string? method) => method switch
+    {
+        "ark" => "pill-info",
+        "boarding" => "pill-warning",
+        "swap" => "pill-success",
+        _ => "pill-info"
+    };
+
+    private static string MethodLabel(string? method) => method switch
+    {
+        "ark" => "ARK",
+        "boarding" => "ON-CHAIN",
+        "swap" => "CHAIN SWAP",
+        _ => ""
+    };
+}

@@ -12,6 +12,7 @@ using NArk.Core.Services;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
+
 using NBitcoin;
 using NBitcoin.Crypto;
 
@@ -28,7 +29,7 @@ public class BatchSessionTests
         var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
             [new PaymentContractTransformer(walletDetails.walletProvider), new HashLockedContractTransformer(walletDetails.walletProvider)]);
 
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         // The threshold is so high, it will force an intent generation
         var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider), walletDetails.clientTransport, walletDetails.contractService,

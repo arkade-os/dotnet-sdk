@@ -11,6 +11,7 @@
     <ItemGroup>
         <PackageReference Include="CliWrap" Version="3.10.0" />
         <PackageReference Include="coverlet.collector" Version="6.0.4" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.16" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
         <PackageReference Include="NUnit" Version="4.4.0" />
         <PackageReference Include="NUnit.Analyzers" Version="4.11.2">
@@ -33,6 +34,7 @@
     <ItemGroup>
       <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
+      <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
     </ItemGroup>
 

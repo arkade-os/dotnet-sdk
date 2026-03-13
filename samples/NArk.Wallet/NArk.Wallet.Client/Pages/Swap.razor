@@ -1,0 +1,102 @@
+@page "/swap"
+@inject ArkWalletService Ark
+@inject WalletState State
+
+<div class="page-header">
+    <a href="/" class="back-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </a>
+    <span class="page-title">Swap</span>
+</div>
+
+<div class="px-20">
+    <!-- Swap Direction Cards -->
+    <div class="glass-card mb-12">
+        <p class="input-label">From</p>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <div class="method-icon onchain">₿</div>
+            <div style="flex:1;">
+                <p style="font-size:16px;font-weight:600;">Bitcoin</p>
+                <p class="text-secondary" style="font-size:12px;">On-chain</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="text-center mb-12">
+        <div style="width:36px;height:36px;border-radius:50%;background:var(--bg-card);border:1px solid var(--border-card);display:inline-flex;align-items:center;justify-content:center;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+        </div>
+    </div>
+
+    <div class="glass-card mb-24">
+        <p class="input-label">To</p>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <div class="method-icon ark">⚡</div>
+            <div style="flex:1;">
+                <p style="font-size:16px;font-weight:600;">Ark</p>
+                <p class="text-secondary" style="font-size:12px;">Off-chain</p>
+            </div>
+        </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:16px;">
+        <span class="pill pill-info">Powered by Boltz</span>
+    </div>
+
+    <!-- Swap History -->
+    <div class="section-header mt-24" style="padding:0;">
+        <span class="section-title">Swap History</span>
+    </div>
+
+    @if (_swaps is null)
+    {
+        <div class="skeleton mt-12" style="height:60px;"></div>
+    }
+    else if (_swaps.Count == 0)
+    {
+        <div class="empty-state">
+            <div class="glass-card">
+                <p>No swaps yet</p>
+                <p>Swap functionality coming in next iteration</p>
+            </div>
+        </div>
+    }
+    else
+    {
+        @foreach (var swap in _swaps)
+        {
+            <div class="tx-item" style="padding:14px 0;">
+                <div class="tx-icon swap">⇄</div>
+                <div class="tx-details">
+                    <div class="tx-label">@swap.SwapType</div>
+                    <div class="tx-meta">@swap.CreatedAt.LocalDateTime.ToString("MMM d, HH:mm")</div>
+                </div>
+                <div>
+                    <span class="pill @StatusPill(swap.Status.ToString())">@swap.Status</span>
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private IReadOnlyCollection<ArkSwap>? _swaps;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (State.ActiveWalletId is not null)
+        {
+            try { _swaps = await Ark.GetSwaps(State.ActiveWalletId); }
+            catch { _swaps = []; }
+        }
+        else { _swaps = []; }
+    }
+
+    private static string StatusPill(string status) => status switch
+    {
+        "Settled" => "pill-success",
+        "Pending" => "pill-warning",
+        "Failed" => "pill-danger",
+        _ => "pill-info"
+    };
+}

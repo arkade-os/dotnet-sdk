@@ -1,10 +1,13 @@
 using NArk.Abstractions.Assets;
+using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Intents;
+using NArk.Abstractions.Safety;
+using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.CoinSelector;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
-using NArk.Safety.AsyncKeyedLock;
 using NArk.Tests.End2End.TestPersistance;
 
 namespace NArk.Tests.End2End.Common;
@@ -14,11 +17,11 @@ namespace NArk.Tests.End2End.Common;
 /// </summary>
 internal static class AssetTestHelpers
 {
-    internal static (AssetManager assetManager, CoinService coinService, InMemoryIntentStorage intentStorage)
+    internal static (AssetManager assetManager, CoinService coinService, IIntentStorage intentStorage)
         CreateAssetServices(
-            (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-                string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-                ContractService contractService, InMemoryContractStorage contracts,
+            (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+                string walletIdentifier, IVtxoStorage vtxoStorage,
+                ContractService contractService, IContractStorage contracts,
                 IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails,
             IContractTransformer[]? additionalTransformers = null)
     {
@@ -33,7 +36,7 @@ internal static class AssetTestHelpers
         var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
             transformers.ToArray());
 
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var assetManager = new AssetManager(
             walletDetails.vtxoStorage,
@@ -51,9 +54,9 @@ internal static class AssetTestHelpers
     }
 
     internal static async Task PollAllScripts(
-        (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-            string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-            ContractService contractService, InMemoryContractStorage contracts,
+        (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+            string walletIdentifier, IVtxoStorage vtxoStorage,
+            ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails)
     {
         await Task.Delay(500);
@@ -67,9 +70,9 @@ internal static class AssetTestHelpers
     }
 
     internal static async Task PollUntilAssetVtxo(
-        (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-            string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-            ContractService contractService, InMemoryContractStorage contracts,
+        (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+            string walletIdentifier, IVtxoStorage vtxoStorage,
+            ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails,
         string assetId, TimeSpan timeout)
     {
@@ -107,9 +110,9 @@ internal static class AssetTestHelpers
     }
 
     internal static async Task PollUntilAssetBalance(
-        (AsyncSafetyService safetyService, InMemoryWalletProvider walletProvider,
-            string walletIdentifier, InMemoryVtxoStorage vtxoStorage,
-            ContractService contractService, InMemoryContractStorage contracts,
+        (ISafetyService safetyService, InMemoryWalletProvider walletProvider,
+            string walletIdentifier, IVtxoStorage vtxoStorage,
+            ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) walletDetails,
         string assetId, ulong expectedBalance, TimeSpan timeout)
     {
@@ -136,7 +139,7 @@ internal static class AssetTestHelpers
             $"Timed out waiting for asset balance. Expected={expectedBalance}, Actual={finalBalance}, AssetId={assetId}");
     }
 
-    internal static async Task<ulong> GetAssetBalance(InMemoryVtxoStorage vtxoStorage, string assetId)
+    internal static async Task<ulong> GetAssetBalance(IVtxoStorage vtxoStorage, string assetId)
     {
         var vtxos = await vtxoStorage.GetVtxos(includeSpent: false);
         return vtxos

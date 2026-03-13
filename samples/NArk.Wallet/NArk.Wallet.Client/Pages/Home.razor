@@ -1,0 +1,181 @@
+@page "/"
+@inject ArkWalletService Ark
+@inject WalletState State
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<div class="hero-gradient">
+    @if (State.ActiveWalletId is null)
+    {
+        <p class="balance-label">Welcome to Arkade</p>
+        <p style="font-size:18px;font-weight:500;margin-bottom:20px;">Create a wallet to get started</p>
+        <button class="btn btn-primary" @onclick="CreateWallet" disabled="@_creating">
+            @(_creating ? "Creating..." : "Create Wallet")
+        </button>
+    }
+    else
+    {
+        <!-- Balance Carousel -->
+        <div class="balance-carousel" id="balanceCarousel">
+            <div class="balance-slide">
+                <p class="balance-label">Total Balance</p>
+                <p class="balance-amount">
+                    @FormatSats(State.BalanceSats)<span class="balance-unit">sats</span>
+                </p>
+            </div>
+            <div class="balance-slide">
+                <p class="balance-label">Ark Balance</p>
+                <p class="balance-amount">
+                    @FormatSats(_arkBalance)<span class="balance-unit">sats</span>
+                </p>
+            </div>
+            <div class="balance-slide">
+                <p class="balance-label">On-chain</p>
+                <p class="balance-amount">
+                    @FormatSats(_onchainBalance)<span class="balance-unit">sats</span>
+                </p>
+            </div>
+        </div>
+
+        <div class="carousel-dots">
+            @for (int i = 0; i < _slideCount; i++)
+            {
+                var idx = i;
+                <button class="carousel-dot @(idx == _activeSlide ? "active" : "")"
+                        @onclick="() => ScrollTo(idx)"></button>
+            }
+        </div>
+
+        <div class="action-buttons">
+            <a href="/send" class="action-btn">
+                <div class="action-btn-circle">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                </div>
+                <span>Send</span>
+            </a>
+            <a href="/receive" class="action-btn">
+                <div class="action-btn-circle">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+                </div>
+                <span>Receive</span>
+            </a>
+            <a href="/swap" class="action-btn">
+                <div class="action-btn-circle">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+                </div>
+                <span>Swap</span>
+            </a>
+            <a href="/assets" class="action-btn">
+                <div class="action-btn-circle">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M6 12h12"/></svg>
+                </div>
+                <span>Assets</span>
+            </a>
+        </div>
+    }
+</div>
+
+<div class="ambient-zone">
+    @if (State.ActiveWalletId is not null)
+    {
+        <div class="section-header mt-24">
+            <span class="section-title">Recent Activity</span>
+        </div>
+
+        @if (_vtxos is null)
+        {
+            <div class="px-20 flex-col gap-12">
+                @for (int i = 0; i < 3; i++)
+                {
+                    <div class="skeleton" style="height:52px;"></div>
+                }
+            </div>
+        }
+        else if (_vtxos.Count == 0)
+        {
+            <div class="empty-state">
+                <div class="glass-card" style="margin:0 20px;">
+                    <p>No transactions yet</p>
+                    <p>Receive some sats to get started</p>
+                </div>
+            </div>
+        }
+        else
+        {
+            @foreach (var vtxo in _vtxos.Take(10))
+            {
+                <div class="tx-item">
+                    <div class="tx-icon @(vtxo.IsSpent() ? "send" : "receive")">
+                        @(vtxo.IsSpent() ? "\u2191" : "\u2193")
+                    </div>
+                    <div class="tx-details">
+                        <div class="tx-label mono">@vtxo.TransactionId[..12]...</div>
+                        <div class="tx-meta">@vtxo.CreatedAt.LocalDateTime.ToString("MMM d, HH:mm")</div>
+                    </div>
+                    <div class="tx-amount @(vtxo.IsSpent() ? "negative" : "positive")">
+                        @(vtxo.IsSpent() ? "-" : "+")@FormatSats((long)vtxo.Amount)
+                    </div>
+                </div>
+            }
+        }
+    }
+</div>
+
+@code {
+    private IReadOnlyCollection<ArkVtxo>? _vtxos;
+    private long _arkBalance;
+    private long _onchainBalance;
+    private int _activeSlide;
+    private int _slideCount = 3;
+    private bool _creating;
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.OnChange += StateHasChanged;
+        await LoadWallet();
+    }
+
+    private async Task LoadWallet()
+    {
+        try
+        {
+            var wallets = await Ark.GetWallets();
+            if (wallets.Count > 0)
+            {
+                var wallet = wallets.First();
+                State.SetActiveWallet(wallet.Id);
+                var balance = await Ark.GetBalance(wallet.Id);
+                State.UpdateBalance(balance);
+                _arkBalance = balance;
+                _onchainBalance = 0;
+                _vtxos = await Ark.GetVtxos(wallet.Id);
+            }
+        }
+        catch { /* Server not connected yet */ }
+    }
+
+    private async Task CreateWallet()
+    {
+        _creating = true;
+        try
+        {
+            var wallet = await Ark.CreateWallet();
+            State.SetActiveWallet(wallet.Id);
+            await LoadWallet();
+        }
+        finally { _creating = false; }
+    }
+
+    private async Task ScrollTo(int index)
+    {
+        _activeSlide = index;
+        await JS.InvokeVoidAsync("arkade.scrollCarousel", "balanceCarousel", index);
+    }
+
+    private static string FormatSats(long sats) => sats.ToString("N0");
+
+    public void Dispose()
+    {
+        State.OnChange -= StateHasChanged;
+    }
+}

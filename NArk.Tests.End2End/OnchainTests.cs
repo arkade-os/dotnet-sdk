@@ -1,5 +1,6 @@
 using CliWrap;
 using CliWrap.Buffered;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions;
 using NArk.Abstractions.Intents;
@@ -11,6 +12,7 @@ using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
+using NArk.Storage.EfCore.Hosting;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 
@@ -26,13 +28,15 @@ public class OnchainTests
                 .AddArk()
                 .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
                 .WithSafetyService<AsyncSafetyService>()
-                .WithIntentStorage<InMemoryIntentStorage>()
                 .WithIntentScheduler<SimpleIntentScheduler>()
-                .WithSwapStorage<InMemorySwapStorage>()
-                .WithContractStorage<InMemoryContractStorage>()
-                .WithVtxoStorage<InMemoryVtxoStorage>()
                 .WithWalletProvider<InMemoryWalletProvider>()
                 .WithTimeProvider<ChainTimeProvider>()
+                .ConfigureServices((_, s) =>
+                {
+                    s.AddDbContextFactory<TestDbContext>(options =>
+                        options.UseInMemoryDatabase($"Test_{Guid.NewGuid():N}"));
+                    s.AddArkEfCoreStorage<TestDbContext>();
+                })
                 .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
                 {
                     o.Network = Network.RegTest;

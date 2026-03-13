@@ -28,6 +28,8 @@ public class EfCoreSwapStorage : ISwapStorage
         if (existing != null)
         {
             existing.Status = swap.Status;
+            existing.Address = swap.Address;
+            existing.Metadata = swap.Metadata;
             existing.UpdatedAt = swap.UpdatedAt.ToUniversalTime();
         }
         else
@@ -40,8 +42,10 @@ public class EfCoreSwapStorage : ISwapStorage
                 Invoice = swap.Invoice,
                 ExpectedAmount = swap.ExpectedAmount,
                 ContractScript = swap.ContractScript,
+                Address = swap.Address,
                 Status = swap.Status,
                 Hash = swap.Hash,
+                Metadata = swap.Metadata,
                 CreatedAt = swap.CreatedAt.ToUniversalTime(),
                 UpdatedAt = swap.UpdatedAt.ToUniversalTime()
             };
@@ -136,6 +140,7 @@ public class EfCoreSwapStorage : ISwapStorage
         swap.FailReason = failReason;
         swap.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
+        SwapsChanged?.Invoke(this, MapToArkSwap(swap));
         return true;
     }
 
@@ -154,6 +159,9 @@ public class EfCoreSwapStorage : ISwapStorage
             CreatedAt: entity.CreatedAt,
             UpdatedAt: entity.UpdatedAt,
             Hash: entity.Hash
-        );
+        )
+        {
+            Metadata = entity.Metadata
+        };
     }
 }

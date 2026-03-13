@@ -6,6 +6,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain.NBXplorer;
 using NArk.Core.Contracts;
+using NArk.Abstractions.Safety;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
 using NArk.Tests.End2End.TestPersistance;
@@ -30,7 +31,9 @@ public class VtxoSynchronizationTests
 
         // Listen for incoming vtxos
         var receiveTcs = new TaskCompletionSource();
-        var vtxoStorage = new InMemoryVtxoStorage();
+        var safetyService = new AsyncSafetyService();
+        var storage = new TestStorage(safetyService);
+        var vtxoStorage = storage.VtxoStorage;
 
         vtxoStorage.VtxosChanged += (_, vtxo) =>
         {
@@ -41,8 +44,7 @@ public class VtxoSynchronizationTests
         };
 
         // Create a new wallet
-        var contracts = new InMemoryContractStorage();
-        var safetyService = new AsyncSafetyService();
+        var contracts = storage.ContractStorage;
         var wallet = new InMemoryWalletProvider(clientTransport);
         var fp = await wallet.CreateTestWallet();
 
@@ -85,8 +87,9 @@ public class VtxoSynchronizationTests
 
         // Create wallet and storage
         var inMemoryWalletProvider = new InMemoryWalletProvider(clientTransport);
-        var contracts = new InMemoryContractStorage();
-        var vtxoStorage = new InMemoryVtxoStorage();
+        var storage2 = new TestStorage(new AsyncSafetyService());
+        var contracts = storage2.ContractStorage;
+        var vtxoStorage = storage2.VtxoStorage;
 
         var fp = await inMemoryWalletProvider.CreateTestWallet();
         var contractService = new ContractService(inMemoryWalletProvider, contracts, clientTransport);
@@ -153,11 +156,10 @@ public class VtxoSynchronizationTests
 
         // Create a new wallet
         var inMemoryWalletProvider = new InMemoryWalletProvider(clientTransport);
-        var contracts = new InMemoryContractStorage();
-
-        var vtxoStorage = new InMemoryVtxoStorage();
-
         var safetyService = new AsyncSafetyService();
+        var storage3 = new TestStorage(safetyService);
+        var contracts = storage3.ContractStorage;
+        var vtxoStorage = storage3.VtxoStorage;
 
         var fp1 = await inMemoryWalletProvider.CreateTestWallet();
         var fp2 = await inMemoryWalletProvider.CreateTestWallet();
@@ -212,7 +214,7 @@ public class VtxoSynchronizationTests
             [new PaymentContractTransformer(inMemoryWalletProvider), new HashLockedContractTransformer(inMemoryWalletProvider)]);
 
         var spendingService = new SpendingService(vtxoStorage, contracts,
-            inMemoryWalletProvider, coinService, contractService, clientTransport, new DefaultCoinSelector(), safetyService, new InMemoryIntentStorage());
+            inMemoryWalletProvider, coinService, contractService, clientTransport, new DefaultCoinSelector(), safetyService, TestStorage.CreateIntentStorage());
 
         await spendingService.Spend(fp1,
         [

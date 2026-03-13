@@ -29,11 +29,11 @@ public class SwapManagementServiceTests
     public async Task CanPayInvoiceWithArkUsingBoltz()
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var swapStorage = new InMemorySwapStorage();
+        var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
@@ -71,11 +71,11 @@ public class SwapManagementServiceTests
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var swapStorage = new InMemorySwapStorage();
+        var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var options =
             new OptionsWrapper<IntentGenerationServiceOptions>(
@@ -145,11 +145,11 @@ public class SwapManagementServiceTests
     public async Task CanDoArkCoOpRefundUsingBoltz()
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var swapStorage = new InMemorySwapStorage();
+        var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
@@ -208,11 +208,12 @@ public class SwapManagementServiceTests
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var swapStorage = new InMemorySwapStorage();
+        var restoreStorage = new TestStorage(testingPrerequisite.safetyService);
+        var swapStorage = restoreStorage.SwapStorage;
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
 
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
             [
@@ -249,7 +250,7 @@ public class SwapManagementServiceTests
         var originalSwap = swapsBeforeClear.First();
 
         // Simulate data loss by clearing the swap storage
-        swapStorage.Clear();
+        await restoreStorage.ClearSwaps();
 
         // Verify storage is empty
         var swapsAfterClear = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);

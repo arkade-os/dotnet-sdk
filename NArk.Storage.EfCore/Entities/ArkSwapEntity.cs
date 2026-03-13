@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using NArk.Swaps.Models;
@@ -27,6 +29,16 @@ public class ArkSwapEntity
     /// </summary>
     public string? FailReason { get; set; }
 
+    [Column("Metadata", TypeName = "jsonb")]
+    public string? MetadataJson { get; set; }
+
+    [NotMapped]
+    public Dictionary<string, string>? Metadata
+    {
+        get => MetadataJson is null ? null : JsonSerializer.Deserialize<Dictionary<string, string>>(MetadataJson);
+        set => MetadataJson = value is null ? null : JsonSerializer.Serialize(value);
+    }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
@@ -47,6 +59,7 @@ public class ArkSwapEntity
         builder.Property(e => e.CreatedAt).IsRequired();
         builder.Property(e => e.FailReason).HasDefaultValue(null);
         builder.Property(e => e.Address).HasDefaultValue(null);
+        builder.Property(e => e.MetadataJson).HasDefaultValue(null);
 
         builder.HasOne(e => e.Contract)
             .WithMany(c => c.Swaps)

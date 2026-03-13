@@ -11,6 +11,7 @@ using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
+using NArk.Abstractions.Safety;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
@@ -25,13 +26,14 @@ public class BoardingTests
     public async Task CanBoardFromOnchainToVtxo()
     {
         // --- 1. Setup wallet and transport ---
-        var vtxoStorage = new InMemoryVtxoStorage();
+        var safetyService = new AsyncSafetyService();
+        var storage = new TestStorage(safetyService);
+        var vtxoStorage = storage.VtxoStorage;
         var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
         var info = await clientTransport.GetServerInfoAsync();
 
         var walletProvider = new InMemoryWalletProvider(clientTransport);
-        var contracts = new InMemoryContractStorage();
-        var safetyService = new AsyncSafetyService();
+        var contracts = storage.ContractStorage;
         var walletId = await walletProvider.CreateTestWallet();
 
         var contractService = new ContractService(walletProvider, contracts, clientTransport);
@@ -89,7 +91,7 @@ public class BoardingTests
             new BoardingContractTransformer(walletProvider)
         ]);
 
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = storage.IntentStorage;
 
         // ThresholdHeight must cover the boarding exit delay (144 blocks) so the
         // scheduler picks up boarding VTXOs whose ExpiresAtHeight is ~144 blocks away.
