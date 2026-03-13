@@ -3,6 +3,7 @@ using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Transport.Models;
+using NBitcoin;
 
 namespace NArk.Core.Transport;
 
@@ -12,6 +13,12 @@ public interface IClientTransport
     IAsyncEnumerable<HashSet<string>> GetVtxoToPollAsStream(IReadOnlySet<string> scripts, CancellationToken token = default);
     IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Queries arkd indexer for VTXOs by outpoints, optionally filtering by spent status.
+    /// </summary>
+    IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(IReadOnlyCollection<OutPoint> outpoints,
+        bool spentOnly = false, CancellationToken cancellationToken = default);
     Task<string> RegisterIntent(ArkIntent intent, CancellationToken cancellationToken = default);
     Task DeleteIntent(ArkIntent intent, CancellationToken cancellationToken = default);
     Task<SubmitTxResponse> SubmitTx(string signedArkTx, string[] checkpointTxs, CancellationToken cancellationToken = default);

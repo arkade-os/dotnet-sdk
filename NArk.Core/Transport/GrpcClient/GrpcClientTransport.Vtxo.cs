@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using Ark.V1;
 using Grpc.Core;
 using NArk.Abstractions.VTXOs;
+using NBitcoin;
 
 namespace NArk.Transport.GrpcClient;
 
@@ -93,6 +94,67 @@ public partial class GrpcClientTransport
                     break;
                 default:
                     throw new InvalidDataException("Operator error: unexpected response from indexer");
+            }
+        }
+    }
+
+    public async IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(
+        IReadOnlyCollection<OutPoint> outpoints,
+        bool spentOnly = false,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var chunk in outpoints.Chunk(1000))
+        {
+            var request = new GetVtxosRequest
+            {
+                Outpoints = { chunk.Select(op => $"{op.Hash}:{op.N}") },
+                SpentOnly = spentOnly,
+                SpendableOnly = false,
+                RecoverableOnly = false,
+                PendingOnly = false,
+                Page = new IndexerPageRequest { Index = 0, Size = 1000 },
+                Before = 0,
+                After = 0,
+            };
+
+            GetVtxosResponse? response = null;
+
+            while (response is null || response.Page.Next != response.Page.Total)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                response = await _indexerServiceClient.GetVtxosAsync(request, cancellationToken: cancellationToken);
+
+                foreach (var vtxo in response.Vtxos)
+                {
+                    DateTimeOffset? expiresAt = null;
+                    var maybeExpiresAt = DateTimeOffset.FromUnixTimeSeconds(vtxo.ExpiresAt);
+                    if (maybeExpiresAt.Year >= 2025)
+                        expiresAt = maybeExpiresAt;
+
+                    uint? expiresAtHeight = expiresAt.HasValue ? null : (uint)vtxo.ExpiresAt;
+
+                    yield return new ArkVtxo(
+                        vtxo.Script,
+                        vtxo.Outpoint.Txid,
+                        vtxo.Outpoint.Vout,
+                        vtxo.Amount,
+                        vtxo.SpentBy,
+                        vtxo.SettledBy,
+                        vtxo.IsSwept,
+                        DateTimeOffset.FromUnixTimeSeconds(vtxo.CreatedAt),
+                        expiresAt,
+                        expiresAtHeight,
+                        Preconfirmed: vtxo.IsPreconfirmed,
+                        Unrolled: vtxo.IsUnrolled,
+                        CommitmentTxids: vtxo.CommitmentTxids.ToList(),
+                        ArkTxid: string.IsNullOrEmpty(vtxo.ArkTxid) ? null : vtxo.ArkTxid,
+                        Assets: vtxo.Assets.Count > 0
+                            ? vtxo.Assets.Select(a => new VtxoAsset(a.AssetId, a.Amount)).ToList()
+                            : null
+                    );
+                }
+
+                request.Page.Index = response.Page.Next;
             }
         }
     }

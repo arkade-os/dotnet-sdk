@@ -193,8 +193,7 @@ public class PostSpendVtxoPollingHandlerTests
 
         _handler = new PostSpendVtxoPollingHandler(
             vtxoSyncService,
-            _vtxoStorage,
-            _contractStorage,
+            _clientTransport,
             _options);
     }
 
@@ -266,8 +265,9 @@ public class PostSpendVtxoPollingHandlerTests
                 Arg.Any<CancellationToken>())
             .Returns(new[] { dummyVtxo }.ToAsyncEnumerable());
 
-        // After polling arkd, the handler checks local storage to verify input VTXOs are spent.
-        // Return the input VTXO as spent so the retry loop breaks after the first attempt.
+        // After polling arkd via scripts, the handler checks spent state of inputs
+        // by querying arkd with spent_only=true. Return the input VTXO as spent
+        // so the retry loop breaks after the first attempt.
         var spentInputVtxo = new ArkVtxo(
             Script: coin.TxOut.ScriptPubKey.ToHex(),
             TransactionId: coin.Outpoint.Hash.ToString(),
@@ -280,16 +280,11 @@ public class PostSpendVtxoPollingHandlerTests
             ExpiresAt: null,
             ExpiresAtHeight: null);
 
-        _vtxoStorage.GetVtxos(
-                scripts: Arg.Any<IReadOnlyCollection<string>?>(),
-                outpoints: Arg.Any<IReadOnlyCollection<OutPoint>?>(),
-                walletIds: Arg.Any<string[]?>(),
-                includeSpent: Arg.Is(true),
-                searchText: Arg.Any<string?>(),
-                skip: Arg.Any<int?>(),
-                take: Arg.Any<int?>(),
-                cancellationToken: Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyCollection<ArkVtxo>>(new[] { spentInputVtxo }));
+        _clientTransport.GetVtxosByOutpoints(
+                Arg.Any<IReadOnlyCollection<OutPoint>>(),
+                Arg.Is(true),
+                Arg.Any<CancellationToken>())
+            .Returns(new[] { spentInputVtxo }.ToAsyncEnumerable());
 
         await _handler.HandleAsync(@event);
 
