@@ -26,6 +26,7 @@ public class UnilateralExitService(
     IWalletProvider walletProvider,
     IChainTimeProvider chainTimeProvider,
     VirtualTxService virtualTxService,
+    IFeeWallet? feeWallet = null,
     ILogger<UnilateralExitService>? logger = null)
 {
     /// <summary>
@@ -174,6 +175,9 @@ public class UnilateralExitService(
                 return;
             }
 
+            var serverInfo = await transport.GetServerInfoAsync(ct);
+            var network = serverInfo.Network;
+
             // Process from NextTxIndex onwards
             for (var i = session.NextTxIndex; i < branch.Count; i++)
             {
@@ -199,7 +203,6 @@ public class UnilateralExitService(
                 if (status.InMempool)
                 {
                     logger?.LogDebug("Virtual tx {Txid} in mempool, waiting for confirmation", vtx.Txid);
-                    // Update progress and wait
                     await UpdateSession(session with
                     {
                         NextTxIndex = i,
@@ -208,44 +211,21 @@ public class UnilateralExitService(
                     return;
                 }
 
-                // Not seen — broadcast as 1p1c package
-                var tx = Transaction.Parse(vtx.Hex, Network.Main); // Network doesn't matter for parsing
-                var anchor = P2ACpfpBuilder.FindP2AAnchor(tx);
+                // Not seen — broadcast
+                var tx = Transaction.Parse(vtx.Hex, network);
+                var success = await BroadcastWithCpfpAsync(tx, ct);
 
-                if (anchor is not null)
+                if (!success)
                 {
-                    // Build CPFP child and broadcast as package
-                    // For now, broadcast the parent alone — CPFP child building requires
-                    // wallet UTXOs which will be wired through the fee funding interface
-                    var success = await broadcaster.BroadcastAsync(tx, ct);
-                    if (!success)
+                    logger?.LogWarning("Failed to broadcast virtual tx {Txid} for session {SessionId}",
+                        vtx.Txid, session.Id);
+                    // Don't fail — might succeed on retry
+                    await UpdateSession(session with
                     {
-                        logger?.LogWarning("Failed to broadcast virtual tx {Txid} for session {SessionId}",
-                            vtx.Txid, session.Id);
-                        // Don't fail — might succeed on retry
-                        await UpdateSession(session with
-                        {
-                            NextTxIndex = i,
-                            UpdatedAt = DateTimeOffset.UtcNow
-                        }, ct);
-                        return;
-                    }
-                }
-                else
-                {
-                    // No P2A anchor — broadcast directly
-                    var success = await broadcaster.BroadcastAsync(tx, ct);
-                    if (!success)
-                    {
-                        logger?.LogWarning("Failed to broadcast virtual tx {Txid} for session {SessionId}",
-                            vtx.Txid, session.Id);
-                        await UpdateSession(session with
-                        {
-                            NextTxIndex = i,
-                            UpdatedAt = DateTimeOffset.UtcNow
-                        }, ct);
-                        return;
-                    }
+                        NextTxIndex = i,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    }, ct);
+                    return;
                 }
 
                 logger?.LogInformation("Broadcast virtual tx {Txid} ({Index}/{Total}) for session {SessionId}",
@@ -267,6 +247,39 @@ public class UnilateralExitService(
             logger?.LogError(ex, "Error progressing broadcasting session {SessionId}", session.Id);
             await FailSession(session, ex.Message, ct);
         }
+    }
+
+    /// <summary>
+    /// Broadcasts a virtual tx, using 1p1c CPFP package relay when the tx has a P2A anchor
+    /// and a fee wallet is available.
+    /// </summary>
+    private async Task<bool> BroadcastWithCpfpAsync(Transaction tx, CancellationToken ct)
+    {
+        var anchor = P2ACpfpBuilder.FindP2AAnchor(tx);
+        if (anchor is null || feeWallet is null)
+        {
+            // No P2A anchor or no fee wallet — broadcast directly
+            return await broadcaster.BroadcastAsync(tx, ct);
+        }
+
+        // Estimate fee needed for the CPFP child
+        var feeRate = await broadcaster.EstimateFeeRateAsync(6, ct);
+        var parentVsize = tx.GetVirtualSize();
+        const int estimatedChildVsize = 155;
+        var totalFee = feeRate.GetFee(parentVsize + estimatedChildVsize);
+
+        var feeCoin = await feeWallet.SelectFeeUtxoAsync(totalFee, ct);
+        if (feeCoin is null)
+        {
+            logger?.LogWarning("No fee UTXO available for CPFP, falling back to direct broadcast");
+            return await broadcaster.BroadcastAsync(tx, ct);
+        }
+
+        var changeScript = await feeWallet.GetChangeScriptAsync(ct);
+        var cpfpChild = P2ACpfpBuilder.BuildCpfpChild(
+            tx, feeRate, feeCoin.Outpoint, feeCoin.TxOut, changeScript, feeCoin.SigningKey);
+
+        return await broadcaster.BroadcastPackageAsync(tx, cpfpChild, ct);
     }
 
     private async Task ProgressAwaitingCsvAsync(ExitSession session, CancellationToken ct)

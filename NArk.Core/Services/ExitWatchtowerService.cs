@@ -3,6 +3,9 @@ using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.VTXOs;
+using NArk.Abstractions.Wallets;
+using NArk.Core.Contracts;
+using NArk.Core.Transport;
 using NBitcoin;
 
 namespace NArk.Core.Services;
@@ -14,10 +17,13 @@ namespace NArk.Core.Services;
 /// timeout. The watchtower detects this and continues the exit automatically.
 /// </summary>
 public class ExitWatchtowerService(
+    IClientTransport transport,
     IVtxoStorage vtxoStorage,
     IVirtualTxStorage virtualTxStorage,
     IOnchainBroadcaster broadcaster,
     IContractStorage contractStorage,
+    IWalletProvider walletProvider,
+    IContractService contractService,
     UnilateralExitService exitService,
     ILogger<ExitWatchtowerService>? logger = null)
 {
@@ -93,11 +99,52 @@ public class ExitWatchtowerService(
             return;
         }
 
-        // Auto-start exit — use the wallet's default claim address
-        // The caller should configure a default claim address; for now we log the detection
+        var walletId = contract.WalletIdentifier;
+
+        // Derive a claim address for the exit using the wallet's address provider
+        var claimAddress = await DeriveClaimAddressAsync(walletId, ct);
+        if (claimAddress is null)
+        {
+            logger?.LogWarning(
+                "Cannot derive claim address for wallet {WalletId}, cannot auto-start exit for VTXO {Outpoint}",
+                walletId, vtxo.OutPoint);
+            return;
+        }
+
         logger?.LogWarning(
-            "Auto-exit needed for VTXO {Outpoint} (wallet={WalletId}). " +
-            "Call StartExitAsync with a claim address to protect these funds.",
-            vtxo.OutPoint, contract.WalletIdentifier);
+            "Auto-starting unilateral exit for VTXO {Outpoint} (wallet={WalletId}, claimAddress={Address})",
+            vtxo.OutPoint, walletId, claimAddress);
+
+        await exitService.StartExitAsync(walletId, [vtxo.OutPoint], claimAddress, ct);
+    }
+
+    /// <summary>
+    /// Derives a P2TR on-chain address for claiming exit funds.
+    /// Uses the wallet's address provider to derive a boarding contract,
+    /// then extracts the on-chain taproot address from it.
+    /// </summary>
+    private async Task<BitcoinAddress?> DeriveClaimAddressAsync(string walletId, CancellationToken ct)
+    {
+        try
+        {
+            var serverInfo = await transport.GetServerInfoAsync(ct);
+            var contract = await contractService.DeriveContract(
+                walletId,
+                NextContractPurpose.Boarding,
+                ContractActivityState.Active,
+                cancellationToken: ct);
+
+            if (contract is ArkBoardingContract boarding)
+                return boarding.GetOnchainAddress(serverInfo.Network);
+
+            // Fallback: derive a receive contract and use its taproot output key
+            var spendInfo = contract.GetTaprootSpendInfo();
+            return spendInfo.OutputPubKey.GetAddress(serverInfo.Network);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(0, ex, "Failed to derive claim address for wallet {WalletId}", walletId);
+            return null;
+        }
     }
 }
