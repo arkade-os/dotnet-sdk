@@ -254,6 +254,12 @@ public class UnilateralExitService(
                 UpdatedAt = DateTimeOffset.UtcNow
             }, ct);
         }
+        catch (Exception ex) when (ex is HttpRequestException or TimeoutException or TaskCanceledException)
+        {
+            // Transient network errors — log and retry on next poll cycle
+            logger?.LogWarning(ex,
+                "Transient error progressing broadcasting session {SessionId}, will retry", session.Id);
+        }
         catch (Exception ex)
         {
             logger?.LogError(ex, "Error progressing broadcasting session {SessionId}", session.Id);
@@ -274,13 +280,16 @@ public class UnilateralExitService(
             return await broadcaster.BroadcastAsync(tx, ct);
         }
 
-        // Estimate fee needed for the CPFP child
+        // Estimate fee: first build CPFP child with zero fee to measure its vsize,
+        // then rebuild with the correct fee covering both parent and child.
         var feeRate = await broadcaster.EstimateFeeRateAsync(6, ct);
         var parentVsize = tx.GetVirtualSize();
-        const int estimatedChildVsize = 155;
-        var totalFee = feeRate.GetFee(parentVsize + estimatedChildVsize);
 
-        var feeCoin = await feeWallet.SelectFeeUtxoAsync(totalFee, ct);
+        // Initial estimate to select a UTXO large enough
+        const int estimatedChildVsize = 155;
+        var estimatedTotalFee = feeRate.GetFee(parentVsize + estimatedChildVsize);
+
+        var feeCoin = await feeWallet.SelectFeeUtxoAsync(estimatedTotalFee, ct);
         if (feeCoin is null)
         {
             logger?.LogWarning("No fee UTXO available for CPFP, falling back to direct broadcast");
@@ -288,8 +297,21 @@ public class UnilateralExitService(
         }
 
         var changeScript = await feeWallet.GetChangeScriptAsync(ct);
+
+        // Build the actual child tx to get its real vsize
         var cpfpChild = P2ACpfpBuilder.BuildCpfpChild(
             tx, feeRate, feeCoin.Outpoint, feeCoin.TxOut, changeScript, feeCoin.SigningKey);
+        var actualChildVsize = cpfpChild.GetVirtualSize();
+
+        // If actual vsize differs significantly, rebuild with corrected fee
+        if (Math.Abs(actualChildVsize - estimatedChildVsize) > 10)
+        {
+            var correctedFeeRate = new FeeRate(
+                feeRate.GetFee(parentVsize + actualChildVsize),
+                parentVsize + actualChildVsize);
+            cpfpChild = P2ACpfpBuilder.BuildCpfpChild(
+                tx, correctedFeeRate, feeCoin.Outpoint, feeCoin.TxOut, changeScript, feeCoin.SigningKey);
+        }
 
         return await broadcaster.BroadcastPackageAsync(tx, cpfpChild, ct);
     }

@@ -33,7 +33,8 @@ public class ExitWatchtowerService(
     /// </summary>
     public async Task CheckAndRespondAsync(CancellationToken cancellationToken = default)
     {
-        // Get all unspent VTXOs that have stored virtual tx branches
+        // Only check unspent VTXOs that have stored virtual tx branches.
+        // This avoids expensive RPC calls for VTXOs without exit data.
         var allVtxos = await vtxoStorage.GetVtxos(cancellationToken: cancellationToken);
         var unspent = allVtxos.Where(v => !v.IsSpent()).ToList();
 
@@ -41,6 +42,11 @@ public class ExitWatchtowerService(
         {
             try
             {
+                // Skip early if no branch stored — avoids RPC calls
+                var hasBranch = await virtualTxStorage.HasBranchAsync(vtxo.OutPoint, cancellationToken);
+                if (!hasBranch)
+                    continue;
+
                 await CheckVtxoAsync(vtxo, cancellationToken);
             }
             catch (Exception ex)
@@ -53,11 +59,6 @@ public class ExitWatchtowerService(
 
     private async Task CheckVtxoAsync(ArkVtxo vtxo, CancellationToken ct)
     {
-        // Check if this VTXO has a stored branch
-        var hasBranch = await virtualTxStorage.HasBranchAsync(vtxo.OutPoint, ct);
-        if (!hasBranch)
-            return;
-
         var branch = await virtualTxStorage.GetBranchAsync(vtxo.OutPoint, ct);
         if (branch.Count == 0)
             return;
