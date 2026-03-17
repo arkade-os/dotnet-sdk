@@ -24,9 +24,13 @@ public partial class RestClientTransport
 
             foreach (var entry in response.Chain ?? [])
             {
+                var expiresAt = long.TryParse(entry.ExpiresAt, out var epoch)
+                    ? DateTimeOffset.FromUnixTimeSeconds(epoch)
+                    : DateTimeOffset.MaxValue;
+
                 result.Add(new VtxoChainEntry(
                     entry.Txid,
-                    DateTimeOffset.FromUnixTimeSeconds(long.Parse(entry.ExpiresAt)),
+                    expiresAt,
                     Enum.TryParse<ChainedTxType>(entry.Type, true, out var t) ? t : ChainedTxType.Unspecified,
                     entry.Spends ?? []
                 ));

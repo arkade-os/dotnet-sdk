@@ -32,9 +32,6 @@ public class PostBatchVirtualTxFetchHandler(
 
         try
         {
-            // Wait a bit for VTXO polling to complete first
-            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-
             var walletId = @event.Intent.WalletId;
 
             // Get active contracts for the wallet
@@ -48,14 +45,29 @@ public class PostBatchVirtualTxFetchHandler(
 
             var scripts = contracts.Select(c => c.Script).ToArray();
 
-            // Get unspent VTXOs for these scripts
-            var vtxos = await vtxoStorage.GetVtxos(
-                scripts: scripts,
-                cancellationToken: cancellationToken);
+            // Retry with backoff: VTXO polling may not have completed yet after batch
+            const int maxAttempts = 4;
+            List<ArkVtxo> unspentVtxos = [];
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                // Wait with exponential backoff: 2s, 4s, 8s, 16s
+                await Task.Delay(TimeSpan.FromSeconds(2 << attempt), cancellationToken);
 
-            var unspentVtxos = vtxos
-                .Where(v => !v.IsSpent() && v.Amount >= minAmount)
-                .ToList();
+                var vtxos = await vtxoStorage.GetVtxos(
+                    scripts: scripts,
+                    cancellationToken: cancellationToken);
+
+                unspentVtxos = vtxos
+                    .Where(v => !v.IsSpent() && v.Amount >= minAmount)
+                    .ToList();
+
+                if (unspentVtxos.Count > 0)
+                    break;
+
+                logger?.LogDebug(
+                    "No unspent VTXOs found after batch (attempt {Attempt}/{Max}), retrying...",
+                    attempt + 1, maxAttempts);
+            }
 
             foreach (var vtxo in unspentVtxos)
             {

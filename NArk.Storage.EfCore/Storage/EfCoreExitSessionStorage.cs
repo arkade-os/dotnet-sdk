@@ -27,7 +27,8 @@ public class EfCoreExitSessionStorage(IArkDbContextFactory contextFactory) : IEx
                 ClaimTxid = session.ClaimTxid,
                 CreatedAt = session.CreatedAt,
                 UpdatedAt = session.UpdatedAt,
-                FailReason = session.FailReason
+                FailReason = session.FailReason,
+                RetryCount = session.RetryCount
             });
         }
         else
@@ -37,6 +38,7 @@ public class EfCoreExitSessionStorage(IArkDbContextFactory contextFactory) : IEx
             existing.ClaimTxid = session.ClaimTxid;
             existing.UpdatedAt = session.UpdatedAt;
             existing.FailReason = session.FailReason;
+            existing.RetryCount = session.RetryCount;
         }
 
         await ctx.SaveChangesAsync(cancellationToken);
@@ -85,5 +87,5 @@ public class EfCoreExitSessionStorage(IArkDbContextFactory contextFactory) : IEx
 
     private static ExitSession MapToRecord(ExitSessionEntity e) => new(
         e.Id, e.VtxoTxid, (uint)e.VtxoVout, e.WalletId, e.ClaimAddress,
-        e.State, e.NextTxIndex, e.ClaimTxid, e.CreatedAt, e.UpdatedAt, e.FailReason);
+        e.State, e.NextTxIndex, e.ClaimTxid, e.CreatedAt, e.UpdatedAt, e.FailReason, e.RetryCount);
 }
