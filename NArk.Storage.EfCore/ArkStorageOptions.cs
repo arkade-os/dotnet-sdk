@@ -19,6 +19,9 @@ public class ArkStorageOptions
     public string IntentsTable { get; set; } = "Intents";
     public string IntentVtxosTable { get; set; } = "IntentVtxos";
     public string SwapsTable { get; set; } = "Swaps";
+    public string VirtualTxsTable { get; set; } = "VirtualTxs";
+    public string VtxoBranchesTable { get; set; } = "VtxoBranches";
+    public string ExitSessionsTable { get; set; } = "ExitSessions";
 
     /// <summary>
     /// Optional callback for provider-specific text search on contract metadata.

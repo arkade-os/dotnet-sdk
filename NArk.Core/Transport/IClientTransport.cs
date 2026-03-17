@@ -31,4 +31,19 @@ public interface IClientTransport
     IAsyncEnumerable<BatchEvent> GetEventStreamAsync(GetEventStreamRequest req, CancellationToken cancellationToken);
     Task<ArkAssetDetails> GetAssetDetailsAsync(string assetId, CancellationToken cancellationToken = default);
     Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the chain of virtual txs from commitment tx to the given VTXO leaf.
+    /// </summary>
+    Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns raw tx hex for the given virtual transaction IDs.
+    /// </summary>
+    Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the full VTXO tree structure for a batch outpoint.
+    /// </summary>
+    Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default);
 }
