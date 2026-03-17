@@ -25,6 +25,9 @@ public static class ModelBuilderExtensions
         ArkIntentEntity.Configure(modelBuilder.Entity<ArkIntentEntity>(), options);
         ArkIntentVtxoEntity.Configure(modelBuilder.Entity<ArkIntentVtxoEntity>(), options);
         ArkSwapEntity.Configure(modelBuilder.Entity<ArkSwapEntity>(), options);
+        VirtualTxEntity.Configure(modelBuilder.Entity<VirtualTxEntity>(), options);
+        VtxoBranchEntity.Configure(modelBuilder.Entity<VtxoBranchEntity>(), options);
+        ExitSessionEntity.Configure(modelBuilder.Entity<ExitSessionEntity>(), options);
 
         return modelBuilder;
     }

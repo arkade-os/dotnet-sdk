@@ -21,6 +21,9 @@ public class ArkStorageOptions
     public string SwapsTable { get; set; } = "Swaps";
     public string PaymentsTable { get; set; } = "Payments";
     public string PaymentRequestsTable { get; set; } = "PaymentRequests";
+    public string VirtualTxsTable { get; set; } = "VirtualTxs";
+    public string VtxoBranchesTable { get; set; } = "VtxoBranches";
+    public string ExitSessionsTable { get; set; } = "ExitSessions";
 
     /// <summary>
     /// Optional callback for provider-specific text search on contract metadata.

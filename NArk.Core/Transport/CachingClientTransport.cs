@@ -159,4 +159,13 @@ public class CachingClientTransport : IClientTransport
 
     public Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default)
         => _inner.GetIntentsByProofAsync(proof, message, cancellationToken);
+
+    public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
+        => _inner.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+
+    public Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default)
+        => _inner.GetVirtualTxsAsync(txids, cancellationToken);
+
+    public Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default)
+        => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken);
 }
