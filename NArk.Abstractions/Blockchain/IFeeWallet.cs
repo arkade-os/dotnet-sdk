@@ -33,4 +33,8 @@ public interface IFeeWallet
 /// <param name="Outpoint">The UTXO outpoint.</param>
 /// <param name="TxOut">The previous output being spent.</param>
 /// <param name="SigningKey">The private key for P2TR keypath signing.</param>
-public record FeeCoin(OutPoint Outpoint, TxOut TxOut, Key SigningKey);
+public record FeeCoin(OutPoint Outpoint, TxOut TxOut, Key SigningKey)
+{
+    // Prevent accidental private key exposure via record ToString/logging
+    public override string ToString() => $"FeeCoin {{ Outpoint = {Outpoint}, Amount = {TxOut.Value} }}";
+}
