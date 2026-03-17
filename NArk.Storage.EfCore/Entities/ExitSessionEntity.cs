@@ -17,6 +17,7 @@ public class ExitSessionEntity
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public string? FailReason { get; set; }
+    public int RetryCount { get; set; }
 
     // Navigation
     public VtxoEntity Vtxo { get; set; } = null!;

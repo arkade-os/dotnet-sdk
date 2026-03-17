@@ -49,7 +49,8 @@ public class NBXplorerOnchainBroadcaster(
             if (response.Error is not null)
             {
                 logger?.LogWarning("submitpackage failed: {Error}", response.Error.Message);
-                return false;
+                // Fall back to sequential broadcast (submitpackage requires Bitcoin Core 28+)
+                return await BroadcastSequentialFallbackAsync(parent, child, cancellationToken);
             }
 
             logger?.LogDebug("Package broadcast successful: parent={Parent}, child={Child}",
@@ -58,9 +59,26 @@ public class NBXplorerOnchainBroadcaster(
         }
         catch (Exception ex)
         {
-            logger?.LogWarning(0, ex, "Failed to broadcast package for parent {Txid}", parent.GetHash());
-            return false;
+            // submitpackage RPC may not exist on Bitcoin Core < 28 — fall back to sequential
+            logger?.LogWarning(0, ex,
+                "submitpackage failed for parent {Txid}, falling back to sequential broadcast", parent.GetHash());
+            return await BroadcastSequentialFallbackAsync(parent, child, cancellationToken);
         }
+    }
+
+    private async Task<bool> BroadcastSequentialFallbackAsync(
+        Transaction parent, Transaction child, CancellationToken cancellationToken)
+    {
+        var parentOk = await BroadcastAsync(parent, cancellationToken);
+        if (!parentOk)
+            return false;
+
+        // Parent accepted — try child CPFP, but parent success is the minimum requirement
+        var childOk = await BroadcastAsync(child, cancellationToken);
+        if (!childOk)
+            logger?.LogDebug("Sequential fallback: child CPFP broadcast failed, but parent was accepted");
+
+        return true;
     }
 
     public async Task<TxStatus> GetTxStatusAsync(

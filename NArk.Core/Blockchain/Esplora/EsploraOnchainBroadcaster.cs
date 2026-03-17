@@ -56,25 +56,29 @@ public class EsploraOnchainBroadcaster : IOnchainBroadcaster
     public async Task<bool> BroadcastPackageAsync(
         Transaction parent, Transaction child, CancellationToken cancellationToken = default)
     {
-        try
-        {
-            var package = new[] { parent.ToHex(), child.ToHex() };
-            var response = await _httpClient.PostAsJsonAsync("txs/package", package, cancellationToken);
+        // Standard Esplora does not expose a package relay endpoint.
+        // Fall back to sequential broadcast: parent first, then CPFP child.
+        _logger?.LogDebug("Esplora: broadcasting package as sequential txs (parent then child)");
 
-            if (!response.IsSuccessStatusCode)
-            {
-                var error = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger?.LogWarning("Esplora package broadcast failed: {Error}", error);
-                return false;
-            }
-
-            return true;
-        }
-        catch (Exception ex)
+        var parentSuccess = await BroadcastAsync(parent, cancellationToken);
+        if (!parentSuccess)
         {
-            _logger?.LogWarning(0, ex, "Failed to broadcast package via Esplora");
+            _logger?.LogWarning("Esplora package fallback: parent broadcast failed for {Txid}", parent.GetHash());
             return false;
         }
+
+        var childSuccess = await BroadcastAsync(child, cancellationToken);
+        if (!childSuccess)
+        {
+            _logger?.LogWarning(
+                "Esplora package fallback: child broadcast failed for {Txid} (parent {ParentTxid} was accepted)",
+                child.GetHash(), parent.GetHash());
+            // Parent was accepted so return true — child may be rejected if parent
+            // fee is sufficient on its own, which is still a valid outcome.
+            return true;
+        }
+
+        return true;
     }
 
     public async Task<TxStatus> GetTxStatusAsync(

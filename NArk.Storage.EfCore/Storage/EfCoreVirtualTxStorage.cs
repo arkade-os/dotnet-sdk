@@ -12,10 +12,22 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
         await using var ctx = await contextFactory.CreateDbContextAsync(cancellationToken);
         var virtualTxs = ctx.Set<VirtualTxEntity>();
 
+        // Batch lookup to avoid N+1 queries
+        var txids = txs.Select(t => t.Txid).ToList();
+        var existingEntities = await virtualTxs
+            .Where(e => txids.Contains(e.Txid))
+            .ToDictionaryAsync(e => e.Txid, cancellationToken);
+
         foreach (var tx in txs)
         {
-            var existing = await virtualTxs.FindAsync([tx.Txid], cancellationToken);
-            if (existing is null)
+            if (existingEntities.TryGetValue(tx.Txid, out var existing))
+            {
+                if (tx.Hex is not null)
+                    existing.Hex = tx.Hex;
+                if (tx.ExpiresAt is not null)
+                    existing.ExpiresAt = tx.ExpiresAt;
+            }
+            else
             {
                 virtualTxs.Add(new VirtualTxEntity
                 {
@@ -23,13 +35,6 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
                     Hex = tx.Hex,
                     ExpiresAt = tx.ExpiresAt
                 });
-            }
-            else
-            {
-                if (tx.Hex is not null)
-                    existing.Hex = tx.Hex;
-                if (tx.ExpiresAt is not null)
-                    existing.ExpiresAt = tx.ExpiresAt;
             }
         }
 
@@ -91,6 +96,12 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
         var txid = vtxoOutpoint.Hash.ToString();
         var vout = (int)vtxoOutpoint.N;
 
+        // Use a serializable transaction to prevent concurrent prune races:
+        // two sibling VTXOs pruning simultaneously could both see the other's
+        // references and skip orphan cleanup, or both delete the same tx.
+        await using var dbTx = await ctx.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken);
+
         // Get the virtual txids referenced by this VTXO's branch
         var branchTxids = await ctx.Set<VtxoBranchEntity>()
             .Where(b => b.VtxoTxid == txid && b.VtxoVout == vout)
@@ -119,6 +130,7 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
         }
 
         await ctx.SaveChangesAsync(cancellationToken);
+        await dbTx.CommitAsync(cancellationToken);
     }
 
     public async Task<bool> HasBranchAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)

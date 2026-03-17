@@ -29,6 +29,8 @@ public class UnilateralExitService(
     IFeeWallet? feeWallet = null,
     ILogger<UnilateralExitService>? logger = null)
 {
+    private const int MaxBroadcastRetries = 10;
+
     /// <summary>
     /// Start unilateral exit for specific VTXOs.
     /// </summary>
@@ -217,12 +219,22 @@ public class UnilateralExitService(
 
                 if (!success)
                 {
-                    logger?.LogWarning("Failed to broadcast virtual tx {Txid} for session {SessionId}",
-                        vtx.Txid, session.Id);
-                    // Don't fail — might succeed on retry
+                    var retries = session.RetryCount + 1;
+                    logger?.LogWarning(
+                        "Failed to broadcast virtual tx {Txid} for session {SessionId} (retry {Retry}/{Max})",
+                        vtx.Txid, session.Id, retries, MaxBroadcastRetries);
+
+                    if (retries >= MaxBroadcastRetries)
+                    {
+                        await FailSession(session,
+                            $"Exceeded {MaxBroadcastRetries} broadcast retries for tx {vtx.Txid}", ct);
+                        return;
+                    }
+
                     await UpdateSession(session with
                     {
                         NextTxIndex = i,
+                        RetryCount = retries,
                         UpdatedAt = DateTimeOffset.UtcNow
                     }, ct);
                     return;

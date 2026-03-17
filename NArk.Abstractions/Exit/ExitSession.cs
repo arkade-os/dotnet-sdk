@@ -14,4 +14,5 @@ public record ExitSession(
     string? ClaimTxid,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    string? FailReason);
+    string? FailReason,
+    int RetryCount = 0);
