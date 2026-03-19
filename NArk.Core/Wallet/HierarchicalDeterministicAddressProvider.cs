@@ -105,7 +105,10 @@ public class HierarchicalDeterministicAddressProvider(
             await GetNextSigningDescriptor(cancellationToken)
         );
 
-        return (result, result.ToEntity(wallet.Id, info.SignerKey, null, activityState));
+        var entity = result.ToEntity(wallet.Id, info.SignerKey, null, activityState);
+        if (result is UnknownArkContract)
+            entity = entity with { Metadata = new Dictionary<string, string> { ["Source"] = "sweep-destination" } };
+        return (result, entity);
     }
 
     private async Task<OutputDescriptor?> TryGetRecyclableDescriptor(

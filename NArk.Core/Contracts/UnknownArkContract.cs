@@ -50,6 +50,11 @@ public class UnknownArkContract : ArkContract
         return _address;
     }
 
+    public override Script GetScriptPubKey()
+    {
+        return _address.ScriptPubKey;
+    }
+
     public const string ContractType = "Unknown";
 
     public static ArkContract? Parse(Dictionary<string, string> arg1, Network arg2)

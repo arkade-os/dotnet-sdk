@@ -76,6 +76,9 @@ public class SingleKeyAddressProvider(
             RandomUtils.GetBytes(32),
             HashLockTypeOption.Hash160
         );
-        return (result, result.ToEntity(wallet.Id, info.SignerKey, null, activityState));
+        var entity = result.ToEntity(wallet.Id, info.SignerKey, null, activityState);
+        if (result is UnknownArkContract)
+            entity = entity with { Metadata = new Dictionary<string, string> { ["Source"] = "sweep-destination" } };
+        return (result, entity);
     }
 }

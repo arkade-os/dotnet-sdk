@@ -124,7 +124,16 @@ public class SweeperService(
         var result = new List<ArkCoin>();
         foreach (var contractCoins in coins)
             foreach (var vtxo in contractCoins.Value)
-                result.Add(await coinService.GetCoin(contractCoins.Key, vtxo));
+            {
+                try
+                {
+                    result.Add(await coinService.GetCoin(contractCoins.Key, vtxo));
+                }
+                catch (AdditionalInformationRequiredException)
+                {
+                    // Skip unsignable contracts (e.g. UnknownArkContract for sweep destinations)
+                }
+            }
         return result;
     }
 

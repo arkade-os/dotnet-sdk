@@ -153,6 +153,7 @@ public class SpendingService(
             .ToDictionary(g => g.Key, g => g.First());
         var vtxosByContracts =
             vtxos
+                .Where(v => contractByScript.ContainsKey(v.Script))
                 .GroupBy(v => contractByScript[v.Script]);
 
         HashSet<ArkCoin> coins = [];
@@ -168,7 +169,13 @@ public class SpendingService(
                 catch (AdditionalInformationRequiredException ex)
                 {
                     logger?.LogDebug(0, ex,
-                        "Skipping vtxo {TxId}:{Index} - requires additional information (likely VHTLC contract)",
+                        "Skipping vtxo {TxId}:{Index} - requires additional information",
+                        vtxo.TransactionId, vtxo.TransactionOutputIndex);
+                }
+                catch (UnableToSignUnknownContracts ex)
+                {
+                    logger?.LogDebug(0, ex,
+                        "Skipping vtxo {TxId}:{Index} - unknown/unsignable contract",
                         vtxo.TransactionId, vtxo.TransactionOutputIndex);
                 }
             }
