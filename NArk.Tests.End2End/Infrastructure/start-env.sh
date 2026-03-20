@@ -269,14 +269,19 @@ setup_fulmine_wallet() {
 
 # Argument parsing
 CLEAN=false
+REBUILD=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --clean)
       CLEAN=true
       shift
       ;;
+    --rebuild)
+      REBUILD=true
+      shift
+      ;;
     *)
-      echo "Usage: $0 [--clean]" >&2
+      echo "Usage: $0 [--clean] [--rebuild]" >&2
       exit 1
       ;;
   esac
@@ -285,10 +290,14 @@ done
 cd "$SCRIPT_DIR"
 
 # 1. Ensure nigiri is installed
-if [ ! -f "$NIGIRI" ]; then
-  log "Nigiri binary not found at $NIGIRI"
+if [ ! -f "$NIGIRI" ] || [ "$REBUILD" = true ]; then
+  if [ ! -f "$NIGIRI" ]; then
+    log "Nigiri binary not found at $NIGIRI"
+  else
+    log "Rebuild flag set, rebuilding nigiri..."
+  fi
   log "Building nigiri from source..."
-  
+
   # Clone or update the repo
   if [ ! -d "$NIGIRI_REPO" ]; then
     log "Cloning nigiri repository..."
@@ -302,30 +311,20 @@ if [ ! -f "$NIGIRI" ]; then
     git pull origin $NIGIRI_BRANCH
     cd "$SCRIPT_DIR"
   fi
-  
+
   # Build nigiri
   log "Installing and building nigiri..."
   cd "$NIGIRI_REPO"
   make install
   make build
   cd "$SCRIPT_DIR"
-  
+
   if [ ! -f "$NIGIRI" ]; then
     log "ERROR: Failed to build nigiri binary"
     exit 1
   fi
-  
+
   log "✓ Nigiri built successfully"
-elif [ "$CLEAN" = true ]; then
-  log "Nigiri found but clean flag set. Rebuilding..."
-  cd "$NIGIRI_REPO"
-  git stash
-  git fetch origin
-  git checkout $NIGIRI_BRANCH
-  git pull origin $NIGIRI_BRANCH
-  make install
-  make build
-  cd "$SCRIPT_DIR"
 else
   log "Nigiri found: $($NIGIRI --version)"
 fi

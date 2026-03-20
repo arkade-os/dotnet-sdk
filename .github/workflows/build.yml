@@ -41,6 +41,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+      - name: Cache nigiri binary
+        uses: actions/cache@v4
+        with:
+          path: NArk.Tests.End2End/Infrastructure/nigiri
+          key: nigiri-${{ runner.os }}-bump-arkd-${{ hashFiles('NArk.Tests.End2End/Infrastructure/start-env.sh') }}
       - name: Start regtest infrastructure
         run: |
           chmod +x ./NArk.Tests.End2End/Infrastructure/start-env.sh
