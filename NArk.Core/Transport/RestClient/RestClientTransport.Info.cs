@@ -61,6 +61,8 @@ public partial class RestClientTransport
                 IntentOffchainInput: GetJsonStringOrZero(intentFee, "offchain_input"),
                 IntentOnchainInput: GetJsonStringOrZero(intentFee, "onchain_input")
             ),
+            MaxTxWeight: json.TryGetProperty("max_tx_weight", out var mtw) ? mtw.GetInt64() : 0,
+            MaxOpReturnOutputs: json.TryGetProperty("max_op_return_outputs", out var mor) ? (int)mor.GetInt64() : 0,
             VtxoMinAmount: Money.Satoshis(GetJsonInt64OrDefault(json, "vtxo_min_amount")),
             VtxoMaxAmount: ParseAmountLimit(GetJsonInt64OrDefault(json, "vtxo_max_amount", -1)),
             UtxoMinAmount: Money.Satoshis(GetJsonInt64OrDefault(json, "utxo_min_amount")),

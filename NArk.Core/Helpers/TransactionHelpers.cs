@@ -15,7 +15,13 @@ namespace NArk.Core.Helpers;
 
 public static class TransactionHelpers
 {
-    public const int MaxOpReturnOutputs = 1;
+    public const int DefaultMaxOpReturnOutputs = 3;
+
+    /// <summary>
+    /// Fallback max OP_RETURN outputs when server info is not available.
+    /// Prefer <see cref="ArkServerInfo.MaxOpReturnOutputs"/> when accessible.
+    /// </summary>
+    public static int MaxOpReturnOutputs { get; set; } = DefaultMaxOpReturnOutputs;
 
     /// <summary>
     /// Utility class for building and constructing Ark transactions

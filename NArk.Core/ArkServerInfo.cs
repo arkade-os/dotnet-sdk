@@ -16,6 +16,8 @@ public record ArkServerInfo(
     ECXOnlyPubKey ForfeitPubKey,
     UnilateralPathArkTapScript CheckpointTapScript,
     ArkOperatorFeeTerms FeeTerms,
+    long MaxTxWeight = 0,
+    int MaxOpReturnOutputs = 0,
     Money VtxoMinAmount = default!,
     Money VtxoMaxAmount = default!,
     Money UtxoMinAmount = default!,

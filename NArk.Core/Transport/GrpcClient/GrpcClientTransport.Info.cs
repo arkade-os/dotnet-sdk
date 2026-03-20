@@ -52,6 +52,8 @@ public partial class GrpcClientTransport
                 IntentOffchainInput: GetOrZero(response.Fees.IntentFee.OffchainInput),
                 IntentOnchainInput: GetOrZero(response.Fees.IntentFee.OnchainInput)
             ),
+            MaxTxWeight: response.MaxTxWeight,
+            MaxOpReturnOutputs: (int)response.MaxOpReturnOutputs,
             VtxoMinAmount: Money.Satoshis(response.VtxoMinAmount),
             VtxoMaxAmount: response.VtxoMaxAmount < 0 ? Money.Coins(21_000_000m) : Money.Satoshis(response.VtxoMaxAmount),
             UtxoMinAmount: Money.Satoshis(response.UtxoMinAmount),
