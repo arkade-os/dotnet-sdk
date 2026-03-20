@@ -98,19 +98,25 @@ public class BoardingUtxoSyncServiceTests
 
         await service.SyncAsync(CancellationToken.None);
 
+        ArkVtxo? captured = null;
         await _vtxoStorage.Received(1).UpsertVtxo(
-            Arg.Is<ArkVtxo>(v =>
-                v.Script == entity.Script &&
-                v.TransactionId == "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234" &&
-                v.TransactionOutputIndex == 0 &&
-                v.Amount == 100000 &&
-                v.Unrolled == true &&
-                v.Swept == false &&
-                v.SpentByTransactionId == null &&
-                v.ExpiresAt != null &&
-                v.Metadata != null &&
-                v.Metadata["Confirmed"] == "True"),
+            Arg.Do<ArkVtxo>(v => captured = v),
             Arg.Any<CancellationToken>());
+
+        Assert.That(captured, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(captured!.Script, Is.EqualTo(entity.Script));
+            Assert.That(captured.TransactionId, Is.EqualTo("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"));
+            Assert.That(captured.TransactionOutputIndex, Is.EqualTo(0));
+            Assert.That(captured.Amount, Is.EqualTo(100000));
+            Assert.That(captured.Unrolled, Is.True);
+            Assert.That(captured.Swept, Is.False);
+            Assert.That(captured.SpentByTransactionId, Is.Null);
+            Assert.That(captured.ExpiresAt, Is.Not.Null);
+            Assert.That(captured.Metadata, Is.Not.Null);
+            Assert.That(captured.Metadata!["Confirmed"], Is.EqualTo("True"));
+        });
     }
 
     [Test]
@@ -138,16 +144,22 @@ public class BoardingUtxoSyncServiceTests
 
         await service.SyncAsync(CancellationToken.None);
 
+        ArkVtxo? captured = null;
         await _vtxoStorage.Received(1).UpsertVtxo(
-            Arg.Is<ArkVtxo>(v =>
-                v.Script == entity.Script &&
-                v.Amount == 50000 &&
-                v.Unrolled == true &&
-                v.ExpiresAt == null &&
-                v.ExpiresAtHeight == null &&
-                v.Metadata != null &&
-                v.Metadata["Confirmed"] == "False"),
+            Arg.Do<ArkVtxo>(v => captured = v),
             Arg.Any<CancellationToken>());
+
+        Assert.That(captured, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(captured!.Script, Is.EqualTo(entity.Script));
+            Assert.That(captured.Amount, Is.EqualTo(50000));
+            Assert.That(captured.Unrolled, Is.True);
+            Assert.That(captured.ExpiresAt, Is.Null);
+            Assert.That(captured.ExpiresAtHeight, Is.Null);
+            Assert.That(captured.Metadata, Is.Not.Null);
+            Assert.That(captured.Metadata!["Confirmed"], Is.EqualTo("False"));
+        });
     }
 
     [Test]
