@@ -69,10 +69,6 @@ public class CachingClientTransport : IClientTransport
             _cachedServerInfo = serverInfo;
             _serverInfoExpiresAt = DateTimeOffset.UtcNow.Add(_cacheExpiry);
 
-            // Update global OP_RETURN limit from server when available
-            if (serverInfo.MaxOpReturnOutputs > 0)
-                Helpers.TransactionHelpers.MaxOpReturnOutputs = serverInfo.MaxOpReturnOutputs;
-
             _logger?.LogDebug("Cached server info: Network={Network}, Dust={Dust}",
                 serverInfo.Network.Name, serverInfo.Dust);
 

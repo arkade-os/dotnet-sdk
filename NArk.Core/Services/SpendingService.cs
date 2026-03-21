@@ -67,6 +67,7 @@ public class SpendingService(
         try
         {
             var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+            var maxOpReturn = GetMaxOpReturnOutputs(serverInfo);
 
             var totalInput = inputs.Sum(x => x.TxOut.Value);
 
@@ -84,7 +85,7 @@ public class SpendingService(
             // This is important for HD wallets as it consumes a derivation index
             ArkAddress? changeAddress = null;
             var needsChange = change >= serverInfo.Dust ||
-                              (change > 0L && (hasExplicitSubdustOutput + 1) <= TransactionHelpers.MaxOpReturnOutputs);
+                              (change > 0L && (hasExplicitSubdustOutput + 1) <= maxOpReturn);
 
             // Also need a change output when inputs carry assets not fully consumed by outputs
             if (!needsChange && HasAssetChange(inputs, outputs))
@@ -108,7 +109,7 @@ public class SpendingService(
                     new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!)
                 ];
             }
-            else if (change > 0 && (hasExplicitSubdustOutput + 1) <= TransactionHelpers.MaxOpReturnOutputs)
+            else if (change > 0 && (hasExplicitSubdustOutput + 1) <= maxOpReturn)
             {
                 outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
             }
@@ -193,6 +194,7 @@ public class SpendingService(
         logger?.LogDebug("Spending with automatic coin selection for wallet {WalletId} with {OutputCount} outputs",
             walletId, outputs.Length);
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+        var maxOpReturn = GetMaxOpReturnOutputs(serverInfo);
 
         var outputsSumInSatoshis = outputs.Sum(o => o.Value);
 
@@ -213,9 +215,9 @@ public class SpendingService(
             : Money.Satoshis(outputsSumInSatoshis);
         var selectedCoins = assetRequirements.Count > 0
             ? coinSelector.SelectCoins([.. coins], btcTarget, assetRequirements, serverInfo.Dust,
-                hasExplicitSubdustOutput)
+                hasExplicitSubdustOutput, maxOpReturn)
             : coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
-                hasExplicitSubdustOutput);
+                hasExplicitSubdustOutput, maxOpReturn);
         logger?.LogDebug("Selected {SelectedCount} coins for spending", selectedCoins.Count);
 
         try
@@ -227,7 +229,7 @@ public class SpendingService(
             // This is important for HD wallets as it consumes a derivation index
             ArkAddress? changeAddress = null;
             var needsChange = change >= serverInfo.Dust ||
-                              (change > 0L && (hasExplicitSubdustOutput + 1) <= TransactionHelpers.MaxOpReturnOutputs);
+                              (change > 0L && (hasExplicitSubdustOutput + 1) <= maxOpReturn);
 
             // Also need a change output when inputs carry assets that aren't fully consumed
             // by the explicit outputs, so asset change has a dedicated output to land on.
@@ -251,7 +253,7 @@ public class SpendingService(
                     new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!)
                 ];
             }
-            else if (change > 0 && (hasExplicitSubdustOutput + 1) <= TransactionHelpers.MaxOpReturnOutputs)
+            else if (change > 0 && (hasExplicitSubdustOutput + 1) <= maxOpReturn)
             {
                 outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
             }
@@ -380,4 +382,9 @@ public class SpendingService(
                     $"Output value {output.Value} exceeds the server maximum VTXO amount of {vtxoMax}.");
         }
     }
+
+    private static int GetMaxOpReturnOutputs(ArkServerInfo serverInfo) =>
+        serverInfo.MaxOpReturnOutputs > 0
+            ? serverInfo.MaxOpReturnOutputs
+            : TransactionHelpers.MaxOpReturnOutputs;
 }

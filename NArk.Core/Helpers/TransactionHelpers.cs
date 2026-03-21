@@ -15,13 +15,7 @@ namespace NArk.Core.Helpers;
 
 public static class TransactionHelpers
 {
-    public const int DefaultMaxOpReturnOutputs = 3;
-
-    /// <summary>
-    /// Fallback max OP_RETURN outputs when server info is not available.
-    /// Prefer <see cref="ArkServerInfo.MaxOpReturnOutputs"/> when accessible.
-    /// </summary>
-    public static int MaxOpReturnOutputs { get; set; } = DefaultMaxOpReturnOutputs;
+    public const int MaxOpReturnOutputs = 1;
 
     /// <summary>
     /// Utility class for building and constructing Ark transactions
@@ -132,13 +126,18 @@ public static class TransactionHelpers
             arkTx.AddCoins(checkpointCoins);
 
             // Track OP_RETURN outputs to enforce the limit
+            // Use server-configured limit, falling back to the const default
+            var maxOpReturn = serverInfo.MaxOpReturnOutputs > 0
+                ? serverInfo.MaxOpReturnOutputs
+                : MaxOpReturnOutputs;
+
             // First, count any existing OP_RETURN outputs
             int opReturnCount = outputs.Count(o => o.ScriptPubKey.IsUnspendable);
 
-            if (opReturnCount > MaxOpReturnOutputs)
+            if (opReturnCount > maxOpReturn)
             {
                 throw new InvalidOperationException(
-                    $"Transaction already contains {opReturnCount} OP_RETURN outputs, which exceeds the maximum of {MaxOpReturnOutputs}.");
+                    $"Transaction already contains {opReturnCount} OP_RETURN outputs, which exceeds the maximum of {maxOpReturn}.");
             }
 
             foreach (var output in outputs)
@@ -150,10 +149,10 @@ public static class TransactionHelpers
                 // convert it to an OP_RETURN output
                 if (output.Value < serverInfo.Dust && PayToTaprootTemplate.Instance.CheckScriptPubKey(scriptPubKey))
                 {
-                    if (opReturnCount >= MaxOpReturnOutputs)
+                    if (opReturnCount >= maxOpReturn)
                     {
                         throw new InvalidOperationException(
-                            $"Cannot create more than {MaxOpReturnOutputs} OP_RETURN outputs per transaction. " +
+                            $"Cannot create more than {maxOpReturn} OP_RETURN outputs per transaction. " +
                             $"Output with value {output.Value} is below dust threshold {serverInfo.Dust}. " +
                             $"Transaction already contains {opReturnCount} OP_RETURN output(s).");
                     }

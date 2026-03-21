@@ -266,11 +266,8 @@ public class CachingClientTransportTests
     }
 
     [Test]
-    public async Task SetsGlobalMaxOpReturnOutputs_FromServerInfo()
+    public async Task ServerInfoLimits_AreExposedFromGetInfo()
     {
-        // Reset to default before test
-        TransactionHelpers.MaxOpReturnOutputs = TransactionHelpers.DefaultMaxOpReturnOutputs;
-
         var serverInfoWithLimits = CreateServerInfo(maxOpReturnOutputs: 5, maxTxWeight: 40000);
         var inner = Substitute.For<IClientTransport>();
         inner.GetServerInfoAsync(Arg.Any<CancellationToken>())
@@ -281,23 +278,20 @@ public class CachingClientTransportTests
 
         Assert.That(result.MaxOpReturnOutputs, Is.EqualTo(5));
         Assert.That(result.MaxTxWeight, Is.EqualTo(40000));
-        Assert.That(TransactionHelpers.MaxOpReturnOutputs, Is.EqualTo(5));
     }
 
     [Test]
-    public async Task KeepsDefaultMaxOpReturnOutputs_WhenServerReportsZero()
+    public async Task ServerInfoLimits_DefaultToZero_WhenNotReported()
     {
-        TransactionHelpers.MaxOpReturnOutputs = TransactionHelpers.DefaultMaxOpReturnOutputs;
-
         var serverInfoNoLimits = CreateServerInfo(maxOpReturnOutputs: 0);
         var inner = Substitute.For<IClientTransport>();
         inner.GetServerInfoAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(serverInfoNoLimits));
 
         var transport = new CachingClientTransport(inner, logger: null);
-        await transport.GetServerInfoAsync();
+        var result = await transport.GetServerInfoAsync();
 
-        Assert.That(TransactionHelpers.MaxOpReturnOutputs, Is.EqualTo(TransactionHelpers.DefaultMaxOpReturnOutputs));
+        Assert.That(result.MaxOpReturnOutputs, Is.EqualTo(0));
     }
 
     private static ArkServerInfo CreateServerInfo(

@@ -2,7 +2,6 @@
 
 
 using NArk.Abstractions;
-using NArk.Core.Helpers;
 using NBitcoin;
 
 namespace NArk.Core.CoinSelector;
@@ -16,12 +15,14 @@ public class DefaultCoinSelector : ICoinSelector
     /// <param name="targetAmount">Target amount to send</param>
     /// <param name="dustThreshold">Dust threshold from operator terms</param>
     /// <param name="currentSubDustOutputs">Whether the user explicitly uses subdust change</param>
+    /// <param name="maxOpReturnOutputs">Maximum OP_RETURN outputs allowed per transaction</param>
     /// <returns>Selected coins or null if impossible</returns>
     public IReadOnlyCollection<ArkCoin> SelectCoins(
         List<ArkCoin> availableCoins,
         Money targetAmount,
         Money dustThreshold,
-        int currentSubDustOutputs)
+        int currentSubDustOutputs,
+        int maxOpReturnOutputs = 1)
     {
         if (availableCoins.Count == 0)
             throw new NotEnoughFundsException("Not enough funds to create transaction", null, targetAmount);
@@ -41,7 +42,7 @@ public class DefaultCoinSelector : ICoinSelector
             {
                 var change = currentTotal - targetAmount;
                 // Check if the change is acceptable (either 0, > dust, or we can add another subdust OP_RETURN)
-                var canAddSubdustChange = (currentSubDustOutputs + 1) <= TransactionHelpers.MaxOpReturnOutputs;
+                var canAddSubdustChange = (currentSubDustOutputs + 1) <= maxOpReturnOutputs;
                 if (change == Money.Zero || change >= dustThreshold || canAddSubdustChange)
                     break;
             }
@@ -53,7 +54,7 @@ public class DefaultCoinSelector : ICoinSelector
         var finalChange = currentTotal - targetAmount;
 
         // If we have subdust change and can't add another OP_RETURN, try to find better combination
-        var canAddSubdust = (currentSubDustOutputs + 1) <= TransactionHelpers.MaxOpReturnOutputs;
+        var canAddSubdust = (currentSubDustOutputs + 1) <= maxOpReturnOutputs;
         if (finalChange > Money.Zero && finalChange < dustThreshold && !canAddSubdust)
         {
             // Strategy 2: Try adding one more coin to push change above dust threshold
@@ -91,10 +92,11 @@ public class DefaultCoinSelector : ICoinSelector
         Money targetBtcAmount,
         IReadOnlyList<AssetRequirement> assetRequirements,
         Money dustThreshold,
-        int currentSubDustOutputs)
+        int currentSubDustOutputs,
+        int maxOpReturnOutputs = 1)
     {
         if (assetRequirements.Count == 0)
-            return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs);
+            return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs);
 
         var selected = new HashSet<ArkCoin>(ReferenceEqualityComparer.Instance);
         var btcFromAssetCoins = Money.Zero;
@@ -136,7 +138,7 @@ public class DefaultCoinSelector : ICoinSelector
             throw new NotEnoughFundsException("Not enough BTC funds to create transaction", null, remainingBtc);
         }
 
-        var btcSelected = SelectCoins(remainingCoins, remainingBtc, dustThreshold, currentSubDustOutputs);
+        var btcSelected = SelectCoins(remainingCoins, remainingBtc, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs);
         foreach (var coin in btcSelected)
             selected.Add(coin);
 
