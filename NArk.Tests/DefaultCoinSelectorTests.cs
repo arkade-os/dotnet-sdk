@@ -82,7 +82,7 @@ public class DefaultCoinSelectorTests
     public void FindsBetterCombination_ToAvoidSubdustChange()
     {
         // Scenario: greedy picks 5000, change = 5000 - 4800 = 200 (subdust, below 546).
-        // With currentSubDustOutputs = 1 (max is 1), we can't add another OP_RETURN.
+        // With currentSubDustOutputs at the max, we can't add another OP_RETURN.
         // The selector should find a better combination:
         // - Pair (3000, 2000) = 5000, change = 200 (still subdust)
         // - Pair (5000, 3000) = 8000, change = 3200 (above dust) -- good!
@@ -97,10 +97,11 @@ public class DefaultCoinSelectorTests
         var target = Money.Satoshis(4800);
         var dust = Money.Satoshis(546);
 
-        // With currentSubDustOutputs = 1 (already at max), subdust change is not allowed.
+        // With currentSubDustOutputs at max (MaxOpReturnOutputs), subdust change is not allowed.
         // Greedy picks 5000 first: change = 200 < 546, can't add OP_RETURN.
         // Strategy 2: add next coin (3000): change = 200 + 3000 = 3200 >= 546.
-        var result = _selector.SelectCoins(coins, target, dust, currentSubDustOutputs: 1);
+        var maxOpReturn = NArk.Core.Helpers.TransactionHelpers.MaxOpReturnOutputs;
+        var result = _selector.SelectCoins(coins, target, dust, currentSubDustOutputs: maxOpReturn);
 
         var totalSelected = result.Sum(c => c.Amount);
         var change = totalSelected - target;
