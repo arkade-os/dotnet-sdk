@@ -400,6 +400,67 @@ var sweepService = new OnchainSweepService(
 await sweepService.SweepExpiredUtxosAsync(ct);
 ```
 
+## Unilateral Exit
+
+When the Ark server goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their VTXO leaf, waiting a CSV timelock, then claiming funds on-chain.
+
+### Setup
+
+```csharp
+services.AddUnilateralExit(
+    configureVirtualTx: opts =>
+    {
+        opts.DefaultMode = VirtualTxMode.Full;  // Store tx hex immediately (Lite = fetch on demand)
+        opts.MinExitWorthAmount = 1000;         // Skip tiny VTXOs not worth exiting
+    },
+    configureWatchtower: opts =>
+    {
+        opts.PollInterval = TimeSpan.FromSeconds(60);
+    });
+
+// Register a broadcaster (NBXplorer or Esplora)
+services.AddSingleton<IOnchainBroadcaster>(sp =>
+    new NBXplorerOnchainBroadcaster(explorerClient));
+
+// Optional: run watchtower as background service
+services.AddExitWatchtowerBackgroundService();
+```
+
+### Starting an Exit
+
+```csharp
+var exitService = serviceProvider.GetRequiredService<UnilateralExitService>();
+
+// Exit specific VTXOs
+var sessions = await exitService.StartExitAsync(
+    walletId,
+    vtxoOutpoints,
+    claimAddress,     // Bitcoin address to receive claimed funds
+    cancellationToken);
+
+// Or exit all VTXOs in a wallet
+var sessions = await exitService.StartExitForWalletAsync(
+    walletId, claimAddress, cancellationToken);
+```
+
+### Progressing Exits
+
+Call `ProgressExitsAsync` periodically to advance exit sessions through their state machine:
+
+```csharp
+// Broadcasting → AwaitingCsvDelay → Claimable → Claiming → Completed
+await exitService.ProgressExitsAsync(cancellationToken);
+```
+
+The exit watchtower background service does this automatically if registered.
+
+### Virtual Tx Storage Modes
+
+- **Full mode**: Fetches and stores raw tx hex on VTXO receive. Ready for instant exit.
+- **Lite mode**: Stores only txids. Fetches hex on demand when exit is needed (saves storage, slower exit start).
+
+Virtual tx data is automatically pruned when VTXOs are spent. Sibling VTXOs sharing internal tree nodes naturally deduplicate — shared nodes are only cleaned up when no VTXO references them.
+
 ## Contracts
 
 Derive receiving addresses and manage contracts:

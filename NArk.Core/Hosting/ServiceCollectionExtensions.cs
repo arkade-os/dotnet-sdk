@@ -15,6 +15,8 @@ using NArk.Core.Wallet;
 using NArk.Transport.GrpcClient;
 using NArk.Transport.RestClient;
 using Microsoft.Extensions.Logging;
+using NArk.Abstractions.VirtualTxs;
+using NArk.Abstractions.Exit;
 
 namespace NArk.Hosting;
 
@@ -238,6 +240,47 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<PostSpendVtxoPollingHandler>();
         services.AddSingleton<IEventHandler<PostCoinsSpendActionEvent>>(sp => sp.GetRequiredService<PostSpendVtxoPollingHandler>());
 
+        return services;
+    }
+
+    /// <summary>
+    /// Registers unilateral exit services including virtual tx management, exit orchestration,
+    /// and watchtower monitoring. Caller must still register IOnchainBroadcaster, IVirtualTxStorage,
+    /// and IExitSessionStorage.
+    /// </summary>
+    public static IServiceCollection AddUnilateralExit(
+        this IServiceCollection services,
+        Action<VirtualTxOptions>? configureVirtualTx = null,
+        Action<ExitWatchtowerOptions>? configureWatchtower = null)
+    {
+        // Configure options
+        services.Configure(configureVirtualTx ?? (_ => { }));
+        services.Configure(configureWatchtower ?? (_ => { }));
+
+        // Core services
+        services.AddSingleton<VirtualTxService>();
+        services.AddSingleton<UnilateralExitService>();
+        services.AddSingleton<ExitWatchtowerService>();
+
+        // Event handlers: fetch virtual tx data after batch, prune after spend
+        services.AddSingleton<PostBatchVirtualTxFetchHandler>();
+        services.AddSingleton<IEventHandler<PostBatchSessionEvent>>(
+            sp => sp.GetRequiredService<PostBatchVirtualTxFetchHandler>());
+
+        services.AddSingleton<PostSpendVirtualTxPruneHandler>();
+        services.AddSingleton<IEventHandler<PostCoinsSpendActionEvent>>(
+            sp => sp.GetRequiredService<PostSpendVirtualTxPruneHandler>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the exit watchtower as a background service for autonomous monitoring.
+    /// Call after <see cref="AddUnilateralExit"/>.
+    /// </summary>
+    public static IServiceCollection AddExitWatchtowerBackgroundService(this IServiceCollection services)
+    {
+        services.AddHostedService<ExitWatchtowerBackgroundService>();
         return services;
     }
 }

@@ -160,4 +160,13 @@ public class CachingClientTransport : IClientTransport
 
     public Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default)
         => _inner.UpdateStreamTopicsAsync(streamId, addTopics, removeTopics, cancellationToken);
+
+    public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
+        => _inner.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+
+    public Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default)
+        => _inner.GetVirtualTxsAsync(txids, cancellationToken);
+
+    public Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default)
+        => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken);
 }
