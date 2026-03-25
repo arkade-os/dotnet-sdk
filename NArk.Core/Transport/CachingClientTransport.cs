@@ -160,4 +160,7 @@ public class CachingClientTransport : IClientTransport
 
     public Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default)
         => _inner.UpdateStreamTopicsAsync(streamId, addTopics, removeTopics, cancellationToken);
+
+    public Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default)
+        => _inner.GetIntentsByProofAsync(proof, message, cancellationToken);
 }

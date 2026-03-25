@@ -152,7 +152,7 @@ public class DelegationMonitorService(
             outpoint, vtxo.TxOut, signerDescriptor, intentScriptBuilder,
             null, null, null, vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
 
-        var intentPsbt = CreateBip322Proof(intentMessage, serverInfo.Network, intentCoin);
+        var intentPsbt = IntentProofHelper.CreateBip322Psbt(intentMessage, serverInfo.Network, intentCoin);
 
         // Build asset packet if the VTXO carries assets — delegation is send-to-self (vout=0)
         if (vtxo.Assets is { Count: > 0 } vtxoAssets)
@@ -169,24 +169,7 @@ public class DelegationMonitorService(
             }
         }
 
-        var intentGtx = intentPsbt.GetGlobalTransaction();
-
-        // Clone intent coin for input[0] (BIP322 toSpend reference) — matches IntentGenerationService pattern
-        var bip322Coin = new ArkCoin(intentCoin);
-        bip322Coin.TxOut = intentPsbt.Inputs[0].GetTxOut()!;
-        bip322Coin.Outpoint = intentPsbt.Inputs[0].PrevOut;
-
-        var intentPrecomputed = intentGtx.PrecomputeTransactionData(
-            [bip322Coin.TxOut, intentCoin.TxOut]);
-
-        // Reconstruct PSBT from the global tx so both inputs have coin data
-        intentPsbt = PSBT.FromTransaction(intentGtx, serverInfo.Network).UpdateFrom(intentPsbt);
-
-        // Sign both inputs: input[0] = BIP322 toSpend ref, input[1] = real VTXO
-        await PsbtHelpers.SignAndFillPsbt(signer, bip322Coin, intentPsbt, intentPrecomputed,
-            cancellationToken: CancellationToken.None);
-        await PsbtHelpers.SignAndFillPsbt(signer, intentCoin, intentPsbt, intentPrecomputed,
-            cancellationToken: CancellationToken.None);
+        await IntentProofHelper.SignBip322Proof(intentPsbt, intentCoin, signer, serverInfo.Network);
 
         // Build forfeit tx using the delegate path, signed with SIGHASH_ALL|ANYONECANPAY
         var forfeitCoin = new ArkCoin(
@@ -205,35 +188,6 @@ public class DelegationMonitorService(
             intentMessage,
             intentPsbt.ToBase64(),
             [forfeitTx.ToBase64()]);
-    }
-
-    private static PSBT CreateBip322Proof(string message, Network network, ArkCoin coin)
-    {
-        var messageHash = HashHelpers.CreateTaggedMessageHash("ark-intent-proof-message", message);
-
-        var toSpend = network.CreateTransaction();
-        toSpend.Version = 0;
-        toSpend.LockTime = 0;
-        toSpend.Inputs.Add(new TxIn(new OutPoint(uint256.Zero, 0xFFFFFFFF),
-            new Script(OpcodeType.OP_0, Op.GetPushOp(messageHash)))
-        {
-            Sequence = 0,
-            WitScript = WitScript.Empty,
-        });
-        toSpend.Outputs.Add(new TxOut(Money.Zero, coin.ScriptPubKey));
-
-        var toSign = network.CreateTransaction();
-        toSign.Version = 2;
-        toSign.LockTime = 0;
-        toSign.Inputs.Add(new TxIn(new OutPoint(toSpend.GetHash(), 0)) { Sequence = 0 });
-        toSign.Inputs.Add(new TxIn(coin.Outpoint) { Sequence = 0 });
-        toSign.Outputs.Add(new TxOut(Money.Zero, new Script(OpcodeType.OP_RETURN)));
-
-        var psbt = PSBT.FromTransaction(toSign, network);
-        psbt.Settings.AutomaticUTXOTrimming = false;
-        psbt.AddTransactions(toSpend);
-        psbt.AddCoins(coin);
-        return psbt;
     }
 
     private static PSBT CreateForfeitTransaction(Network network, ArkCoin coin)

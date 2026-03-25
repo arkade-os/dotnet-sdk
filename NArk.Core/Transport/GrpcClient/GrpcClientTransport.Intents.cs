@@ -52,4 +52,38 @@ public partial class GrpcClientTransport
 
         await _serviceClient.DeleteIntentAsync(deleteRequest, cancellationToken: cancellationToken);
     }
+
+    public async Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new GetIntentRequest
+        {
+            Intent = new Intent
+            {
+                Proof = proof,
+                Message = message
+            }
+        };
+
+        var response = await _serviceClient.GetIntentAsync(request, cancellationToken: cancellationToken);
+
+        return response.Intents.Select(i => new ArkIntent(
+            IntentTxId: string.Empty,
+            IntentId: null,
+            WalletId: string.Empty,
+            State: ArkIntentState.WaitingToSubmit,
+            ValidFrom: null,
+            ValidUntil: null,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow,
+            RegisterProof: i.Proof,
+            RegisterProofMessage: i.Message,
+            DeleteProof: string.Empty,
+            DeleteProofMessage: string.Empty,
+            BatchId: null,
+            CommitmentTransactionId: null,
+            CancellationReason: null,
+            IntentVtxos: [],
+            SignerDescriptor: string.Empty)).ToArray();
+    }
 }

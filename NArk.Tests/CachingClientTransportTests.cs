@@ -141,6 +141,19 @@ public class CachingClientTransportTests
     }
 
     [Test]
+    public async Task PassThroughMethods_CallInner_GetIntentsByProof()
+    {
+        var expectedIntents = new[] { CreateDummyIntent() };
+        _inner.GetIntentsByProofAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(expectedIntents));
+
+        var result = await _cachingTransport.GetIntentsByProofAsync("proof", "message");
+
+        Assert.That(result, Is.SameAs(expectedIntents));
+        await _inner.Received(1).GetIntentsByProofAsync("proof", "message", Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task InvalidateCache_ForcesRefetch()
     {
         // Populate the cache

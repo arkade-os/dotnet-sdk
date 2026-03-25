@@ -53,4 +53,49 @@ public partial class RestClientTransport
         var response = await _http.PostAsJsonAsync("/v1/batch/deleteIntent", body, JsonOpts, cancellationToken);
         response.EnsureSuccessStatusCode();
     }
+
+    public async Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message,
+        CancellationToken cancellationToken = default)
+    {
+        var body = new
+        {
+            intent = new
+            {
+                proof,
+                message
+            }
+        };
+
+        var response = await _http.PostAsJsonAsync("/v1/intent", body, JsonOpts, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, cancellationToken);
+
+        var intents = new List<ArkIntent>();
+        if (json.TryGetProperty("intents", out var intentsArr) && intentsArr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var i in intentsArr.EnumerateArray())
+            {
+                intents.Add(new ArkIntent(
+                    IntentTxId: string.Empty,
+                    IntentId: null,
+                    WalletId: string.Empty,
+                    State: ArkIntentState.WaitingToSubmit,
+                    ValidFrom: null,
+                    ValidUntil: null,
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow,
+                    RegisterProof: i.GetProperty("proof").GetString() ?? string.Empty,
+                    RegisterProofMessage: i.GetProperty("message").GetString() ?? string.Empty,
+                    DeleteProof: string.Empty,
+                    DeleteProofMessage: string.Empty,
+                    BatchId: null,
+                    CommitmentTransactionId: null,
+                    CancellationReason: null,
+                    IntentVtxos: [],
+                    SignerDescriptor: string.Empty));
+            }
+        }
+
+        return intents.ToArray();
+    }
 }

@@ -329,6 +329,21 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
     new ArkTxOut(bitcoinAddress, Money.Satoshis(50_000)));
 ```
 
+## Querying Intents by Proof
+
+Retrieve registered intents by proving ownership of any input coin via a BIP-322-style proof:
+
+```csharp
+// Create a signed ownership proof for a coin
+var (proof, message) = await IntentProofHelper.CreateIntentOwnershipProofAsync(
+    coin, signer, network);
+
+// Query arkd for intents registered with this coin
+var intents = await transport.GetIntentsByProofAsync(proof, message);
+```
+
+The `IntentProofHelper.CreateBip322Psbt` and `IntentProofHelper.SignBip322Proof` building blocks are also available separately for delegation and other proof flows.
+
 ## Boarding (On-chain → Ark)
 
 Boarding lets users move on-chain Bitcoin UTXOs into the Ark VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the boarding UTXO is automatically picked up by the intent/batch pipeline — no manual intervention needed.

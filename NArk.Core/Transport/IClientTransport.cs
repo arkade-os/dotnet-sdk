@@ -31,4 +31,9 @@ public interface IClientTransport
     IAsyncEnumerable<BatchEvent> GetEventStreamAsync(GetEventStreamRequest req, CancellationToken cancellationToken);
     Task<ArkAssetDetails> GetAssetDetailsAsync(string assetId, CancellationToken cancellationToken = default);
     Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves registered intents by providing a BIP-322 proof of ownership of any input.
+    /// </summary>
+    Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default);
 }
