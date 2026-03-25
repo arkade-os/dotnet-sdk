@@ -113,6 +113,21 @@ public class CachingClientTransportTests
     }
 
     [Test]
+    public async Task PassThroughMethods_CallInner_GetVtxoByScriptsWithTimeRange()
+    {
+        var scripts = new HashSet<string> { "script1" };
+        var after = DateTimeOffset.UtcNow.AddHours(-1);
+        var before = DateTimeOffset.UtcNow;
+
+        await foreach (var _ in _cachingTransport.GetVtxoByScriptsAsSnapshot(scripts, after, before)) { }
+
+        _inner.Received(1).GetVtxoByScriptsAsSnapshot(
+            Arg.Is<IReadOnlySet<string>>(s => s.Contains("script1")),
+            after, before,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task PassThroughMethods_CallInner_RegisterIntent()
     {
         var intent = CreateDummyIntent();

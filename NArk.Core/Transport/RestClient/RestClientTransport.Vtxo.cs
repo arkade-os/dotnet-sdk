@@ -9,8 +9,27 @@ namespace NArk.Transport.RestClient;
 
 public partial class RestClientTransport
 {
-    public async IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(
+    public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(
         IReadOnlySet<string> scripts,
+        DateTimeOffset? after, DateTimeOffset? before,
+        CancellationToken cancellationToken = default)
+    {
+        return GetVtxoByScriptsAsSnapshotCore(scripts,
+            after?.ToUnixTimeMilliseconds() ?? 0,
+            before?.ToUnixTimeMilliseconds() ?? 0,
+            cancellationToken);
+    }
+
+    public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(
+        IReadOnlySet<string> scripts,
+        CancellationToken cancellationToken = default)
+    {
+        return GetVtxoByScriptsAsSnapshotCore(scripts, 0, 0, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshotCore(
+        IReadOnlySet<string> scripts,
+        long afterMs, long beforeMs,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         foreach (var scriptsChunk in scripts.Chunk(1000))
@@ -27,6 +46,8 @@ public partial class RestClientTransport
                     query.Add("scripts", s);
                 query["page.size"] = "1000";
                 query["page.index"] = pageIndex.ToString();
+                if (afterMs > 0) query["after"] = afterMs.ToString();
+                if (beforeMs > 0) query["before"] = beforeMs.ToString();
 
                 var json = await _http.GetFromJsonAsync<JsonElement>(
                     $"/v1/indexer/vtxos?{query}", JsonOpts, cancellationToken);

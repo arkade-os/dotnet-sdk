@@ -15,6 +15,17 @@ public interface IClientTransport
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Queries arkd indexer for VTXOs by scripts, filtered to those updated within the given time range.
+    /// </summary>
+    IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
+        DateTimeOffset? after, DateTimeOffset? before,
+        CancellationToken cancellationToken = default)
+    {
+        // Default implementation delegates to the non-filtered overload (backwards compatible)
+        return GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);
+    }
+
+    /// <summary>
     /// Queries arkd indexer for VTXOs by outpoints, optionally filtering by spent status.
     /// </summary>
     IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(IReadOnlyCollection<OutPoint> outpoints,

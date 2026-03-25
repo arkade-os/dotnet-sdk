@@ -125,6 +125,10 @@ public class CachingClientTransport : IClientTransport
     public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
         => _inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);
 
+    public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
+        DateTimeOffset? after, DateTimeOffset? before, CancellationToken cancellationToken = default)
+        => _inner.GetVtxoByScriptsAsSnapshot(scripts, after, before, cancellationToken);
+
     public IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(IReadOnlyCollection<OutPoint> outpoints, bool spentOnly = false, CancellationToken cancellationToken = default)
         => _inner.GetVtxosByOutpoints(outpoints, spentOnly, cancellationToken);
 

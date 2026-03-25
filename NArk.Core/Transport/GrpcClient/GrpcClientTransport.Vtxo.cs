@@ -8,7 +8,25 @@ namespace NArk.Transport.GrpcClient;
 
 public partial class GrpcClientTransport
 {
-    public async IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
+        DateTimeOffset? after, DateTimeOffset? before,
+        CancellationToken cancellationToken = default)
+    {
+        return GetVtxoByScriptsAsSnapshotCore(scripts,
+            after?.ToUnixTimeMilliseconds() ?? 0,
+            before?.ToUnixTimeMilliseconds() ?? 0,
+            cancellationToken);
+    }
+
+    public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
+        CancellationToken cancellationToken = default)
+    {
+        return GetVtxoByScriptsAsSnapshotCore(scripts, 0, 0, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshotCore(IReadOnlySet<string> scripts,
+        long afterMs, long beforeMs,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         foreach (var scriptsChunk in scripts.Chunk(1000))
         {
@@ -24,9 +42,8 @@ public partial class GrpcClientTransport
                     Size = 1000
                 },
                 PendingOnly = false,
-                Before = 0,
-                After = 0,
-                
+                After = afterMs,
+                Before = beforeMs,
             };
 
             GetVtxosResponse? response = null;
