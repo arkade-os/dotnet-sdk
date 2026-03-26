@@ -22,8 +22,7 @@ public class SharedArkInfrastructure
         {
             Assert.Fail(
                 "Ark infrastructure not running. Start it with:\n" +
-                "  cd NArk.Tests.End2End/Infrastructure && ./start-env.sh\n" +
-                "  (Windows: wsl bash ./start-env.sh)\n\n" +
+                "  ./regtest/start-env.sh\n\n" +
                 $"Health check failed: {ex.Message}");
         }
     }

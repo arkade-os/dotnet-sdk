@@ -44,12 +44,12 @@ jobs:
       - name: Cache nigiri binary
         uses: actions/cache@v4
         with:
-          path: NArk.Tests.End2End/Infrastructure/nigiri
-          key: nigiri-${{ runner.os }}-bump-arkd-${{ hashFiles('NArk.Tests.End2End/Infrastructure/start-env.sh') }}
+          path: regtest/_build
+          key: nigiri-${{ runner.os }}-${{ hashFiles('regtest/.env.defaults', '.env.regtest') }}
       - name: Start regtest infrastructure
         run: |
-          chmod +x ./NArk.Tests.End2End/Infrastructure/start-env.sh
-          ./NArk.Tests.End2End/Infrastructure/start-env.sh --clean
+          chmod +x regtest/*.sh regtest/helpers/*.sh
+          ./regtest/start-env.sh
         timeout-minutes: 10
       - name: Restore and build
         run: dotnet build
@@ -59,13 +59,12 @@ jobs:
       - name: Collect docker logs on failure
         if: failure()
         run: |
-          docker compose -f NArk.Tests.End2End/Infrastructure/docker-compose.ark.yml logs > /tmp/ark-overlay-logs.txt 2>&1 || true
           docker logs ark > /tmp/arkd-logs.txt 2>&1 || true
           docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
           docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
           docker logs boltz-lnd > /tmp/boltz-lnd-logs.txt 2>&1 || true
-          docker logs fulmine-delegator > /tmp/fulmine-delegator-logs.txt 2>&1 || true
+          docker logs boltz-fulmine > /tmp/fulmine-logs.txt 2>&1 || true
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -75,8 +74,8 @@ jobs:
       - name: Stop infrastructure
         if: always()
         run: |
-          docker compose -f NArk.Tests.End2End/Infrastructure/docker-compose.ark.yml down --volumes || true
-          ./NArk.Tests.End2End/Infrastructure/nigiri/build/nigiri-linux-amd64 stop --delete || true
+          chmod +x regtest/*.sh regtest/helpers/*.sh 2>/dev/null
+          ./regtest/clean-env.sh || true
 
   publish:
     name: Publish NuGet Packages
