@@ -1,0 +1,69 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "files": [
+            "NArk.Abstractions/NArk.Abstractions.csproj",
+            "NArk.Core/NArk.Core.csproj",
+            "NArk.Swaps/NArk.Swaps.csproj",
+            "NArk.Storage.EfCore/NArk.Storage.EfCore.csproj"
+          ]
+        }
+      ],
+      "dest": "api",
+      "properties": {
+        "TargetFramework": "net8.0"
+      },
+      "filter": "docs/filterConfig.yml"
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "files": [
+          "api/**.yml",
+          "api/index.md"
+        ]
+      },
+      {
+        "files": [
+          "docs/articles/**.md",
+          "docs/articles/**/toc.yml",
+          "docs/toc.yml",
+          "docs/index.md"
+        ]
+      },
+      {
+        "files": [
+          "toc.yml",
+          "index.md"
+        ]
+      }
+    ],
+    "resource": [
+      {
+        "files": [
+          "docs/images/**"
+        ]
+      }
+    ],
+    "output": "_site",
+    "template": [
+      "default",
+      "modern"
+    ],
+    "globalMetadata": {
+      "_appTitle": "NArk .NET SDK",
+      "_appName": "NArk SDK Docs",
+      "_appFooter": "© Ark Labs — MIT License",
+      "_enableSearch": true,
+      "_gitContribute": {
+        "repo": "https://github.com/arkade-os/dotnet-sdk",
+        "branch": "master",
+        "apiSpecFolder": "docs"
+      }
+    },
+    "disableGitFeatures": false
+  }
+}

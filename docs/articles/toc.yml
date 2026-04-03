@@ -1,0 +1,16 @@
+- name: Getting Started
+  href: getting-started.md
+- name: Architecture
+  href: architecture.md
+- name: Wallets
+  href: wallets.md
+- name: Spending
+  href: spending.md
+- name: Assets
+  href: assets.md
+- name: Swaps
+  href: swaps.md
+- name: Storage
+  href: storage.md
+- name: Development
+  href: development.md

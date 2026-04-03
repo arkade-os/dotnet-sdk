@@ -67,3 +67,8 @@ nul
 
 # Superpowers docs (auto-generated)
 docs/superpowers/
+
+# DocFX
+_site/
+api/*.yml
+api/.manifest
