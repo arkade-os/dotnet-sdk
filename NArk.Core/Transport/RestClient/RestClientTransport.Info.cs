@@ -60,7 +60,11 @@ public partial class RestClientTransport
                 IntentOnchainOutput: GetJsonStringOrZero(intentFee, "onchain_output"),
                 IntentOffchainInput: GetJsonStringOrZero(intentFee, "offchain_input"),
                 IntentOnchainInput: GetJsonStringOrZero(intentFee, "onchain_input")
-            )
+            ),
+            VtxoMinAmount: Money.Satoshis(GetJsonInt64OrDefault(json, "vtxo_min_amount")),
+            VtxoMaxAmount: ParseAmountLimit(GetJsonInt64OrDefault(json, "vtxo_max_amount", -1)),
+            UtxoMinAmount: Money.Satoshis(GetJsonInt64OrDefault(json, "utxo_min_amount")),
+            UtxoMaxAmount: ParseAmountLimit(GetJsonInt64OrDefault(json, "utxo_max_amount", -1))
         );
     }
 
@@ -70,5 +74,15 @@ public partial class RestClientTransport
         if (!el.TryGetProperty(prop, out var val)) return "0.0";
         var s = val.GetString();
         return string.IsNullOrWhiteSpace(s) ? "0.0" : s;
+    }
+
+    private static long GetJsonInt64OrDefault(JsonElement el, string prop, long defaultValue = 0)
+    {
+        return el.TryGetProperty(prop, out var val) ? val.GetInt64() : defaultValue;
+    }
+
+    private static Money ParseAmountLimit(long value)
+    {
+        return value < 0 ? Money.Coins(21_000_000m) : Money.Satoshis(value);
     }
 }

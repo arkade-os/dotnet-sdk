@@ -72,6 +72,9 @@ public class SpendingService(
 
             var outputsSumInSatoshis = outputs.Sum(o => o.Value);
 
+            // Validate VTXO output amounts against server bounds
+            ValidateVtxoOutputBounds(serverInfo, outputs);
+
             // Check if any output is explicitly subdust (the user wants to send subdust amount)
             var hasExplicitSubdustOutput = outputs.Count(o => o.Value < serverInfo.Dust);
 
@@ -192,6 +195,9 @@ public class SpendingService(
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
 
         var outputsSumInSatoshis = outputs.Sum(o => o.Value);
+
+        // Validate VTXO output amounts against server bounds
+        ValidateVtxoOutputBounds(serverInfo, outputs);
 
         // Check if any output is explicitly subdust (the user wants to send subdust amount)
         var hasExplicitSubdustOutput = outputs.Count(o => o.Value < serverInfo.Dust);
@@ -348,5 +354,30 @@ public class SpendingService(
             assetInputTuples,
             assetOutputTuples.Count > 0 ? assetOutputTuples : null,
             changeOutputIndex);
+    }
+
+    /// <summary>
+    /// Validates that VTXO output amounts fall within server-configured bounds.
+    /// Only checks non-onchain (VTXO) outputs; onchain outputs (collaborative exits) are not bounded.
+    /// </summary>
+    private static void ValidateVtxoOutputBounds(ArkServerInfo serverInfo, ArkTxOut[] outputs)
+    {
+        foreach (var output in outputs)
+        {
+            if (output.Type != ArkTxOutType.Vtxo)
+                continue;
+
+            // Skip subdust outputs — they become OP_RETURN outputs, not real VTXOs
+            if (output.Value < serverInfo.Dust)
+                continue;
+
+            if (serverInfo.VtxoMinAmount is { } vtxoMin && vtxoMin > Money.Zero && output.Value < vtxoMin)
+                throw new InvalidOperationException(
+                    $"Output value {output.Value} is below the server minimum VTXO amount of {vtxoMin}.");
+
+            if (serverInfo.VtxoMaxAmount is { } vtxoMax && output.Value > vtxoMax)
+                throw new InvalidOperationException(
+                    $"Output value {output.Value} exceeds the server maximum VTXO amount of {vtxoMax}.");
+        }
     }
 }
