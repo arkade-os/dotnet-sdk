@@ -30,11 +30,24 @@ jobs:
           8.0.x
           10.0.x
 
+    - name: Install wasm-tools workload
+      run: dotnet workload install wasm-tools
+
     - name: Install DocFX
       run: dotnet tool install -g docfx
 
     - name: Build Documentation
       run: docfx docfx.json
+
+    - name: Publish Blazor WASM Wallet
+      run: dotnet publish samples/NArk.Wallet/NArk.Wallet.Client/NArk.Wallet.Client.csproj -c Release -o _wallet_publish
+
+    - name: Copy wallet into docs site
+      run: |
+        mkdir -p _site/wallet
+        cp -r _wallet_publish/wwwroot/* _site/wallet/
+        # GitHub Pages needs .nojekyll to serve _framework/ directory
+        touch _site/.nojekyll
 
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3

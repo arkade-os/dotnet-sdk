@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Arkade Wallet</title>
-    <base href="/" />
+    <base href="/dotnet-sdk/wallet/" />
     <link rel="stylesheet" href="css/app.css" />
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png" />
@@ -18,6 +18,7 @@
             <div style="width:120px;height:20px;border-radius:8px;background:linear-gradient(90deg,rgba(255,255,255,0.04) 25%,rgba(255,255,255,0.08) 50%,rgba(255,255,255,0.04) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;"></div>
         </div>
     </div>
+    <script src="coi-serviceworker.js"></script>
     <script src="_framework/blazor.webassembly.js"></script>
     <script src="js/interop.js"></script>
     <script>navigator.serviceWorker.register('service-worker.js');</script>

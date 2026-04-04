@@ -36,4 +36,5 @@ NArk provides everything you need to integrate Arkade into .NET applications: wa
 - [GitHub Repository](https://github.com/arkade-os/dotnet-sdk)
 - [NuGet Packages](https://www.nuget.org/profiles/ArkLabs)
 - [Arkade Protocol](https://ark-protocol.org)
-- [Sample Wallet App](https://github.com/arkade-os/dotnet-sdk/tree/master/samples/NArk.Wallet)
+- [Live Wallet Demo](wallet/) — Blazor WASM sample app running entirely in-browser
+- [Sample Wallet Source](https://github.com/arkade-os/dotnet-sdk/tree/master/samples/NArk.Wallet)
