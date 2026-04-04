@@ -21,29 +21,29 @@ services.Configure<BoltzOptions>(opts =>
 });
 ```
 
-## Submarine Swap (Lightning → Ark)
+## Submarine Swap (Ark → Lightning)
+
+Pay a Lightning invoice from your Ark wallet:
+
+```csharp
+var swap = await swapService.CreateSubmarineSwap(
+    walletId,
+    bolt11Invoice,
+    cancellationToken: ct);
+```
+
+## Reverse Swap (Lightning → Ark)
 
 Receive a Lightning payment as a VTXO:
 
 ```csharp
-var swap = await swapService.CreateSubmarineSwap(
+var swap = await swapService.CreateReverseSwap(
     walletId,
     amountSats: 50_000,
     cancellationToken: ct);
 
 // swap.Invoice — BOLT11 invoice for the payer
 // The SDK monitors the swap and creates the VTXO automatically
-```
-
-## Reverse Swap (Ark → Lightning)
-
-Pay a Lightning invoice from your Ark wallet:
-
-```csharp
-var swap = await swapService.CreateReverseSwap(
-    walletId,
-    bolt11Invoice,
-    cancellationToken: ct);
 ```
 
 ## Chain Swap (BTC ↔ Ark)
