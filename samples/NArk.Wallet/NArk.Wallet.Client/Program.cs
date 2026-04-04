@@ -6,6 +6,7 @@ using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain.NBXplorer;
+using NArk.Abstractions.Intents;
 using NArk.Core.Services;
 using NArk.Core.Wallet;
 using NArk.Hosting;
@@ -36,6 +37,7 @@ builder.Services.AddArkRestTransport(networkConfig);
 builder.Services.AddArkSwapServices();
 
 // ── SDK infrastructure ──
+builder.Services.AddSingleton<IIntentScheduler, SimpleIntentScheduler>();
 builder.Services.AddSingleton<ISafetyService, WasmSafetyService>();
 builder.Services.AddSingleton<IChainTimeProvider>(sp =>
 {
