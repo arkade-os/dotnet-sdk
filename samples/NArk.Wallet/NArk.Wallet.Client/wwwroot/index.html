@@ -17,6 +17,20 @@
             <div style="width:120px;height:20px;border-radius:8px;background:linear-gradient(90deg,rgba(255,255,255,0.04) 25%,rgba(255,255,255,0.08) 50%,rgba(255,255,255,0.04) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;"></div>
         </div>
     </div>
+    <script>
+        // GitHub Pages SPA fallback: restore route after 404.html redirect
+        (function(){
+            var redirect = sessionStorage.getItem('blazor-redirect');
+            if (redirect) {
+                sessionStorage.removeItem('blazor-redirect');
+                var base = '/dotnet-sdk/wallet/';
+                if (redirect.startsWith(base)) {
+                    var route = redirect.substring(base.length);
+                    if (route) history.replaceState(null, '', base + route);
+                }
+            }
+        })();
+    </script>
     <script src="_framework/blazor.webassembly.js"></script>
     <script src="_content/Bit.Besql/bit-besql.js"></script>
     <script src="js/interop.js"></script>

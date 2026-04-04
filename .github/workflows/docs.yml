@@ -48,6 +48,8 @@ jobs:
         cp -r _wallet_publish/wwwroot/* _site/wallet/
         # GitHub Pages needs .nojekyll to serve _framework/ directory
         touch _site/.nojekyll
+        # SPA fallback: GitHub Pages serves 404.html from site root only
+        cp _site/wallet/404.html _site/404.html
 
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3
