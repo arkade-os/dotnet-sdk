@@ -33,10 +33,21 @@ public class ArkWalletService(
 
     public async Task<ArkWalletInfo> CreateWallet(string? secret = null)
     {
-        var serverInfo = await transport.GetServerInfoAsync();
-        var walletSecret = secret ?? GenerateNsec();
-        var wallet = await WalletFactory.CreateWallet(walletSecret, null, serverInfo);
-        await walletStorage.SaveWallet(wallet);
+        ArkServerInfo serverInfo;
+        try { serverInfo = await transport.GetServerInfoAsync(); }
+        catch (Exception ex) { throw new InvalidOperationException($"GetServerInfo failed: {ex.GetType().Name}: {ex.Message}", ex); }
+
+        string walletSecret;
+        try { walletSecret = secret ?? GenerateNsec(); }
+        catch (Exception ex) { throw new InvalidOperationException($"GenerateNsec failed: {ex.GetType().Name}: {ex.Message}", ex); }
+
+        ArkWalletInfo wallet;
+        try { wallet = await WalletFactory.CreateWallet(walletSecret, null, serverInfo); }
+        catch (Exception ex) { throw new InvalidOperationException($"WalletFactory.CreateWallet failed: {ex.GetType().Name}: {ex.Message}", ex); }
+
+        try { await walletStorage.SaveWallet(wallet); }
+        catch (Exception ex) { throw new InvalidOperationException($"SaveWallet failed: {ex.GetType().Name}: {ex.Message}", ex); }
+
         return wallet;
     }
 
