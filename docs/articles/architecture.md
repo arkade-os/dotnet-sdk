@@ -8,7 +8,7 @@ NArk (meta-package)
  │    ├── Services (spending, batches, VTXO sync, sweeping, intents)
  │    ├── Wallet (WalletFactory, signers, address providers)
  │    ├── Hosting (DI extensions, ArkApplicationBuilder)
- │    └── Transport (gRPC client for Ark server communication)
+ │    └── Transport (gRPC client for Arkade server communication)
  │
  ├── NArk.Swaps
  │    ├── Boltz client (submarine & chain swaps)
@@ -48,7 +48,7 @@ The SDK is built around pluggable interfaces. Provide your own implementations o
 
 ## Transport Layer
 
-Communication with the Ark server (arkd) uses gRPC:
+Communication with the Arkade server (arkd) uses gRPC:
 
 - **`GrpcClientTransport`** — direct gRPC connection
 - **`RestClientTransport`** — REST/JSON fallback (e.g., for browser environments)

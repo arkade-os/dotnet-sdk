@@ -38,7 +38,7 @@ Outputs below the dust threshold are converted to OP_RETURN outputs. The server 
 
 ## Collaborative Exit (On-Chain Withdrawal)
 
-To move funds from Ark back to on-chain Bitcoin:
+To move funds from Arkade back to on-chain Bitcoin:
 
 ```csharp
 var txId = await spendingService.Spend(

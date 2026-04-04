@@ -11,7 +11,7 @@ A .NET SDK for building applications on [Arkade](https://arkadeos.com) — a Bit
 |---------|-------------|
 | **NArk.Abstractions** | Interfaces and domain types (`IVtxoStorage`, `IContractStorage`, `IWalletProvider`, `ArkCoin`, `ArkVtxo`, etc.) |
 | **NArk.Core** | Core services: spending, batch management, VTXO sync, sweeping, wallet infrastructure, gRPC transport |
-| **NArk.Swaps** | [Boltz](https://boltz.exchange) swap integration for BTC-to-Ark and Ark-to-BTC chain/submarine swaps |
+| **NArk.Swaps** | [Boltz](https://boltz.exchange) swap integration for BTC-to-Arkade and Arkade-to-BTC chain/submarine swaps |
 | **NArk.Storage.EfCore** | Entity Framework Core storage implementations (provider-agnostic — works with PostgreSQL, SQLite, etc.) |
 | **NArk** | Meta-package that pulls in `NArk.Core` + `NArk.Swaps` |
 
@@ -86,7 +86,7 @@ NArk (meta-package)
  │    ├── Services (spending, batches, VTXO sync, sweeping, intents)
  │    ├── Wallet (WalletFactory, signers, address providers)
  │    ├── Hosting (DI extensions, ArkApplicationBuilder)
- │    └── Transport (gRPC client for Ark server communication)
+ │    └── Transport (gRPC client for Arkade server communication)
  │
  ├── NArk.Swaps
  │    ├── Boltz client (submarine & chain swaps)
@@ -138,7 +138,7 @@ var all = await walletStorage.LoadAllWallets();
 
 ## Spending
 
-Use `ISpendingService` to send Ark transactions:
+Use `ISpendingService` to send Arkade transactions:
 
 ```csharp
 // Automatic coin selection
@@ -156,7 +156,7 @@ var txId = await spendingService.Spend(
 
 ## Assets
 
-The SDK supports issuing, transferring, and burning assets on Ark. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Ark transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
+The SDK supports issuing, transferring, and burning assets on Arkade. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Ark transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
 
 ### Issuance
 
@@ -167,7 +167,7 @@ var result = await assetManager.IssueAsync(walletId,
     new IssuanceParams(Amount: 1000));
 
 // result.AssetId  — the unique asset identifier
-// result.ArkTxId  — the Ark transaction that created it
+// result.ArkTxId  — the Arkade transaction that created it
 ```
 
 Issue with metadata:
@@ -241,7 +241,7 @@ foreach (var coin in coins.Where(c => c.Assets is { Count: > 0 }))
 }
 ```
 
-Query asset details from the Ark server:
+Query asset details from the Arkade server:
 
 ```csharp
 var details = await transport.GetAssetDetailsAsync(assetId);
@@ -321,7 +321,7 @@ Each transformer implements:
 
 ## Collaborative Exits (On-chain)
 
-Move funds from Ark back to the Bitcoin base layer:
+Move funds from Arkade back to the Bitcoin base layer:
 
 ```csharp
 var btcTxId = await onchainService.InitiateCollaborativeExit(
@@ -344,9 +344,9 @@ var intents = await transport.GetIntentsByProofAsync(proof, message);
 
 The `IntentProofHelper.CreateBip322Psbt` and `IntentProofHelper.SignBip322Proof` building blocks are also available separately for delegation and other proof flows.
 
-## Boarding (On-chain → Ark)
+## Boarding (On-chain → Arkade)
 
-Boarding lets users move on-chain Bitcoin UTXOs into the Ark VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the boarding UTXO is automatically picked up by the intent/batch pipeline — no manual intervention needed.
+Boarding lets users move on-chain Bitcoin UTXOs into the Arkade VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the boarding UTXO is automatically picked up by the intent/batch pipeline — no manual intervention needed.
 
 ### 1. Derive a Boarding Address
 
@@ -420,7 +420,7 @@ await sweepService.SweepExpiredUtxosAsync(ct);
 Derive receiving addresses and manage contracts:
 
 ```csharp
-// Derive a new receive contract (generates a new Ark address)
+// Derive a new receive contract (generates a new Arkade address)
 var contract = await contractService.DeriveContract(
     walletId,
     NextContractPurpose.Receive);
@@ -496,7 +496,7 @@ services.AddArkNetwork(new ArkNetworkConfig(
 
 ## Swaps (Boltz Integration)
 
-Enable Bitcoin &harr; Ark swaps through [Boltz](https://boltz.exchange):
+Enable Bitcoin &harr; Arkade swaps through [Boltz](https://boltz.exchange):
 
 ```csharp
 // Fluent builder

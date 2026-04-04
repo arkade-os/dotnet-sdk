@@ -9,7 +9,7 @@ services.AddDbContextFactory<YourDbContext>(opts =>
 services.AddArkEfCoreStorage<YourDbContext>();
 ```
 
-Your `DbContext` must inherit from or include the Ark entity configuration:
+Your `DbContext` must inherit from or include the Arkade entity configuration:
 
 ```csharp
 public class YourDbContext : DbContext
@@ -17,7 +17,7 @@ public class YourDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        modelBuilder.AddArkEntities(); // Adds all Ark tables
+        modelBuilder.AddArkEntities(); // Adds all Arkade tables
     }
 }
 ```
