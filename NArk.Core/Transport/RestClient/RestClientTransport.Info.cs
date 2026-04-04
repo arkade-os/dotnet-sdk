@@ -18,69 +18,106 @@ public partial class RestClientTransport
     {
         var json = await _http.GetFromJsonAsync<JsonElement>("/v1/info", JsonOpts, cancellationToken);
 
-        var networkStr = json.GetProperty("network").GetString()!;
+        var networkStr = GetString(json, "network");
         var network = Network.GetNetwork(networkStr) ?? (networkStr == "bitcoin" ? Network.Main
             : throw new InvalidOperationException("Ark server advertises unknown network"));
 
-        var checkpointTapscript = json.GetProperty("checkpoint_tapscript").GetString()!;
+        var checkpointTapscript = GetString(json, "checkpoint_tapscript", "checkpointTapscript");
         var serverUnrollScript = UnilateralPathArkTapScript.Parse(checkpointTapscript);
 
-        var signerPubkey = json.GetProperty("signer_pubkey").GetString()!;
-        var forfeitPubkey = json.GetProperty("forfeit_pubkey").GetString()!;
+        var signerPubkey = GetString(json, "signer_pubkey", "signerPubkey");
+        var forfeitPubkey = GetString(json, "forfeit_pubkey", "forfeitPubkey");
         var fPubKey = forfeitPubkey.ToECXOnlyPubKey();
 
         var deprecatedSigners = new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>();
-        if (json.TryGetProperty("deprecated_signers", out var ds) && ds.ValueKind == JsonValueKind.Array)
+        if (TryGetProp(json, "deprecated_signers", "deprecatedSigners", out var ds) && ds.ValueKind == JsonValueKind.Array)
         {
             foreach (var signer in ds.EnumerateArray())
             {
-                var pk = signer.GetProperty("pubkey").GetString()!.ToECXOnlyPubKey();
-                var cutoff = signer.GetProperty("cutoff_date").GetInt64();
+                var pk = GetString(signer, "pubkey").ToECXOnlyPubKey();
+                var cutoff = GetInt64(signer, "cutoff_date", "cutoffDate");
                 deprecatedSigners[pk] = cutoff;
             }
         }
 
-        // Parse fees
-        var fees = json.TryGetProperty("fees", out var feesEl) ? feesEl : default;
-        var intentFee = fees.ValueKind == JsonValueKind.Object && fees.TryGetProperty("intent_fee", out var ifEl) ? ifEl : default;
+        // Parse fees — handle both snake_case and camelCase
+        JsonElement fees = default;
+        TryGetProp(json, "fees", "fees", out fees);
+        JsonElement intentFee = default;
+        if (fees.ValueKind == JsonValueKind.Object)
+            TryGetProp(fees, "intent_fee", "intentFee", out intentFee);
 
         return new ArkServerInfo(
-            Dust: Money.Satoshis(json.GetProperty("dust").GetInt64()),
+            Dust: Money.Satoshis(GetInt64(json, "dust")),
             SignerKey: PubKeyExtensions.ParseOutputDescriptor(signerPubkey, network),
             DeprecatedSigners: deprecatedSigners,
             Network: network,
-            UnilateralExit: ParseSequence(json.GetProperty("unilateral_exit_delay").GetInt64()),
-            BoardingExit: ParseSequence(json.GetProperty("boarding_exit_delay").GetInt64()),
-            ForfeitAddress: BitcoinAddress.Create(json.GetProperty("forfeit_address").GetString()!, network),
+            UnilateralExit: ParseSequence(GetInt64(json, "unilateral_exit_delay", "unilateralExitDelay")),
+            BoardingExit: ParseSequence(GetInt64(json, "boarding_exit_delay", "boardingExitDelay")),
+            ForfeitAddress: BitcoinAddress.Create(GetString(json, "forfeit_address", "forfeitAddress"), network),
             ForfeitPubKey: fPubKey,
             CheckpointTapScript: serverUnrollScript,
             FeeTerms: new ArkOperatorFeeTerms(
-                TxFeeRate: GetJsonStringOrZero(fees, "tx_fee_rate"),
-                IntentOffchainOutput: GetJsonStringOrZero(intentFee, "offchain_output"),
-                IntentOnchainOutput: GetJsonStringOrZero(intentFee, "onchain_output"),
-                IntentOffchainInput: GetJsonStringOrZero(intentFee, "offchain_input"),
-                IntentOnchainInput: GetJsonStringOrZero(intentFee, "onchain_input")
+                TxFeeRate: GetJsonStringOrZero(fees, "tx_fee_rate", "txFeeRate"),
+                IntentOffchainOutput: GetJsonStringOrZero(intentFee, "offchain_output", "offchainOutput"),
+                IntentOnchainOutput: GetJsonStringOrZero(intentFee, "onchain_output", "onchainOutput"),
+                IntentOffchainInput: GetJsonStringOrZero(intentFee, "offchain_input", "offchainInput"),
+                IntentOnchainInput: GetJsonStringOrZero(intentFee, "onchain_input", "onchainInput")
             ),
-            MaxTxWeight: json.TryGetProperty("max_tx_weight", out var mtw) ? mtw.GetInt64() : 0,
-            MaxOpReturnOutputs: json.TryGetProperty("max_op_return_outputs", out var mor) ? (int)mor.GetInt64() : 0,
-            VtxoMinAmount: Money.Satoshis(GetJsonInt64OrDefault(json, "vtxo_min_amount")),
-            VtxoMaxAmount: ParseAmountLimit(GetJsonInt64OrDefault(json, "vtxo_max_amount", -1)),
-            UtxoMinAmount: Money.Satoshis(GetJsonInt64OrDefault(json, "utxo_min_amount")),
-            UtxoMaxAmount: ParseAmountLimit(GetJsonInt64OrDefault(json, "utxo_max_amount", -1))
+            MaxTxWeight: GetInt64Optional(json, "max_tx_weight", "maxTxWeight"),
+            MaxOpReturnOutputs: (int)GetInt64Optional(json, "max_op_return_outputs", "maxOpReturnOutputs"),
+            VtxoMinAmount: Money.Satoshis(GetInt64Optional(json, "vtxo_min_amount", "vtxoMinAmount")),
+            VtxoMaxAmount: ParseAmountLimit(GetInt64Optional(json, "vtxo_max_amount", "vtxoMaxAmount", -1)),
+            UtxoMinAmount: Money.Satoshis(GetInt64Optional(json, "utxo_min_amount", "utxoMinAmount")),
+            UtxoMaxAmount: ParseAmountLimit(GetInt64Optional(json, "utxo_max_amount", "utxoMaxAmount", -1))
         );
     }
 
-    private static string GetJsonStringOrZero(JsonElement el, string prop)
+    /// <summary>
+    /// Gets a string property, checking snake_case then camelCase.
+    /// </summary>
+    private static string GetString(JsonElement el, string snakeCase, string? camelCase = null)
     {
-        if (el.ValueKind != JsonValueKind.Object) return "0.0";
-        if (!el.TryGetProperty(prop, out var val)) return "0.0";
-        var s = val.GetString();
-        return string.IsNullOrWhiteSpace(s) ? "0.0" : s;
+        if (el.TryGetProperty(snakeCase, out var v)) return v.GetString()!;
+        if (camelCase is not null && el.TryGetProperty(camelCase, out v)) return v.GetString()!;
+        return el.GetProperty(snakeCase).GetString()!; // throw with original name
     }
 
-    private static long GetJsonInt64OrDefault(JsonElement el, string prop, long defaultValue = 0)
+    /// <summary>
+    /// Gets an int64, handling both numeric and string-encoded values (proto3 JSON),
+    /// checking snake_case then camelCase property names.
+    /// </summary>
+    private static long GetInt64(JsonElement el, string snakeCase, string? camelCase = null)
     {
-        return el.TryGetProperty(prop, out var val) ? val.GetInt64() : defaultValue;
+        JsonElement v;
+        if (!el.TryGetProperty(snakeCase, out v))
+        {
+            if (camelCase is null || !el.TryGetProperty(camelCase, out v))
+                v = el.GetProperty(snakeCase); // throw with original name
+        }
+        return v.ValueKind == JsonValueKind.String ? long.Parse(v.GetString()!) : v.GetInt64();
+    }
+
+    /// <summary>
+    /// Gets an optional int64, returning defaultValue if the property doesn't exist.
+    /// </summary>
+    private static long GetInt64Optional(JsonElement el, string snakeCase, string? camelCase = null, long defaultValue = 0)
+    {
+        if (el.TryGetProperty(snakeCase, out var v) || (camelCase is not null && el.TryGetProperty(camelCase, out v)))
+        {
+            return v.ValueKind == JsonValueKind.String ? long.Parse(v.GetString()!) : v.GetInt64();
+        }
+        return defaultValue;
+    }
+
+    private static string GetJsonStringOrZero(JsonElement el, string snakeCase, string? camelCase = null)
+    {
+        if (el.ValueKind != JsonValueKind.Object) return "0.0";
+        JsonElement val;
+        if (!el.TryGetProperty(snakeCase, out val) && (camelCase is null || !el.TryGetProperty(camelCase, out val)))
+            return "0.0";
+        var s = val.GetString();
+        return string.IsNullOrWhiteSpace(s) ? "0.0" : s;
     }
 
     private static Money ParseAmountLimit(long value)
