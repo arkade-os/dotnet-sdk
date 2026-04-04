@@ -99,17 +99,9 @@ public class CachingClientTransport : IClientTransport
     /// </summary>
     public void InvalidateServerInfoCache()
     {
-        _lock.Wait();
-        try
-        {
-            _cachedServerInfo = null;
-            _serverInfoExpiresAt = DateTimeOffset.MinValue;
-            _logger?.LogDebug("Server info cache invalidated");
-        }
-        finally
-        {
-            _lock.Release();
-        }
+        _cachedServerInfo = null;
+        _serverInfoExpiresAt = DateTimeOffset.MinValue;
+        _logger?.LogDebug("Server info cache invalidated");
     }
 
     /// <summary>

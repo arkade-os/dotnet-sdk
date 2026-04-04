@@ -12,6 +12,10 @@
         <button class="btn btn-primary" @onclick="CreateWallet" disabled="@_creating">
             @(_creating ? "Creating..." : "Create Wallet")
         </button>
+        @if (_error is not null)
+        {
+            <p style="color:#ef4444;margin-top:12px;font-size:14px;">@_error</p>
+        }
     }
     else
     {
@@ -128,6 +132,7 @@
     private int _activeSlide;
     private int _slideCount = 3;
     private bool _creating;
+    private string? _error;
 
     protected override async Task OnInitializedAsync()
     {
@@ -157,11 +162,17 @@
     private async Task CreateWallet()
     {
         _creating = true;
+        _error = null;
         try
         {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var wallet = await Ark.CreateWallet();
             State.SetActiveWallet(wallet.Id);
             await LoadWallet();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to create wallet: {ex.Message}";
         }
         finally { _creating = false; }
     }

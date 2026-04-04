@@ -85,6 +85,7 @@ public partial class RestClientTransport
         var url = $"/v1/batch/events?{queryString}";
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -97,6 +98,16 @@ public partial class RestClientTransport
             if (line is null) break;
             if (string.IsNullOrWhiteSpace(line)) continue;
 
+            // SSE format: lines prefixed with "data: "
+            if (line.StartsWith("data: "))
+                line = line[6..];
+            else if (line.StartsWith("data:"))
+                line = line[5..];
+            else if (line.StartsWith(":") || line.StartsWith("event:") || line.StartsWith("id:") || line.StartsWith("retry:"))
+                continue; // Skip SSE comments and non-data fields
+
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
             JsonElement json;
             try { json = JsonSerializer.Deserialize<JsonElement>(line, JsonOpts); }
             catch { continue; }
@@ -107,6 +118,21 @@ public partial class RestClientTransport
         }
     }
 
+    /// <summary>
+    /// Case-insensitive property lookup for JsonElement.
+    /// arkd SSE uses camelCase, gRPC-gateway uses snake_case.
+    /// </summary>
+    private static bool TryGetProp(JsonElement el, string snakeCase, string camelCase, out JsonElement value)
+    {
+        return el.TryGetProperty(snakeCase, out value) || el.TryGetProperty(camelCase, out value);
+    }
+
+    private static JsonElement GetProp(JsonElement el, string snakeCase, string camelCase)
+    {
+        if (el.TryGetProperty(snakeCase, out var v)) return v;
+        return el.GetProperty(camelCase);
+    }
+
     private BatchEvent? ParseBatchEvent(JsonElement json)
     {
         // gRPC-gateway wraps the oneof in a "result" envelope for server streaming
@@ -115,53 +141,53 @@ public partial class RestClientTransport
         if (root.TryGetProperty("heartbeat", out _))
             return null;
 
-        if (root.TryGetProperty("stream_started", out var ss))
+        if (TryGetProp(root, "stream_started", "streamStarted", out var ss))
             return new StreamStartedEvent(ss.GetProperty("id").GetString()!);
 
-        if (root.TryGetProperty("batch_started", out var bs))
+        if (TryGetProp(root, "batch_started", "batchStarted", out var bs))
         {
             var intentHashes = new List<string>();
-            if (bs.TryGetProperty("intent_id_hashes", out var ih))
+            if (TryGetProp(bs, "intent_id_hashes", "intentIdHashes", out var ih))
                 foreach (var h in ih.EnumerateArray())
                     if (h.GetString() is { } s) intentHashes.Add(s);
 
             return new BatchStartedEvent(
                 bs.GetProperty("id").GetString()!,
-                ParseSequence(bs.GetProperty("batch_expiry").GetInt64()),
+                ParseSequence(GetProp(bs, "batch_expiry", "batchExpiry").GetInt64()),
                 intentHashes);
         }
 
-        if (root.TryGetProperty("batch_finalization", out var bf))
+        if (TryGetProp(root, "batch_finalization", "batchFinalization", out var bf))
             return new BatchFinalizationEvent(
-                bf.GetProperty("commitment_tx").GetString()!,
+                GetProp(bf, "commitment_tx", "commitmentTx").GetString()!,
                 bf.GetProperty("id").GetString()!);
 
-        if (root.TryGetProperty("batch_finalized", out var bfd))
+        if (TryGetProp(root, "batch_finalized", "batchFinalized", out var bfd))
             return new BatchFinalizedEvent(
-                bfd.GetProperty("commitment_txid").GetString()!,
+                GetProp(bfd, "commitment_txid", "commitmentTxid").GetString()!,
                 bfd.GetProperty("id").GetString()!);
 
-        if (root.TryGetProperty("batch_failed", out var bfl))
+        if (TryGetProp(root, "batch_failed", "batchFailed", out var bfl))
             return new BatchFailedEvent(
                 bfl.GetProperty("id").GetString()!,
                 bfl.GetProperty("reason").GetString()!);
 
-        if (root.TryGetProperty("tree_signing_started", out var tss))
+        if (TryGetProp(root, "tree_signing_started", "treeSigningStarted", out var tss))
         {
             var cosigners = Array.Empty<string>();
-            if (tss.TryGetProperty("cosigners_pubkeys", out var cp))
+            if (TryGetProp(tss, "cosigners_pubkeys", "cosignersPubkeys", out var cp))
                 cosigners = cp.EnumerateArray().Select(e => e.GetString()!).ToArray();
 
             return new TreeSigningStartedEvent(
-                tss.GetProperty("unsigned_commitment_tx").GetString()!,
+                GetProp(tss, "unsigned_commitment_tx", "unsignedCommitmentTx").GetString()!,
                 tss.GetProperty("id").GetString()!,
                 cosigners);
         }
 
-        if (root.TryGetProperty("tree_nonces_aggregated", out var tna))
+        if (TryGetProp(root, "tree_nonces_aggregated", "treeNoncesAggregated", out var tna))
         {
             var nonces = new Dictionary<string, string>();
-            if (tna.TryGetProperty("tree_nonces", out var tn) && tn.ValueKind == JsonValueKind.Object)
+            if (TryGetProp(tna, "tree_nonces", "treeNonces", out var tn) && tn.ValueKind == JsonValueKind.Object)
                 foreach (var prop in tn.EnumerateObject())
                     nonces[prop.Name] = prop.Value.GetString()!;
 
@@ -170,7 +196,7 @@ public partial class RestClientTransport
                 nonces);
         }
 
-        if (root.TryGetProperty("tree_tx", out var ttx))
+        if (TryGetProp(root, "tree_tx", "treeTx", out var ttx))
         {
             var children = new Dictionary<uint, string>();
             if (ttx.TryGetProperty("children", out var ch) && ch.ValueKind == JsonValueKind.Object)
@@ -185,13 +211,13 @@ public partial class RestClientTransport
 
             return new TreeTxEvent(
                 ttx.GetProperty("id").GetString()!,
-                ttx.GetProperty("batch_index").GetInt32(),
+                GetProp(ttx, "batch_index", "batchIndex").GetInt32(),
                 children, topics,
                 ttx.GetProperty("tx").GetString()!,
                 ttx.GetProperty("txid").GetString()!);
         }
 
-        if (root.TryGetProperty("tree_signature", out var tsig))
+        if (TryGetProp(root, "tree_signature", "treeSignature", out var tsig))
         {
             var topics = new List<string>();
             if (tsig.TryGetProperty("topic", out var tp) && tp.ValueKind == JsonValueKind.Array)
@@ -199,14 +225,14 @@ public partial class RestClientTransport
                     if (t.GetString() is { } s) topics.Add(s);
 
             return new TreeSignatureEvent(
-                tsig.GetProperty("batch_index").GetInt32(),
+                GetProp(tsig, "batch_index", "batchIndex").GetInt32(),
                 tsig.GetProperty("id").GetString()!,
                 tsig.GetProperty("signature").GetString()!,
                 topics,
                 tsig.GetProperty("txid").GetString()!);
         }
 
-        if (root.TryGetProperty("tree_nonces", out var tnonces))
+        if (TryGetProp(root, "tree_nonces", "treeNonces", out var tnonces))
         {
             var nonces = new Dictionary<string, string>();
             if (tnonces.TryGetProperty("nonces", out var n) && n.ValueKind == JsonValueKind.Object)
