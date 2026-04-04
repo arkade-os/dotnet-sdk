@@ -60,7 +60,6 @@ nunit-*.xml
 .idea/
 *.user
 **/.DS_Store
-CLAUDE.md
 NArk.Tests.End2End/Infrastructure/nigiri
 docs/plans
 nul
