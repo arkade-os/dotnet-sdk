@@ -133,6 +133,17 @@ public partial class RestClientTransport
         return el.GetProperty(camelCase);
     }
 
+    /// <summary>
+    /// Gets an int64 from a JsonElement, handling proto3 JSON encoding where int64 values
+    /// may be encoded as strings to avoid JavaScript precision loss.
+    /// </summary>
+    private static long GetInt64Flexible(JsonElement el)
+    {
+        return el.ValueKind == JsonValueKind.String
+            ? long.Parse(el.GetString()!)
+            : el.GetInt64();
+    }
+
     private BatchEvent? ParseBatchEvent(JsonElement json)
     {
         // gRPC-gateway wraps the oneof in a "result" envelope for server streaming
@@ -151,9 +162,11 @@ public partial class RestClientTransport
                 foreach (var h in ih.EnumerateArray())
                     if (h.GetString() is { } s) intentHashes.Add(s);
 
+            var expiry = GetInt64Flexible(GetProp(bs, "batch_expiry", "batchExpiry"));
+
             return new BatchStartedEvent(
                 bs.GetProperty("id").GetString()!,
-                ParseSequence(GetProp(bs, "batch_expiry", "batchExpiry").GetInt64()),
+                ParseSequence(expiry),
                 intentHashes);
         }
 
