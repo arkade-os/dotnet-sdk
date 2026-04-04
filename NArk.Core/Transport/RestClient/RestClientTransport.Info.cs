@@ -19,8 +19,7 @@ public partial class RestClientTransport
         var json = await _http.GetFromJsonAsync<JsonElement>("/v1/info", JsonOpts, cancellationToken);
 
         var networkStr = GetString(json, "network");
-        var network = Network.GetNetwork(networkStr) ?? (networkStr == "bitcoin" ? Network.Main
-            : throw new InvalidOperationException("Ark server advertises unknown network"));
+        var network = NetworkExtensions.ResolveArkNetwork(networkStr);
 
         var checkpointTapscript = GetString(json, "checkpoint_tapscript", "checkpointTapscript");
         var serverUnrollScript = UnilateralPathArkTapScript.Parse(checkpointTapscript);

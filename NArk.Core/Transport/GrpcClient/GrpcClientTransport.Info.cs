@@ -16,13 +16,7 @@ public partial class GrpcClientTransport
     public async Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
     {
         var response = await _serviceClient.GetInfoAsync(new GetInfoRequest(), cancellationToken: cancellationToken);
-        var network =
-            response.Network switch
-            {
-                _ when Network.GetNetwork(response.Network) is { } net => net,
-                "bitcoin" => Network.Main,
-                _ => throw new InvalidOperationException("Ark server advertises unknown network")
-            };
+        var network = NArk.Core.Transport.Extensions.NetworkExtensions.ResolveArkNetwork(response.Network);
 
         var serverUnrollScript = UnilateralPathArkTapScript.Parse(response.CheckpointTapscript);
         //
