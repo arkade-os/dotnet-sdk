@@ -3,7 +3,6 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <ServiceWorkerAssetsManifest>service-worker-assets.js</ServiceWorkerAssetsManifest>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\NArk.Core\NArk.Core.csproj" />
@@ -15,9 +14,5 @@
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.0" PrivateAssets="all" />
     <PackageReference Include="SqliteWasmBlazor" Version="0.6.2-pre" />
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.11" ExcludeAssets="all" PrivateAssets="all" />
-  </ItemGroup>
-  <ItemGroup>
-    <ServiceWorker Include="wwwroot\service-worker.js"
-                   PublishedContent="wwwroot\service-worker.published.js" />
   </ItemGroup>
 </Project>
