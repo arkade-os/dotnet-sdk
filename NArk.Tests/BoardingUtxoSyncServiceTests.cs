@@ -249,7 +249,101 @@ public class BoardingUtxoSyncServiceTests
             Arg.Any<CancellationToken>());
     }
 
-    private static ArkServerInfo CreateServerInfo()
+    [Test]
+    public async Task SyncAsync_BoardingDisabled_SkipsSync()
+    {
+        var contract = new ArkBoardingContract(TestServerKey, BoardingExitDelay, TestUserKey);
+        var entity = contract.ToEntity("test-wallet");
+
+        SetupContractStorage(entity);
+        SetupVtxoStorage();
+
+        // Server says boarding is disabled (UtxoMaxAmount=0)
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(CreateServerInfo(utxoMaxAmount: Money.Zero)));
+
+        var service = new BoardingUtxoSyncService(
+            _contractStorage, _vtxoStorage, _clientTransport, _utxoProvider);
+
+        await service.SyncAsync(CancellationToken.None);
+
+        // Provider should never be called
+        await _utxoProvider.DidNotReceive().GetUtxosAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task SyncAsync_UtxoBelowMinimum_IsSkipped()
+    {
+        var contract = new ArkBoardingContract(TestServerKey, BoardingExitDelay, TestUserKey);
+        var entity = contract.ToEntity("test-wallet");
+
+        SetupContractStorage(entity);
+        SetupVtxoStorage();
+
+        // Server requires minimum 50K sats
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(CreateServerInfo(
+                utxoMinAmount: Money.Satoshis(50_000),
+                utxoMaxAmount: Money.Coins(21_000_000m))));
+
+        _utxoProvider.GetUtxosAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns([
+                new BoardingUtxo(
+                    Txid: "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+                    Vout: 0,
+                    Amount: 10_000, // Below minimum
+                    Confirmed: true,
+                    BlockHeight: 800000,
+                    BlockTime: 1700000000)
+            ]);
+
+        var service = new BoardingUtxoSyncService(
+            _contractStorage, _vtxoStorage, _clientTransport, _utxoProvider);
+
+        await service.SyncAsync(CancellationToken.None);
+
+        // Should not upsert the below-minimum UTXO
+        await _vtxoStorage.DidNotReceive().UpsertVtxo(Arg.Any<ArkVtxo>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task SyncAsync_UtxoAboveMaximum_IsSkipped()
+    {
+        var contract = new ArkBoardingContract(TestServerKey, BoardingExitDelay, TestUserKey);
+        var entity = contract.ToEntity("test-wallet");
+
+        SetupContractStorage(entity);
+        SetupVtxoStorage();
+
+        // Server caps at 100K sats
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(CreateServerInfo(
+                utxoMinAmount: Money.Zero,
+                utxoMaxAmount: Money.Satoshis(100_000))));
+
+        _utxoProvider.GetUtxosAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns([
+                new BoardingUtxo(
+                    Txid: "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+                    Vout: 0,
+                    Amount: 200_000, // Above maximum
+                    Confirmed: true,
+                    BlockHeight: 800000,
+                    BlockTime: 1700000000)
+            ]);
+
+        var service = new BoardingUtxoSyncService(
+            _contractStorage, _vtxoStorage, _clientTransport, _utxoProvider);
+
+        await service.SyncAsync(CancellationToken.None);
+
+        // Should not upsert the above-maximum UTXO
+        await _vtxoStorage.DidNotReceive().UpsertVtxo(Arg.Any<ArkVtxo>(), Arg.Any<CancellationToken>());
+    }
+
+    private static ArkServerInfo CreateServerInfo(
+        Money? utxoMinAmount = null,
+        Money? utxoMaxAmount = null)
     {
         var serverKey = KeyExtensions.ParseOutputDescriptor(
             "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
@@ -268,6 +362,8 @@ public class BoardingUtxoSyncServiceTests
             ForfeitPubKey: ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes()),
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
-            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"));
+            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            UtxoMinAmount: utxoMinAmount ?? null!,
+            UtxoMaxAmount: utxoMaxAmount ?? null!);
     }
 }

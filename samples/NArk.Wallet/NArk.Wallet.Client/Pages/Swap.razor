@@ -1,50 +1,53 @@
 @page "/swap"
 @inject ArkWalletService Ark
 @inject WalletState State
+@inject NavigationManager Nav
 
 <div class="page-header">
-    <a href="/" class="back-btn">
+    <a href="./" class="back-btn">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
     </a>
     <span class="page-title">Swap</span>
 </div>
 
 <div class="px-20">
-    <!-- Swap Direction Cards -->
-    <div class="glass-card mb-12">
-        <p class="input-label">From</p>
-        <div style="display:flex;align-items:center;gap:12px;">
-            <div class="method-icon onchain">₿</div>
-            <div style="flex:1;">
-                <p style="font-size:16px;font-weight:600;">Bitcoin</p>
-                <p class="text-secondary" style="font-size:12px;">On-chain</p>
+    <!-- New Swap CTA -->
+    <div class="glass-card mb-16">
+        <p style="font-size:14px;font-weight:500;margin-bottom:8px;">Receive via swap</p>
+        <p class="text-secondary" style="font-size:12px;margin-bottom:12px;">
+            Use Lightning or on-chain BTC to receive sats into your Ark wallet via Boltz.
+        </p>
+        <button class="btn btn-primary btn-sm" @onclick="@(() => Nav.NavigateTo("receive"))">
+            Go to Receive
+        </button>
+    </div>
+
+    @if (_boltzLimits is not null)
+    {
+        <div class="glass-card mb-24">
+            <p class="input-label">Boltz Limits</p>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;">
+                <div style="display:flex;justify-content:space-between;">
+                    <span class="text-secondary">Lightning (reverse)</span>
+                    <span>@_boltzLimits.ReverseMinAmount.ToString("N0") - @_boltzLimits.ReverseMaxAmount.ToString("N0") sats</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;">
+                    <span class="text-secondary">Lightning fee</span>
+                    <span>@_boltzLimits.ReverseFeePercentage% + @_boltzLimits.ReverseMinerFee sats</span>
+                </div>
+                @if (_boltzLimits.ChainBtcToArkMinAmount is not null)
+                {
+                    <div style="display:flex;justify-content:space-between;">
+                        <span class="text-secondary">Chain swap (BTC→ARK)</span>
+                        <span>@_boltzLimits.ChainBtcToArkMinAmount.Value.ToString("N0") - @_boltzLimits.ChainBtcToArkMaxAmount!.Value.ToString("N0") sats</span>
+                    </div>
+                }
             </div>
         </div>
-    </div>
-
-    <div class="text-center mb-12">
-        <div style="width:36px;height:36px;border-radius:50%;background:var(--bg-card);border:1px solid var(--border-card);display:inline-flex;align-items:center;justify-content:center;">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
-        </div>
-    </div>
-
-    <div class="glass-card mb-24">
-        <p class="input-label">To</p>
-        <div style="display:flex;align-items:center;gap:12px;">
-            <div class="method-icon ark">⚡</div>
-            <div style="flex:1;">
-                <p style="font-size:16px;font-weight:600;">Ark</p>
-                <p class="text-secondary" style="font-size:12px;">Off-chain</p>
-            </div>
-        </div>
-    </div>
-
-    <div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:16px;">
-        <span class="pill pill-info">Powered by Boltz</span>
-    </div>
+    }
 
     <!-- Swap History -->
-    <div class="section-header mt-24" style="padding:0;">
+    <div class="section-header" style="padding:0;">
         <span class="section-title">Swap History</span>
     </div>
 
@@ -57,46 +60,74 @@
         <div class="empty-state">
             <div class="glass-card">
                 <p>No swaps yet</p>
-                <p>Swap functionality coming in next iteration</p>
+                <p>Use Receive to create a Lightning or chain swap</p>
             </div>
         </div>
     }
     else
     {
-        @foreach (var swap in _swaps)
-        {
-            <div class="tx-item" style="padding:14px 0;">
-                <div class="tx-icon swap">⇄</div>
-                <div class="tx-details">
-                    <div class="tx-label">@swap.SwapType</div>
-                    <div class="tx-meta">@swap.CreatedAt.LocalDateTime.ToString("MMM d, HH:mm")</div>
+        <div class="flex-col mt-12">
+            @foreach (var swap in _swaps.OrderByDescending(s => s.CreatedAt))
+            {
+                <div class="tx-item" style="padding:14px 0;">
+                    <div class="tx-icon swap">
+                        @(swap.SwapType == ArkSwapType.ReverseSubmarine ? "\u26A1" : "\u21C4")
+                    </div>
+                    <div class="tx-details">
+                        <div class="tx-label">@SwapTypeLabel(swap.SwapType)</div>
+                        <div class="tx-meta">
+                            @swap.CreatedAt.LocalDateTime.ToString("MMM d, HH:mm")
+                            @if (swap.ExpectedAmount > 0)
+                            {
+                                <text> &middot; @swap.ExpectedAmount.ToString("N0") sats</text>
+                            }
+                        </div>
+                    </div>
+                    <div>
+                        <span class="pill @StatusPill(swap.Status)">@swap.Status</span>
+                    </div>
                 </div>
-                <div>
-                    <span class="pill @StatusPill(swap.Status.ToString())">@swap.Status</span>
-                </div>
-            </div>
-        }
+            }
+        </div>
     }
 </div>
 
 @code {
     private IReadOnlyCollection<ArkSwap>? _swaps;
+    private BoltzAllLimits? _boltzLimits;
 
     protected override async Task OnInitializedAsync()
     {
         if (State.ActiveWalletId is not null)
         {
-            try { _swaps = await Ark.GetSwaps(State.ActiveWalletId); }
+            try
+            {
+                var swapTask = Ark.GetSwaps(State.ActiveWalletId);
+                var limitsTask = Ark.GetBoltzLimits();
+                await Task.WhenAll(swapTask, limitsTask);
+                _swaps = swapTask.Result;
+                _boltzLimits = limitsTask.Result;
+            }
             catch { _swaps = []; }
         }
         else { _swaps = []; }
     }
 
-    private static string StatusPill(string status) => status switch
+    private static string SwapTypeLabel(ArkSwapType type) => type switch
     {
-        "Settled" => "pill-success",
-        "Pending" => "pill-warning",
-        "Failed" => "pill-danger",
+        ArkSwapType.ReverseSubmarine => "Lightning Receive",
+        ArkSwapType.Submarine => "Lightning Send",
+        ArkSwapType.ChainBtcToArk => "BTC \u2192 Ark",
+        ArkSwapType.ChainArkToBtc => "Ark \u2192 BTC",
+        _ => type.ToString()
+    };
+
+    private static string StatusPill(ArkSwapStatus status) => status switch
+    {
+        ArkSwapStatus.Settled => "pill-success",
+        ArkSwapStatus.Pending => "pill-warning",
+        ArkSwapStatus.Failed => "pill-danger",
+        ArkSwapStatus.Refunded => "pill-danger",
         _ => "pill-info"
     };
 }

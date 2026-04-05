@@ -12,6 +12,10 @@
         <button class="btn btn-primary" @onclick="CreateWallet" disabled="@_creating">
             @(_creating ? "Creating..." : "Create Wallet")
         </button>
+        @if (_error is not null)
+        {
+            <p style="color:#ef4444;margin-top:12px;font-size:14px;">@_error</p>
+        }
     }
     else
     {
@@ -47,25 +51,25 @@
         </div>
 
         <div class="action-buttons">
-            <a href="/send" class="action-btn">
+            <a href="send" class="action-btn">
                 <div class="action-btn-circle">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
                 </div>
                 <span>Send</span>
             </a>
-            <a href="/receive" class="action-btn">
+            <a href="receive" class="action-btn">
                 <div class="action-btn-circle">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
                 </div>
                 <span>Receive</span>
             </a>
-            <a href="/swap" class="action-btn">
+            <a href="swap" class="action-btn">
                 <div class="action-btn-circle">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
                 </div>
                 <span>Swap</span>
             </a>
-            <a href="/assets" class="action-btn">
+            <a href="assets" class="action-btn">
                 <div class="action-btn-circle">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M6 12h12"/></svg>
                 </div>
@@ -128,6 +132,7 @@
     private int _activeSlide;
     private int _slideCount = 3;
     private bool _creating;
+    private string? _error;
 
     protected override async Task OnInitializedAsync()
     {
@@ -157,11 +162,17 @@
     private async Task CreateWallet()
     {
         _creating = true;
+        _error = null;
         try
         {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var wallet = await Ark.CreateWallet();
             State.SetActiveWallet(wallet.Id);
             await LoadWallet();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to create wallet: {ex.Message}";
         }
         finally { _creating = false; }
     }

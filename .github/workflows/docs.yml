@@ -1,0 +1,68 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          8.0.x
+          10.0.x
+
+    - name: Install wasm-tools workload
+      run: dotnet workload install wasm-tools
+
+    - name: Install DocFX
+      run: dotnet tool install -g docfx
+
+    - name: Build Documentation
+      run: docfx docfx.json
+
+    - name: Publish Blazor WASM Wallet
+      run: dotnet publish samples/NArk.Wallet/NArk.Wallet.Client/NArk.Wallet.Client.csproj -c Release -o _wallet_publish
+
+    - name: Copy wallet into docs site
+      run: |
+        mkdir -p _site/wallet
+        cp -r _wallet_publish/wwwroot/* _site/wallet/
+        # GitHub Pages needs .nojekyll to serve _framework/ directory
+        touch _site/.nojekyll
+        # SPA fallback: GitHub Pages serves 404.html from site root only
+        cp _site/wallet/404.html _site/404.html
+
+    - name: Upload artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: '_site'
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4

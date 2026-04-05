@@ -1,6 +1,7 @@
 using NArk.Abstractions.Intents;
 using NArk.Core;
 using NArk.Abstractions.Extensions;
+using NArk.Core.Helpers;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Secp256k1;
@@ -240,7 +241,63 @@ public class CachingClientTransportTests
             SignerDescriptor: "dummy-signer");
     }
 
-    private static ArkServerInfo CreateServerInfo()
+    [Test]
+    public void BoardingAllowed_IsFalse_WhenUtxoMaxAmountIsZero()
+    {
+        var info = CreateServerInfo(utxoMaxAmount: Money.Zero);
+        Assert.That(info.BoardingAllowed, Is.False);
+    }
+
+    [Test]
+    public void BoardingAllowed_IsTrue_WhenUtxoMaxAmountIsPositive()
+    {
+        var info = CreateServerInfo(utxoMaxAmount: Money.Satoshis(1_000_000));
+        Assert.That(info.BoardingAllowed, Is.True);
+    }
+
+    [Test]
+    public void VtxoBounds_AreExposedFromServerInfo()
+    {
+        var info = CreateServerInfo(
+            vtxoMinAmount: Money.Satoshis(1000),
+            vtxoMaxAmount: Money.Coins(21_000_000m));
+        Assert.That(info.VtxoMinAmount, Is.EqualTo(Money.Satoshis(1000)));
+        Assert.That(info.VtxoMaxAmount, Is.EqualTo(Money.Coins(21_000_000m)));
+    }
+
+    [Test]
+    public async Task ServerInfoLimits_AreExposedFromGetInfo()
+    {
+        var serverInfoWithLimits = CreateServerInfo(maxOpReturnOutputs: 5, maxTxWeight: 40000);
+        var inner = Substitute.For<IClientTransport>();
+        inner.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(serverInfoWithLimits));
+
+        var transport = new CachingClientTransport(inner, logger: null);
+        var result = await transport.GetServerInfoAsync();
+
+        Assert.That(result.MaxOpReturnOutputs, Is.EqualTo(5));
+        Assert.That(result.MaxTxWeight, Is.EqualTo(40000));
+    }
+
+    [Test]
+    public async Task ServerInfoLimits_DefaultToZero_WhenNotReported()
+    {
+        var serverInfoNoLimits = CreateServerInfo(maxOpReturnOutputs: 0);
+        var inner = Substitute.For<IClientTransport>();
+        inner.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(serverInfoNoLimits));
+
+        var transport = new CachingClientTransport(inner, logger: null);
+        var result = await transport.GetServerInfoAsync();
+
+        Assert.That(result.MaxOpReturnOutputs, Is.EqualTo(0));
+    }
+
+    private static ArkServerInfo CreateServerInfo(
+        int maxOpReturnOutputs = 0, long maxTxWeight = 0,
+        Money? vtxoMinAmount = null, Money? vtxoMaxAmount = null,
+        Money? utxoMinAmount = null, Money? utxoMaxAmount = null)
     {
         var serverKey = KeyExtensions.ParseOutputDescriptor(
             "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
@@ -259,6 +316,12 @@ public class CachingClientTransportTests
             ForfeitPubKey: ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes()),
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
-            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"));
+            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            MaxTxWeight: maxTxWeight,
+            MaxOpReturnOutputs: maxOpReturnOutputs,
+            VtxoMinAmount: vtxoMinAmount ?? Money.Zero,
+            VtxoMaxAmount: vtxoMaxAmount ?? Money.Coins(21_000_000m),
+            UtxoMinAmount: utxoMinAmount ?? Money.Zero,
+            UtxoMaxAmount: utxoMaxAmount ?? Money.Coins(21_000_000m));
     }
 }

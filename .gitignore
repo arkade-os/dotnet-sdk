@@ -60,10 +60,14 @@ nunit-*.xml
 .idea/
 *.user
 **/.DS_Store
-CLAUDE.md
 NArk.Tests.End2End/Infrastructure/nigiri
 docs/plans
 nul
 
 # Superpowers docs (auto-generated)
 docs/superpowers/
+
+# DocFX
+_site/
+api/*.yml
+api/.manifest

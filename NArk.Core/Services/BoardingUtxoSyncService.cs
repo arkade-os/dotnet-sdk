@@ -61,6 +61,13 @@ public class BoardingUtxoSyncService
             return;
 
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+
+        if (!serverInfo.BoardingAllowed)
+        {
+            _logger?.LogDebug("Boarding is disabled by the server (UtxoMaxAmount=0), skipping sync");
+            return;
+        }
+
         var network = serverInfo.Network;
         var boardingExitDelay = serverInfo.BoardingExit;
 
@@ -70,7 +77,7 @@ public class BoardingUtxoSyncService
         {
             try
             {
-                await SyncContractAsync(contractEntity, network, boardingExitDelay, cancellationToken);
+                await SyncContractAsync(contractEntity, serverInfo, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -81,13 +88,12 @@ public class BoardingUtxoSyncService
 
     private async Task SyncContractAsync(
         ArkContractEntity contractEntity,
-        Network network,
-        Sequence boardingExitDelay,
+        ArkServerInfo serverInfo,
         CancellationToken cancellationToken)
     {
         // Derive the P2TR address from the stored scriptPubKey hex
         var script = Script.FromHex(contractEntity.Script);
-        var address = script.GetDestinationAddress(network);
+        var address = script.GetDestinationAddress(serverInfo.Network);
 
         if (address is null)
         {
@@ -111,11 +117,27 @@ public class BoardingUtxoSyncService
         {
             onchainOutpoints.Add($"{utxo.Txid}:{utxo.Vout}");
 
+            // Skip UTXOs outside server-configured boarding bounds
+            var utxoAmount = Money.Satoshis(utxo.Amount);
+            if (serverInfo.UtxoMinAmount is { } utxoMin && utxoMin > Money.Zero && utxoAmount < utxoMin)
+            {
+                _logger?.LogDebug("Skipping boarding UTXO {Txid}:{Vout} ({Amount} sats): below minimum {Min}",
+                    utxo.Txid, utxo.Vout, utxo.Amount, utxoMin);
+                continue;
+            }
+
+            if (serverInfo.UtxoMaxAmount is { } utxoMax && utxoAmount > utxoMax)
+            {
+                _logger?.LogDebug("Skipping boarding UTXO {Txid}:{Vout} ({Amount} sats): above maximum {Max}",
+                    utxo.Txid, utxo.Vout, utxo.Amount, utxoMax);
+                continue;
+            }
+
             var createdAt = utxo.BlockTime > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(utxo.BlockTime)
                 : DateTimeOffset.UtcNow;
 
-            var expiresAt = utxo.Confirmed ? ComputeExpiresAt(createdAt, boardingExitDelay) : null;
+            var expiresAt = utxo.Confirmed ? ComputeExpiresAt(createdAt, serverInfo.BoardingExit) : null;
 
             var metadata = new Dictionary<string, string>
             {
@@ -133,7 +155,7 @@ public class BoardingUtxoSyncService
                 CreatedAt: createdAt,
                 ExpiresAt: expiresAt,
                 ExpiresAtHeight: utxo.Confirmed && utxo.BlockHeight > 0
-                    ? (uint)(utxo.BlockHeight + GetBlockCount(boardingExitDelay))
+                    ? (uint)(utxo.BlockHeight + GetBlockCount(serverInfo.BoardingExit))
                     : null,
                 Unrolled: true,
                 Metadata: metadata);

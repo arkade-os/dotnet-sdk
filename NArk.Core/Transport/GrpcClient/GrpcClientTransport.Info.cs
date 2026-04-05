@@ -16,13 +16,7 @@ public partial class GrpcClientTransport
     public async Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
     {
         var response = await _serviceClient.GetInfoAsync(new GetInfoRequest(), cancellationToken: cancellationToken);
-        var network =
-            response.Network switch
-            {
-                _ when Network.GetNetwork(response.Network) is { } net => net,
-                "bitcoin" => Network.Main,
-                _ => throw new InvalidOperationException("Ark server advertises unknown network")
-            };
+        var network = NArk.Core.Transport.Extensions.NetworkExtensions.ResolveArkNetwork(response.Network);
 
         var serverUnrollScript = UnilateralPathArkTapScript.Parse(response.CheckpointTapscript);
         //
@@ -51,7 +45,13 @@ public partial class GrpcClientTransport
                 IntentOnchainOutput: GetOrZero(response.Fees.IntentFee.OnchainOutput),
                 IntentOffchainInput: GetOrZero(response.Fees.IntentFee.OffchainInput),
                 IntentOnchainInput: GetOrZero(response.Fees.IntentFee.OnchainInput)
-            )
+            ),
+            MaxTxWeight: response.MaxTxWeight,
+            MaxOpReturnOutputs: (int)response.MaxOpReturnOutputs,
+            VtxoMinAmount: Money.Satoshis(response.VtxoMinAmount),
+            VtxoMaxAmount: response.VtxoMaxAmount < 0 ? Money.Coins(21_000_000m) : Money.Satoshis(response.VtxoMaxAmount),
+            UtxoMinAmount: Money.Satoshis(response.UtxoMinAmount),
+            UtxoMaxAmount: response.UtxoMaxAmount < 0 ? Money.Coins(21_000_000m) : Money.Satoshis(response.UtxoMaxAmount)
         );
     }
 

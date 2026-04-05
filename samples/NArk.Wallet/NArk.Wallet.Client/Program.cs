@@ -6,6 +6,7 @@ using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain.NBXplorer;
+using NArk.Abstractions.Intents;
 using NArk.Core.Services;
 using NArk.Core.Wallet;
 using NArk.Hosting;
@@ -13,7 +14,6 @@ using NArk.Storage.EfCore.Hosting;
 using NArk.Swaps.Hosting;
 using NArk.Wallet.Client;
 using NArk.Wallet.Client.Services;
-using SqliteWasmBlazor;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
@@ -22,11 +22,10 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 // ── Network ──
 var networkConfig = ArkNetworkConfig.Mutinynet;
 
-// ── EF Core + SQLite WASM (persistent via OPFS) ──
-builder.Services.AddDbContextFactory<WalletDbContext>(options =>
+// ── EF Core + SQLite via Bit.Besql (persistent via browser Cache API) ──
+builder.Services.AddBesqlDbContextFactory<WalletDbContext>(options =>
 {
-    var connection = new SqliteWasmConnection("Data Source=ArkadeWallet.db");
-    options.UseSqliteWasm(connection);
+    options.UseSqlite("Data Source=ArkadeWallet.db");
 });
 builder.Services.AddArkEfCoreStorage<WalletDbContext>();
 
@@ -38,6 +37,7 @@ builder.Services.AddArkRestTransport(networkConfig);
 builder.Services.AddArkSwapServices();
 
 // ── SDK infrastructure ──
+builder.Services.AddSingleton<IIntentScheduler, SimpleIntentScheduler>();
 builder.Services.AddSingleton<ISafetyService, WasmSafetyService>();
 builder.Services.AddSingleton<IChainTimeProvider>(sp =>
 {
@@ -57,8 +57,10 @@ builder.Services.AddSingleton<WalletState>();
 
 var host = builder.Build();
 
-// Initialize SQLite WASM (Web Worker + OPFS) and run migrations
-await host.Services.InitializeSqliteWasmDatabaseAsync<WalletDbContext>();
+// Create/migrate the SQLite database on first launch
+var dbFactory = host.Services.GetRequiredService<IDbContextFactory<WalletDbContext>>();
+await using var db = await dbFactory.CreateDbContextAsync();
+await db.Database.EnsureCreatedAsync();
 
 // Start SDK lifecycle services manually (WASM has no IHostedService support)
 await host.Services.StartArkServicesAsync();

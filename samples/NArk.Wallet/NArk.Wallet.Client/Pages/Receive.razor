@@ -2,9 +2,12 @@
 @inject ArkWalletService Ark
 @inject WalletState State
 @inject IJSRuntime JS
+@using NArk.Wallet.Client.Services
+@using NArk.Swaps.Boltz
+@using Microsoft.AspNetCore.Components
 
 <div class="page-header">
-    <a href="/" class="back-btn">
+    <a href="./" class="back-btn">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
     </a>
     <span class="page-title">Receive</span>
@@ -59,35 +62,60 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-tertiary)"><path d="M9 18l6-6-6-6"/></svg>
             </div>
 
-            @if (_amountSats > 0)
+            @if (_amountSats > 0 && IsWithinReverseLimits())
             {
-                <!-- With amount: Boltz swap -->
-                <div class="method-card lightning" @onclick="@(() => SelectMethod("swap"))">
+                <!-- Lightning (Reverse Swap via Boltz) -->
+                <div class="method-card lightning" @onclick="@(() => SelectMethod("lightning"))">
                     <div class="method-icon lightning">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg>
                     </div>
                     <div class="method-info">
-                        <div class="method-name">Chain Swap (Boltz)</div>
-                        <div class="method-desc">Receive on-chain BTC, auto-swap into Ark.</div>
+                        <div class="method-name">Lightning</div>
+                        <div class="method-desc">Pay a Lightning invoice to receive into Ark.</div>
                     </div>
                     <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
                 </div>
             }
-            else
+
+            @if (_amountSats > 0 && IsWithinChainLimits())
             {
-                <!-- No amount: LNURL placeholder -->
+                <!-- Chain Swap (BTC on-chain → Ark via Boltz) -->
+                <div class="method-card lightning" @onclick="@(() => SelectMethod("chainswap"))">
+                    <div class="method-icon onchain">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+                    </div>
+                    <div class="method-info">
+                        <div class="method-name">Chain Swap (Boltz)</div>
+                        <div class="method-desc">Send BTC on-chain, receive into Ark.</div>
+                    </div>
+                    <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
+                </div>
+            }
+
+            @if (_amountSats > 0 && _boltzLimits is not null)
+            {
+                <p class="text-secondary" style="font-size:11px;text-align:center;">
+                    Boltz limits: @_boltzLimits.ReverseMinAmount.ToString("N0")-@_boltzLimits.ReverseMaxAmount.ToString("N0") sats (Lightning)
+                    @if (_boltzLimits.ChainBtcToArkMinAmount is not null)
+                    {
+                        <text> | @_boltzLimits.ChainBtcToArkMinAmount.Value.ToString("N0")-@_boltzLimits.ChainBtcToArkMaxAmount!.Value.ToString("N0") sats (Chain)</text>
+                    }
+                </p>
+            }
+            else if (_amountSats == 0)
+            {
                 <div class="method-card lightning" style="opacity:0.5;cursor:default;">
                     <div class="method-icon lightning">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg>
                     </div>
                     <div class="method-info">
-                        <div class="method-name">Lightning (LNURL)</div>
-                        <div class="method-desc">Coming soon</div>
+                        <div class="method-name">Lightning / Chain Swap</div>
+                        <div class="method-desc">Enter an amount to see swap options</div>
                     </div>
                 </div>
             }
 
-            <!-- Boarding Address -->
+            <!-- Boarding Address (always available) -->
             <div class="method-card onchain" @onclick="@(() => SelectMethod("boarding"))">
                 <div class="method-icon onchain">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg>
@@ -100,6 +128,25 @@
             </div>
         </div>
     }
+    else if (_initiatingSwap)
+    {
+        <div class="text-center" style="padding:40px 0;">
+            <div class="skeleton" style="width:200px;height:200px;border-radius:16px;margin:0 auto 16px;"></div>
+            <p class="text-secondary" style="font-size:14px;">Creating @MethodLabel(_selectedMethod) swap...</p>
+        </div>
+    }
+    else if (_swapError is not null)
+    {
+        <div class="text-center mb-16">
+            <span class="pill pill-danger">ERROR</span>
+        </div>
+        <div class="glass-card mb-16">
+            <p style="color:var(--arkade-red);font-size:13px;">@_swapError</p>
+        </div>
+        <button class="btn btn-secondary btn-full" @onclick="@(() => { _selectedMethod = null; _swapError = null; })">
+            Back
+        </button>
+    }
     else
     {
         <!-- Step 2: QR + Address Display -->
@@ -109,10 +156,11 @@
             </span>
         </div>
 
-        <div class="qr-container mb-16" style="background:white;border-radius:16px;padding:16px;">
-            <div id="receiveQr" style="width:200px;height:200px;display:flex;align-items:center;justify-content:center;">
-                <div class="skeleton" style="width:200px;height:200px;border-radius:8px;"></div>
-            </div>
+        <div class="qr-container mb-16">
+            @if (_displayAddress is not null)
+            {
+                @((MarkupString)QrCodeHelper.GenerateSvg(_displayAddress))
+            }
         </div>
 
         @if (_amountSats > 0)
@@ -122,15 +170,28 @@
             </p>
         }
 
+        @if (_selectedMethod == "lightning")
+        {
+            <p class="text-secondary text-center mb-12" style="font-size:12px;">
+                Pay this Lightning invoice to receive sats into your Ark wallet
+            </p>
+        }
+        else if (_selectedMethod == "chainswap")
+        {
+            <p class="text-secondary text-center mb-12" style="font-size:12px;">
+                Send exactly @_chainSwapExpectedSats.ToString("N0") sats to this BTC address
+            </p>
+        }
+
         <div class="address-display mb-16">
             @_displayAddress
         </div>
 
         <div style="display:flex;gap:8px;">
             <button class="btn btn-primary" style="flex:1;" @onclick="CopyAddress">
-                @(_copied ? "Copied!" : "Copy Address")
+                @(_copied ? "Copied!" : _selectedMethod == "lightning" ? "Copy Invoice" : "Copy Address")
             </button>
-            <button class="btn btn-secondary" @onclick="@(() => { _selectedMethod = null; _copied = false; })">
+            <button class="btn btn-secondary" @onclick="@(() => { _selectedMethod = null; _copied = false; _swapError = null; })">
                 Back
             </button>
         </div>
@@ -145,6 +206,10 @@
     private long _amountSats;
     private bool _loading = true;
     private bool _copied;
+    private bool _initiatingSwap;
+    private string? _swapError;
+    private long _chainSwapExpectedSats;
+    private BoltzAllLimits? _boltzLimits;
 
     protected override async Task OnInitializedAsync()
     {
@@ -152,31 +217,96 @@
         {
             try
             {
-                var (ark, boarding) = await Ark.GetReceiveInfo(State.ActiveWalletId);
+                var receiveTask = Ark.GetReceiveInfo(State.ActiveWalletId);
+                var limitsTask = Ark.GetBoltzLimits();
+                await Task.WhenAll(receiveTask, limitsTask);
+
+                var (ark, boarding) = receiveTask.Result;
                 _arkAddress = ark;
                 _boardingAddress = boarding;
+                _boltzLimits = limitsTask.Result;
             }
             catch { }
         }
         _loading = false;
     }
 
+    private bool IsWithinReverseLimits()
+        => _boltzLimits is not null
+           && _amountSats >= _boltzLimits.ReverseMinAmount
+           && _amountSats <= _boltzLimits.ReverseMaxAmount;
+
+    private bool IsWithinChainLimits()
+        => _boltzLimits?.ChainBtcToArkMinAmount is not null
+           && _amountSats >= _boltzLimits.ChainBtcToArkMinAmount
+           && _amountSats <= _boltzLimits.ChainBtcToArkMaxAmount;
+
     private async Task SelectMethod(string method)
     {
         _selectedMethod = method;
+        _swapError = null;
+
+        if (method == "lightning")
+        {
+            await InitiateReverseSwap();
+            return;
+        }
+
+        if (method == "chainswap")
+        {
+            await InitiateChainSwap();
+            return;
+        }
+
+        // Ark address or boarding — just show the address
         _displayAddress = method switch
         {
             "ark" => _arkAddress,
             "boarding" => _boardingAddress,
-            "swap" => _boardingAddress,
             _ => null
         };
+    }
 
-        if (_displayAddress is not null)
+    private async Task InitiateReverseSwap()
+    {
+        if (State.ActiveWalletId is null) return;
+        _initiatingSwap = true;
+        StateHasChanged();
+
+        try
         {
-            StateHasChanged();
-            await Task.Delay(50);
-            await JS.InvokeVoidAsync("arkade.renderQr", "receiveQr", _displayAddress, 200);
+            var invoice = await Ark.InitiateReverseSwap(State.ActiveWalletId, _amountSats);
+            _displayAddress = invoice;
+        }
+        catch (Exception ex)
+        {
+            _swapError = $"Failed to create Lightning invoice: {ex.Message}";
+        }
+        finally
+        {
+            _initiatingSwap = false;
+        }
+    }
+
+    private async Task InitiateChainSwap()
+    {
+        if (State.ActiveWalletId is null) return;
+        _initiatingSwap = true;
+        StateHasChanged();
+
+        try
+        {
+            var (btcAddress, _, expectedSats) = await Ark.InitiateChainSwap(State.ActiveWalletId, _amountSats);
+            _displayAddress = btcAddress;
+            _chainSwapExpectedSats = expectedSats;
+        }
+        catch (Exception ex)
+        {
+            _swapError = $"Failed to create chain swap: {ex.Message}";
+        }
+        finally
+        {
+            _initiatingSwap = false;
         }
     }
 
@@ -196,7 +326,8 @@
     {
         "ark" => "pill-info",
         "boarding" => "pill-warning",
-        "swap" => "pill-success",
+        "lightning" => "pill-success",
+        "chainswap" => "pill-info",
         _ => "pill-info"
     };
 
@@ -204,7 +335,8 @@
     {
         "ark" => "ARK",
         "boarding" => "ON-CHAIN",
-        "swap" => "CHAIN SWAP",
+        "lightning" => "LIGHTNING",
+        "chainswap" => "CHAIN SWAP",
         _ => ""
     };
 }
