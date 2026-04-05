@@ -24,10 +24,16 @@
             if (redirect) {
                 sessionStorage.removeItem('blazor-redirect');
                 var base = '/dotnet-sdk/wallet/';
+                var route;
                 if (redirect.startsWith(base)) {
-                    var route = redirect.substring(base.length);
-                    if (route) history.replaceState(null, '', base + route);
+                    // Normal case: /dotnet-sdk/wallet/send → send
+                    route = redirect.substring(base.length);
+                } else {
+                    // Old cached code sent /send or /receive (missing base prefix)
+                    // Extract the path segment and map it into the wallet base
+                    route = redirect.replace(/^\/+/, '');
                 }
+                if (route) history.replaceState(null, '', base + route);
             }
         })();
     </script>
