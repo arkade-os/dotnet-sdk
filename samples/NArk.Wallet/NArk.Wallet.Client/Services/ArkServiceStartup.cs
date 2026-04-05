@@ -1,5 +1,6 @@
 using NArk.Core.Services;
 using NArk.Core.Sweeper;
+using NArk.Swaps.Services;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace NArk.Wallet.Client.Services;
@@ -29,5 +30,9 @@ public static class ArkServiceStartup
 
         var vtxoSync = services.GetRequiredService<VtxoSynchronizationService>();
         await vtxoSync.StartAsync(cts.Token);
+
+        // Start swap management (monitors swap status, handles claims)
+        var swapMgr = services.GetRequiredService<SwapsManagementService>();
+        await swapMgr.StartAsync(cts.Token);
     }
 }

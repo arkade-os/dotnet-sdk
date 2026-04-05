@@ -1,3 +1,4 @@
+using BTCPayServer.Lightning;
 using NArk.Abstractions;
 using NArk.Abstractions.Assets;
 using NArk.Abstractions.Contracts;
@@ -8,6 +9,8 @@ using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Core.Wallet;
 using NArk.Swaps.Abstractions;
+using NArk.Swaps.Boltz;
+using NArk.Swaps.Services;
 using NBitcoin;
 using NBitcoin.Secp256k1;
 
@@ -24,7 +27,9 @@ public class ArkWalletService(
     ISpendingService spendingService,
     IVtxoStorage vtxoStorage,
     ISwapStorage swapStorage,
-    IAssetManager assetManager)
+    IAssetManager assetManager,
+    SwapsManagementService swapsManagementService,
+    BoltzLimitsValidator boltzLimitsValidator)
 {
     // ── Wallets ──
 
@@ -93,6 +98,42 @@ public class ArkWalletService(
 
     public async Task<IReadOnlyCollection<NArk.Swaps.Models.ArkSwap>> GetSwaps(string walletId)
         => await swapStorage.GetSwaps(walletIds: [walletId]);
+
+    /// <summary>
+    /// Initiates a reverse submarine swap (Lightning → Ark). Returns the Lightning invoice to pay.
+    /// </summary>
+    public async Task<string> InitiateReverseSwap(string walletId, long amountSats)
+    {
+        var invoiceParams = new CreateInvoiceParams(
+            LightMoney.Satoshis(amountSats),
+            "Arkade Wallet Receive",
+            TimeSpan.FromHours(1));
+        return await swapsManagementService.InitiateReverseSwap(walletId, invoiceParams);
+    }
+
+    /// <summary>
+    /// Initiates a BTC→ARK chain swap. Returns the BTC address to send to.
+    /// </summary>
+    public async Task<(string BtcAddress, string SwapId, long ExpectedSats)> InitiateChainSwap(
+        string walletId, long amountSats)
+        => await swapsManagementService.InitiateBtcToArkChainSwap(walletId, amountSats);
+
+    /// <summary>
+    /// Gets Boltz swap limits for all swap types.
+    /// </summary>
+    public async Task<BoltzAllLimits?> GetBoltzLimits()
+        => await boltzLimitsValidator.GetAllLimitsAsync();
+
+    // ── Wallet Info ──
+
+    /// <summary>
+    /// Gets wallet details including the public key for display in settings.
+    /// </summary>
+    public async Task<ArkWalletInfo?> GetWalletInfo(string walletId)
+    {
+        var wallets = await walletStorage.LoadAllWallets();
+        return wallets.FirstOrDefault(w => w.Id == walletId);
+    }
 
     // ── Assets ──
 

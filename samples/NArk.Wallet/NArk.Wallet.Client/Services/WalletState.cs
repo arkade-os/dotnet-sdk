@@ -6,7 +6,7 @@ public class WalletState
     public long BalanceSats { get; private set; }
     public event Action? OnChange;
 
-    public void SetActiveWallet(string walletId)
+    public void SetActiveWallet(string? walletId)
     {
         ActiveWalletId = walletId;
         OnChange?.Invoke();
