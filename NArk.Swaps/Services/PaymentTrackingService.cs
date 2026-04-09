@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Payments;
@@ -8,35 +9,39 @@ using NArk.Swaps.Models;
 namespace NArk.Swaps.Services;
 
 /// <summary>
-/// Subscribes to protocol events (VTXOs, intents, swaps) and automatically
-/// updates payment and payment request statuses.
-/// Register as a singleton after all storage implementations.
+/// Hosted service that subscribes to protocol events (VTXOs, intents, swaps) and
+/// automatically updates payment and payment request statuses.
+/// Registered via <see cref="NArk.Hosting.SwapServiceCollectionExtensions.AddArkSwapServices"/>.
 /// </summary>
-public class PaymentTrackingService
+public class PaymentTrackingService(
+    IPaymentStorage paymentStorage,
+    IPaymentRequestStorage paymentRequestStorage,
+    IVtxoStorage vtxoStorage,
+    IIntentStorage intentStorage,
+    ISwapStorage swapStorage,
+    ILogger<PaymentTrackingService> logger) : IHostedService, IDisposable
 {
-    private readonly IPaymentStorage _paymentStorage;
-    private readonly IPaymentRequestStorage _paymentRequestStorage;
-    private readonly ILogger<PaymentTrackingService> _logger;
-
-    public PaymentTrackingService(
-        IPaymentStorage paymentStorage,
-        IPaymentRequestStorage paymentRequestStorage,
-        IVtxoStorage vtxoStorage,
-        IIntentStorage intentStorage,
-        ISwapStorage swapStorage,
-        ILogger<PaymentTrackingService> logger)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
-        _paymentStorage = paymentStorage;
-        _paymentRequestStorage = paymentRequestStorage;
-        _logger = logger;
-
         vtxoStorage.VtxosChanged += OnVtxoChanged;
         intentStorage.IntentChanged += OnIntentChanged;
         swapStorage.SwapsChanged += OnSwapChanged;
+        logger.LogInformation("PaymentTrackingService started");
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        vtxoStorage.VtxosChanged -= OnVtxoChanged;
+        intentStorage.IntentChanged -= OnIntentChanged;
+        swapStorage.SwapsChanged -= OnSwapChanged;
+        logger.LogInformation("PaymentTrackingService stopped");
+        return Task.CompletedTask;
     }
 
     /// <summary>
     /// When a VTXO arrives, check if it matches a pending payment request.
+    /// Tracks both sats amount and assets carried by the VTXO.
     /// </summary>
     private async void OnVtxoChanged(object? sender, ArkVtxo vtxo)
     {
@@ -44,22 +49,25 @@ public class PaymentTrackingService
         {
             if (vtxo.IsSpent()) return;
 
-            var request = await _paymentRequestStorage.GetPaymentRequestByScript(vtxo.Script);
+            var request = await paymentRequestStorage.GetPaymentRequestByScript(vtxo.Script);
             if (request is null) return;
 
             var newReceived = request.ReceivedAmount + vtxo.Amount;
             var (newStatus, overpayment) = ResolveRequestStatus(request, newReceived);
 
-            await _paymentRequestStorage.UpdatePaymentRequestStatus(
-                request.WalletId, request.RequestId, newStatus, newReceived, overpayment);
+            // Accumulate received assets from this VTXO
+            var receivedAssets = MergeAssets(request.ReceivedAssets, vtxo.Assets);
 
-            _logger.LogInformation(
+            await paymentRequestStorage.UpdatePaymentRequestStatus(
+                request.WalletId, request.RequestId, newStatus, newReceived, overpayment, receivedAssets);
+
+            logger.LogInformation(
                 "Payment request {RequestId} received {Amount} sats (total: {Total}), status: {Status}",
                 request.RequestId, vtxo.Amount, newReceived, newStatus);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing VTXO {TxId}:{Index} for payment request",
+            logger.LogError(ex, "Error processing VTXO {TxId}:{Index} for payment request",
                 vtxo.TransactionId, vtxo.TransactionOutputIndex);
         }
     }
@@ -85,13 +93,30 @@ public class PaymentTrackingService
     }
 
     /// <summary>
+    /// Merges newly received assets into an existing list, summing amounts for the same AssetId.
+    /// </summary>
+    internal static IReadOnlyList<VtxoAsset>? MergeAssets(
+        IReadOnlyList<VtxoAsset>? existing, IReadOnlyList<VtxoAsset>? incoming)
+    {
+        if (incoming is null or { Count: 0 }) return existing;
+        if (existing is null or { Count: 0 }) return incoming;
+
+        var merged = existing.ToDictionary(a => a.AssetId, a => a.Amount);
+        foreach (var asset in incoming)
+        {
+            merged[asset.AssetId] = merged.GetValueOrDefault(asset.AssetId) + asset.Amount;
+        }
+        return merged.Select(kv => new VtxoAsset(kv.Key, kv.Value)).ToList();
+    }
+
+    /// <summary>
     /// When an intent state changes, update linked outbound payments.
     /// </summary>
     private async void OnIntentChanged(object? sender, ArkIntent intent)
     {
         try
         {
-            var payments = await _paymentStorage.GetPayments(
+            var payments = await paymentStorage.GetPayments(
                 intentTxIds: [intent.IntentTxId]);
 
             foreach (var payment in payments)
@@ -102,27 +127,27 @@ public class PaymentTrackingService
                 {
                     ArkIntentState.BatchSucceeded => ArkPaymentStatus.Completed,
                     ArkIntentState.BatchFailed => ArkPaymentStatus.Failed,
-                    ArkIntentState.Cancelled => ArkPaymentStatus.Failed,
+                    ArkIntentState.Cancelled => ArkPaymentStatus.Cancelled,
                     _ => ArkPaymentStatus.Pending
                 };
 
                 if (newStatus == ArkPaymentStatus.Pending) continue;
 
-                var failReason = newStatus == ArkPaymentStatus.Failed
-                    ? intent.CancellationReason ?? "Intent failed"
+                var failReason = newStatus is ArkPaymentStatus.Failed or ArkPaymentStatus.Cancelled
+                    ? intent.CancellationReason ?? (newStatus == ArkPaymentStatus.Cancelled ? "Intent cancelled" : "Intent failed")
                     : null;
 
-                await _paymentStorage.UpdatePaymentStatus(
+                await paymentStorage.UpdatePaymentStatus(
                     payment.WalletId, payment.PaymentId, newStatus, failReason);
 
-                _logger.LogInformation(
+                logger.LogInformation(
                     "Payment {PaymentId} updated to {Status} from intent {IntentTxId}",
                     payment.PaymentId, newStatus, intent.IntentTxId);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing intent {IntentTxId} for payment tracking",
+            logger.LogError(ex, "Error processing intent {IntentTxId} for payment tracking",
                 intent.IntentTxId);
         }
     }
@@ -134,7 +159,7 @@ public class PaymentTrackingService
     {
         try
         {
-            var payments = await _paymentStorage.GetPayments(swapIds: [swap.SwapId]);
+            var payments = await paymentStorage.GetPayments(swapIds: [swap.SwapId]);
 
             foreach (var payment in payments)
             {
@@ -154,10 +179,10 @@ public class PaymentTrackingService
                     ? swap.FailReason ?? $"Swap {swap.Status}"
                     : null;
 
-                await _paymentStorage.UpdatePaymentStatus(
+                await paymentStorage.UpdatePaymentStatus(
                     payment.WalletId, payment.PaymentId, newStatus, failReason);
 
-                _logger.LogInformation(
+                logger.LogInformation(
                     "Payment {PaymentId} updated to {Status} from swap {SwapId}",
                     payment.PaymentId, newStatus, swap.SwapId);
             }
@@ -171,13 +196,13 @@ public class PaymentTrackingService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing swap {SwapId} for payment tracking", swap.SwapId);
+            logger.LogError(ex, "Error processing swap {SwapId} for payment tracking", swap.SwapId);
         }
     }
 
     private async Task HandleReverseSwapSettled(ArkSwap swap)
     {
-        var requests = await _paymentRequestStorage.GetPaymentRequests(
+        var requests = await paymentRequestStorage.GetPaymentRequests(
             walletIds: [swap.WalletId],
             statuses: [ArkPaymentRequestStatus.Pending, ArkPaymentRequestStatus.PartiallyPaid]);
 
@@ -188,9 +213,16 @@ public class PaymentTrackingService
             var receivedAmount = request.ReceivedAmount + (ulong)swap.ExpectedAmount;
             var (newStatus, overpayment) = ResolveRequestStatus(request, receivedAmount);
 
-            await _paymentRequestStorage.UpdatePaymentRequestStatus(
+            await paymentRequestStorage.UpdatePaymentRequestStatus(
                 request.WalletId, request.RequestId, newStatus, receivedAmount, overpayment);
             break;
         }
+    }
+
+    public void Dispose()
+    {
+        vtxoStorage.VtxosChanged -= OnVtxoChanged;
+        intentStorage.IntentChanged -= OnIntentChanged;
+        swapStorage.SwapsChanged -= OnSwapChanged;
     }
 }

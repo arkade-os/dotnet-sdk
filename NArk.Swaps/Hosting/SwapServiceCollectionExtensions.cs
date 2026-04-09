@@ -24,10 +24,11 @@ public static class SwapServiceCollectionExtensions
         services.AddSingleton<SwapsManagementService>();
         services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
         services.AddSingleton<IContractTransformer, VHTLCContractTransformer>();
-        
+
         services.AddSingleton<CachedBoltzClient>();
         services.AddSingleton<BoltzLimitsValidator>();
         services.AddHostedService<NArk.Swaps.Hosting.SwapHostedLifecycle>();
+        services.AddHostedService<PaymentTrackingService>();
 
         // Auto-configure BoltzClientOptions from ArkNetworkConfig if available
         services.AddOptions<BoltzClientOptions>()

@@ -30,6 +30,7 @@ public class EfCorePaymentStorage : IPaymentStorage
             existing.IntentTxId = payment.IntentTxId;
             existing.SwapId = payment.SwapId;
             existing.OnchainTxId = payment.OnchainTxId;
+            existing.Assets = payment.Assets;
             existing.CompletedAt = payment.CompletedAt?.ToUniversalTime();
             existing.Metadata = payment.Metadata;
         }
@@ -47,6 +48,7 @@ public class EfCorePaymentStorage : IPaymentStorage
                 IntentTxId = payment.IntentTxId,
                 SwapId = payment.SwapId,
                 OnchainTxId = payment.OnchainTxId,
+                Assets = payment.Assets,
                 Metadata = payment.Metadata,
                 CreatedAt = payment.CreatedAt.ToUniversalTime(),
                 CompletedAt = payment.CompletedAt?.ToUniversalTime()
@@ -124,7 +126,7 @@ public class EfCorePaymentStorage : IPaymentStorage
         entity.Status = status;
         entity.FailReason = failReason;
         if (onchainTxId != null) entity.OnchainTxId = onchainTxId;
-        if (status is ArkPaymentStatus.Completed or ArkPaymentStatus.Failed)
+        if (status is ArkPaymentStatus.Completed or ArkPaymentStatus.Failed or ArkPaymentStatus.Cancelled)
             entity.CompletedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(cancellationToken);
@@ -146,6 +148,7 @@ public class EfCorePaymentStorage : IPaymentStorage
         IntentTxId = e.IntentTxId,
         SwapId = e.SwapId,
         OnchainTxId = e.OnchainTxId,
+        Assets = e.Assets,
         Metadata = e.Metadata
     };
 }
