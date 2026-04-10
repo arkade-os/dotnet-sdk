@@ -39,13 +39,13 @@ public class LendaSwapClientTests
     }
 
     private static LendaSwapClient CreateClient(
-        MockHttpHandler handler, string? apiKey = null)
+        MockHttpHandler handler, string? publishableKey = null)
     {
         var httpClient = new HttpClient(handler);
         var options = Options.Create(new LendaSwapOptions
         {
             ApiUrl = BaseUrl,
-            ApiKey = apiKey
+            PublishableKey = publishableKey
         });
         return new LendaSwapClient(httpClient, options);
     }
@@ -244,30 +244,30 @@ public class LendaSwapClientTests
     // ─── API Key Header ────────────────────────────────────────
 
     [Test]
-    public async Task ApiKeyHeader_SentWhenConfigured()
+    public async Task PublishableKeyHeader_SentWhenConfigured()
     {
         const string json = """{ "btc_tokens": [], "evm_tokens": [] }""";
         var handler = new MockHttpHandler(HttpStatusCode.OK, json);
-        var client = CreateClient(handler, apiKey: "test-api-key-123");
+        var client = CreateClient(handler, publishableKey: "pk_test_123");
 
         await client.GetTokensAsync();
 
-        Assert.That(handler.LastRequest!.Headers.Contains("X-API-Key"), Is.True);
+        Assert.That(handler.LastRequest!.Headers.Contains("X-Publishable-Key"), Is.True);
         Assert.That(
-            handler.LastRequest.Headers.GetValues("X-API-Key").First(),
-            Is.EqualTo("test-api-key-123"));
+            handler.LastRequest.Headers.GetValues("X-Publishable-Key").First(),
+            Is.EqualTo("pk_test_123"));
     }
 
     [Test]
-    public async Task ApiKeyHeader_NotSentWhenNotConfigured()
+    public async Task PublishableKeyHeader_NotSentWhenNotConfigured()
     {
         const string json = """{ "btc_tokens": [], "evm_tokens": [] }""";
         var handler = new MockHttpHandler(HttpStatusCode.OK, json);
-        var client = CreateClient(handler, apiKey: null);
+        var client = CreateClient(handler, publishableKey: null);
 
         await client.GetTokensAsync();
 
-        Assert.That(handler.LastRequest!.Headers.Contains("X-API-Key"), Is.False);
+        Assert.That(handler.LastRequest!.Headers.Contains("X-Publishable-Key"), Is.False);
     }
 
     // ─── HTTP Error Handling ───────────────────────────────────
@@ -406,22 +406,62 @@ public class LendaSwapClientTests
     }
 
     [Test]
-    public void SupportsRoute_LightningToArk_False()
+    public void SupportsRoute_LightningToArk_True()
     {
         var provider = CreateProviderForRouteTests();
         var route = new SwapRoute(
             SwapAsset.BtcLightning,
             SwapAsset.ArkBtc);
-        Assert.That(provider.SupportsRoute(route), Is.False);
+        Assert.That(provider.SupportsRoute(route), Is.True);
     }
 
     [Test]
-    public void SupportsRoute_ArkToLightning_False()
+    public void SupportsRoute_ArkToLightning_True()
     {
         var provider = CreateProviderForRouteTests();
         var route = new SwapRoute(
             SwapAsset.ArkBtc,
             SwapAsset.BtcLightning);
+        Assert.That(provider.SupportsRoute(route), Is.True);
+    }
+
+    [Test]
+    public void SupportsRoute_ArkToBtcOnchain_True()
+    {
+        var provider = CreateProviderForRouteTests();
+        var route = new SwapRoute(
+            SwapAsset.ArkBtc,
+            SwapAsset.BtcOnchain);
+        Assert.That(provider.SupportsRoute(route), Is.True);
+    }
+
+    [Test]
+    public void SupportsRoute_LightningToEvmPolygon_True()
+    {
+        var provider = CreateProviderForRouteTests();
+        var route = new SwapRoute(
+            SwapAsset.BtcLightning,
+            SwapAsset.Erc20(SwapNetwork.EvmPolygon, "0xusdc"));
+        Assert.That(provider.SupportsRoute(route), Is.True);
+    }
+
+    [Test]
+    public void SupportsRoute_BtcOnchainToEvmEthereum_True()
+    {
+        var provider = CreateProviderForRouteTests();
+        var route = new SwapRoute(
+            SwapAsset.BtcOnchain,
+            SwapAsset.Erc20(SwapNetwork.EvmEthereum, "0xusdt"));
+        Assert.That(provider.SupportsRoute(route), Is.True);
+    }
+
+    [Test]
+    public void SupportsRoute_ArkToArk_False()
+    {
+        var provider = CreateProviderForRouteTests();
+        var route = new SwapRoute(
+            SwapAsset.ArkBtc,
+            SwapAsset.ArkBtc);
         Assert.That(provider.SupportsRoute(route), Is.False);
     }
 
