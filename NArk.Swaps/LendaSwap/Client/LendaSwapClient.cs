@@ -26,9 +26,9 @@ public partial class LendaSwapClient
 
         _httpClient.BaseAddress = new Uri(options.Value.ApiUrl.TrimEnd('/') + "/");
 
-        if (!string.IsNullOrWhiteSpace(options.Value.ApiKey))
+        if (!string.IsNullOrWhiteSpace(options.Value.PublishableKey))
         {
-            _httpClient.DefaultRequestHeaders.Add("X-API-Key", options.Value.ApiKey);
+            _httpClient.DefaultRequestHeaders.Add("X-Publishable-Key", options.Value.PublishableKey);
         }
     }
 
