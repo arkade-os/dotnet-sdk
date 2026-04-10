@@ -28,7 +28,6 @@ public static class SwapServiceCollectionExtensions
         services.AddSingleton<CachedBoltzClient>();
         services.AddSingleton<BoltzLimitsValidator>();
         services.AddHostedService<NArk.Swaps.Hosting.SwapHostedLifecycle>();
-        services.AddHostedService<PaymentTrackingService>();
 
         // Auto-configure BoltzClientOptions from ArkNetworkConfig if available
         services.AddOptions<BoltzClientOptions>()

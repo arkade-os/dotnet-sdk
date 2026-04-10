@@ -28,6 +28,7 @@ builder.Services.AddBesqlDbContextFactory<WalletDbContext>(options =>
     options.UseSqlite("Data Source=ArkadeWallet.db");
 });
 builder.Services.AddArkEfCoreStorage<WalletDbContext>();
+builder.Services.AddArkPaymentTracking();
 
 // ── NArk SDK core services ──
 builder.Services.AddArkCoreServices();

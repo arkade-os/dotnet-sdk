@@ -6,8 +6,9 @@ namespace NArk.Storage.EfCore;
 public static class ModelBuilderExtensions
 {
     /// <summary>
-    /// Configures all Ark SDK entity types on the given ModelBuilder.
+    /// Configures core Ark SDK entity types on the given ModelBuilder.
     /// Call this from your DbContext's OnModelCreating.
+    /// For payment tracking tables, also call <see cref="ConfigureArkPaymentEntities"/>.
     /// </summary>
     public static ModelBuilder ConfigureArkEntities(
         this ModelBuilder modelBuilder,
@@ -25,6 +26,22 @@ public static class ModelBuilderExtensions
         ArkIntentEntity.Configure(modelBuilder.Entity<ArkIntentEntity>(), options);
         ArkIntentVtxoEntity.Configure(modelBuilder.Entity<ArkIntentVtxoEntity>(), options);
         ArkSwapEntity.Configure(modelBuilder.Entity<ArkSwapEntity>(), options);
+
+        return modelBuilder;
+    }
+
+    /// <summary>
+    /// Configures payment tracking entity types (Payments and PaymentRequests tables).
+    /// Call this from your DbContext's OnModelCreating alongside <see cref="ConfigureArkEntities"/>.
+    /// Requires <see cref="ConfigureArkEntities"/> to be called first (for the Wallet FK).
+    /// </summary>
+    public static ModelBuilder ConfigureArkPaymentEntities(
+        this ModelBuilder modelBuilder,
+        Action<ArkStorageOptions>? configure = null)
+    {
+        var options = new ArkStorageOptions();
+        configure?.Invoke(options);
+
         ArkPaymentEntity.Configure(modelBuilder.Entity<ArkPaymentEntity>(), options);
         ArkPaymentRequestEntity.Configure(modelBuilder.Entity<ArkPaymentRequestEntity>(), options);
 

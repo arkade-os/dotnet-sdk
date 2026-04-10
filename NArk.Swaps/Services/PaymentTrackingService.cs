@@ -11,7 +11,7 @@ namespace NArk.Swaps.Services;
 /// <summary>
 /// Hosted service that subscribes to protocol events (VTXOs, intents, swaps) and
 /// automatically updates payment and payment request statuses.
-/// Registered via <see cref="NArk.Hosting.SwapServiceCollectionExtensions.AddArkSwapServices"/>.
+/// Registered via <see cref="NArk.Storage.EfCore.Hosting.StorageServiceCollectionExtensions.AddArkPaymentTracking"/>.
 /// </summary>
 public class PaymentTrackingService(
     IPaymentStorage paymentStorage,
