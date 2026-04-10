@@ -36,21 +36,39 @@ public class LendaSwapProvider : ISwapProvider
 
     // ─── Route Support ─────────────────────────────────────────
 
+    private static bool IsEvmNetwork(SwapNetwork n) =>
+        n is SwapNetwork.EvmEthereum or SwapNetwork.EvmPolygon or SwapNetwork.EvmArbitrum;
+
+    /// <inheritdoc />
     public bool SupportsRoute(SwapRoute route)
     {
         return route switch
         {
             // BTC Onchain <-> Ark
             { Source.Network: SwapNetwork.BitcoinOnchain, Destination.Network: SwapNetwork.Ark } => true,
+            { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.BitcoinOnchain } => true,
 
-            // Ark <-> EVM chains
-            { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.EvmEthereum or SwapNetwork.EvmPolygon or SwapNetwork.EvmArbitrum } => true,
-            { Source.Network: SwapNetwork.EvmEthereum or SwapNetwork.EvmPolygon or SwapNetwork.EvmArbitrum, Destination.Network: SwapNetwork.Ark } => true,
+            // Lightning <-> Ark
+            { Source.Network: SwapNetwork.Lightning, Destination.Network: SwapNetwork.Ark } => true,
+            { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.Lightning } => true,
+
+            // Ark <-> EVM
+            { Source.Network: SwapNetwork.Ark } when IsEvmNetwork(route.Destination.Network) => true,
+            { Destination.Network: SwapNetwork.Ark } when IsEvmNetwork(route.Source.Network) => true,
+
+            // Lightning <-> EVM
+            { Source.Network: SwapNetwork.Lightning } when IsEvmNetwork(route.Destination.Network) => true,
+            { Destination.Network: SwapNetwork.Lightning } when IsEvmNetwork(route.Source.Network) => true,
+
+            // BTC Onchain <-> EVM
+            { Source.Network: SwapNetwork.BitcoinOnchain } when IsEvmNetwork(route.Destination.Network) => true,
+            { Destination.Network: SwapNetwork.BitcoinOnchain } when IsEvmNetwork(route.Source.Network) => true,
 
             _ => false
         };
     }
 
+    /// <inheritdoc />
     public async Task<IReadOnlyCollection<SwapRoute>> GetAvailableRoutesAsync(CancellationToken ct)
     {
         try
@@ -60,14 +78,16 @@ public class LendaSwapProvider : ISwapProvider
                 return Array.Empty<SwapRoute>();
 
             var routes = new List<SwapRoute>();
+            var hasBtc = tokens.BtcTokens.Exists(t => t.TokenId == "btc");
 
-            // BTC -> Ark (always available if BTC token exists)
-            if (tokens.BtcTokens.Exists(t => t.TokenId == "btc"))
+            if (hasBtc)
             {
                 routes.Add(new SwapRoute(SwapAsset.BtcOnchain, SwapAsset.ArkBtc));
+                routes.Add(new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain));
+                routes.Add(new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc));
+                routes.Add(new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning));
             }
 
-            // For each EVM token, add Ark <-> EVM routes in both directions
             foreach (var evmToken in tokens.EvmTokens)
             {
                 var network = MapChainToNetwork(evmToken.Chain);
@@ -77,6 +97,14 @@ public class LendaSwapProvider : ISwapProvider
 
                 routes.Add(new SwapRoute(SwapAsset.ArkBtc, evmAsset));
                 routes.Add(new SwapRoute(evmAsset, SwapAsset.ArkBtc));
+                routes.Add(new SwapRoute(SwapAsset.BtcLightning, evmAsset));
+                routes.Add(new SwapRoute(evmAsset, SwapAsset.BtcLightning));
+
+                if (hasBtc)
+                {
+                    routes.Add(new SwapRoute(SwapAsset.BtcOnchain, evmAsset));
+                    routes.Add(new SwapRoute(evmAsset, SwapAsset.BtcOnchain));
+                }
             }
 
             return routes;

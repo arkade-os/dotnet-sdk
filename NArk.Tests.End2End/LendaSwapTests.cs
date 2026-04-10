@@ -76,7 +76,7 @@ public class LendaSwapTests
     {
         // This test doesn't need the server — tests route declarations
         var client = CreateClient();
-        var provider = new LendaSwapProvider(client, new InMemorySwapStorage());
+        var provider = new LendaSwapProvider(client, TestStorage.CreateSwapStorage());
 
         Assert.Multiple(() =>
         {
@@ -89,9 +89,13 @@ public class LendaSwapTests
                 new SwapRoute(SwapAsset.ArkBtc,
                     SwapAsset.Erc20(SwapNetwork.EvmPolygon, "0x3c499c"))), Is.True);
 
-            // Ark → Lightning (not supported by LendaSwap)
+            // Lightning → Ark (now supported by LendaSwap)
             Assert.That(provider.SupportsRoute(
-                new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning)), Is.False);
+                new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc)), Is.True);
+
+            // Ark → Ark (not a valid route)
+            Assert.That(provider.SupportsRoute(
+                new SwapRoute(SwapAsset.ArkBtc, SwapAsset.ArkBtc)), Is.False);
         });
     }
 }
