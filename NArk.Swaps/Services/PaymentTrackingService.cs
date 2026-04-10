@@ -21,6 +21,11 @@ public class PaymentTrackingService(
     ISwapStorage swapStorage,
     ILogger<PaymentTrackingService> logger) : IHostedService, IDisposable
 {
+    // Serializes VTXO processing to prevent race conditions when multiple VTXOs
+    // arrive for the same payment request in the same batch round.
+    private readonly SemaphoreSlim _vtxoLock = new(1, 1);
+    private bool _disposed;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         vtxoStorage.VtxosChanged += OnVtxoChanged;
@@ -32,16 +37,15 @@ public class PaymentTrackingService(
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        vtxoStorage.VtxosChanged -= OnVtxoChanged;
-        intentStorage.IntentChanged -= OnIntentChanged;
-        swapStorage.SwapsChanged -= OnSwapChanged;
+        Unsubscribe();
         logger.LogInformation("PaymentTrackingService stopped");
         return Task.CompletedTask;
     }
 
     /// <summary>
     /// When a VTXO arrives, check if it matches a pending payment request.
-    /// Tracks both sats amount and assets carried by the VTXO.
+    /// Serialized via <see cref="_vtxoLock"/> to prevent concurrent read-compute-write
+    /// races when multiple VTXOs target the same payment request.
     /// </summary>
     private async void OnVtxoChanged(object? sender, ArkVtxo vtxo)
     {
@@ -49,21 +53,28 @@ public class PaymentTrackingService(
         {
             if (vtxo.IsSpent()) return;
 
-            var request = await paymentRequestStorage.GetPaymentRequestByScript(vtxo.Script);
-            if (request is null) return;
+            await _vtxoLock.WaitAsync();
+            try
+            {
+                var request = await paymentRequestStorage.GetPaymentRequestByScript(vtxo.Script);
+                if (request is null) return;
 
-            var newReceived = request.ReceivedAmount + vtxo.Amount;
-            var (newStatus, overpayment) = ResolveRequestStatus(request, newReceived);
+                var newReceived = request.ReceivedAmount + vtxo.Amount;
+                var (newStatus, overpayment) = ResolveRequestStatus(request, newReceived);
 
-            // Accumulate received assets from this VTXO
-            var receivedAssets = MergeAssets(request.ReceivedAssets, vtxo.Assets);
+                var receivedAssets = MergeAssets(request.ReceivedAssets, vtxo.Assets);
 
-            await paymentRequestStorage.UpdatePaymentRequestStatus(
-                request.WalletId, request.RequestId, newStatus, newReceived, overpayment, receivedAssets);
+                await paymentRequestStorage.UpdatePaymentRequestStatus(
+                    request.WalletId, request.RequestId, newStatus, newReceived, overpayment, receivedAssets);
 
-            logger.LogInformation(
-                "Payment request {RequestId} received {Amount} sats (total: {Total}), status: {Status}",
-                request.RequestId, vtxo.Amount, newReceived, newStatus);
+                logger.LogInformation(
+                    "Payment request {RequestId} received {Amount} sats (total: {Total}), status: {Status}",
+                    request.RequestId, vtxo.Amount, newReceived, newStatus);
+            }
+            finally
+            {
+                _vtxoLock.Release();
+            }
         }
         catch (Exception ex)
         {
@@ -80,7 +91,6 @@ public class PaymentTrackingService(
     private static (ArkPaymentRequestStatus Status, ulong Overpayment) ResolveRequestStatus(
         ArkPaymentRequest request, ulong newReceived)
     {
-        // Any-amount request: paid as soon as anything arrives
         if (request.Amount is null)
             return (ArkPaymentRequestStatus.Paid, 0);
 
@@ -94,6 +104,7 @@ public class PaymentTrackingService(
 
     /// <summary>
     /// Merges newly received assets into an existing list, summing amounts for the same AssetId.
+    /// Handles duplicate AssetIds in existing list defensively.
     /// </summary>
     internal static IReadOnlyList<VtxoAsset>? MergeAssets(
         IReadOnlyList<VtxoAsset>? existing, IReadOnlyList<VtxoAsset>? incoming)
@@ -101,11 +112,12 @@ public class PaymentTrackingService(
         if (incoming is null or { Count: 0 }) return existing;
         if (existing is null or { Count: 0 }) return incoming;
 
-        var merged = existing.ToDictionary(a => a.AssetId, a => a.Amount);
-        foreach (var asset in incoming)
-        {
+        var merged = new Dictionary<string, ulong>();
+        foreach (var asset in existing)
             merged[asset.AssetId] = merged.GetValueOrDefault(asset.AssetId) + asset.Amount;
-        }
+        foreach (var asset in incoming)
+            merged[asset.AssetId] = merged.GetValueOrDefault(asset.AssetId) + asset.Amount;
+
         return merged.Select(kv => new VtxoAsset(kv.Key, kv.Value)).ToList();
     }
 
@@ -187,7 +199,6 @@ public class PaymentTrackingService(
                     payment.PaymentId, newStatus, swap.SwapId);
             }
 
-            // Also check if this swap fulfills a payment request (reverse submarine → Lightning receive)
             if (swap.Status == ArkSwapStatus.Settled &&
                 swap.SwapType == ArkSwapType.ReverseSubmarine)
             {
@@ -200,6 +211,11 @@ public class PaymentTrackingService(
         }
     }
 
+    /// <summary>
+    /// Reverse submarine swaps settle Lightning → Ark. Asset tracking is not applicable here
+    /// because Lightning invoices are BTC-only; the VTXO that arrives will be tracked separately
+    /// via <see cref="OnVtxoChanged"/> which handles assets.
+    /// </summary>
     private async Task HandleReverseSwapSettled(ArkSwap swap)
     {
         var requests = await paymentRequestStorage.GetPaymentRequests(
@@ -219,10 +235,18 @@ public class PaymentTrackingService(
         }
     }
 
-    public void Dispose()
+    private void Unsubscribe()
     {
         vtxoStorage.VtxosChanged -= OnVtxoChanged;
         intentStorage.IntentChanged -= OnIntentChanged;
         swapStorage.SwapsChanged -= OnSwapChanged;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Unsubscribe();
+        _vtxoLock.Dispose();
     }
 }
