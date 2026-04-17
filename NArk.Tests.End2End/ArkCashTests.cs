@@ -133,13 +133,6 @@ public class ArkCashTests
                 firstBatchTcs.TrySetResult();
         };
 
-        var cashVtxoSpentTcs = new TaskCompletionSource();
-        walletDetails.vtxoStorage.VtxosChanged += (_, vtxo) =>
-        {
-            if (vtxo.Script == cashScript && vtxo.IsSpent())
-                cashVtxoSpentTcs.TrySetResult();
-        };
-
         await using var intentGeneration = new IntentGenerationService(
             walletDetails.clientTransport,
             new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
@@ -169,7 +162,8 @@ public class ArkCashTests
         await batchManager.StartAsync(CancellationToken.None);
 
         await firstBatchTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
-        await cashVtxoSpentTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        
+        await walletDetails.vtxoSync.PollScriptsForVtxos(new HashSet<string> { cashScript });
 
         // after claim vtxo at the ArkCash address must be spent
         var spentVtxos = await walletDetails.vtxoStorage.GetVtxos(
@@ -187,3 +181,4 @@ public class ArkCashTests
         Assert.That(unspentVtxos, Is.Empty, "No unspent VTXOs should remain at ArkCash address after claim");
     }
 }
+
