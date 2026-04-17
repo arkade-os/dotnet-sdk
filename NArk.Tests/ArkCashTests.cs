@@ -1,4 +1,3 @@
-using Google.Api;
 using NArk.Abstractions;
 using NBitcoin;
 using NBitcoin.Secp256k1;

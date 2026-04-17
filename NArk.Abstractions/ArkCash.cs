@@ -6,19 +6,19 @@ using NBitcoin.Secp256k1;
 
 namespace NArk.Abstractions;
 
-public class ArkCash
+public class ArkCash: IDisposable
 {
     private static readonly byte Version = 0x00;
-    private static readonly int PayloadLength = 1 + 32 + 32 + 4;
+    private const int PayloadLength = 1 + 32 + 32 + 4;
     
     private const string HrpMainnet = "arkcash";
     private const string HrpTestnet = "tarkcash";
     
-    private static Bech32Encoder MainnetEncoder;
-    private static Bech32Encoder TestnetEncoder;
+    private static readonly Bech32Encoder MainnetEncoder;
+    private static readonly Bech32Encoder TestnetEncoder;
 
-    public readonly string Hrp;
-    public readonly ECPrivKey PrivKey;
+    public string Hrp { get; }
+    public ECPrivKey PrivKey { get; }
     public ECXOnlyPubKey Pubkey { get; }
     public ECXOnlyPubKey ServerPubkey { get; }
     public Sequence LockTime { get; }
@@ -128,5 +128,10 @@ public class ArkCash
         {
             return false;
         }
+    }
+
+    public void Dispose()
+    {
+        PrivKey.Dispose();
     }
 }
