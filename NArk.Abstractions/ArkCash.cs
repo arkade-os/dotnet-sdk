@@ -90,20 +90,22 @@ public class ArkCash
         var encoder = 
             encoded.StartsWith(HrpMainnet) ? MainnetEncoder : 
             encoded.StartsWith(HrpTestnet) ? TestnetEncoder : 
-            throw new ArgumentException($"Invalid ArkCash HRP: {encoded}");
+            throw new FormatException($"Invalid ArkCash HRP: {encoded}");
+        
         var decodedRaw = encoder.DecodeDataRaw(encoded, out _);
         if (decodedRaw == null)
         {
-            throw new ArgumentException("Could not decode encoded data");
+            throw new FormatException("Could not decode encoded data");
         }
+        
         var payload = decodedRaw.AsSpan();
         if (payload.Length != PayloadLength)
         {
-            throw new ArgumentException($"Invalid payload length! (Expected: {PayloadLength} bytes , got {payload.Length})");
+            throw new FormatException($"Invalid payload length! (Expected: {PayloadLength} bytes, got {payload.Length})");
         }
         if (payload[0] != Version)
         {
-            throw new ArgumentException($"Invalid version! {payload[0]}");
+            throw new FormatException($"Invalid version! {payload[0]}");
         }
         var privKey = ECPrivKey.Create(payload[1..33]);
         var serverPubkey = ECXOnlyPubKey.Create(payload[33..65]);
