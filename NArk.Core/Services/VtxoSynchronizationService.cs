@@ -164,35 +164,75 @@ public class VtxoSynchronizationService : IAsyncDisposable
 
     private async Task StartStreamLogic(HashSet<string> scripts, CancellationToken token)
     {
-        _logger?.LogDebug("Starting stream logic for {ScriptCount} scripts", scripts.Count);
+        _logger?.LogInformation(
+            "VTXO subscription stream starting for {ScriptCount} script(s)", scripts.Count);
+        var endedGracefully = false;
         try
         {
             var restartableToken =
                 CancellationTokenSource.CreateLinkedTokenSource(token, _shutdownCts.Token);
             await foreach (var vtxosToPoll in _arkClientTransport.GetVtxoToPollAsStream(scripts, restartableToken.Token))
             {
+                _logger?.LogInformation(
+                    "VTXO subscription stream: arkd pushed update for {Count} script(s): [{Scripts}]",
+                    vtxosToPoll.Count, string.Join(", ", vtxosToPoll));
                 await _readyToPoll.Writer.WriteAsync(vtxosToPoll, restartableToken.Token);
             }
+            endedGracefully = true;
         }
         catch (Exception ex) when (!token.IsCancellationRequested)
         {
-            _logger?.LogWarning(0, ex, "Stream logic failed, restarting scripts view");
+            _logger?.LogWarning(0, ex, "VTXO subscription stream failed — restarting scripts view");
             await UpdateScriptsView(_shutdownCts.Token);
+            return;
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(0, ex, "Stream logic cancelled");
+            _logger?.LogDebug(0, ex, "VTXO subscription stream cancelled");
+            return;
+        }
+
+        // Graceful end: arkd closed the stream without an error. We must restart
+        // or we silently lose every subsequent VTXO notification for these scripts.
+        if (endedGracefully && !token.IsCancellationRequested)
+        {
+            _logger?.LogWarning(
+                "VTXO subscription stream ended without error — arkd closed the stream. Restarting scripts view.");
+            await UpdateScriptsView(_shutdownCts.Token);
         }
     }
 
     private async Task? StartQueryLogic(CancellationToken cancellationToken)
     {
+        // Per-iteration try/catch: the transport or storage can throw transiently
+        // (arkd restart, DB timeout, etc.). We MUST NOT let the whole loop die,
+        // otherwise every subsequent stream event writes to _readyToPoll and
+        // nothing reads — VTXO detection goes permanently silent until the
+        // service is recycled.
         await foreach (var pollBatch in _readyToPoll.Reader.ReadAllAsync(cancellationToken))
         {
-            await foreach (var vtxo in _arkClientTransport.GetVtxoByScriptsAsSnapshot(pollBatch, cancellationToken))
+            try
             {
-                // Upsert
-                var updated = await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
+                _logger?.LogDebug("StartQueryLogic: polling {Count} script(s)", pollBatch.Count);
+                var found = 0;
+                await foreach (var vtxo in _arkClientTransport.GetVtxoByScriptsAsSnapshot(pollBatch, cancellationToken))
+                {
+                    found++;
+                    await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
+                }
+                _logger?.LogDebug(
+                    "StartQueryLogic: poll returned {Found} VTXO(s) across {Count} script(s)",
+                    found, pollBatch.Count);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(0, ex,
+                    "StartQueryLogic: poll failed for {Count} script(s); continuing loop",
+                    pollBatch.Count);
             }
         }
     }
