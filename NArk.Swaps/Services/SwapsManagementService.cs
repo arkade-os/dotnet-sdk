@@ -272,6 +272,29 @@ public class SwapsManagementService : IAsyncDisposable
                 // Terminal states: nothing to do
                 if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled) continue;
 
+                // Refresh VTXO state for the swap's contract script directly against arkd.
+                // We cannot rely solely on the indexer subscription stream here: arkd does
+                // not retroactively replay events, so if a VTXO lands between the moment
+                // we subscribe and the moment we start reading the stream (or if a stream
+                // reconnect drops a message), it never reaches OnVtxosChanged and the
+                // swap stalls until a manual sync. Polling the single contract script per
+                // status-check is cheap and closes that gap.
+                if (!string.IsNullOrEmpty(swap.ContractScript))
+                {
+                    try
+                    {
+                        await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                                           new HashSet<string> { swap.ContractScript }, cancellationToken))
+                        {
+                            await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger?.LogDebug(ex, "Swap {SwapId}: failed to refresh VTXOs for contract script during status poll", idToPoll);
+                    }
+                }
+
                 // If not refunded and status is refundable, start a coop refund
                 if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
                     IsRefundableStatus(swapStatus.Status))
