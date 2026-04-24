@@ -122,6 +122,20 @@ public class SwapsManagementService : IAsyncDisposable
 
     private void OnSwapsChanged(object? sender, ArkSwap swapChanged)
     {
+        // Keep the script→swap map up-to-date synchronously on every storage write.
+        // Previously the map was only populated inside PollSwapState, so a VTXO
+        // arriving on the swap contract between "swap saved" and "first poll
+        // completes" would fire VtxosChanged, OnVtxosChanged would not find the
+        // script in _scriptToSwapId, and the swap would stall until the next
+        // routine poll (or a manual sync) populated the map.
+        if (!string.IsNullOrEmpty(swapChanged.ContractScript))
+        {
+            if (swapChanged.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled or ArkSwapStatus.Failed)
+                _scriptToSwapId.TryRemove(swapChanged.ContractScript, out _);
+            else
+                _scriptToSwapId[swapChanged.ContractScript] = swapChanged.SwapId;
+        }
+
         _triggerChannel.Writer.TryWrite($"id:{swapChanged.SwapId}");
     }
 
@@ -133,6 +147,24 @@ public class SwapsManagementService : IAsyncDisposable
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
         _serverKey = OutputDescriptorHelpers.Extract(serverInfo.SignerKey).XOnlyPubKey;
         _network = serverInfo.Network;
+
+        // Seed the script→swap map from persistent storage so VTXOs arriving before
+        // the first routine poll are still dispatched correctly. Without this, a
+        // VTXO that hits a swap contract within the first minute after a restart
+        // (or any pending swap carried over across restarts) silently no-ops in
+        // OnVtxosChanged and the swap stalls until the user manually syncs.
+        try
+        {
+            var existingActiveSwaps = await _swapsStorage.GetSwaps(active: true, cancellationToken: cancellationToken);
+            foreach (var swap in existingActiveSwaps.Where(s => !string.IsNullOrEmpty(s.ContractScript)))
+                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
+            _logger?.LogInformation("Seeded script→swap map with {Count} active swap(s)", _scriptToSwapId.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to seed script→swap map from storage; RoutinePoll will populate it on next tick");
+        }
+
         _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
         _cacheTask = DoUpdateStorage(multiToken.Token);
     }
