@@ -29,6 +29,11 @@ public class VtxoSynchronizationService : IAsyncDisposable
     // UpdateScriptsView full-syncs newly-added scripts with After=null.
     private static readonly TimeSpan StreamPollLookback = TimeSpan.FromMinutes(5);
 
+    // Delay between arkd's subscription push and our follow-up indexer poll.
+    // arkd can emit the event before the indexer query path has the VTXO
+    // visible; polling immediately returns the stale prior state.
+    private static readonly TimeSpan StreamPushToPollDelay = TimeSpan.FromMilliseconds(750);
+
     private readonly record struct PollRequest(HashSet<string> Scripts, DateTimeOffset? After);
 
     private readonly Channel<PollRequest> _readyToPoll =
@@ -235,9 +240,16 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 _logger?.LogInformation(
                     "VTXO subscription stream: arkd pushed update for {Count} script(s): [{Scripts}]",
                     vtxosToPoll.Count, string.Join(", ", vtxosToPoll));
-                // arkd just pushed an event — the change by definition happened very
-                // recently, so a short time-window avoids re-fetching the full
-                // historical VTXO set on every push.
+                // arkd's subscription event can fire before its indexer query path has
+                // committed the new VTXO — an immediate poll then silently returns the
+                // prior state. A short delay gives the indexer time to catch up.
+                try
+                {
+                    await Task.Delay(StreamPushToPollDelay, restartableToken.Token);
+                }
+                catch (OperationCanceledException) { break; }
+                // Stream push = recent change. Use a short after-window so we don't
+                // refetch the full historical VTXO set of every touched script.
                 var after = DateTimeOffset.UtcNow - StreamPollLookback;
                 await _readyToPoll.Writer.WriteAsync(new PollRequest(vtxosToPoll, after), restartableToken.Token);
             }
