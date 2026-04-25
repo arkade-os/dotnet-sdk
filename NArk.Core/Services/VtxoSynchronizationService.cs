@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
+using NArk.Abstractions.Sync;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Transport;
 
@@ -41,7 +42,31 @@ public class VtxoSynchronizationService : IAsyncDisposable
         TimeSpan.FromSeconds(8),
     ];
 
-    private readonly record struct PollRequest(HashSet<string> Scripts, DateTimeOffset? After);
+    /// <summary>
+    /// Internal poll work item.
+    /// </summary>
+    /// <param name="Scripts">Scripts to poll on this iteration.</param>
+    /// <param name="After">
+    /// Lower bound on VTXO last-update for the indexer query. <c>null</c>
+    /// means "full history" — used for newly-added scripts.
+    /// </param>
+    /// <param name="IsFullSetSnapshot">
+    /// When true, this poll covers the entire active script view at the time
+    /// of enqueuing, and on success <see cref="ISyncStateStorage.SetLastFullPollAtAsync"/>
+    /// will be advanced to <see cref="StartedAt"/>. Stream-driven and
+    /// newly-added-scripts polls set this false.
+    /// </param>
+    /// <param name="StartedAt">
+    /// Wall-clock time the request was created. On a successful full-set
+    /// poll this becomes the new <c>LastFullPollAt</c> — using "started"
+    /// not "completed" guarantees that any change which lands on arkd while
+    /// our poll is in flight is still inside the next poll's <c>after</c> window.
+    /// </param>
+    private readonly record struct PollRequest(
+        HashSet<string> Scripts,
+        DateTimeOffset? After,
+        bool IsFullSetSnapshot = false,
+        DateTimeOffset StartedAt = default);
 
     // Unbounded: retry schedules + RoutinePoll + catchup can all enqueue at once,
     // and we never want stream-event processing to block on back-pressure. The
@@ -52,14 +77,24 @@ public class VtxoSynchronizationService : IAsyncDisposable
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IClientTransport _arkClientTransport;
     private readonly IEnumerable<IActiveScriptsProvider> _activeScriptsProviders;
+    private readonly ISyncStateStorage? _syncStateStorage;
     private readonly ILogger<VtxoSynchronizationService>? _logger;
+
+    /// <summary>
+    /// Set on startup, cleared after the first <see cref="UpdateScriptsView"/>
+    /// initial-catchup poll. While true, that initial poll uses the persisted
+    /// <c>LastFullPollAt</c> as its <c>after</c> filter (instead of <c>null</c>)
+    /// so wallets with long history don't refetch every VTXO on every cold start.
+    /// </summary>
+    private bool _isFirstStartupCatchup = true;
 
     public VtxoSynchronizationService(
         IEnumerable<IActiveScriptsProvider> activeScriptsProviders,
         IVtxoStorage vtxoStorage,
         IClientTransport arkClientTransport,
-        ILogger<VtxoSynchronizationService> logger)
-        : this(vtxoStorage, arkClientTransport, activeScriptsProviders)
+        ILogger<VtxoSynchronizationService> logger,
+        ISyncStateStorage? syncStateStorage = null)
+        : this(vtxoStorage, arkClientTransport, activeScriptsProviders, syncStateStorage)
     {
         _logger = logger;
     }
@@ -67,11 +102,13 @@ public class VtxoSynchronizationService : IAsyncDisposable
     public VtxoSynchronizationService(
         IVtxoStorage vtxoStorage,
         IClientTransport arkClientTransport,
-        IEnumerable<IActiveScriptsProvider> activeScriptsProviders)
+        IEnumerable<IActiveScriptsProvider> activeScriptsProviders,
+        ISyncStateStorage? syncStateStorage = null)
     {
         _vtxoStorage = vtxoStorage;
         _arkClientTransport = arkClientTransport;
         _activeScriptsProviders = activeScriptsProviders;
+        _syncStateStorage = syncStateStorage;
 
         foreach (var provider in _activeScriptsProviders)
         {
@@ -167,12 +204,17 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 if (scripts.Count == 0)
                     continue;
 
-                var after = DateTimeOffset.UtcNow - RoutinePollLookback;
+                var startedAt = DateTimeOffset.UtcNow;
+                var after = startedAt - RoutinePollLookback;
                 _logger?.LogDebug(
                     "RoutinePoll: re-polling {Count} active script(s) with after={After}",
                     scripts.Count, after.ToString("O"));
+                // IsFullSetSnapshot=true: on success the StartedAt timestamp will
+                // be persisted as LastFullPollAt, bounding the next cold-start
+                // catch-up window.
                 await _readyToPoll.Writer.WriteAsync(
-                    new PollRequest(scripts, after), cancellationToken);
+                    new PollRequest(scripts, after, IsFullSetSnapshot: true, StartedAt: startedAt),
+                    cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -228,7 +270,35 @@ public class VtxoSynchronizationService : IAsyncDisposable
             // events for future changes). Skip when the set only shrank.
             if (newlyAdded.Count > 0)
             {
-                await _readyToPoll.Writer.WriteAsync(new PollRequest(newlyAdded, After: null), token);
+                // First-startup nuance: at this point _lastViewOfScripts WAS
+                // empty (we're populating it from cold), so "newly added" =
+                // entire set. Without the persisted LastFullPollAt cursor we'd
+                // re-fetch every script's full VTXO history every cold start.
+                // Use the stored timestamp as an `after` filter on this one
+                // call so the cold-start catch-up window equals "since last
+                // shutdown" rather than "all of history".
+                DateTimeOffset? catchupAfter = null;
+                if (_isFirstStartupCatchup && _syncStateStorage is not null)
+                {
+                    try
+                    {
+                        catchupAfter = await _syncStateStorage.GetLastFullPollAtAsync(token);
+                        if (catchupAfter is not null)
+                        {
+                            _logger?.LogInformation(
+                                "First-startup catch-up: using stored LastFullPollAt={After} as `after` filter for {Count} script(s)",
+                                catchupAfter.Value.ToString("O"), newlyAdded.Count);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex,
+                            "First-startup catch-up: failed to read LastFullPollAt; falling back to full-history fetch");
+                    }
+                }
+                _isFirstStartupCatchup = false;
+
+                await _readyToPoll.Writer.WriteAsync(new PollRequest(newlyAdded, catchupAfter), token);
             }
         }
         finally
@@ -333,6 +403,23 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 _logger?.LogInformation(
                     "StartQueryLogic: poll returned {Found} VTXO(s) across {Count} script(s) in {Elapsed}ms",
                     found, request.Scripts.Count, (int)(DateTimeOffset.UtcNow - started).TotalMilliseconds);
+
+                // Advance the persisted full-poll cursor only after a successful
+                // poll that was enqueued as a full-set snapshot. Per-script and
+                // stream-driven polls never advance it.
+                if (request.IsFullSetSnapshot && _syncStateStorage is not null)
+                {
+                    try
+                    {
+                        await _syncStateStorage.SetLastFullPollAtAsync(request.StartedAt, cancellationToken);
+                    }
+                    catch (Exception persistEx)
+                    {
+                        _logger?.LogWarning(persistEx,
+                            "Failed to persist LastFullPollAt={At}; cold-start catch-up will fall back to a longer window",
+                            request.StartedAt.ToString("O"));
+                    }
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

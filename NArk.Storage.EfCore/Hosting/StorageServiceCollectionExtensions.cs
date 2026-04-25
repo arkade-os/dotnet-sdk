@@ -5,6 +5,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Payments;
 using NArk.Abstractions.Scripts;
+using NArk.Abstractions.Sync;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Storage.EfCore.Storage;
@@ -49,6 +50,9 @@ public static class StorageServiceCollectionExtensions
 
         services.AddSingleton<EfCoreWalletStorage>();
         services.AddSingleton<IWalletStorage>(sp => sp.GetRequiredService<EfCoreWalletStorage>());
+
+        services.AddSingleton<EfCoreSyncStateStorage>();
+        services.AddSingleton<ISyncStateStorage>(sp => sp.GetRequiredService<EfCoreSyncStateStorage>());
 
         return services;
     }

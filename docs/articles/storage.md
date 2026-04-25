@@ -40,6 +40,9 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 | `ArkIntentEntity` | `Intents` | `IntentTxId` |
 | `ArkIntentVtxoEntity` | `IntentVtxos` | `(IntentTxId, VtxoTransactionId, VtxoTransactionOutputIndex)` |
 | `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
+| `ArkSyncStateEntity` | `SyncState` | `Id` (singleton row, key=`"vtxo"`) |
+
+`ArkSyncStateEntity` persists the `LastFullPollAt` cursor used by `VtxoSynchronizationService` to bound the cold-start catch-up window. Without it, a process restart on a wallet with thousands of historical VTXOs re-fetches the entire script set from arkd. With it, the first catch-up poll uses the stored timestamp as its `after` filter so only changes since the last shutdown are returned. The cursor is advanced after every successful 5-second routine poll.
 
 ## Payment Tracking (Opt-In)
 

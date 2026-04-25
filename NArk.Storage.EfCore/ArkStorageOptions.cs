@@ -21,6 +21,7 @@ public class ArkStorageOptions
     public string SwapsTable { get; set; } = "Swaps";
     public string PaymentsTable { get; set; } = "Payments";
     public string PaymentRequestsTable { get; set; } = "PaymentRequests";
+    public string SyncStateTable { get; set; } = "SyncState";
 
     /// <summary>
     /// Optional callback for provider-specific text search on contract metadata.
