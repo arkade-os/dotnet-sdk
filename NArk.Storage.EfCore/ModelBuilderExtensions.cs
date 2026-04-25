@@ -6,8 +6,9 @@ namespace NArk.Storage.EfCore;
 public static class ModelBuilderExtensions
 {
     /// <summary>
-    /// Configures all Ark SDK entity types on the given ModelBuilder.
+    /// Configures core Ark SDK entity types on the given ModelBuilder.
     /// Call this from your DbContext's OnModelCreating.
+    /// For payment tracking tables, also call <see cref="ConfigureArkPaymentEntities"/>.
     /// </summary>
     public static ModelBuilder ConfigureArkEntities(
         this ModelBuilder modelBuilder,
@@ -30,9 +31,10 @@ public static class ModelBuilderExtensions
     }
 
     /// <summary>
-    /// Configures the payment-tracking entity types (ArkPaymentEntity, ArkPaymentRequestEntity).
-    /// Call this from your DbContext's OnModelCreating only if you also call AddArkPaymentTracking
-    /// on the service collection. Requires ConfigureArkEntities to have been called (for Wallet FK).
+    /// Configures payment-tracking entity types (Payments and PaymentRequests tables).
+    /// Call this from your DbContext's OnModelCreating alongside <see cref="ConfigureArkEntities"/>
+    /// only if you also call <c>AddArkPaymentTracking</c> on the service collection.
+    /// Requires <see cref="ConfigureArkEntities"/> to be called first (for the Wallet FK).
     /// </summary>
     public static ModelBuilder ConfigureArkPaymentEntities(
         this ModelBuilder modelBuilder,

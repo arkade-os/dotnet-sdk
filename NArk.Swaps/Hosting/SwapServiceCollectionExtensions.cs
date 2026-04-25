@@ -24,7 +24,7 @@ public static class SwapServiceCollectionExtensions
         services.AddSingleton<SwapsManagementService>();
         services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
         services.AddSingleton<IContractTransformer, VHTLCContractTransformer>();
-        
+
         services.AddSingleton<CachedBoltzClient>();
         services.AddSingleton<BoltzLimitsValidator>();
         services.AddHostedService<NArk.Swaps.Hosting.SwapHostedLifecycle>();

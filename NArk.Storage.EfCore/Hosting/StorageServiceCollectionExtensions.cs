@@ -16,9 +16,9 @@ namespace NArk.Storage.EfCore.Hosting;
 public static class StorageServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers all Ark EF Core storage implementations.
-    /// The consumer's TDbContext must call modelBuilder.ConfigureArkEntities() in OnModelCreating.
-    /// For wallet provider registration, use NArk.Core.Wallet.DefaultWalletProvider separately.
+    /// Registers core Ark EF Core storage implementations.
+    /// The consumer's TDbContext must call <c>modelBuilder.ConfigureArkEntities()</c> in OnModelCreating.
+    /// For payment tracking, also call <see cref="AddArkPaymentTracking"/>.
     /// </summary>
     public static IServiceCollection AddArkEfCoreStorage<TDbContext>(
         this IServiceCollection services,
@@ -54,11 +54,14 @@ public static class StorageServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers opt-in payment-tracking storage and the <see cref="PaymentTrackingService"/>.
+    /// Registers opt-in payment-tracking storage and the <see cref="PaymentTrackingService"/>
+    /// hosted service that automatically updates payment statuses from protocol events.
+    /// <para>
     /// Call this in addition to <see cref="AddArkEfCoreStorage{TDbContext}"/> only if the
     /// consumer needs payment tracking. The consumer's TDbContext must also call
     /// <c>modelBuilder.ConfigureArkPaymentEntities()</c> in OnModelCreating, and the DB
     /// schema must include the Payments and PaymentRequests tables (run the corresponding migration).
+    /// </para>
     /// </summary>
     public static IServiceCollection AddArkPaymentTracking(this IServiceCollection services)
     {
@@ -68,25 +71,8 @@ public static class StorageServiceCollectionExtensions
         services.AddSingleton<EfCorePaymentRequestStorage>();
         services.AddSingleton<IPaymentRequestStorage>(sp => sp.GetRequiredService<EfCorePaymentRequestStorage>());
 
-        services.AddSingleton<PaymentTrackingService>();
-        services.AddHostedService<PaymentTrackingServiceStarter>();
+        services.AddHostedService<PaymentTrackingService>();
 
         return services;
-    }
-
-    /// <summary>
-    /// Hosted service whose only job is to resolve <see cref="PaymentTrackingService"/> so
-    /// its constructor-time event subscriptions fire. Nothing else depends on it in the
-    /// container, so without this it would never be instantiated.
-    /// </summary>
-    private sealed class PaymentTrackingServiceStarter(PaymentTrackingService service) : IHostedService
-    {
-        public Task StartAsync(CancellationToken cancellationToken)
-        {
-            _ = service;
-            return Task.CompletedTask;
-        }
-
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }
