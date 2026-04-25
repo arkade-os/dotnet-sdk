@@ -48,7 +48,12 @@ public partial class GrpcClientTransport
 
             GetVtxosResponse? response = null;
 
-            while (response is null || response.Page.Next != response.Page.Total)
+            // arkd's paginator is 1-based and clamps `next` to `total` on the final page
+            // (see arkd internal/core/application/indexer.go paginate()). The correct "more pages"
+            // condition is therefore `current < total` — using `next != total` exits one page
+            // early (fetches only `total - 1` pages), which is how 11k-VTXO wallets appeared to
+            // cap at exactly 11 × page_size instead of all items.
+            while (response is null || response.Page.Current < response.Page.Total)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 response = await _indexerServiceClient.GetVtxosAsync(request, cancellationToken: cancellationToken);
@@ -136,7 +141,12 @@ public partial class GrpcClientTransport
 
             GetVtxosResponse? response = null;
 
-            while (response is null || response.Page.Next != response.Page.Total)
+            // arkd's paginator is 1-based and clamps `next` to `total` on the final page
+            // (see arkd internal/core/application/indexer.go paginate()). The correct "more pages"
+            // condition is therefore `current < total` — using `next != total` exits one page
+            // early (fetches only `total - 1` pages), which is how 11k-VTXO wallets appeared to
+            // cap at exactly 11 × page_size instead of all items.
+            while (response is null || response.Page.Current < response.Page.Total)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 response = await _indexerServiceClient.GetVtxosAsync(request, cancellationToken: cancellationToken);

@@ -58,10 +58,15 @@ public class PostSpendVtxoPollingHandler(
             // We poll all scripts to upsert both input (spent) and output (new) VTXOs,
             // then use the transport's spent_only filter to verify inputs are marked spent
             // by arkd before breaking — avoids relying on local storage which may lag.
+            //
+            // Time-filter: only fetch VTXOs updated within a short window before the
+            // spend. Scripts that already hold large history would otherwise re-fetch
+            // everything on every spend, which is what triggered this optimisation.
+            var after = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(5);
             const int maxAttempts = 5;
             for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                var found = await vtxoSyncService.PollScriptsForVtxos(scripts, cancellationToken);
+                var found = await vtxoSyncService.PollScriptsForVtxos(scripts, after, cancellationToken);
                 logger?.LogInformation(
                     "PostSpendVtxoPolling: attempt {Attempt}/{Max} for TxId={TxId}, {Found} VTXOs returned",
                     attempt, maxAttempts, @event.TransactionId, found);

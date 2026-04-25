@@ -5,11 +5,15 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <WarningsAsErrors>nullable</WarningsAsErrors>
+        <!-- HAS_SPAN enables Taproot-related code in the vendored NBitcoin.Scripting files. -->
+        <DefineConstants>$(DefineConstants);HAS_SPAN</DefineConstants>
+        <!-- Vendored NBitcoin Scripting code (pre-10.x) is not strict-nullable-clean. Suppress those warnings. -->
+        <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8619;CS8620;CS8625;CS8632;CS8765;CS8767</NoWarn>
         <PackageDescription>Interfaces and domain types for the Ark protocol .NET SDK. Includes storage abstractions, wallet interfaces, and core domain records (ArkCoin, ArkVtxo, ArkContract, ArkAddress).</PackageDescription>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="NBitcoin" Version="9.0.4" />
-      <PackageReference Include="NBitcoin.Secp256k1" Version="3.2.0" />
+      <PackageReference Include="NBitcoin" Version="10.0.1" />
+      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.0" />
     </ItemGroup>
 </Project>

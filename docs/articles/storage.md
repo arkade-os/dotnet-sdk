@@ -1,58 +1,93 @@
 # Storage (EF Core)
 
+`NArk.Storage.EfCore` provides ready-made storage implementations. It is **provider-agnostic** — no dependency on Npgsql or any specific database driver.
+
 ## Setup
 
-```csharp
-services.AddDbContextFactory<YourDbContext>(opts =>
-    opts.UseNpgsql(connectionString));
-
-services.AddArkEfCoreStorage<YourDbContext>();
-```
-
-Your `DbContext` must inherit from or include the Arkade entity configuration:
+Two pieces wire storage up: a `DbContext` that includes the Arkade entity configuration, and the `AddArkEfCoreStorage<TDbContext>()` DI registration.
 
 ```csharp
-public class YourDbContext : DbContext
+public class MyDbContext : DbContext
 {
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        base.OnModelCreating(modelBuilder);
-        modelBuilder.AddArkEntities(); // Adds all Arkade tables
+        modelBuilder.ConfigureArkEntities(opts =>
+        {
+            opts.Schema = "ark";            // default; set to null for no schema
+            // opts.WalletsTable = "Wallets"; // all table names configurable
+        });
     }
 }
+
+services.AddDbContextFactory<MyDbContext>(opts =>
+    opts.UseNpgsql(connectionString));
+
+services.AddArkEfCoreStorage<MyDbContext>(opts =>
+{
+    opts.Schema = "ark";
+});
 ```
 
-## Entity Reference
+`AddArkEfCoreStorage` registers all the core storage implementations (`IVtxoStorage`, `IContractStorage`, `IIntentStorage`, `ISwapStorage`, `IWalletStorage`).
 
-| Table | Entity | Description |
+## Core Entities
+
+| Entity | Table | Primary Key |
 |---|---|---|
-| Wallets | `WalletEntity` | HD/SingleKey wallet configurations |
-| VTXOs | `VtxoEntity` | Virtual UTXO state, amounts, expiry, spend status |
-| Contracts | `ContractEntity` | Taproot contracts with derivation indices and metadata |
-| Intents | `IntentEntity` | Batch payment intents and lifecycle |
-| Swaps | `SwapEntity` | Boltz swap state and metadata |
+| `ArkWalletEntity` | `Wallets` | `Id` |
+| `ArkWalletContractEntity` | `WalletContracts` | `(Script, WalletId)` |
+| `VtxoEntity` | `Vtxos` | `(TransactionId, TransactionOutputIndex)` |
+| `ArkIntentEntity` | `Intents` | `IntentTxId` |
+| `ArkIntentVtxoEntity` | `IntentVtxos` | `(IntentTxId, VtxoTransactionId, VtxoTransactionOutputIndex)` |
+| `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
+
+## Payment Tracking (Opt-In)
+
+Payment tracking (`ArkPayment` / `ArkPaymentRequest`) is **opt-in** — consumers who don't need it carry no extra schema or services. To enable it, add the entity configuration *and* the DI registration:
+
+```csharp
+// OnModelCreating — alongside ConfigureArkEntities
+modelBuilder.ConfigureArkEntities(opts => opts.Schema = "ark");
+modelBuilder.ConfigureArkPaymentEntities(opts => opts.Schema = "ark");
+
+// DI — alongside AddArkEfCoreStorage
+services.AddArkEfCoreStorage<MyDbContext>();
+services.AddArkPaymentTracking();
+```
+
+`AddArkPaymentTracking()` registers `IPaymentStorage`, `IPaymentRequestStorage`, and `PaymentTrackingService` as an `IHostedService` so its `VtxosChanged`/`IntentChanged`/`SwapsChanged` subscriptions activate on startup. After calling `ConfigureArkPaymentEntities`, run the corresponding EF Core migration so the `Payments` and `PaymentRequests` tables are created.
+
+Payment-tracking entities:
+
+| Entity | Table | Primary Key |
+|---|---|---|
+| `ArkPaymentEntity` | `Payments` | `PaymentId` |
+| `ArkPaymentRequestEntity` | `PaymentRequests` | `RequestId` |
 
 ## Storage Interfaces
 
-Each storage interface can be implemented independently:
+Each interface can be implemented independently if you need a non-EF Core backend:
 
 - `IVtxoStorage` — VTXO CRUD and queries
-- `IContractStorage` — Contract management and script lookups
-- `IIntentStorage` — Intent lifecycle management
-- `ISwapStorage` — Swap state tracking
-- `IWalletStorage` — Wallet persistence
+- `IContractStorage` — contract management and script lookups
+- `IIntentStorage` — intent lifecycle management
+- `ISwapStorage` — swap state tracking
+- `IWalletStorage` — wallet persistence
+- `IPaymentStorage` / `IPaymentRequestStorage` — opt-in payment tracking
 
 ## Provider Agnostic
 
-The EF Core storage works with any EF Core provider:
+Works with any EF Core provider — choose at `DbContextFactory` registration time:
 
 ```csharp
 // PostgreSQL
 opts.UseNpgsql(connectionString);
 
-// SQLite (e.g., for mobile/desktop apps)
+// SQLite (mobile/desktop apps)
 opts.UseSqlite("Data Source=ark.db");
 
-// In-memory (testing)
+// In-memory (testing only — some queries use provider-specific features)
 opts.UseInMemoryDatabase("test");
 ```
+
+`ArkStorageOptions.ContractSearchProvider` lets you inject provider-specific text-search for contract metadata (e.g. PostgreSQL `ILIKE`). See `ArkStorageOptions` for all configuration knobs.

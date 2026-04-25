@@ -309,11 +309,14 @@ The CLTV locktime is optional — when set, it prevents the delegate from acting
 
 ### Custom Contract Delegation
 
-The SDK uses an `IDelegationTransformer` pattern to support delegating different contract types. The built-in `DelegateContractDelegationTransformer` handles `ArkDelegateContract` VTXOs. Register additional transformers for other contract types:
+The SDK uses an `IDelegationTransformer` pattern to support delegating different contract types. The built-in `DelegateContractDelegationTransformer` handles `ArkDelegateContract` VTXOs and is registered by `AddArkDelegation`. Register additional transformers for other contract types *after* calling `AddArkDelegation`:
 
 ```csharp
+services.AddArkDelegation("http://localhost:7012");
 services.AddTransient<IDelegationTransformer, MyCustomDelegationTransformer>();
 ```
+
+> Note: `DelegationService` and the default `IDelegationTransformer` are only registered by `AddArkDelegation`. `AddArkCoreServices` alone does not include delegation services.
 
 Each transformer implements:
 - `CanDelegate(walletId, contract, delegatePubkey)` — check eligibility
@@ -475,12 +478,28 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 | `ArkIntentEntity` | `Intents` | `IntentTxId` |
 | `ArkIntentVtxoEntity` | `IntentVtxos` | `(IntentTxId, VtxoTransactionId, VtxoTransactionOutputIndex)` |
 | `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
-| `ArkPaymentEntity` | `Payments` | `PaymentId` |
-| `ArkPaymentRequestEntity` | `PaymentRequests` | `RequestId` |
+
+Payment-tracking entities (`ArkPaymentEntity`, `ArkPaymentRequestEntity`) are opt-in — see [Payment Repository](#payment-repository) below.
 
 ## Payment Repository
 
-The SDK includes a payment repository for tracking end-to-end payments — both outbound (sends) and inbound (payment requests). This replaces the need for consumers to build their own payment-to-protocol linkage.
+The SDK includes an **opt-in** payment repository for tracking end-to-end payments — both outbound (sends) and inbound (payment requests). This replaces the need for consumers to build their own payment-to-protocol linkage.
+
+### Opt-In Setup
+
+Payment tracking is not wired up by `AddArkEfCoreStorage` / `ConfigureArkEntities` — consumers that don't need it carry no extra schema or services. To enable it, call both the DI and model extensions:
+
+```csharp
+// OnModelCreating — alongside ConfigureArkEntities
+modelBuilder.ConfigureArkEntities(opts => opts.Schema = "ark");
+modelBuilder.ConfigureArkPaymentEntities(opts => opts.Schema = "ark");
+
+// DI — alongside AddArkEfCoreStorage
+services.AddArkEfCoreStorage<MyDbContext>();
+services.AddArkPaymentTracking();
+```
+
+`AddArkPaymentTracking` registers `IPaymentStorage`, `IPaymentRequestStorage`, and the `PaymentTrackingService` (as an `IHostedService`, so its event subscriptions activate on startup). After calling `ConfigureArkPaymentEntities`, add the corresponding EF Core migration so the `Payments` and `PaymentRequests` tables are created.
 
 ### Outbound Payments (`ArkPayment`)
 
@@ -547,13 +566,7 @@ The `PaymentTrackingService` subscribes to `VtxosChanged`, `IntentChanged`, and 
 - **Outbound**: When an intent succeeds/fails or a swap settles/fails, the linked `ArkPayment` moves to `Completed` or `Failed`.
 - **Inbound**: When a VTXO arrives on a watched contract script, the `ArkPaymentRequest` accumulates `ReceivedAmount` and transitions to `Paid` (or `PartiallyPaid` for fixed-amount requests). Overpayment is tracked in the `Overpayment` property.
 
-Register it as a singleton:
-
-```csharp
-services.AddSingleton<PaymentTrackingService>();
-```
-
-It is registered automatically by `AddArkEfCoreStorage`, but must be resolved (e.g., via `IServiceProvider.GetRequiredService<PaymentTrackingService>()`) to activate event subscriptions.
+It is registered by `AddArkPaymentTracking()` (see [Opt-In Setup](#opt-in-setup) above) and runs as an `IHostedService`, so its event subscriptions activate automatically on application startup — no manual resolution needed.
 
 ### Fulfillment Rules
 

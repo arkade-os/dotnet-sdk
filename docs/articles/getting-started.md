@@ -4,7 +4,7 @@
 
 ```bash
 dotnet add package NArk                    # Core + Swaps
-dotnet add package NArk.Storage.EfCore     # EF Core persistence
+dotnet add package NArk.Storage.EfCore     # EF Core persistence (optional)
 ```
 
 ## Minimal Setup with Generic Host
@@ -69,12 +69,37 @@ services.AddSingleton<IChainTimeProvider, YourChainTimeProvider>();
 .OnMutinynet()    // Mutinynet testnet
 .OnRegtest()      // local regtest
 
-// Custom server
-.OnCustom(new Uri("https://your-arkd.example.com"))
+// Custom arkd endpoint
+.OnCustomGrpcArk("https://your-arkd.example.com")
 ```
+
+Or via `IServiceCollection`:
+
+```csharp
+services.AddArkNetwork(ArkNetworkConfig.Mainnet);
+services.AddArkNetwork(new ArkNetworkConfig(
+    ArkUri: "http://my-ark-server:7070",
+    BoltzUri: "http://my-boltz:9069/"));
+```
+
+## Opt-In Features
+
+Several features are opt-in and must be wired up explicitly:
+
+```csharp
+// Automated delegation (requires a Fulmine delegator endpoint)
+services.AddArkDelegation("http://localhost:7012");
+
+// Payment-tracking storage (opt-in over AddArkEfCoreStorage)
+services.AddArkPaymentTracking();
+// Also call modelBuilder.ConfigureArkPaymentEntities() in OnModelCreating.
+```
+
+See [Storage](storage.md) for details on payment tracking, and the SDK README for delegation.
 
 ## Next Steps
 
-- [Architecture](architecture.md) — understand SDK layering and extensibility
+- [Architecture](architecture.md) — SDK layering and extensibility
 - [Wallets](wallets.md) — create and manage HD or SingleKey wallets
 - [Spending](spending.md) — send payments with automatic coin selection
+- [Storage](storage.md) — EF Core persistence and opt-in payment tracking

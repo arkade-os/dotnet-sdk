@@ -54,11 +54,13 @@ public static class StorageServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers payment tracking storage, and the <see cref="PaymentTrackingService"/> hosted service
-    /// that automatically updates payment statuses from protocol events.
+    /// Registers opt-in payment-tracking storage and the <see cref="PaymentTrackingService"/>
+    /// hosted service that automatically updates payment statuses from protocol events.
     /// <para>
-    /// Requires <see cref="AddArkEfCoreStorage{TDbContext}"/> to be called first.
-    /// The consumer's DbContext must also call <c>modelBuilder.ConfigureArkPaymentEntities()</c>.
+    /// Call this in addition to <see cref="AddArkEfCoreStorage{TDbContext}"/> only if the
+    /// consumer needs payment tracking. The consumer's TDbContext must also call
+    /// <c>modelBuilder.ConfigureArkPaymentEntities()</c> in OnModelCreating, and the DB
+    /// schema must include the Payments and PaymentRequests tables (run the corresponding migration).
     /// </para>
     /// </summary>
     public static IServiceCollection AddArkPaymentTracking(this IServiceCollection services)

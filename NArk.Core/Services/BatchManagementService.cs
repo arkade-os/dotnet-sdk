@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
@@ -141,6 +142,13 @@ public class BatchManagementService(
                                        ex.InnerException is OperationCanceledException)
             {
                 // Cancellation during gRPC call
+            }
+            catch (RpcException rpc) when (rpc.StatusCode == StatusCode.FailedPrecondition)
+            {
+                logger?.LogWarning("Ark server not ready ({Detail}), retrying in {Seconds}s",
+                    rpc.Status.Detail, EventStreamRetryDelay.TotalSeconds);
+                _streamId = null;
+                await Task.Delay(EventStreamRetryDelay, cancellationToken);
             }
             catch (Exception ex)
             {

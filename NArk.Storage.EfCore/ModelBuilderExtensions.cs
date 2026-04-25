@@ -31,8 +31,9 @@ public static class ModelBuilderExtensions
     }
 
     /// <summary>
-    /// Configures payment tracking entity types (Payments and PaymentRequests tables).
-    /// Call this from your DbContext's OnModelCreating alongside <see cref="ConfigureArkEntities"/>.
+    /// Configures payment-tracking entity types (Payments and PaymentRequests tables).
+    /// Call this from your DbContext's OnModelCreating alongside <see cref="ConfigureArkEntities"/>
+    /// only if you also call <c>AddArkPaymentTracking</c> on the service collection.
     /// Requires <see cref="ConfigureArkEntities"/> to be called first (for the Wallet FK).
     /// </summary>
     public static ModelBuilder ConfigureArkPaymentEntities(

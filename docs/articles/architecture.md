@@ -53,3 +53,17 @@ Communication with the Arkade server (arkd) uses gRPC:
 - **`GrpcClientTransport`** — direct gRPC connection
 - **`RestClientTransport`** — REST/JSON fallback (e.g., for browser environments)
 - **`CachingClientTransport`** — caches server info to reduce round-trips
+
+## Opt-In Feature Wiring
+
+A few subsystems are intentionally not registered by `AddArkCoreServices` because they need consumer-supplied configuration:
+
+- **Delegation** — `AddArkDelegation(delegatorUri)` registers `IDelegatorProvider`, `DelegationService`, `DelegateContractTransformer`, and `DelegationMonitorService` (hosted). Wraps `IWalletProvider` to produce `ArkDelegateContract`s for HD wallets.
+- **Payment tracking** — `AddArkPaymentTracking()` registers `IPaymentStorage`, `IPaymentRequestStorage`, and `PaymentTrackingService` (hosted). Requires `modelBuilder.ConfigureArkPaymentEntities()` in your `DbContext`.
+- **Swaps** — `AddArkSwapServices()` registers `SwapsManagementService` and the Boltz client. Configured via `ArkNetworkConfig.BoltzUri`.
+
+Skipping any of these keeps the dependency graph and schema minimal for plugins that don't need them.
+
+## Vendored NBitcoin.Scripting
+
+`NArk.Abstractions/Scripting/` contains a pruned copy of the `NBitcoin.Scripting` namespace from the NBitcoin 9.x era (`OutputDescriptor`, `PubKeyProvider`, parser combinators). NBitcoin 10 removed this subsystem in favor of BIP388 `WalletPolicy` / `Miniscript`; NArk continues to use the classic `OutputDescriptor` type because its semantics (HD derivation, origin info, non-Taproot wrapping) match arkd's wire format and preserve 33-byte compressed keys with parity. Only the descriptor parsing and HD-derivation parts are vendored — the script-tree inference and signing-repo interactions that depended on NBitcoin internals were stripped.
