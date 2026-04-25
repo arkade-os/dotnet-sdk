@@ -2,10 +2,12 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Fees;
 using NArk.Abstractions.Wallets;
+using NArk.Abstractions.Recovery;
 using NArk.Core.CoinSelector;
 using NArk.Core.Events;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
+using NArk.Core.Recovery;
 using NArk.Core.Services;
 using NArk.Core.Sweeper;
 using NArk.Abstractions.Services;
@@ -95,6 +97,20 @@ public static class ServiceCollectionExtensions
 
         // VTXO polling - automatically poll for updates after batch success and spend transactions
         services.AddVtxoPolling();
+
+        // HD-wallet recovery: gap-limit scan for prior contract usage on import.
+        services.AddSingleton<HdWalletRecoveryService>();
+        services.AddSingleton<IContractDiscoveryProvider, IndexerVtxoDiscoveryProvider>();
+        // BoardingUtxoDiscoveryProvider activates only when an IBoardingUtxoProvider has
+        // been registered (typically by the plugin via NBXplorer/Esplora). When absent the
+        // provider is a no-op so HD recovery still works without on-chain probing.
+        services.AddSingleton<IContractDiscoveryProvider>(sp =>
+            sp.GetService<IBoardingUtxoProvider>() is { } utxoProvider
+                ? new BoardingUtxoDiscoveryProvider(
+                    utxoProvider,
+                    sp.GetRequiredService<IClientTransport>(),
+                    sp.GetService<ILogger<BoardingUtxoDiscoveryProvider>>())
+                : NullContractDiscoveryProvider.Instance);
 
         return services;
     }
