@@ -431,6 +431,29 @@ var contract = await contractService.DeriveContract(
 // The contract's script can be converted to an ArkAddress for display
 ```
 
+## HD Wallet Recovery
+
+When importing an HD wallet from its mnemonic, the SDK has no record of contracts the previous instance derived. `HdWalletRecoveryService` rebuilds that state by sweeping derivation indices via gap-limit and asking each registered `IContractDiscoveryProvider` whether it ever saw activity at that index.
+
+The default providers ship with the SDK:
+
+- `IndexerVtxoDiscoveryProvider` (`AddArkCoreServices`) — asks arkd's indexer for VTXOs at the index's payment script.
+- `BoardingUtxoDiscoveryProvider` (`AddArkCoreServices`, opt-in via registering an `IBoardingUtxoProvider`) — asks NBXplorer/Esplora for historical UTXOs at the index's boarding address.
+- `BoltzSwapDiscoveryProvider` (`AddArkSwapServices`) — asks Boltz `/v2/swap/restore` whether the index's user pubkey ever participated in a swap.
+
+```csharp
+var recovery = serviceProvider.GetRequiredService<HdWalletRecoveryService>();
+
+var report = await recovery.ScanAsync(walletId);
+// or with options:
+var deepReport = await recovery.ScanAsync(walletId, new RecoveryOptions(GapLimit: 50));
+
+Console.WriteLine($"Highest used index: {report.HighestUsedIndex}");
+Console.WriteLine($"Discovered {report.DiscoveredContracts.Count} contract(s)");
+```
+
+Custom discovery sources are added by implementing `IContractDiscoveryProvider` and registering it in DI; the orchestrator picks them up automatically. See [docs/articles/recovery.md](docs/articles/recovery.md) for the full API and tuning guidance.
+
 ## EF Core Storage
 
 `NArk.Storage.EfCore` provides ready-made storage implementations. It is **provider-agnostic** — no dependency on Npgsql or any specific database driver.

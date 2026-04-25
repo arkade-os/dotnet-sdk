@@ -129,9 +129,11 @@ public class PostBatchVtxoPollingHandlerTests
                 cancellationToken: Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkContractEntity>>(contracts));
 
-        // Mock the VTXO snapshot to return empty (just verify it's called)
+        // Mock the VTXO snapshot (after-filtered overload — see PostBatchVtxoPollingHandler).
         _clientTransport.GetVtxoByScriptsAsSnapshot(
                 Arg.Any<IReadOnlySet<string>>(),
+                Arg.Any<DateTimeOffset?>(),
+                Arg.Any<DateTimeOffset?>(),
                 Arg.Any<CancellationToken>())
             .Returns(AsyncEnumerable.Empty<ArkVtxo>());
 
@@ -140,6 +142,8 @@ public class PostBatchVtxoPollingHandlerTests
         // Verify that VTXO polling was triggered with the scripts from active contracts
         _clientTransport.Received(1).GetVtxoByScriptsAsSnapshot(
             Arg.Is<IReadOnlySet<string>>(s => s.Contains("script1")),
+            Arg.Any<DateTimeOffset?>(),
+            Arg.Any<DateTimeOffset?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -263,6 +267,8 @@ public class PostSpendVtxoPollingHandlerTests
 
         _clientTransport.GetVtxoByScriptsAsSnapshot(
                 Arg.Any<IReadOnlySet<string>>(),
+                Arg.Any<DateTimeOffset?>(),
+                Arg.Any<DateTimeOffset?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new[] { dummyVtxo }.ToAsyncEnumerable());
 
@@ -289,10 +295,14 @@ public class PostSpendVtxoPollingHandlerTests
 
         await _handler.HandleAsync(@event);
 
-        // pollOneByOne=true queries each script individually (1 input + 1 output = 2 calls),
-        // and returning a spent input VTXO ensures the retry loop breaks after the first attempt
-        _clientTransport.Received(2).GetVtxoByScriptsAsSnapshot(
+        // PollScriptsForVtxos now batches all scripts into a single after-filtered
+        // call (since arkd's multi-script query was fixed). The retry loop breaks
+        // after attempt 1 because the spent-input check via GetVtxosByOutpoints
+        // sees the input as spent.
+        _clientTransport.Received(1).GetVtxoByScriptsAsSnapshot(
             Arg.Any<IReadOnlySet<string>>(),
+            Arg.Any<DateTimeOffset?>(),
+            Arg.Any<DateTimeOffset?>(),
             Arg.Any<CancellationToken>());
     }
 
