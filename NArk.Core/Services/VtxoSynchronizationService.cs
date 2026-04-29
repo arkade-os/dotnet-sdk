@@ -62,11 +62,21 @@ public class VtxoSynchronizationService : IAsyncDisposable
     /// not "completed" guarantees that any change which lands on arkd while
     /// our poll is in flight is still inside the next poll's <c>after</c> window.
     /// </param>
+    /// <param name="IsColdStartCatchup">
+    /// Marks the very first cold-start catch-up poll. On its successful
+    /// completion <c>_coldStartCatchupComplete</c> flips to true, ungating
+    /// the persistent cursor advance for subsequent <see cref="IsFullSetSnapshot"/>
+    /// polls. Until that happens, a failure-then-success sequence
+    /// (catch-up fails, routine poll succeeds) MUST NOT advance the cursor —
+    /// otherwise the window between the stored cursor and the routine
+    /// poll's lookback is permanently skipped.
+    /// </param>
     private readonly record struct PollRequest(
         HashSet<string> Scripts,
         DateTimeOffset? After,
         bool IsFullSetSnapshot = false,
-        DateTimeOffset StartedAt = default);
+        DateTimeOffset StartedAt = default,
+        bool IsColdStartCatchup = false);
 
     // Unbounded: retry schedules + RoutinePoll + catchup can all enqueue at once,
     // and we never want stream-event processing to block on back-pressure. The
@@ -87,6 +97,19 @@ public class VtxoSynchronizationService : IAsyncDisposable
     /// so wallets with long history don't refetch every VTXO on every cold start.
     /// </summary>
     private bool _isFirstStartupCatchup = true;
+
+    /// <summary>
+    /// Gate on advancing the persisted <c>LastFullPollAt</c> cursor. Stays
+    /// false until the cold-start catch-up poll succeeds at least once;
+    /// while false, even successful <see cref="PollRequest.IsFullSetSnapshot"/>
+    /// polls (i.e. routine polls) leave the stored cursor untouched. This
+    /// prevents a transient catch-up failure followed by a routine-poll
+    /// success from advancing the cursor past the catch-up window — which
+    /// would permanently skip any VTXO that landed during the downtime.
+    /// Initialised to true when no <see cref="ISyncStateStorage"/> is wired,
+    /// since there is nothing to gate.
+    /// </summary>
+    private volatile bool _coldStartCatchupComplete;
 
     public VtxoSynchronizationService(
         IEnumerable<IActiveScriptsProvider> activeScriptsProviders,
@@ -109,6 +132,10 @@ public class VtxoSynchronizationService : IAsyncDisposable
         _arkClientTransport = arkClientTransport;
         _activeScriptsProviders = activeScriptsProviders;
         _syncStateStorage = syncStateStorage;
+        // Without a sync-state storage there is no cursor to advance, so the
+        // gate is irrelevant — start in the "complete" state to keep the
+        // opt-out path identical to pre-cursor behaviour.
+        _coldStartCatchupComplete = syncStateStorage is null;
 
         foreach (var provider in _activeScriptsProviders)
         {
@@ -278,7 +305,8 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 // call so the cold-start catch-up window equals "since last
                 // shutdown" rather than "all of history".
                 DateTimeOffset? catchupAfter = null;
-                if (_isFirstStartupCatchup && _syncStateStorage is not null)
+                var isInitialCatchup = _isFirstStartupCatchup;
+                if (isInitialCatchup && _syncStateStorage is not null)
                 {
                     try
                     {
@@ -298,7 +326,25 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 }
                 _isFirstStartupCatchup = false;
 
-                await _readyToPoll.Writer.WriteAsync(new PollRequest(newlyAdded, catchupAfter), token);
+                // The cold-start catch-up IS a full-set snapshot: at this moment
+                // newlyAdded equals the entire active script view (cold start →
+                // _lastViewOfScripts was empty before line 291), and `catchupAfter`
+                // is the stored cursor (or null for first-ever startup). On its
+                // successful completion we both flip the gate flag and advance
+                // the cursor to its StartedAt — eliminating the 5-second window
+                // between catch-up success and the first routine poll's cursor
+                // write. Subsequent UpdateScriptsView calls (script set grows
+                // mid-flight) only carry newly-added scripts and stay
+                // IsFullSetSnapshot=false.
+                var startedAt = isInitialCatchup ? DateTimeOffset.UtcNow : default;
+                await _readyToPoll.Writer.WriteAsync(
+                    new PollRequest(
+                        newlyAdded,
+                        catchupAfter,
+                        IsFullSetSnapshot: isInitialCatchup,
+                        StartedAt: startedAt,
+                        IsColdStartCatchup: isInitialCatchup),
+                    token);
             }
         }
         finally
@@ -404,10 +450,20 @@ public class VtxoSynchronizationService : IAsyncDisposable
                     "StartQueryLogic: poll returned {Found} VTXO(s) across {Count} script(s) in {Elapsed}ms",
                     found, request.Scripts.Count, (int)(DateTimeOffset.UtcNow - started).TotalMilliseconds);
 
+                // Mark the cold-start catch-up as complete on its first
+                // successful poll. Until this flips, routine polls below
+                // are gated from advancing the cursor — protecting against
+                // the failure-then-success gap-loss scenario.
+                if (request.IsColdStartCatchup)
+                {
+                    _coldStartCatchupComplete = true;
+                }
+
                 // Advance the persisted full-poll cursor only after a successful
-                // poll that was enqueued as a full-set snapshot. Per-script and
-                // stream-driven polls never advance it.
-                if (request.IsFullSetSnapshot && _syncStateStorage is not null)
+                // poll that was enqueued as a full-set snapshot AND the cold-start
+                // catch-up has succeeded at least once. Per-script and stream-driven
+                // polls never advance it.
+                if (request.IsFullSetSnapshot && _coldStartCatchupComplete && _syncStateStorage is not null)
                 {
                     try
                     {

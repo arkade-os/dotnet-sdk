@@ -42,7 +42,7 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 | `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
 | `ArkSyncStateEntity` | `SyncState` | `Id` (singleton row, key=`"vtxo"`) |
 
-`ArkSyncStateEntity` persists the `LastFullPollAt` cursor used by `VtxoSynchronizationService` to bound the cold-start catch-up window. Without it, a process restart on a wallet with thousands of historical VTXOs re-fetches the entire script set from arkd. With it, the first catch-up poll uses the stored timestamp as its `after` filter so only changes since the last shutdown are returned. The cursor is advanced after every successful 5-second routine poll.
+`ArkSyncStateEntity` persists the `LastFullPollAt` cursor used by `VtxoSynchronizationService` to bound the cold-start catch-up window. Without it, a process restart on a wallet with thousands of historical VTXOs re-fetches the entire script set from arkd. With it, the first catch-up poll uses the stored timestamp as its `after` filter so only changes since the last shutdown are returned. The cursor is advanced when the cold-start catch-up succeeds, and after every subsequent successful 5-second routine poll. If the catch-up fails (transient indexer/network error) the cursor stays unchanged and routine polls do **not** advance it until catch-up has succeeded at least once — this prevents a failure-then-success sequence from skipping the catch-up window.
 
 ## Payment Tracking (Opt-In)
 
