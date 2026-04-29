@@ -3,9 +3,11 @@ using NArk.Abstractions;
 using NArk.Abstractions.Assets;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
+using NArk.Abstractions.Recovery;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core;
+using NArk.Core.Recovery;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Core.Wallet;
@@ -36,6 +38,7 @@ public class ArkWalletService(
     IContractService contractService,
     SwapsManagementService swapsManagementService,
     BoltzLimitsValidator boltzLimitsValidator,
+    HdWalletRecoveryService recoveryService,
     ArkNetworkConfig networkConfig)
 {
     // ── Wallets ──
@@ -51,6 +54,22 @@ public class ArkWalletService(
         await walletStorage.SaveWallet(wallet);
         return wallet;
     }
+
+    /// <summary>
+    /// Run an HD-wallet gap-limit recovery scan for a freshly imported wallet.
+    /// Discovers contracts that were used by a previous instance of the same
+    /// mnemonic — VTXOs (arkd indexer), boarding UTXOs (on-chain), and Boltz
+    /// swaps — and persists them in local storage so balances and history
+    /// reflect the wallet's prior activity.
+    /// </summary>
+    /// <remarks>
+    /// Only meaningful for HD wallets; SingleKey wallets have no derivation index
+    /// and the scanner will throw. Safe to re-run; subsequent calls are
+    /// idempotent (deduped by script, never lowers <c>LastUsedIndex</c>).
+    /// </remarks>
+    public Task<RecoveryReport> RestoreWallet(string walletId, RecoveryOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => recoveryService.ScanAsync(walletId, options, cancellationToken);
 
     public async Task DeleteWallet(string walletId)
         => await walletStorage.DeleteWallet(walletId);
