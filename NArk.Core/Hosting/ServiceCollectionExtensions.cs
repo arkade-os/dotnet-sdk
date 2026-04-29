@@ -90,9 +90,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICoinSelector, DefaultCoinSelector>();
         services.AddHostedService<ArkHostedLifecycle>();
 
-        // Delegation
-        services.AddTransient<IDelegationTransformer, DelegateContractDelegationTransformer>();
-        services.AddSingleton<DelegationService>();
+        // Delegation services are opt-in via AddArkDelegation (they require an
+        // IDelegatorProvider that only the caller knows how to configure).
 
         // VTXO polling - automatically poll for updates after batch success and spend transactions
         services.AddVtxoPolling();
@@ -182,6 +181,8 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<IDelegatorProvider>(_ => new GrpcDelegatorProvider(delegatorUri));
         services.AddTransient<IContractTransformer, DelegateContractTransformer>();
+        services.AddTransient<IDelegationTransformer, DelegateContractDelegationTransformer>();
+        services.AddSingleton<DelegationService>();
 
         // Decorate IWalletProvider: wrap the existing registration with DelegatingWalletProvider
         // that overrides contract derivation to produce ArkDelegateContract for HD wallets.

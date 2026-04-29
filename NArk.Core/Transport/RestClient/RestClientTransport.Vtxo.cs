@@ -34,10 +34,15 @@ public partial class RestClientTransport
     {
         foreach (var scriptsChunk in scripts.Chunk(1000))
         {
+            // arkd's paginator is 1-based and clamps `next` to `total` on the final page.
+            // Drive the loop with `current < total` (set from the response) and use `next`
+            // only to advance `page.index` for the next request; otherwise we exit one
+            // page early and silently lose the last page's VTXOs.
             var pageIndex = 0;
+            int? pageCurrent = null;
             int? pageTotal = null;
 
-            while (pageTotal is null || pageIndex < pageTotal)
+            while (pageCurrent is null || pageCurrent < pageTotal)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -54,11 +59,13 @@ public partial class RestClientTransport
 
                 if (json.TryGetProperty("page", out var page))
                 {
-                    pageIndex = page.GetProperty("next").GetInt32();
+                    pageCurrent = page.GetProperty("current").GetInt32();
                     pageTotal = page.GetProperty("total").GetInt32();
+                    pageIndex = page.GetProperty("next").GetInt32();
                 }
                 else
                 {
+                    pageCurrent = 0;
                     pageTotal = 0; // No more pages
                 }
 
@@ -124,10 +131,12 @@ public partial class RestClientTransport
     {
         foreach (var chunk in outpoints.Chunk(1000))
         {
+            // See GetVtxoByScriptsAsSnapshotCore for the pagination rationale.
             var pageIndex = 0;
+            int? pageCurrent = null;
             int? pageTotal = null;
 
-            while (pageTotal is null || pageIndex < pageTotal)
+            while (pageCurrent is null || pageCurrent < pageTotal)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -144,11 +153,13 @@ public partial class RestClientTransport
 
                 if (json.TryGetProperty("page", out var page))
                 {
-                    pageIndex = page.GetProperty("next").GetInt32();
+                    pageCurrent = page.GetProperty("current").GetInt32();
                     pageTotal = page.GetProperty("total").GetInt32();
+                    pageIndex = page.GetProperty("next").GetInt32();
                 }
                 else
                 {
+                    pageCurrent = 0;
                     pageTotal = 0;
                 }
 

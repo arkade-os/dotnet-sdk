@@ -6,6 +6,14 @@
 
 ## Documentation
 
+> **Every PR that adds, removes, or changes any public surface MUST update**:
+> 1. XML doc comments on the touched API
+> 2. README.md usage section (or add one) with a minimal example
+> 3. The corresponding article under `docs/articles/` (and `toc.yml` if a new article)
+> 4. The Blazor sample wallet under `samples/NArk.Wallet/` if the change is something an end-user app would invoke
+>
+> Treat docs as part of the change, not a follow-up. PRs that ship API changes without doc updates will fail review. The same rule applies to commits that land on `master` directly.
+
 ### Inline Doc Comments
 - When adding or modifying any public API (class, method, property, enum), ALWAYS add or update the XML doc comment (`<summary>`, `<param>`, `<returns>`, `<remarks>` as appropriate).
 - When changing behavior of an existing public API, update its doc comment to reflect the new behavior.
@@ -20,6 +28,18 @@
 ### README
 - When adding any new feature, public API, or significant behavior change, ALWAYS add usage instructions to the README.md with code examples showing how to use the feature.
 - README sections should include: what the feature does, how to set it up (DI registration), and a minimal code example.
+
+### Sample Wallet
+- The Blazor sample wallet at `samples/NArk.Wallet/` is the user-facing reference for how a real app consumes the SDK. If a change touches a code path the sample wallet exercises (wallet import, send/receive, swaps, asset issuance, recovery, etc.), update the sample to demonstrate the new behaviour or surface the new option.
+- Keep the sample buildable and runnable as a smoke check; if the new API needs DI registration, wire it up there too.
+
+### Pre-Merge Checklist
+Before opening a PR or pushing to master:
+- [ ] All new/changed public APIs have XML doc comments
+- [ ] README has a usage section for any new feature (with a minimal example)
+- [ ] `docs/articles/` is in sync; new feature areas have a new article + TOC entry
+- [ ] DocFX build succeeds locally (`dotnet tool restore && dotnet docfx docfx.json`)
+- [ ] Sample wallet still builds and demonstrates the change if applicable
 
 ## Project Structure
 - `NArk.Abstractions` — Interfaces and base types (no implementation)

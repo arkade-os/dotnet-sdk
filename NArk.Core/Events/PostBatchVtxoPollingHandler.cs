@@ -58,7 +58,10 @@ public class PostBatchVtxoPollingHandler(
             logger?.LogDebug("Polling {ScriptCount} scripts for VTXOs after batch success for wallet {WalletId}",
                 scripts.Count, walletId);
 
-            await vtxoSyncService.PollScriptsForVtxos(scripts, cancellationToken);
+            // Time-filter the poll so wallets with large historical VTXO counts
+            // don't re-fetch the whole script history on every batch success.
+            var after = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(5);
+            await vtxoSyncService.PollScriptsForVtxos(scripts, after, cancellationToken);
 
             // Mark unrolled inputs (boarding UTXOs) as spent by the commitment tx.
             // These are on-chain UTXOs not tracked by arkd — we know the spending tx directly.

@@ -25,6 +25,22 @@ public static class ModelBuilderExtensions
         ArkIntentEntity.Configure(modelBuilder.Entity<ArkIntentEntity>(), options);
         ArkIntentVtxoEntity.Configure(modelBuilder.Entity<ArkIntentVtxoEntity>(), options);
         ArkSwapEntity.Configure(modelBuilder.Entity<ArkSwapEntity>(), options);
+
+        return modelBuilder;
+    }
+
+    /// <summary>
+    /// Configures the payment-tracking entity types (ArkPaymentEntity, ArkPaymentRequestEntity).
+    /// Call this from your DbContext's OnModelCreating only if you also call AddArkPaymentTracking
+    /// on the service collection. Requires ConfigureArkEntities to have been called (for Wallet FK).
+    /// </summary>
+    public static ModelBuilder ConfigureArkPaymentEntities(
+        this ModelBuilder modelBuilder,
+        Action<ArkStorageOptions>? configure = null)
+    {
+        var options = new ArkStorageOptions();
+        configure?.Invoke(options);
+
         ArkPaymentEntity.Configure(modelBuilder.Entity<ArkPaymentEntity>(), options);
         ArkPaymentRequestEntity.Configure(modelBuilder.Entity<ArkPaymentRequestEntity>(), options);
 

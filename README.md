@@ -251,6 +251,78 @@ var details = await transport.GetAssetDetailsAsync(assetId);
 // details.Metadata — key-value metadata (if set during issuance)
 ```
 
+## Delegation
+
+Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batch rounds on your behalf, rolling VTXOs over before expiry.
+
+### Automated Delegation
+
+When `AddArkDelegation` is configured, the SDK automatically:
+1. **Derives delegate contracts** — HD wallets produce `ArkDelegateContract` instead of `ArkPaymentContract` for Receive/SendToSelf operations
+2. **Auto-delegates VTXOs** — when VTXOs arrive at delegate contract addresses, the SDK builds partially signed intent + ACP forfeit txs and sends them to the delegator
+
+```csharp
+services.AddArkCoreServices();
+
+// Enable automated delegation (Fulmine delegator gRPC endpoint)
+services.AddArkDelegation("http://localhost:7012");
+
+// That's it. HD wallets will now:
+// - Derive ArkDelegateContract for new receive/change addresses
+// - Auto-delegate incoming VTXOs to the delegator on receipt
+// nsec wallets (hashlock/note contracts) are unaffected.
+```
+
+The delegate contract has three spending paths:
+- **CollaborativePath** (User + Server, 2-of-2) — collaborative spending, same as a regular payment contract
+- **DelegatePath** (User + Delegate + Server, 3-of-3) — used by the delegator for ACP forfeit txs
+- **ExitPath** (User only, after CSV delay) — unilateral recovery
+
+### Manual Delegation
+
+For fine-grained control, you can manually construct delegate contracts and delegate VTXOs:
+
+```csharp
+// Get delegator info
+var info = await delegationService.GetDelegatorInfoAsync();
+
+// Create a delegate contract
+var delegateContract = new ArkDelegateContract(
+    serverInfo.SignerKey,
+    serverInfo.UnilateralExit,
+    userKey,
+    KeyExtensions.ParseOutputDescriptor(info.Pubkey, network),
+    cltvLocktime: new LockTime(currentHeight + 100)); // optional safety window
+
+// Send VTXOs to the delegate contract address
+await spendingService.Spend(walletId,
+    outputs: [new ArkTxOut(delegateContract.GetArkAddress(), amount)]);
+
+// Delegate to the delegator
+await delegationService.DelegateAsync(
+    intentMessage: intentJson,
+    intentProof: proofPsbtBase64,
+    forfeitTxs: forfeitTxHexArray,
+    rejectReplace: false);
+```
+
+The CLTV locktime is optional — when set, it prevents the delegate from acting before a specific block height, giving the owner a safety window.
+
+### Custom Contract Delegation
+
+The SDK uses an `IDelegationTransformer` pattern to support delegating different contract types. The built-in `DelegateContractDelegationTransformer` handles `ArkDelegateContract` VTXOs and is registered by `AddArkDelegation`. Register additional transformers for other contract types *after* calling `AddArkDelegation`:
+
+```csharp
+services.AddArkDelegation("http://localhost:7012");
+services.AddTransient<IDelegationTransformer, MyCustomDelegationTransformer>();
+```
+
+> Note: `DelegationService` and the default `IDelegationTransformer` are only registered by `AddArkDelegation`. `AddArkCoreServices` alone does not include delegation services.
+
+Each transformer implements:
+- `CanDelegate(walletId, contract, delegatePubkey)` — check eligibility
+- `GetDelegationScriptBuilders(contract)` — return (intentScript, forfeitScript) for building delegation artifacts
+
 ## Collaborative Exits (On-chain)
 
 Move funds from Ark back to the Bitcoin base layer:
@@ -321,6 +393,102 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 | `ArkIntentEntity` | `Intents` | `IntentTxId` |
 | `ArkIntentVtxoEntity` | `IntentVtxos` | `(IntentTxId, VtxoTransactionId, VtxoTransactionOutputIndex)` |
 | `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
+
+Payment-tracking entities (`ArkPaymentEntity`, `ArkPaymentRequestEntity`) are opt-in — see [Payment Repository](#payment-repository) below.
+
+## Payment Repository
+
+The SDK includes an **opt-in** payment repository for tracking end-to-end payments — both outbound (sends) and inbound (payment requests). This replaces the need for consumers to build their own payment-to-protocol linkage.
+
+### Opt-In Setup
+
+Payment tracking is not wired up by `AddArkEfCoreStorage` / `ConfigureArkEntities` — consumers that don't need it carry no extra schema or services. To enable it, call both the DI and model extensions:
+
+```csharp
+// OnModelCreating — alongside ConfigureArkEntities
+modelBuilder.ConfigureArkEntities(opts => opts.Schema = "ark");
+modelBuilder.ConfigureArkPaymentEntities(opts => opts.Schema = "ark");
+
+// DI — alongside AddArkEfCoreStorage
+services.AddArkEfCoreStorage<MyDbContext>();
+services.AddArkPaymentTracking();
+```
+
+`AddArkPaymentTracking` registers `IPaymentStorage`, `IPaymentRequestStorage`, and the `PaymentTrackingService` (as an `IHostedService`, so its event subscriptions activate on startup). After calling `ConfigureArkPaymentEntities`, add the corresponding EF Core migration so the `Payments` and `PaymentRequests` tables are created.
+
+### Outbound Payments (`ArkPayment`)
+
+Track a payment you're sending, linked to the protocol object that proves it:
+
+```csharp
+var payment = new ArkPayment(
+    PaymentId: Guid.NewGuid().ToString(),
+    WalletId: walletId,
+    Recipient: "tark1q...",
+    Amount: 50_000,
+    Method: ArkPaymentMethod.ArkSend,
+    Status: ArkPaymentStatus.Pending,
+    FailReason: null,
+    CreatedAt: DateTimeOffset.UtcNow,
+    CompletedAt: null)
+{
+    IntentTxId = intentTxId // links to the Ark intent
+};
+
+await paymentStorage.SavePayment(payment);
+
+// Query payments
+var pending = await paymentStorage.GetPayments(
+    walletIds: [walletId],
+    statuses: [ArkPaymentStatus.Pending]);
+```
+
+Payment methods: `ArkSend`, `CollaborativeExit`, `SubmarineSwap`, `ChainSwap`.
+Proof fields: `IntentTxId` (Ark sends), `SwapId` (swaps), `OnchainTxId` (collab exits).
+
+### Inbound Payment Requests (`ArkPaymentRequest`)
+
+Generate a payment request with multiple payment options:
+
+```csharp
+var request = new ArkPaymentRequest(
+    RequestId: Guid.NewGuid().ToString(),
+    WalletId: walletId,
+    Amount: 100_000,             // null = any amount (donation-style)
+    Description: "Order #1234",
+    Status: ArkPaymentRequestStatus.Pending,
+    ReceivedAmount: 0,
+    CreatedAt: DateTimeOffset.UtcNow,
+    ExpiresAt: DateTimeOffset.UtcNow.AddHours(1))
+{
+    ArkAddress = "tark1q...",
+    BoardingAddress = "bcrt1p...",
+    LightningInvoice = "lnbcrt...",
+    ContractScripts = [arkScript, boardingScript], // scripts to watch
+    SwapId = reverseSwapId                          // if Lightning enabled
+};
+
+await paymentRequestStorage.SavePaymentRequest(request);
+
+// Look up by script (for matching incoming VTXOs)
+var matched = await paymentRequestStorage.GetPaymentRequestByScript(vtxoScript);
+```
+
+### Automatic Status Tracking (`PaymentTrackingService`)
+
+The `PaymentTrackingService` subscribes to `VtxosChanged`, `IntentChanged`, and `SwapsChanged` events and automatically updates payment statuses:
+
+- **Outbound**: When an intent succeeds/fails or a swap settles/fails, the linked `ArkPayment` moves to `Completed` or `Failed`.
+- **Inbound**: When a VTXO arrives on a watched contract script, the `ArkPaymentRequest` accumulates `ReceivedAmount` and transitions to `Paid` (or `PartiallyPaid` for fixed-amount requests). Overpayment is tracked in the `Overpayment` property.
+
+It is registered by `AddArkPaymentTracking()` (see [Opt-In Setup](#opt-in-setup) above) and runs as an `IHostedService`, so its event subscriptions activate automatically on application startup — no manual resolution needed.
+
+### Fulfillment Rules
+
+- **Any-amount requests** (`Amount = null`): `Paid` immediately on first funds received.
+- **Fixed-amount requests**: `Paid` when `ReceivedAmount >= Amount`. No underpayment tolerance.
+- **Overpayment**: Tracked via `ArkPaymentRequest.Overpayment` (sats above the target). Status is still `Paid`.
+- **Expiration**: Handled externally (timer/cron), not by the tracking service.
 
 ## Networks
 

@@ -10,17 +10,17 @@
 
     <ItemGroup>
       <PackageReference Include="Cel" Version="0.3.2" />
-      <PackageReference Include="NBitcoin" Version="9.0.4" />
-      <PackageReference Include="NBitcoin.Secp256k1" Version="3.2.0" />
+      <PackageReference Include="NBitcoin" Version="10.0.1" />
+      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.0" />
       <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.0" />
       <!-- From NArk.Blockchain.NBXplorer -->
-      <PackageReference Include="NBXplorer.Client" Version="5.0.5" />
+      <PackageReference Include="NBXplorer.Client" Version="5.0.6" />
       <!-- From NArk.Safety.AsyncKeyedLock -->
-      <PackageReference Include="AsyncKeyedLock" Version="8.0.1" />
+      <PackageReference Include="AsyncKeyedLock" Version="8.0.2" />
       <!-- From NArk.Transport.GrpcClient -->
       <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
       <PackageReference Include="Google.Api.CommonProtos" Version="2.17.0" GeneratePathProperty="true" />
-      <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <PackageReference Include="Grpc.Tools" Version="2.80.0">
           <PrivateAssets>all</PrivateAssets>
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       </PackageReference>

@@ -141,6 +141,24 @@ public class BoltzSwapProvider : ISwapProvider
         var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
         _serverKey = OutputDescriptorHelpers.Extract(serverInfo.SignerKey).XOnlyPubKey;
         _network = serverInfo.Network;
+
+        // Seed the script→swap map from persistent storage so VTXOs arriving before
+        // the first routine poll are still dispatched correctly. Without this, a
+        // VTXO that hits a swap contract within the first minute after a restart
+        // (or any pending swap carried over across restarts) silently no-ops in
+        // NotifyVtxoChanged and the swap stalls until the user manually syncs.
+        try
+        {
+            var existingActiveSwaps = await _swapsStorage.GetSwaps(active: true, cancellationToken: ct);
+            foreach (var swap in existingActiveSwaps.Where(s => !string.IsNullOrEmpty(s.ContractScript)))
+                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
+            _logger?.LogInformation("Seeded script→swap map with {Count} active swap(s)", _scriptToSwapId.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to seed script→swap map from storage; RoutinePoll will populate it on next tick");
+        }
+
         _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
         _cacheTask = DoUpdateStorage(multiToken.Token);
     }
@@ -209,12 +227,21 @@ public class BoltzSwapProvider : ISwapProvider
         {
             if (_scriptToSwapId.TryGetValue(vtxo.Script, out var id))
             {
+                _logger?.LogInformation(
+                    "NotifyVtxoChanged: VTXO {Outpoint} on swap {SwapId}'s contract script (amount={Amount}, spent={Spent}) — triggering status poll",
+                    vtxo.OutPoint, id, vtxo.Amount, vtxo.SpentByTransactionId is not null);
                 _triggerChannel.Writer.TryWrite($"id:{id}");
             }
+            else
+            {
+                _logger?.LogDebug(
+                    "NotifyVtxoChanged: VTXO {Outpoint} on script {Script} — no swap mapping, ignoring",
+                    vtxo.OutPoint, vtxo.Script);
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            // ignored
+            _logger?.LogWarning(ex, "NotifyVtxoChanged: error dispatching VTXO {Outpoint}", vtxo.OutPoint);
         }
     }
 
@@ -223,6 +250,36 @@ public class BoltzSwapProvider : ISwapProvider
     /// </summary>
     internal void NotifySwapChanged(ArkSwap swap)
     {
+        // Keep the script→swap map up-to-date synchronously on every storage write.
+        // Previously the map was only populated inside PollSwapState, so a VTXO
+        // arriving on the swap contract between "swap saved" and "first poll
+        // completes" would fire VtxosChanged, NotifyVtxoChanged would not find the
+        // script in _scriptToSwapId, and the swap would stall until the next
+        // routine poll (or a manual sync) populated the map.
+        if (!string.IsNullOrEmpty(swap.ContractScript))
+        {
+            if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled or ArkSwapStatus.Failed)
+            {
+                if (_scriptToSwapId.TryRemove(swap.ContractScript, out _))
+                    _logger?.LogInformation(
+                        "NotifySwapChanged: swap {SwapId} reached terminal {Status} — removed contract-script mapping",
+                        swap.SwapId, swap.Status);
+            }
+            else
+            {
+                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
+                _logger?.LogInformation(
+                    "NotifySwapChanged: swap {SwapId} storage event (type={Type}, status={Status}) — map now has {Count} entries",
+                    swap.SwapId, swap.SwapType, swap.Status, _scriptToSwapId.Count);
+            }
+        }
+        else
+        {
+            _logger?.LogDebug(
+                "NotifySwapChanged: swap {SwapId} storage event (type={Type}, status={Status}) — no contract script yet",
+                swap.SwapId, swap.SwapType, swap.Status);
+        }
+
         _triggerChannel.Writer.TryWrite($"id:{swap.SwapId}");
     }
 
@@ -308,12 +365,14 @@ public class BoltzSwapProvider : ISwapProvider
         {
             try
             {
+                _logger?.LogDebug("PollSwapState: querying Boltz for {SwapId}", idToPoll);
                 var swapStatus = await _boltzClient.GetSwapStatusAsync(idToPoll, _shutdownCts.Token);
                 if (swapStatus?.Status is null)
                 {
                     _logger?.LogDebug("Swap {SwapId}: Boltz returned null status", idToPoll);
                     continue;
                 }
+                _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}'", idToPoll, swapStatus.Status);
 
                 await using var @lock = await _safetyService.LockKeyAsync($"swap::{idToPoll}", cancellationToken);
                 var swaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
@@ -327,6 +386,34 @@ public class BoltzSwapProvider : ISwapProvider
 
                 // Terminal states: nothing to do
                 if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled) continue;
+
+                // Refresh VTXO state for the swap's contract script directly against arkd.
+                // We cannot rely solely on the indexer subscription stream here: arkd does
+                // not retroactively replay events, so if a VTXO lands between the moment
+                // we subscribe and the moment we start reading the stream (or if a stream
+                // reconnect drops a message), it never reaches NotifyVtxoChanged and the
+                // swap stalls until a manual sync. Polling the single contract script per
+                // status-check is cheap and closes that gap.
+                if (!string.IsNullOrEmpty(swap.ContractScript))
+                {
+                    var freshCount = 0;
+                    try
+                    {
+                        await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                                           new HashSet<string> { swap.ContractScript }, cancellationToken))
+                        {
+                            freshCount++;
+                            await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
+                        }
+                        _logger?.LogInformation(
+                            "Swap {SwapId}: refreshed contract script — arkd returned {Count} VTXO(s)",
+                            idToPoll, freshCount);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger?.LogWarning(ex, "Swap {SwapId}: failed to refresh VTXOs for contract script during status poll", idToPoll);
+                    }
+                }
 
                 // If not refunded and status is refundable, start a coop refund
                 if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
@@ -366,7 +453,13 @@ public class BoltzSwapProvider : ISwapProvider
 
                 var newStatus = MapBoltzStatus(swapStatus.Status);
 
-                if (swap.Status == newStatus) continue;
+                if (swap.Status == newStatus)
+                {
+                    _logger?.LogDebug(
+                        "Swap {SwapId}: mapped Boltz '{BoltzStatus}' -> {Status}, unchanged",
+                        idToPoll, swapStatus.Status, newStatus);
+                    continue;
+                }
 
                 _logger?.LogInformation("Swap {SwapId}: status changed {OldStatus} -> {NewStatus} (Boltz: '{BoltzStatus}')",
                     idToPoll, swap.Status, newStatus, swapStatus.Status);
