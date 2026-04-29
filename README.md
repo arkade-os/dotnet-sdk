@@ -11,7 +11,7 @@ A .NET SDK for building applications on [Arkade](https://arkadeos.com) — a Bit
 |---------|-------------|
 | **NArk.Abstractions** | Interfaces and domain types (`IVtxoStorage`, `IContractStorage`, `IWalletProvider`, `ArkCoin`, `ArkVtxo`, etc.) |
 | **NArk.Core** | Core services: spending, batch management, VTXO sync, sweeping, wallet infrastructure, gRPC transport |
-| **NArk.Swaps** | Multi-provider swap framework with pluggable providers ([Boltz](https://boltz.exchange), [LendaSwap](https://github.com/lendasat/lendaswap-sdk)) |
+| **NArk.Swaps** | Multi-provider swap framework with pluggable providers ([Boltz](https://boltz.exchange) shipped; route-based architecture for adding others) |
 | **NArk.Storage.EfCore** | Entity Framework Core storage implementations (provider-agnostic — works with PostgreSQL, SQLite, etc.) |
 | **NArk** | Meta-package that pulls in `NArk.Core` + `NArk.Swaps` |
 
@@ -91,7 +91,6 @@ NArk (meta-package)
  ├── NArk.Swaps
  │    ├── Abstractions (ISwapProvider, SwapRoute, SwapAsset)
  │    ├── Boltz provider (submarine, reverse & chain swaps)
- │    ├── LendaSwap provider (BTC→Ark, Ark↔EVM)
  │    └── SwapsManagementService (multi-provider router)
  │
  └── NArk.Abstractions
@@ -369,13 +368,6 @@ Each `ISwapProvider` declares which routes it supports. The router resolves the 
 ```csharp
 // Default: core services + Boltz (backward-compatible)
 services.AddArkSwapServices();
-
-// Add LendaSwap alongside Boltz
-services.AddLendaSwapProvider(opts =>
-{
-    opts.ApiUrl = "https://api.lendaswap.com";
-    opts.ApiKey = "your-api-key";   // optional
-});
 ```
 
 Or register providers individually:
@@ -388,7 +380,6 @@ services.AddSingleton<IContractTransformer, VHTLCContractTransformer>();
 
 // Pick your providers
 services.AddBoltzProvider(opts => opts.BoltzUrl = "https://api.boltz.exchange");
-services.AddLendaSwapProvider(opts => opts.ApiUrl = "https://api.lendaswap.com");
 ```
 
 ### Route Discovery
@@ -400,7 +391,7 @@ var swaps = serviceProvider.GetRequiredService<SwapsManagementService>();
 
 // All routes from all providers
 var routes = await swaps.GetAvailableRoutesAsync(ct);
-// e.g. [Lightning→Ark, Ark→Lightning, BTC→Ark, Ark→BTC, BTC→Ark(lendaswap), Ark→USDC, ...]
+// e.g. [Lightning→Ark, Ark→Lightning, BTC→Ark, Ark→BTC, ...]
 ```
 
 ### Pricing
@@ -422,7 +413,6 @@ var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
 | Provider | Routes | Features |
 |----------|--------|----------|
 | **Boltz** | Ark &harr; Lightning, Ark &harr; BTC on-chain | Submarine/reverse swaps, chain swaps, MuSig2 cooperative claiming, VHTLC management, WebSocket status updates |
-| **LendaSwap** | BTC &rarr; Ark, Ark &harr; EVM (Ethereum, Polygon, Arbitrum) | ERC-20 token swaps, REST API, status polling |
 
 ### Implementing a Custom Provider
 
@@ -462,7 +452,7 @@ The SDK uses a pluggable architecture. Register your implementations for:
 | `IContractStorage` | Contract persistence | `EfCoreContractStorage` |
 | `IIntentStorage` | Intent persistence | `EfCoreIntentStorage` |
 | `ISwapStorage` | Swap persistence | `EfCoreSwapStorage` |
-| `ISwapProvider` | Swap provider (route-based) | `BoltzSwapProvider`, `LendaSwapProvider` |
+| `ISwapProvider` | Swap provider (route-based) | `BoltzSwapProvider` |
 | `IWalletStorage` | Wallet persistence | `EfCoreWalletStorage` |
 | `IWalletProvider` | Wallet signer/address resolution | `DefaultWalletProvider` |
 | `ISafetyService` | Distributed locking | *Must implement* |

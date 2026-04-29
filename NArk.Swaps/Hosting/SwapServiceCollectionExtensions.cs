@@ -5,8 +5,6 @@ using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
-using NArk.Swaps.LendaSwap;
-using NArk.Swaps.LendaSwap.Client;
 using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
@@ -64,20 +62,4 @@ public static class SwapServiceCollectionExtensions
         return services;
     }
 
-    /// <summary>
-    /// Registers the LendaSwap provider and its dependencies.
-    /// Can be called separately if using manual provider registration.
-    /// </summary>
-    public static IServiceCollection AddLendaSwapProvider(
-        this IServiceCollection services, Action<LendaSwapOptions>? configure = null)
-    {
-        if (configure != null)
-            services.Configure(configure);
-
-        services.AddHttpClient<LendaSwapClient>();
-        services.AddSingleton<LendaSwapProvider>();
-        services.AddSingleton<ISwapProvider>(sp => sp.GetRequiredService<LendaSwapProvider>());
-
-        return services;
-    }
 }

@@ -24,7 +24,7 @@
 ## Project Structure
 - `NArk.Abstractions` — Interfaces and base types (no implementation)
 - `NArk.Core` — Protocol implementation (wallets, spending, contracts, transport)
-- `NArk.Swaps` — Swap providers (Boltz, LendaSwap) and swap management
+- `NArk.Swaps` — Swap providers (Boltz) and swap management
 - `NArk.Storage.EfCore` — Entity Framework Core persistence
 - `NArk.Tests` — Unit tests
 - `NArk.Tests.End2End` — E2E integration tests (require nigiri + arkd)
