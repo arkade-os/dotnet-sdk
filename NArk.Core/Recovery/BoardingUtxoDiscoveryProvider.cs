@@ -27,6 +27,12 @@ public class BoardingUtxoDiscoveryProvider(
     IClientTransport clientTransport,
     ILogger<BoardingUtxoDiscoveryProvider>? logger = null) : IContractDiscoveryProvider
 {
+    // See IndexerVtxoDiscoveryProvider for rationale: ArkServerInfo is invariant
+    // for a recovery scan, fetch once and reuse for every probe.
+    private readonly Lazy<Task<ArkServerInfo>> _serverInfo = new(
+        () => clientTransport.GetServerInfoAsync(),
+        LazyThreadSafetyMode.ExecutionAndPublication);
+
     /// <inheritdoc />
     public string Name => "boarding";
 
@@ -37,7 +43,7 @@ public class BoardingUtxoDiscoveryProvider(
         int index,
         CancellationToken cancellationToken = default)
     {
-        var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
+        var serverInfo = await _serverInfo.Value.WaitAsync(cancellationToken);
         var contract = new ArkBoardingContract(serverInfo.SignerKey, serverInfo.BoardingExit, userDescriptor);
         var address = contract.GetOnchainAddress(serverInfo.Network).ToString();
 

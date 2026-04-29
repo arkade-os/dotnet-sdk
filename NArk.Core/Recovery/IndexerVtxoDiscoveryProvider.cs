@@ -18,6 +18,14 @@ public class IndexerVtxoDiscoveryProvider(
     IClientTransport clientTransport,
     ILogger<IndexerVtxoDiscoveryProvider>? logger = null) : IContractDiscoveryProvider
 {
+    // ArkServerInfo is invariant for the wallet-recovery use case (signer key,
+    // exit delays, network — all server-side config that doesn't change between
+    // probes). Cache the fetch on first use and reuse for every subsequent
+    // index — saves N round-trips per scan when a wallet has dozens of indices.
+    private readonly Lazy<Task<ArkServerInfo>> _serverInfo = new(
+        () => clientTransport.GetServerInfoAsync(),
+        LazyThreadSafetyMode.ExecutionAndPublication);
+
     /// <inheritdoc />
     public string Name => "indexer";
 
@@ -28,7 +36,7 @@ public class IndexerVtxoDiscoveryProvider(
         int index,
         CancellationToken cancellationToken = default)
     {
-        var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
+        var serverInfo = await _serverInfo.Value.WaitAsync(cancellationToken);
         var contract = new ArkPaymentContract(serverInfo.SignerKey, serverInfo.UnilateralExit, userDescriptor);
         var script = contract.GetScriptPubKey().ToHex();
 

@@ -13,11 +13,29 @@ namespace NArk.Abstractions.Recovery;
 /// usage at an index, the index counts as used and the gap counter resets.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Providers are stateless and may be queried concurrently for different
-/// indices. They MUST NOT mutate <see cref="IWalletStorage"/> or
-/// <see cref="IContractStorage"/> directly; instead, return any contracts they
-/// reconstructed via <see cref="DiscoveryResult.Contracts"/>, and the
-/// orchestrator persists them once recovery completes.
+/// indices (and concurrently with each other for the same index).
+/// </para>
+/// <para>
+/// As a rule, providers SHOULD return reconstructed contracts via
+/// <see cref="DiscoveryResult.Contracts"/> and let the orchestrator persist
+/// them once recovery completes — this keeps the orchestrator the single
+/// writer and lets it dedupe across providers.
+/// </para>
+/// <para>
+/// The deliberate exception is when a provider already has a richer import
+/// path of its own that produces metadata the orchestrator cannot reconstruct.
+/// <c>BoltzSwapDiscoveryProvider</c> is the canonical example: it delegates to
+/// <c>SwapsManagementService.RestoreSwaps</c>, which writes both the contract
+/// (with <c>Source=swap:&lt;id&gt;</c> metadata) and the corresponding
+/// <c>SwapData</c> row in one transaction. Returning those contracts back
+/// through the orchestrator would either lose the swap-id linkage or require
+/// duplicating the same write. Such providers should set
+/// <see cref="DiscoveryResult.Used"/> to <c>true</c> and leave
+/// <see cref="DiscoveryResult.Contracts"/> empty so the orchestrator does not
+/// re-import what they already persisted.
+/// </para>
 /// </remarks>
 public interface IContractDiscoveryProvider
 {

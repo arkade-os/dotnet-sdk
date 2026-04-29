@@ -3,6 +3,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Recovery;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Transport;
+using NArk.Core.Wallet;
 using NBitcoin;
 using NBitcoin.Scripting;
 
@@ -45,6 +46,7 @@ public class HdWalletRecoveryService(
         CancellationToken cancellationToken = default)
     {
         options ??= RecoveryOptions.Default;
+        options.Validate();
 
         var wallet = await walletStorage.GetWalletById(walletId, cancellationToken)
             ?? throw new InvalidOperationException($"Wallet '{walletId}' not found.");
@@ -82,29 +84,25 @@ public class HdWalletRecoveryService(
             cancellationToken.ThrowIfCancellationRequested();
             scanned++;
 
-            var descriptor = DeriveAtIndex(wallet.AccountDescriptor, index, network);
+            // Reuse the canonical derivation method so this stays in lockstep with
+            // the runtime path (HierarchicalDeterministicAddressProvider.GetNextSigningDescriptor) —
+            // any divergence here would silently make recovery look at the wrong scripts.
+            var descriptor = HierarchicalDeterministicAddressProvider.GetDescriptorFromIndex(
+                network, wallet.AccountDescriptor, index);
+
+            // Probe every provider in parallel — they hit different backends
+            // (gRPC to arkd, HTTP to Boltz, HTTP to Esplora etc.) and the
+            // interface contract requires them to be safe under concurrent use.
+            var probes = providersList
+                .Select(p => ProbeAsync(p, wallet, descriptor, index, cancellationToken))
+                .ToArray();
+            var probeResults = await Task.WhenAll(probes);
 
             var indexUsed = false;
-            foreach (var provider in providersList)
+            for (var i = 0; i < probeResults.Length; i++)
             {
-                DiscoveryResult result;
-                try
-                {
-                    result = await provider.DiscoverAsync(wallet, descriptor, index, cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    logger?.LogWarning(ex,
-                        "Recovery: provider {Provider} threw at index {Index}; treating as not-found",
-                        provider.Name, index);
-                    continue;
-                }
-
-                if (!result.Used) continue;
+                var (provider, result) = (providersList[i], probeResults[i]);
+                if (result is null || !result.Used) continue;
 
                 indexUsed = true;
                 providerHits[provider.Name]++;
@@ -164,16 +162,28 @@ public class HdWalletRecoveryService(
         return report;
     }
 
-    private static OutputDescriptor DeriveAtIndex(string accountDescriptor, int index, Network network)
+    private async Task<DiscoveryResult?> ProbeAsync(
+        IContractDiscoveryProvider provider,
+        ArkWalletInfo wallet,
+        OutputDescriptor descriptor,
+        int index,
+        CancellationToken cancellationToken)
     {
-        // Mirror HierarchicalDeterministicAddressProvider.GetDescriptorFromIndex:
-        // the AccountDescriptor stores the wildcard form `tr([origin]xpub/*)`,
-        // and the concrete descriptor at index N is the wildcard with `/*`
-        // replaced by `/N`. We also tolerate /0/* legacy form by replacing /0/* first.
-        var resolved = accountDescriptor.Contains("/0/*")
-            ? accountDescriptor.Replace("/0/*", $"/0/{index}")
-            : accountDescriptor.Replace("/*", $"/{index}");
-        return OutputDescriptor.Parse(resolved, network);
+        try
+        {
+            return await provider.DiscoverAsync(wallet, descriptor, index, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex,
+                "Recovery: provider {Provider} threw at index {Index}; treating as not-found",
+                provider.Name, index);
+            return null;
+        }
     }
 
     private async Task PersistDiscoveriesAsync(
@@ -192,6 +202,11 @@ public class HdWalletRecoveryService(
             var script = entry.Contract.GetScriptPubKey().ToHex();
             if (!seenScripts.Add(script)) continue;
 
+            // Persist as Active even if the contract has already been fully spent;
+            // VTXO polling will reconcile the activity state on the next sync tick
+            // (sweepers / one-time-use transformers will deactivate it). Marking
+            // as Active here ensures the script enters the subscription set so
+            // any late-arriving VTXOs aren't missed during recovery.
             var entity = entry.Contract.ToEntity(
                 wallet.Id,
                 serverKey,
