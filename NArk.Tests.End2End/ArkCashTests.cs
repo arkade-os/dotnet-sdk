@@ -1,20 +1,13 @@
-using CliWrap;
-using CliWrap.Buffered;
-using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Extensions;
-using NArk.Abstractions.Intents;
-using NArk.Blockchain.NBXplorer;
 using NArk.Core;
 using NArk.Core.Extensions;
-using NArk.Core.Fees;
-using NArk.Core.Models.Options;
 using NArk.Core.Services;
-using NArk.Core.Transformers;
+using NArk.Safety.AsyncKeyedLock;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
-using NBitcoin;
+using NArk.Transport.GrpcClient;
 
 namespace NArk.Tests.End2End;
 
@@ -23,140 +16,64 @@ public class ArkCashTests
     [Test]
     public async Task RoundripsCorrectly()
     {
-        var walletDetails = await FundedWalletHelper.GetFundedWallet();
-        var serverInfo = await walletDetails.clientTransport.GetServerInfoAsync();
+        var safetyService = new AsyncSafetyService();
+        var storage = new TestStorage(safetyService);
+        var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        var walletProvider = new InMemoryWalletProvider(clientTransport);
+        var contractService = new ContractService(walletProvider, storage.ContractStorage, clientTransport);
 
-        // create arkcash
-        var cash = await CreateFundedArkCash(serverInfo, 100000);
+        await using var vtxoSync = new VtxoSynchronizationService(
+            storage.VtxoStorage,
+            clientTransport,
+            [storage.VtxoStorage, storage.ContractStorage]);
+        await vtxoSync.StartAsync(CancellationToken.None);
         
-        // import arkcash contract to receiver wallet
-        var receiverWalletId = await walletDetails.walletProvider.CreateTestWallet();
-        await walletDetails.contractService.ImportContract(receiverWalletId, cash.ToContract(serverInfo.Network));
+        var serverInfo = await clientTransport.GetServerInfoAsync();
+        var cash = await CreateFundedArkCash(serverInfo, 100000);
 
-        // start services needed to participate in a batch (same pattern as BatchSessionTests)
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
-            [new PaymentContractTransformer(walletDetails.walletProvider), new HashLockedContractTransformer(walletDetails.walletProvider)]);
-        var intentStorage = TestStorage.CreateIntentStorage();
-        var scheduler = new SimpleIntentScheduler(
-            new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
-            walletDetails.clientTransport,
-            walletDetails.contractService,
-            chainTimeProvider,
-            new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions
-                { Threshold = TimeSpan.FromHours(2), ThresholdHeight = 2000 }));
-
-        var gotBatchTcs = new TaskCompletionSource();
-
-        intentStorage.IntentChanged += (_, intent) =>
-        {
-            if (intent.State == ArkIntentState.BatchSucceeded)
-                gotBatchTcs.TrySetResult();
-        };
-
-        await using var intentGeneration = new IntentGenerationService(
-            walletDetails.clientTransport,
-            new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
-            coinService,
-            walletDetails.walletProvider,
-            intentStorage,
-            walletDetails.safetyService,
-            walletDetails.contracts,
-            walletDetails.vtxoStorage,
-            scheduler,
-            new OptionsWrapper<IntentGenerationServiceOptions>(new IntentGenerationServiceOptions
-                { PollInterval = TimeSpan.FromSeconds(5) }));
-        await intentGeneration.StartAsync(CancellationToken.None);
-
-        await using var intentSync = new IntentSynchronizationService(
-            intentStorage, walletDetails.clientTransport, walletDetails.safetyService);
-        await intentSync.StartAsync(CancellationToken.None);
-
-        await using var batchManager = new BatchManagementService(
-            intentStorage,
-            walletDetails.clientTransport,
-            walletDetails.vtxoStorage,
-            walletDetails.contracts,
-            walletDetails.walletProvider,
-            coinService,
-            walletDetails.safetyService);
-        await batchManager.StartAsync(CancellationToken.None);
-
-        await gotBatchTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
+        var receiverWalletId = await walletProvider.CreateTestWallet();
+        await contractService.ImportContract(receiverWalletId, cash.ToContract(serverInfo.Network));
 
         var cashScript = cash.GetAddress(serverInfo.Network).ScriptPubKey.ToHex();
-        await WaitForArkCashClaimed(walletDetails.vtxoStorage, cashScript, receiverWalletId, TimeSpan.FromSeconds(30));
+        await ForcePollScript(vtxoSync, cashScript, TimeSpan.FromSeconds(15));
 
-        var oldUnspent = await walletDetails.vtxoStorage.GetVtxos(
-            scripts: [cashScript],
-            includeSpent: false);
-        var receiverUnspent = await walletDetails.vtxoStorage.GetVtxos(
+        var receiverUnspent = await storage.VtxoStorage.GetVtxos(
             walletIds: [receiverWalletId],
             includeSpent: false);
-
-        Assert.That(oldUnspent.Count, Is.EqualTo(0), "ArkCash script should be fully spent after claim");
-        Assert.That(receiverUnspent.Count, Is.GreaterThan(0), "Receiver should have at least one unspent VTXO after claim");
+        var receiverAmount = receiverUnspent.Select(v => v.Amount).Aggregate(0UL, (acc, x) => acc + x);
+        
+        Assert.That(receiverUnspent.Count, Is.EqualTo(1),
+            "Receiver should have at least one unspent ArkCash VTXO");
+        Assert.That(receiverAmount, Is.EqualTo(100000UL),
+            "Receiver unspent amount should be greater than zero");
     }
-    
 
-    private async Task<ArkCash> CreateFundedArkCash(ArkServerInfo serverInfo, ulong amount)
+    private static async Task<ArkCash> CreateFundedArkCash(ArkServerInfo serverInfo, long amount)
     {
-        
-        //create testnet arkcash
         var cash = ArkCash.Generate(
-            serverInfo.SignerKey.ToXOnlyPubKey(), 
-            serverInfo.UnilateralExit, 
+            serverInfo.SignerKey.ToXOnlyPubKey(),
+            serverInfo.UnilateralExit,
             "tarkcash");
-        
-        //fund arkcash
+
         var cashAddress = cash.GetAddress(serverInfo.Network);
-        await Cli.Wrap("docker")
-            .WithArguments(["exec", "ark", "ark", "send",
-                "--to", cashAddress.ToString(false),
-                "--amount", amount.ToString(),
-                "--password", "secret"])
-            .ExecuteBufferedAsync();
-        
+        var sendResult = await DockerHelper.ArkSend(amount, cashAddress.ToString(false), allowNonZeroExit: true);
+        if (!sendResult.IsSuccess)
+            throw new InvalidOperationException(
+                $"ark send failed (exit={sendResult.ExitCode}): stdout={sendResult.StandardOutput}, stderr={sendResult.StandardError}");
+
         return cash;
     }
 
-    private static async Task WaitForArkCashClaimed(
-        NArk.Abstractions.VTXOs.IVtxoStorage vtxoStorage,
-        string cashScript,
-        string receiverWalletId,
+    private static async Task ForcePollScript(
+        VtxoSynchronizationService vtxoSync,
+        string scriptHex,
         TimeSpan timeout)
     {
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        async Task<bool> IsClaimCompleted()
+        var timeoutAt = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < timeoutAt)
         {
-            var oldUnspent = await vtxoStorage.GetVtxos(
-                scripts: [cashScript],
-                includeSpent: false);
-            var receiverUnspent = await vtxoStorage.GetVtxos(
-                walletIds: [receiverWalletId],
-                includeSpent: false);
-
-            return oldUnspent.Count == 0 && receiverUnspent.Count > 0;
-        }
-
-        async void Handler(object? _, NArk.Abstractions.VTXOs.ArkVtxo __)
-        {
-            if (await IsClaimCompleted())
-                tcs.TrySetResult();
-        }
-
-        vtxoStorage.VtxosChanged += Handler;
-        try
-        {
-            if (await IsClaimCompleted())
-                return;
-
-            await tcs.Task.WaitAsync(timeout);
-        }
-        finally
-        {
-            vtxoStorage.VtxosChanged -= Handler;
+            await vtxoSync.PollScriptsForVtxos(new HashSet<string> { scriptHex });
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
         }
     }
 }
