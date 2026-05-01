@@ -182,7 +182,7 @@ public class VtxoSynchronizationTests
             }
         };
         
-        await DockerHelper.ArkSend(randomAmount, wallet1Address.ToString(false), default);
+        await DockerHelper.ArkSend(randomAmount, wallet1Address.ToString(false));
 
         // Wait for the sync service to receive it
         await receiveTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
