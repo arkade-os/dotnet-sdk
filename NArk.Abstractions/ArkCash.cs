@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using NArk.Abstractions.Contracts;
 using NBitcoin;
 using NBitcoin.DataEncoders;
@@ -8,7 +9,7 @@ namespace NArk.Abstractions;
 
 public class ArkCash: IDisposable
 {
-    private static readonly byte Version = 0x00;
+    private const byte Version = 0x00;
     private const int PayloadLength = 1 + 32 + 32 + 4;
     
     private const string HrpMainnet = "arkcash";
@@ -53,17 +54,24 @@ public class ArkCash: IDisposable
     public static ArkCash Generate(ECXOnlyPubKey serverPubkey, Sequence locktime, string? hrp = null)
     {
         var pk = RandomUtils.GetBytes(32);
-        if (!ECPrivKey.TryCreate(pk, out var key))
+        try
         {
-            throw new ArgumentNullException(nameof(key));
-        }
-        
-        if (hrp is null)
-        {
-            return new ArkCash(key, serverPubkey, locktime);
-        }
+            if (!ECPrivKey.TryCreate(pk, out var key))
+            {
+                throw new InvalidOperationException("Could not generate ArkCash address!");
+            }
 
-        return new ArkCash(key, serverPubkey, locktime, hrp);
+            if (hrp is null)
+            {
+                return new ArkCash(key, serverPubkey, locktime);
+            }
+
+            return new ArkCash(key, serverPubkey, locktime, hrp);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(pk);
+        }
     }
 
     public override string ToString()
