@@ -8,10 +8,28 @@
     @if (State.ActiveWalletId is null)
     {
         <p class="balance-label">Welcome to Arkade</p>
-        <p style="font-size:18px;font-weight:500;margin-bottom:20px;">Create a wallet to get started</p>
-        <button class="btn btn-primary" @onclick="CreateWallet" disabled="@_creating">
+        <p style="font-size:18px;font-weight:500;margin-bottom:20px;">Create or restore a wallet to get started</p>
+        <button class="btn btn-primary" @onclick="CreateWallet" disabled="@_creating || _restoring">
             @(_creating ? "Creating..." : "Create Wallet")
         </button>
+
+        <details style="margin-top:24px;text-align:left;max-width:420px;margin-left:auto;margin-right:auto;">
+            <summary style="cursor:pointer;font-size:14px;color:#64748b;">Restore from mnemonic / nsec</summary>
+            <textarea class="form-control" rows="3" placeholder="12 or 24 word mnemonic, or nsec1..."
+                      style="margin-top:12px;width:100%;font-family:monospace;font-size:13px;"
+                      @bind="_restoreSecret" disabled="@(_creating || _restoring)"></textarea>
+            <button class="btn btn-secondary" style="margin-top:8px;width:100%;"
+                    @onclick="RestoreWallet" disabled="@(_creating || _restoring || string.IsNullOrWhiteSpace(_restoreSecret))">
+                @(_restoring ? "Scanning derivation indices…" : "Restore Wallet")
+            </button>
+            @if (_restoreReport is not null)
+            {
+                <p style="margin-top:8px;font-size:13px;color:#16a34a;">
+                    Recovered @_restoreReport.DiscoveredContracts.Count contract(s) up to index @_restoreReport.HighestUsedIndex.
+                </p>
+            }
+        </details>
+
         @if (_error is not null)
         {
             <p style="color:#ef4444;margin-top:12px;font-size:14px;">@_error</p>
@@ -132,7 +150,10 @@
     private int _activeSlide;
     private int _slideCount = 3;
     private bool _creating;
+    private bool _restoring;
     private string? _error;
+    private string _restoreSecret = string.Empty;
+    private NArk.Abstractions.Recovery.RecoveryReport? _restoreReport;
 
     protected override async Task OnInitializedAsync()
     {
@@ -175,6 +196,34 @@
             _error = $"Failed to create wallet: {ex.Message}";
         }
         finally { _creating = false; }
+    }
+
+    private async Task RestoreWallet()
+    {
+        _restoring = true;
+        _error = null;
+        _restoreReport = null;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            var wallet = await Ark.CreateWallet(_restoreSecret.Trim());
+            State.SetActiveWallet(wallet.Id);
+
+            // Sweep derivation indices through every registered IContractDiscoveryProvider
+            // (arkd indexer, on-chain boarding, Boltz) to rebuild prior contract state.
+            // Only HD wallets are scanned; nsec wallets just return without effect.
+            if (wallet.WalletType == NArk.Abstractions.Wallets.WalletType.HD)
+            {
+                _restoreReport = await Ark.RestoreWallet(wallet.Id, cancellationToken: cts.Token);
+            }
+
+            await LoadWallet();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to restore wallet: {ex.Message}";
+        }
+        finally { _restoring = false; }
     }
 
     private async Task ScrollTo(int index)
