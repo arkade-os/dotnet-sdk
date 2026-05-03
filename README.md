@@ -634,6 +634,68 @@ services.AddHttpClient<BoltzClient>();
 
 The `SwapsManagementService` handles swap lifecycle automatically — monitoring status, cooperative claim signing, and VHTLC management.
 
+## ArkadeScript & Introspector (`NArk.Arkade`)
+
+The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/ArkLabsHQ/introspector) — a Bitcoin-Script superset (50+ extension opcodes for transaction introspection, asset queries, EC arithmetic, streaming SHA-256, …) that the [introspector](https://github.com/ArkLabsHQ/introspector) co-signs only when the script attached to an input passes validation.
+
+Install:
+
+```bash
+dotnet add package NArk.Arkade
+```
+
+Build a script and resolve the introspector-tweaked signing key:
+
+```csharp
+using NArk.Arkade.Crypto;
+using NArk.Arkade.Scripts;
+using NBitcoin;
+
+// Compose an ArkadeScript via the opcode enum + ASM helpers
+var bytes = ArkadeScript.AsmToBytes(
+    "OP_0 OP_INSPECTOUTPUTSCRIPTPUBKEY 1 OP_EQUALVERIFY deadbeef OP_EQUAL");
+
+// The introspector co-signs with this tweaked x-only pubkey for the script above
+TaprootPubKey introspectorPubKey = /* from /v1/info */ ;
+TaprootPubKey signingKey = ArkadeScriptHash.Tweak(introspectorPubKey, bytes);
+```
+
+Pin an ArkadeScript leaf to an `ArkContract`-based VTXO via the multisig wrapper:
+
+```csharp
+using NArk.Arkade.Scripts;
+using NArk.Core.Scripts;
+
+protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
+{
+    // Augmented N+1-of-N+1: alice + bob + tweaked introspector key
+    yield return new ArkadeNofNMultisigTapScript(
+        arkadeScript: bytes,
+        baseOwners: [aliceXOnly, bobXOnly],
+        introspectorKeys: [introspectorPubKey]);
+
+    // Plus your existing CSV / collab-path / etc. leaves alongside it
+    yield return new UnilateralPathArkTapScript(...);
+}
+```
+
+Build the introspector REST client through DI and submit intents / transactions for co-signing:
+
+```csharp
+using NArk.Arkade.Hosting;
+
+services.AddIntrospectorClient(opts =>
+    opts.ServerUrl = "http://localhost:7073");
+
+// Inject IIntrospectorProvider and call:
+var info = await introspector.GetInfoAsync();             // GET  /v1/info
+var signed = await introspector.SubmitTxAsync(...);       // POST /v1/tx
+var sig = await introspector.SubmitIntentAsync(...);      // POST /v1/intent
+var fin = await introspector.SubmitFinalizationAsync(...);// POST /v1/finalization
+```
+
+The wire encoding for the introspector's OP_RETURN packet is exposed as `IntrospectorPacket.Serialize` / `IntrospectorPacket.Parse` for callers that need to read or write the TLV directly. Cross-SDK byte-equality is enforced by the unit tests against the canonical fixtures vendored from `ArkLabsHQ/introspector pkg/arkade/testdata/`.
+
 ## Extensibility Points
 
 The SDK uses a pluggable architecture. Register your implementations for:
