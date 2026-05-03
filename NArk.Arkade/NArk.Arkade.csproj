@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <WarningsAsErrors>nullable</WarningsAsErrors>
+        <PackageDescription>Arkade Script support for the Arkade .NET SDK: opcode tables, script codec, tagged-hash key tweaking, ArkadeVtxoScript, PSBT field codecs, and the Introspector REST client. Mirrors the ts-sdk's Arkade module so that scripts produced/consumed by .NET clients are byte-compatible across SDKs.</PackageDescription>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.0" />
+      <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.0" />
+    </ItemGroup>
+
+</Project>
