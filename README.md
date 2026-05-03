@@ -544,10 +544,6 @@ A **swap route** is a directional asset pair:
 var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);  // Lightning → Ark
 var route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);    // Ark → BTC on-chain
 
-// EVM tokens use contract addresses as asset IDs
-var usdcOnEth = SwapAsset.Erc20(SwapNetwork.EvmEthereum, "0xa0b8...");
-var route = new SwapRoute(SwapAsset.ArkBtc, usdcOnEth);               // Ark → USDC on Ethereum
-
 // Ark-issued assets
 var myToken = SwapAsset.ArkAsset("asset1abc...");
 ```

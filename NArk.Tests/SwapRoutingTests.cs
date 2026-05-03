@@ -128,9 +128,8 @@ public class SwapRoutingTests
     {
         _sut = BuildService(_providerA, _providerB);
 
-        var unsupportedRoute = new SwapRoute(
-            SwapAsset.Erc20(SwapNetwork.EvmEthereum, "0xdead"),
-            SwapAsset.ArkBtc);
+        // Neither test provider declares BtcOnchain<->BtcLightning support.
+        var unsupportedRoute = new SwapRoute(SwapAsset.BtcOnchain, SwapAsset.BtcLightning);
 
         var ex = Assert.Throws<InvalidOperationException>(() =>
             _sut.ResolveProvider(unsupportedRoute));

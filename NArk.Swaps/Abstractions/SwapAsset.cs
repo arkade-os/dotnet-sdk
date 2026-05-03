@@ -6,9 +6,6 @@ public record SwapAsset(SwapNetwork Network, string AssetId)
     public static readonly SwapAsset BtcLightning = new(SwapNetwork.Lightning, "BTC");
     public static readonly SwapAsset ArkBtc = new(SwapNetwork.Ark, "BTC");
 
-    public static SwapAsset Erc20(SwapNetwork chain, string contractAddress)
-        => new(chain, contractAddress);
-
     public static SwapAsset ArkAsset(string assetId)
         => new(SwapNetwork.Ark, assetId);
 }

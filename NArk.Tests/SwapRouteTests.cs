@@ -15,14 +15,6 @@ public class SwapRouteTests
     }
 
     [Test]
-    public void Erc20Factory_CreatesAssetWithContractAddress()
-    {
-        var usdc = SwapAsset.Erc20(SwapNetwork.EvmPolygon, "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359");
-        Assert.That(usdc.Network, Is.EqualTo(SwapNetwork.EvmPolygon));
-        Assert.That(usdc.AssetId, Is.EqualTo("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"));
-    }
-
-    [Test]
     public void SwapRoute_EqualityByValue()
     {
         var route1 = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);
