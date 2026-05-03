@@ -43,6 +43,23 @@ public class ArkadeNofNMultisigTapScriptTests
     }
 
     [Test]
+    public void ImplementsArkadeBoundScriptBuilder()
+    {
+        // Detection by interface is what slices 2/3 of the introspector
+        // integration rely on — guard the contract here so that link can't
+        // silently break on a refactor.
+        var (alice, _, introspector) = GenerateThreeKeys();
+        var arkadeScript = new byte[] { 0xc4 };
+        var sut = new ArkadeNofNMultisigTapScript(arkadeScript, [alice], [introspector]);
+
+        Assert.That(sut, Is.InstanceOf<IArkadeBoundScriptBuilder>());
+        var iface = (IArkadeBoundScriptBuilder)sut;
+        Assert.That(iface.ArkadeScript, Is.EqualTo(arkadeScript));
+        Assert.That(iface.IntrospectorKeys, Has.Count.EqualTo(1));
+        Assert.That(iface.IntrospectorKeys[0].ToBytes(), Is.EqualTo(introspector.ToBytes()));
+    }
+
+    [Test]
     public void RejectsEmptyArkadeScript()
     {
         var (alice, _, introspector) = GenerateThreeKeys();
