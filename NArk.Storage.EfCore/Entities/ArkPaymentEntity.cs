@@ -31,6 +31,19 @@ public class ArkPaymentEntity
     /// </summary>
     public string? OnchainTxId { get; set; }
 
+    /// <summary>
+    /// JSON array of assets transferred with this payment.
+    /// </summary>
+    [Column("Assets", TypeName = "jsonb")]
+    public string? AssetsJson { get; set; }
+
+    [NotMapped]
+    public IReadOnlyList<NArk.Abstractions.VTXOs.VtxoAsset>? Assets
+    {
+        get => AssetsJson is null ? null : JsonSerializer.Deserialize<List<NArk.Abstractions.VTXOs.VtxoAsset>>(AssetsJson);
+        set => AssetsJson = value is null ? null : JsonSerializer.Serialize(value);
+    }
+
     [Column("Metadata", TypeName = "jsonb")]
     public string? MetadataJson { get; set; }
 
@@ -60,6 +73,7 @@ public class ArkPaymentEntity
         builder.Property(e => e.IntentTxId).HasDefaultValue(null);
         builder.Property(e => e.SwapId).HasDefaultValue(null);
         builder.Property(e => e.OnchainTxId).HasDefaultValue(null);
+        builder.Property(e => e.AssetsJson).HasDefaultValue(null);
         builder.Property(e => e.MetadataJson).HasDefaultValue(null);
 
         builder.HasOne(e => e.Wallet)
