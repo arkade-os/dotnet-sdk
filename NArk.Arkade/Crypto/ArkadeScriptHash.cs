@@ -60,14 +60,13 @@ public static class ArkadeScriptHash
     {
         var tweakBytes = Compute(script);
 
-        if (!ECPubKey.TryCreate(introspectorPubKey.ToBytes(), Context.Instance, out _, out var ecPub) || ecPub is null)
+        if (!ECXOnlyPubKey.TryCreate(introspectorPubKey.ToBytes(), Context.Instance, out var xOnly) || xOnly is null)
             throw new ArgumentException("Introspector public key could not be parsed.", nameof(introspectorPubKey));
 
-        if (!ecPub.TryAddTweak(tweakBytes, out var tweaked) || tweaked is null)
+        if (!xOnly.TryAddTweak(tweakBytes, out var tweaked) || tweaked is null)
             throw new ArgumentException(
                 "Failed to apply tagged-hash tweak — script hash is not a valid scalar.", nameof(script));
 
-        var xOnly = tweaked.ToXOnlyPubKey();
-        return new TaprootPubKey(xOnly.ToBytes());
+        return new TaprootPubKey(tweaked.Q.x.ToBytes());
     }
 }
