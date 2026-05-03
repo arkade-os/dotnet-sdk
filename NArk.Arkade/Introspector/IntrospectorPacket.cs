@@ -1,11 +1,14 @@
 using System.Buffers.Binary;
+using NArk.Core.Assets;
+using NBitcoin;
 
 namespace NArk.Arkade.Introspector;
 
 /// <summary>
-/// Codec for the Introspector Packet — the TLV payload (type tag <c>0x01</c>)
-/// the Arkade Extension envelope carries to bind ArkadeScript to specific
-/// transaction inputs.
+/// TLV record (type tag <c>0x01</c>) carried inside the same
+/// <see cref="Extension"/> OP_RETURN envelope the asset packet uses, binding
+/// ArkadeScript bytecode + a witness stack to specific transaction inputs
+/// for introspector co-signing.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -14,29 +17,86 @@ namespace NArk.Arkade.Introspector;
 /// compactSize(entry_count) +
 ///   per entry: u16_le(vin) +
 ///              compactSize(script_len) + script_bytes +
-///              compactSize(witness_len) + witness_bytes
+///              compactSize(witness_payload_len) + witness_payload
 /// </code>
-/// where <c>compactSize</c> is Bitcoin's standard variable-length integer
-/// encoding. <c>witness_bytes</c> is opaque from the packet's perspective —
-/// see <see cref="EncodePushList"/> / <see cref="DecodePushList"/> for the
-/// canonical "list of pushes" sub-encoding most consumers use.
+/// where <c>witness_payload</c> is the standard
+/// <c>compactSize(num_pushes) + [compactSize(len)+bytes]*</c> shape produced
+/// by Bitcoin's <c>WriteTxWitness</c> (matching the Go reference's
+/// <c>wire.TxWitness</c>).
 /// </para>
 /// <para>
-/// 1:1 with the introspector reference at
-/// <c>ArkLabsHQ/introspector pkg/arkade</c> and the ts-sdk's
-/// <c>extension/introspector/packet.ts</c> — fixtures are vendored from the
-/// introspector's <c>testdata/introspector_packet.json</c>.
+/// 1:1 with <c>ArkLabsHQ/introspector pkg/arkade/introspector_packet.go</c>
+/// and the ts-sdk's <c>extension/introspector/packet.ts</c>. Fixtures are
+/// vendored verbatim from the introspector's
+/// <c>testdata/introspector_packet.json</c>.
 /// </para>
 /// </remarks>
-public static class IntrospectorPacket
+public sealed class IntrospectorPacket : IExtensionPacket
 {
     /// <summary>The 1-byte TLV type tag the Extension envelope uses for an Introspector Packet.</summary>
-    public const byte PacketType = 0x01;
+    public const byte PacketTypeId = 0x01;
+
+    /// <summary>Validated, immutable list of entries.</summary>
+    public IReadOnlyList<IntrospectorEntry> Entries { get; }
 
     /// <summary>
-    /// Validates and returns a defensive copy of the entries, applying the same
-    /// rules as the introspector reference: non-empty entry list, non-empty
-    /// scripts, unique <c>vin</c> values.
+    /// Construct from a list of entries — validates non-empty packet,
+    /// non-empty scripts, and unique <c>Vin</c> values.
+    /// </summary>
+    public IntrospectorPacket(IReadOnlyList<IntrospectorEntry> entries)
+    {
+        Entries = Validate(entries);
+    }
+
+    byte IExtensionPacket.PacketType => PacketTypeId;
+    /// <inheritdoc cref="IExtensionPacket.SerializePacketData"/>
+    public byte[] SerializePacketData() => SerializeEntries(Entries);
+
+    /// <summary>
+    /// Parse the inner TLV payload bytes into an <see cref="IntrospectorPacket"/>.
+    /// Throws <see cref="FormatException"/> on truncated input or trailing
+    /// data; <see cref="ArgumentException"/> on validation rule violations.
+    /// </summary>
+    public static IntrospectorPacket FromBytes(byte[] payload) => new(ParseEntries(payload));
+
+    /// <summary>
+    /// Look up the introspector packet riding alongside other packets in an
+    /// already-parsed <see cref="Extension"/>. Returns <c>null</c> when
+    /// the extension carries no introspector record. Re-parses the
+    /// underlying <see cref="UnknownPacket"/> bytes — <see cref="Extension"/>
+    /// itself doesn't know the introspector type natively (different package).
+    /// </summary>
+    public static IntrospectorPacket? FromExtension(Extension extension)
+    {
+        ArgumentNullException.ThrowIfNull(extension);
+        foreach (var p in extension.Packets)
+        {
+            switch (p)
+            {
+                case IntrospectorPacket already: return already;
+                case UnknownPacket u when u.PacketType == PacketTypeId:
+                    return FromBytes(u.Data);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Convenience: search a transaction's outputs for an Extension OP_RETURN
+    /// and return its embedded introspector packet, or <c>null</c>.
+    /// </summary>
+    public static IntrospectorPacket? FromTransaction(Transaction tx)
+    {
+        var ext = Extension.FromTransaction(tx);
+        return ext is null ? null : FromExtension(ext);
+    }
+
+    // ─── Validation rules (matches the introspector reference) ────────
+
+    /// <summary>
+    /// Apply the introspector's validation rules: at least one entry,
+    /// non-empty script per entry, unique <c>Vin</c>s. Returns a defensive
+    /// copy on success; throws <see cref="ArgumentException"/> on violation.
     /// </summary>
     public static IReadOnlyList<IntrospectorEntry> Validate(IReadOnlyList<IntrospectorEntry> entries)
     {
@@ -58,35 +118,64 @@ public static class IntrospectorPacket
         return entries.ToArray();
     }
 
+    // ─── Witness "list of pushes" sub-encoding (public for callers
+    //     that want to roundtrip the witness blob outside the packet) ──
+
     /// <summary>
-    /// Serialise a list of <see cref="IntrospectorEntry"/> into the TLV-payload
-    /// byte stream defined above. Entries are validated via
-    /// <see cref="Validate"/> first.
+    /// Encode a list of stack pushes in the standard
+    /// <c>compactSize(num) + [compactSize(len)+bytes]*</c> shape — matches
+    /// Bitcoin's <c>WriteTxWitness</c>.
     /// </summary>
-    public static byte[] Serialize(IReadOnlyList<IntrospectorEntry> entries)
+    public static byte[] EncodePushList(IReadOnlyList<byte[]> pushes)
     {
-        Validate(entries);
+        ArgumentNullException.ThrowIfNull(pushes);
+        using var ms = new MemoryStream();
+        WriteCompactSize(ms, (ulong)pushes.Count);
+        foreach (var push in pushes)
+        {
+            ArgumentNullException.ThrowIfNull(push);
+            WriteCompactSlice(ms, push);
+        }
+        return ms.ToArray();
+    }
+
+    /// <summary>Inverse of <see cref="EncodePushList"/>.</summary>
+    public static IReadOnlyList<byte[]> DecodePushList(byte[] witness)
+    {
+        ArgumentNullException.ThrowIfNull(witness);
+        var span = (ReadOnlySpan<byte>)witness;
+        var pos = 0;
+
+        var count = ReadCompactSize(span, ref pos);
+        if (count > int.MaxValue)
+            throw new FormatException($"witness push count too large: {count}");
+
+        var pushes = new List<byte[]>((int)count);
+        for (var i = 0UL; i < count; i++)
+            pushes.Add(ReadCompactSlice(span, ref pos));
+
+        if (pos != span.Length)
+            throw new FormatException($"unexpected {span.Length - pos} trailing bytes in push list");
+
+        return pushes;
+    }
+
+    // ─── Entry list (TLV payload, no envelope) codec ──────────────────
+
+    private static byte[] SerializeEntries(IReadOnlyList<IntrospectorEntry> entries)
+    {
         using var ms = new MemoryStream();
         WriteCompactSize(ms, (ulong)entries.Count);
         foreach (var entry in entries)
         {
             WriteUInt16Le(ms, entry.Vin);
             WriteCompactSlice(ms, entry.Script);
-            // Witness is a list of stack pushes — encode inline using the
-            // standard `compactSize(num) + [compactSize(len)+bytes]*` shape
-            // that matches Go's psbt.WriteTxWitness.
             WriteCompactSlice(ms, EncodePushList(entry.Witness));
         }
         return ms.ToArray();
     }
 
-    /// <summary>
-    /// Parse a TLV-payload byte stream into <see cref="IntrospectorEntry"/> values.
-    /// Throws <see cref="FormatException"/> on truncated input or trailing data,
-    /// and <see cref="ArgumentException"/> on validation rules (empty packet,
-    /// empty script, duplicate vin).
-    /// </summary>
-    public static IReadOnlyList<IntrospectorEntry> Parse(byte[] payload)
+    private static IReadOnlyList<IntrospectorEntry> ParseEntries(byte[] payload)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var span = (ReadOnlySpan<byte>)payload;
@@ -112,50 +201,7 @@ public static class IntrospectorPacket
         return Validate(entries);
     }
 
-    /// <summary>
-    /// Encode a list of stack pushes into the witness byte format the ts-sdk
-    /// and introspector consume:
-    /// <c>compactSize(num_pushes) + per push: compactSize(push_len) + push_bytes</c>.
-    /// </summary>
-    public static byte[] EncodePushList(IReadOnlyList<byte[]> pushes)
-    {
-        ArgumentNullException.ThrowIfNull(pushes);
-        using var ms = new MemoryStream();
-        WriteCompactSize(ms, (ulong)pushes.Count);
-        foreach (var push in pushes)
-        {
-            ArgumentNullException.ThrowIfNull(push);
-            WriteCompactSlice(ms, push);
-        }
-        return ms.ToArray();
-    }
-
-    /// <summary>
-    /// Decode the inverse of <see cref="EncodePushList"/>. Throws
-    /// <see cref="FormatException"/> if the byte stream isn't a well-formed
-    /// list-of-pushes (truncated or with trailing bytes).
-    /// </summary>
-    public static IReadOnlyList<byte[]> DecodePushList(byte[] witness)
-    {
-        ArgumentNullException.ThrowIfNull(witness);
-        var span = (ReadOnlySpan<byte>)witness;
-        var pos = 0;
-
-        var count = ReadCompactSize(span, ref pos);
-        if (count > int.MaxValue)
-            throw new FormatException($"witness push count too large: {count}");
-
-        var pushes = new List<byte[]>((int)count);
-        for (var i = 0UL; i < count; i++)
-            pushes.Add(ReadCompactSlice(span, ref pos));
-
-        if (pos != span.Length)
-            throw new FormatException($"unexpected {span.Length - pos} trailing bytes in push list");
-
-        return pushes;
-    }
-
-    // ─── compactSize / u16 LE / length-prefixed slice helpers ─────────────────
+    // ─── compactSize / u16 LE / length-prefixed slice helpers ─────────
 
     private static void WriteCompactSize(Stream s, ulong value)
     {
