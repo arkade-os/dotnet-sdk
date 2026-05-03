@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using NArk.Abstractions.Recovery;
 using NArk.Core.Sweeper;
 using NArk.Core.Transformers;
 using NArk.Swaps.Abstractions;
@@ -6,6 +7,7 @@ using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Policies;
+using NArk.Swaps.Recovery;
 using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
 
@@ -43,6 +45,7 @@ public static class SwapServiceCollectionExtensions
         if (configure != null)
             services.Configure(configure);
 
+        services.AddSingleton<IContractDiscoveryProvider, BoltzSwapDiscoveryProvider>();
         services.AddSingleton<CachedBoltzClient>();
         services.AddSingleton<BoltzLimitsValidator>();
         services.AddSingleton<BoltzSwapProvider>();

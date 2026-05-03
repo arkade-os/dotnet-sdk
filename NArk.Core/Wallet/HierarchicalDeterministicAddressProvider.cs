@@ -55,7 +55,14 @@ public class HierarchicalDeterministicAddressProvider(
         return descriptor;
     }
 
-    private static OutputDescriptor GetDescriptorFromIndex(Network network, string descriptor, int index)
+    /// <summary>
+    /// Resolves the wildcard <paramref name="descriptor"/> at the given <paramref name="index"/>.
+    /// This is the canonical derivation entry point — both the runtime
+    /// <see cref="GetNextSigningDescriptor"/> path and any external recovery
+    /// scanners (e.g. <c>HdWalletRecoveryService</c>) MUST go through here so
+    /// they always agree on which script corresponds to a given HD index.
+    /// </summary>
+    internal static OutputDescriptor GetDescriptorFromIndex(Network network, string descriptor, int index)
     {
         return OutputDescriptor.Parse(descriptor.Replace("/*", $"/{index}"), network);
     }

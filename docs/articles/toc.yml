@@ -12,5 +12,7 @@
   href: swaps.md
 - name: Storage
   href: storage.md
+- name: Recovery
+  href: recovery.md
 - name: Development
   href: development.md
