@@ -5,6 +5,8 @@ using NArk.Blockchain.NBXplorer;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
+using NArk.Swaps.Abstractions;
+using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Models;
@@ -72,12 +74,17 @@ public class ChainSwapTests
             { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider, []);
         await sweepMgr.StartAsync(CancellationToken.None);
 
+        var boltzProvider = new BoltzSwapProvider(boltzClient, new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions() { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
         await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
             spendingService,
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider,
             swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
-            testingPrerequisite.safetyService, intentStorage, boltzClient, chainTimeProvider);
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
 
         var settledSwapTcs = new TaskCompletionSource();
         swapStorage.SwapsChanged += (sender, swap) =>
@@ -165,12 +172,17 @@ public class ChainSwapTests
             testingPrerequisite.contractService, testingPrerequisite.clientTransport, new DefaultCoinSelector(),
             testingPrerequisite.safetyService, intentStorage);
 
+        var boltzProvider = new BoltzSwapProvider(boltzClient, new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions() { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
         await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
             spendingService,
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider,
             swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
-            testingPrerequisite.safetyService, intentStorage, boltzClient, chainTimeProvider);
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
 
         var settledSwapTcs = new TaskCompletionSource();
         swapStorage.SwapsChanged += (sender, swap) =>
