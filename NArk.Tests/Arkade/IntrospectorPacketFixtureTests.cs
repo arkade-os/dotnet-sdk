@@ -42,12 +42,15 @@ public class IntrospectorPacketFixtureTests
                 Assert.That(actual.Vin, Is.EqualTo(expected.Vin), $"entry[{i}].vin");
                 Assert.That(Convert.ToHexString(actual.Script).ToLowerInvariant(),
                     Is.EqualTo(expected.Script.ToLowerInvariant()), $"entry[{i}].script");
-                // The fixture's witness is a list of pushes; the wire-level
-                // witness blob is the EncodePushList() of that list.
-                var expectedWitness = IntrospectorPacket.EncodePushList(
-                    expected.Witness.Select(Convert.FromHexString).ToArray());
-                Assert.That(actual.Witness, Is.EqualTo(expectedWitness),
-                    $"entry[{i}].witness");
+                // Witness is now a list of pushes — compare element-wise.
+                Assert.That(actual.Witness, Has.Count.EqualTo(expected.Witness.Count),
+                    $"entry[{i}].witness count");
+                for (var j = 0; j < actual.Witness.Count; j++)
+                {
+                    Assert.That(Convert.ToHexString(actual.Witness[j]).ToLowerInvariant(),
+                        Is.EqualTo(expected.Witness[j].ToLowerInvariant()),
+                        $"entry[{i}].witness[{j}]");
+                }
             });
         }
     }
@@ -94,10 +97,11 @@ public class IntrospectorPacketFixtureTests
 
     private static IntrospectorEntry ToEntry(FixtureEntry e)
     {
-        // Fixture witness = list of pushes; wire witness = the encoded list.
         var pushes = (e.Witness ?? Array.Empty<string>()).Select(Convert.FromHexString).ToArray();
-        var witnessBytes = IntrospectorPacket.EncodePushList(pushes);
-        return new IntrospectorEntry((ushort)e.Vin, Convert.FromHexString(e.Script ?? ""), witnessBytes);
+        return new IntrospectorEntry(
+            (ushort)e.Vin,
+            Convert.FromHexString(e.Script ?? ""),
+            pushes);
     }
 
     private static IEnumerable<string> ValidVectorNames()

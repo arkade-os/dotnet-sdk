@@ -30,7 +30,7 @@ namespace NArk.Arkade.Scripts;
 /// flavours are wanted in production.
 /// </para>
 /// </remarks>
-public sealed class ArkadeNofNMultisigTapScript : ScriptBuilder
+public sealed class ArkadeNofNMultisigTapScript : ScriptBuilder, IArkadeBoundScriptBuilder
 {
     private readonly NofNMultisigTapScript _augmented;
 

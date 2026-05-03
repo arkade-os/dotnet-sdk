@@ -48,6 +48,8 @@ public static class IntrospectorPacket
         foreach (var entry in entries)
         {
             ArgumentNullException.ThrowIfNull(entry);
+            ArgumentNullException.ThrowIfNull(entry.Script);
+            ArgumentNullException.ThrowIfNull(entry.Witness);
             if (entry.Script.Length == 0)
                 throw new ArgumentException($"empty script for vin {entry.Vin}", nameof(entries));
             if (!seen.Add(entry.Vin))
@@ -70,7 +72,10 @@ public static class IntrospectorPacket
         {
             WriteUInt16Le(ms, entry.Vin);
             WriteCompactSlice(ms, entry.Script);
-            WriteCompactSlice(ms, entry.Witness);
+            // Witness is a list of stack pushes — encode inline using the
+            // standard `compactSize(num) + [compactSize(len)+bytes]*` shape
+            // that matches Go's psbt.WriteTxWitness.
+            WriteCompactSlice(ms, EncodePushList(entry.Witness));
         }
         return ms.ToArray();
     }
@@ -96,7 +101,8 @@ public static class IntrospectorPacket
         {
             var vin = ReadUInt16Le(span, ref pos);
             var script = ReadCompactSlice(span, ref pos);
-            var witness = ReadCompactSlice(span, ref pos);
+            var witnessBytes = ReadCompactSlice(span, ref pos);
+            var witness = DecodePushList(witnessBytes);
             entries.Add(new IntrospectorEntry(vin, script, witness));
         }
 
