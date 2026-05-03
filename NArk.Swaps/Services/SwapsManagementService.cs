@@ -56,6 +56,28 @@ public class SwapsManagementService : IAsyncDisposable
     private HashSet<string> _swapsIdToWatch = [];
     private readonly ConcurrentDictionary<string, string> _scriptToSwapId = [];
 
+    /// <summary>
+    /// Per-swap counter of consecutive <see cref="BoltzSwapNotFoundException"/>
+    /// responses from <c>GetSwapStatusAsync</c>. Reset to zero on any successful
+    /// status response. When a swap reaches
+    /// <see cref="UnknownToProviderThreshold"/> consecutive 404s, the safety net
+    /// in <see cref="MarkSwapAsUnknownToProvider"/> trips and the swap is
+    /// transitioned to a terminal state. Concurrent because <c>NotifySwapChanged</c>
+    /// (storage event thread) and <c>PollSwapState</c> (channel reader thread)
+    /// can both touch the map.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, int> _consecutiveUnknown = [];
+
+    /// <summary>
+    /// Number of consecutive Boltz 404s that must elapse before
+    /// <c>PollSwapState</c> gives up on a swap and transitions it to a terminal
+    /// state. At the 1-minute routine-poll cadence this is roughly a
+    /// 10-minute grace window — long enough to ride out a transient Boltz
+    /// route blip, short enough that a real "swap unknown to this provider"
+    /// surfaces inside a working day.
+    /// </summary>
+    private const int UnknownToProviderThreshold = 10;
+
     private Task? _cacheTask;
     private Task? _routinePollTask;
 
@@ -279,6 +301,9 @@ public class SwapsManagementService : IAsyncDisposable
             {
                 _logger?.LogDebug("PollSwapState: querying Boltz for {SwapId}", idToPoll);
                 var swapStatus = await _boltzClient.GetSwapStatusAsync(idToPoll, _shutdownCts.Token);
+                // A successful response (any non-throwing path past GetSwapStatusAsync)
+                // means Boltz still recognises this swap — clear the unknown counter.
+                _consecutiveUnknown.TryRemove(idToPoll, out _);
                 if (swapStatus?.Status is null)
                 {
                     _logger?.LogDebug("Swap {SwapId}: Boltz returned null status", idToPoll);
@@ -390,11 +415,86 @@ public class SwapsManagementService : IAsyncDisposable
                     _swapsIdToWatch.Remove(swapWithNewStatus.SwapId);
                 }
             }
+            catch (BoltzSwapNotFoundException)
+            {
+                // Boltz has no record of this swap. This is the canonical failure
+                // mode after a Boltz endpoint switch — old swap IDs are unknown
+                // to the new instance. Track consecutive 404s; trip the safety
+                // net only after the threshold to ride out transient blips.
+                var count = _consecutiveUnknown.AddOrUpdate(idToPoll, 1, (_, c) => c + 1);
+                _logger?.LogWarning(
+                    "Swap {SwapId}: unknown to Boltz ({Count}/{Threshold} consecutive)",
+                    idToPoll, count, UnknownToProviderThreshold);
+                if (count >= UnknownToProviderThreshold)
+                {
+                    await MarkSwapAsUnknownToProvider(idToPoll, cancellationToken);
+                }
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger?.LogError(ex, "Swap {SwapId}: error polling state from Boltz", idToPoll);
             }
         }
+    }
+
+    /// <summary>
+    /// Transitions a swap to <see cref="ArkSwapStatus.Failed"/> once Boltz has
+    /// consistently reported it unknown for <see cref="UnknownToProviderThreshold"/>
+    /// consecutive polls. Called from <see cref="PollSwapState"/>'s
+    /// <see cref="BoltzSwapNotFoundException"/> handler — at this point the
+    /// swap is presumed permanently lost to the configured Boltz instance,
+    /// typically because the operator pointed the SDK at a different Boltz
+    /// endpoint than the one the swap was created on. After this transition
+    /// the user must recover funds on-chain via the contract's script-path
+    /// after CSV expiry; cooperative refund is no longer available because
+    /// the original Boltz instance is unreachable.
+    /// </summary>
+    private async Task MarkSwapAsUnknownToProvider(string swapId, CancellationToken cancellationToken)
+    {
+        await using var @lock = await _safetyService.LockKeyAsync($"swap::{swapId}", cancellationToken);
+
+        var swap = (await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken))
+            .FirstOrDefault();
+        if (swap is null)
+        {
+            _logger?.LogDebug("MarkSwapAsUnknownToProvider: swap {SwapId} no longer in storage", swapId);
+            _consecutiveUnknown.TryRemove(swapId, out _);
+            return;
+        }
+
+        // Idempotency: another caller (or a previous trip of this safety net)
+        // may have already moved it terminal — nothing to do.
+        if (!swap.Status.IsActive())
+        {
+            _consecutiveUnknown.TryRemove(swapId, out _);
+            _swapsIdToWatch.Remove(swapId);
+            return;
+        }
+
+        var newMetadata = swap.Metadata is null
+            ? new Dictionary<string, string>()
+            : new Dictionary<string, string>(swap.Metadata);
+        newMetadata["unknownToProvider"] = "true";
+
+        var newSwap = swap with
+        {
+            Status = ArkSwapStatus.Failed,
+            FailReason = "Boltz no longer recognises this swap. " +
+                         "Recover funds on-chain via the contract's script-path after CSV expiry.",
+            UpdatedAt = DateTimeOffset.UtcNow,
+            Metadata = newMetadata,
+        };
+
+        await _swapsStorage.SaveSwap(swap.WalletId, newSwap, cancellationToken: cancellationToken);
+
+        _logger?.LogWarning(
+            "Swap {SwapId}: marked Failed after {Threshold} consecutive Boltz 404s — swap is unknown to the configured Boltz instance",
+            swapId, UnknownToProviderThreshold);
+
+        // Stop polling and clear the counter. NotifySwapChanged handles
+        // _scriptToSwapId eviction via the SaveSwap event we just emitted.
+        _swapsIdToWatch.Remove(swapId);
+        _consecutiveUnknown.TryRemove(swapId, out _);
     }
 
     private async Task RequestRefundCooperatively(ArkSwap swap, CancellationToken cancellationToken = default)
