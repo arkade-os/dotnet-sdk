@@ -684,6 +684,12 @@ Build the introspector REST client through DI and submit intents / transactions 
 ```csharp
 using NArk.Arkade.Hosting;
 
+// One-liner: registers the REST client AND the IBatchSessionExtension that
+// transparently co-signs any batch with arkade-bound inputs.
+services.AddArkadeIntrospector(opts =>
+    opts.ServerUrl = "http://localhost:7073");
+
+// Or wire the REST client without batch integration, and inject manually:
 services.AddIntrospectorClient(opts =>
     opts.ServerUrl = "http://localhost:7073");
 
@@ -692,6 +698,23 @@ var info = await introspector.GetInfoAsync();             // GET  /v1/info
 var signed = await introspector.SubmitTxAsync(...);       // POST /v1/tx
 var sig = await introspector.SubmitIntentAsync(...);      // POST /v1/intent
 var fin = await introspector.SubmitFinalizationAsync(...);// POST /v1/finalization
+```
+
+Or co-sign a PSBT inline once it carries the user's partial sigs:
+
+```csharp
+using NArk.Arkade.Introspector;
+
+if (ArkadePsbtExtensions.RequiresIntrospectorCoSigning(spendingCoins))
+{
+    // Append the IntrospectorPacket OP_RETURN to the unsigned tx so the
+    // server can find the script body for each arkade-bound input.
+    var packetOutput = ArkadePsbtExtensions.BuildIntrospectorOutput(spendingCoins);
+    if (packetOutput is not null) tx.Outputs.Add(packetOutput);
+
+    // ...sign locally, then merge the introspector's partial sigs:
+    psbt = await psbt.CoSignWithIntrospectorAsync(introspector);
+}
 ```
 
 The wire encoding for the introspector's OP_RETURN packet is exposed as `IntrospectorPacket.Serialize` / `IntrospectorPacket.Parse` for callers that need to read or write the TLV directly. Cross-SDK byte-equality is enforced by the unit tests against the canonical fixtures vendored from `ArkLabsHQ/introspector pkg/arkade/testdata/`.
