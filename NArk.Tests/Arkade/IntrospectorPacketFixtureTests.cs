@@ -19,7 +19,8 @@ public class IntrospectorPacketFixtureTests
     {
         var v = Fixture.Valid.Single(x => x.Name == name);
         var entries = v.Entries.Select(ToEntry).ToArray();
-        var encoded = IntrospectorPacket.Serialize(entries);
+        var packet = new IntrospectorPacket(entries);
+        var encoded = packet.SerializePacketData();
         Assert.That(Convert.ToHexString(encoded).ToLowerInvariant(),
             Is.EqualTo(v.Encoded.ToLowerInvariant()),
             $"vector '{name}' did not encode to fixture bytes");
@@ -30,7 +31,7 @@ public class IntrospectorPacketFixtureTests
     {
         var v = Fixture.Valid.Single(x => x.Name == name);
         var bytes = Convert.FromHexString(v.Encoded);
-        var parsed = IntrospectorPacket.Parse(bytes);
+        var parsed = IntrospectorPacket.FromBytes(bytes).Entries;
 
         Assert.That(parsed, Has.Count.EqualTo(v.Entries.Count));
         for (var i = 0; i < parsed.Count; i++)
@@ -74,7 +75,7 @@ public class IntrospectorPacketFixtureTests
         var bytes = Convert.FromHexString(v.Encoded!);
         // Either parse rejects with FormatException or validation rejects after
         // a successful parse — both count as "the wire vector is illegal".
-        Assert.That(() => IntrospectorPacket.Parse(bytes),
+        Assert.That(() => IntrospectorPacket.FromBytes(bytes),
             Throws.TypeOf<FormatException>().Or.TypeOf<ArgumentException>());
     }
 
