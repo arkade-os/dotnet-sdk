@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using NArk.Abstractions.Batches;
 using NArk.Arkade.Introspector;
 
 namespace NArk.Arkade.Hosting;
@@ -31,6 +32,21 @@ public static class IntrospectorServiceCollectionExtensions
         services.AddHttpClient<IntrospectorClient>();
         services.AddSingleton<IIntrospectorProvider>(
             sp => sp.GetRequiredService<IntrospectorClient>());
+        return services;
+    }
+
+    /// <summary>
+    /// One-liner: registers the introspector REST client AND the
+    /// <see cref="ArkadeBatchSessionExtension"/> so any batch that includes
+    /// arkade-bound inputs automatically gets introspector co-signing.
+    /// Use when you don't care about wiring the two pieces separately.
+    /// </summary>
+    public static IServiceCollection AddArkadeIntrospector(
+        this IServiceCollection services,
+        Action<IntrospectorClientOptions> configure)
+    {
+        AddIntrospectorClient(services, configure);
+        services.AddSingleton<IBatchSessionExtension, ArkadeBatchSessionExtension>();
         return services;
     }
 }
