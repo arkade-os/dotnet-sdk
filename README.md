@@ -86,7 +86,7 @@ NArk (meta-package)
  │    ├── Services (spending, batches, VTXO sync, sweeping, intents)
  │    ├── Wallet (WalletFactory, signers, address providers)
  │    ├── Hosting (DI extensions, ArkApplicationBuilder)
- │    └── Transport (gRPC client for Ark server communication)
+ │    └── Transport (gRPC client for Arkade server communication)
  │
  ├── NArk.Swaps
  │    ├── Abstractions (ISwapProvider, SwapRoute, SwapAsset)
@@ -139,7 +139,7 @@ var all = await walletStorage.LoadAllWallets();
 
 ## Spending
 
-Use `ISpendingService` to send Ark transactions:
+Use `ISpendingService` to send Arkade transactions:
 
 ```csharp
 // Automatic coin selection
@@ -157,7 +157,7 @@ var txId = await spendingService.Spend(
 
 ## Assets
 
-The SDK supports issuing, transferring, and burning assets on Ark. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Ark transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
+The SDK supports issuing, transferring, and burning assets on Arkade. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Arkade transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
 
 ### Issuance
 
@@ -168,7 +168,7 @@ var result = await assetManager.IssueAsync(walletId,
     new IssuanceParams(Amount: 1000));
 
 // result.AssetId  — the unique asset identifier
-// result.ArkTxId  — the Ark transaction that created it
+// result.ArkTxId  — the Arkade transaction that created it
 ```
 
 Issue with metadata:
@@ -242,7 +242,7 @@ foreach (var coin in coins.Where(c => c.Assets is { Count: > 0 }))
 }
 ```
 
-Query asset details from the Ark server:
+Query asset details from the Arkade server:
 
 ```csharp
 var details = await transport.GetAssetDetailsAsync(assetId);
@@ -325,7 +325,7 @@ Each transformer implements:
 
 ## Collaborative Exits (On-chain)
 
-Move funds from Ark back to the Bitcoin base layer:
+Move funds from Arkade back to the Bitcoin base layer:
 
 ```csharp
 var btcTxId = await onchainService.InitiateCollaborativeExit(
@@ -338,7 +338,7 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
 Derive receiving addresses and manage contracts:
 
 ```csharp
-// Derive a new receive contract (generates a new Ark address)
+// Derive a new receive contract (generates a new Arkade address)
 var contract = await contractService.DeriveContract(
     walletId,
     NextContractPurpose.Receive);
@@ -455,7 +455,7 @@ var payment = new ArkPayment(
     CreatedAt: DateTimeOffset.UtcNow,
     CompletedAt: null)
 {
-    IntentTxId = intentTxId // links to the Ark intent
+    IntentTxId = intentTxId // links to the Arkade intent
 };
 
 await paymentStorage.SavePayment(payment);
@@ -467,7 +467,7 @@ var pending = await paymentStorage.GetPayments(
 ```
 
 Payment methods: `ArkSend`, `CollaborativeExit`, `SubmarineSwap`, `ChainSwap`.
-Proof fields: `IntentTxId` (Ark sends), `SwapId` (swaps), `OnchainTxId` (collab exits).
+Proof fields: `IntentTxId` (Arkade sends), `SwapId` (swaps), `OnchainTxId` (collab exits).
 
 ### Inbound Payment Requests (`ArkPaymentRequest`)
 
@@ -544,7 +544,7 @@ A **swap route** is a directional asset pair:
 var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);  // Lightning → Ark
 var route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);    // Ark → BTC on-chain
 
-// Ark-issued assets
+// Arkade-issued assets
 var myToken = SwapAsset.ArkAsset("asset1abc...");
 ```
 
@@ -578,7 +578,7 @@ var swaps = serviceProvider.GetRequiredService<SwapsManagementService>();
 
 // All routes from all providers
 var routes = await swaps.GetAvailableRoutesAsync(ct);
-// e.g. [Lightning→Ark, Ark→Lightning, BTC→Ark, Ark→BTC, ...]
+// e.g. [Lightning→Arkade, Arkade→Lightning, BTC→Arkade, Arkade→BTC, ...]
 ```
 
 ### Pricing
@@ -599,7 +599,7 @@ var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
 
 | Provider | Routes | Features |
 |----------|--------|----------|
-| **Boltz** | Ark &harr; Lightning, Ark &harr; BTC on-chain | Submarine/reverse swaps, chain swaps, MuSig2 cooperative claiming, VHTLC management, WebSocket status updates |
+| **Boltz** | Arkade &harr; Lightning, Arkade &harr; BTC on-chain | Submarine/reverse swaps, chain swaps, MuSig2 cooperative claiming, VHTLC management, WebSocket status updates |
 
 ### Implementing a Custom Provider
 

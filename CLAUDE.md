@@ -1,8 +1,12 @@
 # NArk .NET SDK (Arkade)
 
-## Branding
-- The protocol/product brand is **Arkade** (not "Ark" on its own). Always use "Arkade" in user-facing text, docs, and comments.
-- Code identifiers (namespaces, classes, variables) use `Ark` / `NArk` for brevity — this is fine and should not be renamed.
+## Branding & Vocabulary
+
+> **NEVER rename "Arkade" → "Ark" or "batch" → "round" anywhere in this repo.** These are the brand and protocol terminology and recurring AI regressions on PRs. If you see existing "Ark" or "round" usages in user-facing text or docs, default to fixing them, not propagating them.
+
+- The protocol/product brand is **Arkade** (not "Ark" on its own). ALWAYS use "Arkade" in user-facing text, docs, comments, log messages, exception messages, and code XML doc comments. Examples that must be "Arkade": `Arkade transaction`, `Arkade server`, `Arkade address`, `Arkade-issued asset`, `Arkade VTXO tree`, `Lightning↔Arkade`, `BTC↔Arkade`, `Arkade intent`. The only acceptable bare "Ark" is inside compound code identifiers (see next bullet).
+- The protocol's settlement primitive is a **batch** (not a "round"). ALWAYS use "batch" in user-facing text, docs, comments, log/exception messages, and code XML doc comments. "Batch round" is wrong — it's just "batch." Examples that must be "batch": `batch settlement`, `next batch`, `batch participation`, `batch session`, `post-batch poll`. The only place a separate "Round" word is acceptable is when transcribing an external system's wire-protocol field name verbatim (e.g. arkd's `RoundId` if it exists in the proto).
+- Code identifiers (namespaces, classes, variables, file/folder names) use `Ark` / `NArk` for brevity — this is fine and should not be renamed: `ArkContract`, `ArkVtxo`, `ArkSwap`, `NArk.Core`, `IArkadeAddressProvider`, etc. Do NOT rename these to `Arkade*` — they're just the project shorthand.
 
 ## Documentation
 
