@@ -41,7 +41,7 @@ public record ArkNetworkConfig(
     public static readonly ArkNetworkConfig Mainnet = new(
         ArkUri: "https://arkade.computer",
         ArkadeWalletUri: "https://arkade.money",
-        BoltzUri: "https://api.ark.boltz.exchange/",
+        BoltzUri: "https://api.boltz.exchange/",
         ExplorerUri: "https://arkade.space");
 
     /// <summary>Mutinynet (signet) configuration.</summary>
