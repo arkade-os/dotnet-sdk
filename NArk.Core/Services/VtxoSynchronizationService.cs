@@ -67,7 +67,8 @@ public class VtxoSynchronizationService : IAsyncDisposable
     /// </param>
     /// <param name="StartedAt">
     /// Wall-clock time the request was created. On a successful full-set
-    /// poll this becomes the new <c>LastFullPollAt</c> — using "started"
+    /// poll this becomes the new per-wallet
+    /// <see cref="LastFullPollAtMetadataKey"/> value — using "started"
     /// not "completed" guarantees that any change which lands on arkd while
     /// our poll is in flight is still inside the next poll's <c>after</c> window.
     /// </param>
@@ -247,8 +248,8 @@ public class VtxoSynchronizationService : IAsyncDisposable
                     "RoutinePoll: re-polling {Count} active script(s) with after={After}",
                     scripts.Count, after.ToString("O"));
                 // IsFullSetSnapshot=true: on success the StartedAt timestamp will
-                // be persisted as LastFullPollAt, bounding the next cold-start
-                // catch-up window.
+                // be persisted to every wallet's vtxo.lastFullPollAt metadata,
+                // bounding the next cold-start catch-up window.
                 await _readyToPoll.Writer.WriteAsync(
                     new PollRequest(scripts, after, IsFullSetSnapshot: true, StartedAt: startedAt),
                     cancellationToken);
@@ -309,11 +310,11 @@ public class VtxoSynchronizationService : IAsyncDisposable
             {
                 // First-startup nuance: at this point _lastViewOfScripts WAS
                 // empty (we're populating it from cold), so "newly added" =
-                // entire set. Without the persisted LastFullPollAt cursor we'd
-                // re-fetch every script's full VTXO history every cold start.
-                // Use the stored timestamp as an `after` filter on this one
-                // call so the cold-start catch-up window equals "since last
-                // shutdown" rather than "all of history".
+                // entire set. Without a persisted cursor we'd re-fetch every
+                // script's full VTXO history every cold start. Use
+                // MIN(per-wallet vtxo.lastFullPollAt) as the `after` filter
+                // on this one call so the cold-start catch-up window equals
+                // "since last shutdown" rather than "all of history".
                 DateTimeOffset? catchupAfter = null;
                 var isInitialCatchup = _isFirstStartupCatchup;
                 if (isInitialCatchup && _walletStorage is not null)
