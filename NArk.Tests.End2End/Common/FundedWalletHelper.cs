@@ -1,5 +1,3 @@
-using CliWrap;
-using CliWrap.Buffered;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Safety;
@@ -59,13 +57,10 @@ internal static class FundedWalletHelper
 
         // Pay a random amount to the contract address
         const int randomAmount = 500000;
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
-                randomAmount.ToString(), "--password", "secret"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync();
+        var sendResult = await DockerHelper.ArkSend(
+            randomAmount,
+            contract.GetArkAddress().ToString(false),
+            allowNonZeroExit: true);
 
         if (!sendResult.IsSuccess)
             throw new InvalidOperationException(
@@ -129,13 +124,10 @@ internal static class FundedWalletHelper
 
         // Fund via ark send
         const int randomAmount = 500000;
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", delegateContract.GetArkAddress().ToString(false), "--amount",
-                randomAmount.ToString(), "--password", "secret"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync();
+        var sendResult = await DockerHelper.ArkSend(
+            randomAmount,
+            delegateContract.GetArkAddress().ToString(false),
+            allowNonZeroExit: true);
 
         if (!sendResult.IsSuccess)
             throw new InvalidOperationException(

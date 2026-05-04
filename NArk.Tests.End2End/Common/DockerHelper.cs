@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CliWrap;
 using CliWrap.Buffered;
+using NBitcoin;
 
 namespace NArk.Tests.End2End.Common;
 
@@ -58,6 +59,13 @@ public static class DockerHelper
         return invoice.Trim();
     }
 
+    public static async Task PayLndInvoice(string invoice, CancellationToken ct = default)
+    {
+        await Cli.Wrap("docker")
+            .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", invoice])
+            .ExecuteBufferedAsync(ct);
+    }
+
     /// <summary>
     /// Creates an arkd note via docker exec.
     /// Returns the note string.
@@ -67,5 +75,41 @@ public static class DockerHelper
         var output = await Exec("ark",
             ["arkd", "note", "--amount", amountSats.ToString()], ct);
         return output.Trim();
+    }
+
+    public static async Task<BufferedCommandResult> ArkSend(
+        long amountSats,
+        string destination,
+        string password = "secret",
+        bool allowNonZeroExit = false,
+        CancellationToken ct = default)
+    {
+        return await Cli.Wrap("docker")
+            .WithArguments(["exec", "ark", "ark", "send",
+                "--to", destination,
+                "--amount", amountSats.ToString(),
+                "--password", password])
+            .WithValidation(allowNonZeroExit ? CommandResultValidation.None : CommandResultValidation.ZeroExitCode)
+            .ExecuteBufferedAsync(ct);
+    }
+
+    public static async Task<BufferedCommandResult> BtcSend(
+        string amountBtc,
+        string destination,
+        bool allowNonZeroExit = false,
+        CancellationToken ct = default)
+    {
+        return await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", destination, amountBtc])
+            .WithValidation(allowNonZeroExit ? CommandResultValidation.None : CommandResultValidation.ZeroExitCode)
+            .ExecuteBufferedAsync(ct);
+    }
+
+    public static async Task<BitcoinAddress> CreateBtcAddress(CancellationToken ct = default)
+    {
+        var addrResult = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
+            .ExecuteBufferedAsync(ct);
+        return BitcoinAddress.Create(addrResult.StandardOutput.Trim(), Network.RegTest);
     }
 }

@@ -1,5 +1,3 @@
-using CliWrap;
-using CliWrap.Buffered;
 using BTCPayServer.Lightning;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -134,9 +132,7 @@ public class SwapManagementServiceTests
             ));
 
         // Until Aspire has a way to run commands with parameters :(
-        await Cli.Wrap("docker")
-            .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", invoice])
-            .ExecuteBufferedAsync();
+        await DockerHelper.PayLndInvoice(invoice);
 
         await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
     }

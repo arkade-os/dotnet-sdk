@@ -13,6 +13,7 @@ using NArk.Core.Services;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
 using NArk.Storage.EfCore.Hosting;
+using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 
@@ -69,13 +70,8 @@ public class OnchainTests
             if (!vtxo.IsSpent() && vtxo.Amount == 50000UL)
                 fundedTcs.TrySetResult();
         };
-
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
-                "50000", "--password", "secret"
-            ])
-            .ExecuteBufferedAsync();
+        
+        await DockerHelper.ArkSend(50000, contract.GetArkAddress().ToString(false));
 
         await fundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 

@@ -1,5 +1,3 @@
-using CliWrap;
-using CliWrap.Buffered;
 using Microsoft.Extensions.Options;
 using NArk.Blockchain.NBXplorer;
 using NArk.Core.Fees;
@@ -105,9 +103,7 @@ public class ChainSwapTests
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
         // Fund the BTC lockup address with the exact expected amount
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, btcAmount])
-            .ExecuteBufferedAsync();
+        var sendResult = await DockerHelper.BtcSend(btcAmount, btcAddress);
         Console.WriteLine($"[BTC→ARK] sendtoaddress result: exit={sendResult.ExitCode}, stdout={sendResult.StandardOutput.Trim()}, stderr={sendResult.StandardError.Trim()}");
         Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
 
@@ -183,10 +179,7 @@ public class ChainSwapTests
         await swapMgr.StartAsync(CancellationToken.None);
 
         // Generate a BTC destination address from the bitcoin node
-        var addrResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
-            .ExecuteBufferedAsync();
-        var btcDestination = BitcoinAddress.Create(addrResult.StandardOutput.Trim(), Network.RegTest);
+        var btcDestination = await DockerHelper.CreateBtcAddress();
 
         // Create ARK→BTC chain swap
         var swapId = await swapMgr.InitiateArkToBtcChainSwap(
