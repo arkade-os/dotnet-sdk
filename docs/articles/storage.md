@@ -40,9 +40,8 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 | `ArkIntentEntity` | `Intents` | `IntentTxId` |
 | `ArkIntentVtxoEntity` | `IntentVtxos` | `(IntentTxId, VtxoTransactionId, VtxoTransactionOutputIndex)` |
 | `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
-| `ArkSyncStateEntity` | `SyncState` | `Id` (singleton row, key=`"vtxo"`) |
 
-`ArkSyncStateEntity` persists the `LastFullPollAt` cursor used by `VtxoSynchronizationService` to bound the cold-start catch-up window. Without it, a process restart on a wallet with thousands of historical VTXOs re-fetches the entire script set from arkd. With it, the first catch-up poll uses the stored timestamp as its `after` filter so only changes since the last shutdown are returned. The cursor is advanced when the cold-start catch-up succeeds, and after every subsequent successful 5-second routine poll. If the catch-up fails (transient indexer/network error) the cursor stays unchanged and routine polls do **not** advance it until catch-up has succeeded at least once — this prevents a failure-then-success sequence from skipping the catch-up window.
+`ArkWalletEntity` carries a generic `Metadata` JSON column for per-wallet bookkeeping the SDK accumulates over time without requiring a column-add migration per concern. `VtxoSynchronizationService` uses key `vtxo.lastFullPollAt` to persist a cursor that bounds the cold-start catch-up window — on first startup it reads `MIN(per-wallet vtxo.lastFullPollAt)` as the `after` filter so wallets with long history don't refetch every VTXO on every cold start. Routine polls write the same `StartedAt` timestamp to every wallet on success. A failure-then-success sequence cannot advance the cursor past the catch-up window: routine-poll writes are gated until the cold-start catch-up has succeeded at least once. Use `IWalletStorage.SetMetadataValue` for sparse updates so concurrent writers for different concerns (sync, recovery, ...) don't clobber each other.
 
 ## Payment Tracking (Opt-In)
 
