@@ -219,34 +219,40 @@ public class BatchManagementService(
             if (!_activeIntents.TryGetValue(intentId, out var intent))
                 continue;
 
-            try
+            // Tag every log emitted during this intent's batch event handling
+            // with the owning wallet so per-wallet diagnostic-log capture
+            // (in BTCPay plugin) can route them.
+            using (logger?.BeginScope(("WalletId", intent.WalletId)))
             {
-                var isComplete = await session.ProcessEventAsync(eventResponse, cancellationToken);
-                if (isComplete)
+                try
                 {
+                    var isComplete = await session.ProcessEventAsync(eventResponse, cancellationToken);
+                    if (isComplete)
+                    {
+                        CleanupBatchSession(intentId, batchId);
+                    }
+
+                    switch (eventResponse)
+                    {
+                        case BatchFailedEvent batchFailed when batchFailed.Id == intent.BatchId:
+                            await HandleBatchFailedAsync(intent, batchFailed, cancellationToken);
+                            CleanupBatchSession(intentId, batchId);
+                            _activeIntents.TryRemove(intentId, out _);
+                            _ = UpdateTopicsAsync(removeTopics: GetTopicsForIntent(intent));
+                            break;
+
+                        case BatchFinalizedEvent batchFinalized when batchFinalized.Id == intent.BatchId:
+                            await HandleBatchFinalizedAsync(intent, batchFinalized, cancellationToken);
+                            CleanupBatchSession(intentId, batchId);
+                            _activeIntents.TryRemove(intentId, out _);
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    await HandleBatchExceptionAsync(intent, ex, cancellationToken);
                     CleanupBatchSession(intentId, batchId);
                 }
-
-                switch (eventResponse)
-                {
-                    case BatchFailedEvent batchFailed when batchFailed.Id == intent.BatchId:
-                        await HandleBatchFailedAsync(intent, batchFailed, cancellationToken);
-                        CleanupBatchSession(intentId, batchId);
-                        _activeIntents.TryRemove(intentId, out _);
-                        _ = UpdateTopicsAsync(removeTopics: GetTopicsForIntent(intent));
-                        break;
-
-                    case BatchFinalizedEvent batchFinalized when batchFinalized.Id == intent.BatchId:
-                        await HandleBatchFinalizedAsync(intent, batchFinalized, cancellationToken);
-                        CleanupBatchSession(intentId, batchId);
-                        _activeIntents.TryRemove(intentId, out _);
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                await HandleBatchExceptionAsync(intent, ex, cancellationToken);
-                CleanupBatchSession(intentId, batchId);
             }
         }
     }
@@ -440,13 +446,16 @@ public class BatchManagementService(
             if (!_activeIntents.TryGetValue(intentId, out var intent) || _activeBatchSessions.ContainsKey(intentId))
                 continue;
 
-            try
+            using (logger?.BeginScope(("WalletId", intent.WalletId)))
             {
-                await SetupBatchSessionAsync(intentId, intent, serverInfo, batchEvent, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                logger?.LogWarning(0, ex, "Failed to handle batch started event for intent {IntentId}", intentId);
+                try
+                {
+                    await SetupBatchSessionAsync(intentId, intent, serverInfo, batchEvent, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(0, ex, "Failed to handle batch started event for intent {IntentId}", intentId);
+                }
             }
         }
     }
