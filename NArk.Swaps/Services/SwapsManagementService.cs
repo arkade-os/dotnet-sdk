@@ -81,8 +81,21 @@ public class SwapsManagementService : IAsyncDisposable
     private Task? _cacheTask;
     private Task? _routinePollTask;
 
-    private Task? _lastStreamTask;
-    private CancellationTokenSource _restartCts = new();
+    /// <summary>
+    /// Long-lived task that owns the persistent Boltz websocket connection.
+    /// One task for the lifetime of the service — replaces the previous
+    /// "cancel and recreate on every set change" pattern. Per the Boltz spec
+    /// (https://api.docs.boltz.exchange/api-v2.html#websocket) the right
+    /// model is one connection plus subscribe/unsubscribe for set changes.
+    /// </summary>
+    private Task? _websocketTask;
+    /// <summary>The currently-connected client, or null when reconnecting / shutting down.</summary>
+    private BoltzWebsocketClient? _websocket;
+    /// <summary>
+    /// Serialises subscribe/unsubscribe calls so two storage events firing
+    /// at once can't interleave their websocket sends mid-payload.
+    /// </summary>
+    private readonly SemaphoreSlim _websocketLock = new(1, 1);
     private Network? _network;
     private ECXOnlyPubKey? _serverKey;
 
@@ -214,6 +227,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
         _cacheTask = DoUpdateStorage(multiToken.Token);
+        _websocketTask = RunWebsocketLoop(multiToken.Token);
     }
 
     private async Task RoutinePoll(TimeSpan interval, CancellationToken cancellationToken)
@@ -236,7 +250,8 @@ public class SwapsManagementService : IAsyncDisposable
                 {
                     var swapId = eventDetails[3..];
 
-                    // If we already monitor this swap, no need to restart websocket
+                    // If we already watch this swap, just poll — the
+                    // persistent websocket already has it subscribed.
                     if (_swapsIdToWatch.Contains(swapId))
                     {
                         _logger?.LogDebug("Swap {SwapId} update triggered (already monitored), polling state", swapId);
@@ -244,16 +259,14 @@ public class SwapsManagementService : IAsyncDisposable
                     }
                     else
                     {
-                        _logger?.LogInformation("New swap {SwapId} detected, subscribing to websocket updates", swapId);
+                        _logger?.LogInformation("New swap {SwapId} detected, subscribing on persistent websocket", swapId);
                         await PollSwapState([swapId], cancellationToken);
 
-                        HashSet<string> newSwapIdSet = [.. _swapsIdToWatch, swapId];
-                        _swapsIdToWatch = newSwapIdSet;
-
-                        var newRestartCts = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token);
-                        _lastStreamTask = DoStatusCheck(newSwapIdSet, newRestartCts.Token);
-                        await _restartCts.CancelAsync();
-                        _restartCts = newRestartCts;
+                        // Add to in-memory watch set + send a Subscribe op
+                        // through the persistent websocket. No connection
+                        // restart — that's the whole point of this fix.
+                        _swapsIdToWatch = [.. _swapsIdToWatch, swapId];
+                        await SubscribeOnWebsocketAsync([swapId], cancellationToken);
                     }
                 }
                 else
@@ -265,7 +278,8 @@ public class SwapsManagementService : IAsyncDisposable
 
                     if (_swapsIdToWatch.SetEquals(newSwapIdSet))
                     {
-                        // Set unchanged, but still poll as a failsafe (websocket may have dropped)
+                        // Set unchanged, but still poll as a failsafe in case
+                        // the websocket was disconnected between events.
                         if (newSwapIdSet.Count > 0)
                         {
                             _logger?.LogDebug("Routine poll: {Count} active swap(s), polling states as failsafe", newSwapIdSet.Count);
@@ -274,16 +288,21 @@ public class SwapsManagementService : IAsyncDisposable
                         continue;
                     }
 
-                    _logger?.LogInformation("Active swap set changed: {OldCount} -> {NewCount} swap(s), restarting websocket",
-                        _swapsIdToWatch.Count, newSwapIdSet.Count);
-                    await PollSwapState(newSwapIdSet.Except(_swapsIdToWatch), cancellationToken);
+                    var added = newSwapIdSet.Except(_swapsIdToWatch).ToArray();
+                    var removed = _swapsIdToWatch.Except(newSwapIdSet).ToArray();
+                    _logger?.LogInformation(
+                        "Active swap set changed: {OldCount} -> {NewCount} swap(s); subscribing {Added}, unsubscribing {Removed}",
+                        _swapsIdToWatch.Count, newSwapIdSet.Count, added.Length, removed.Length);
+
+                    if (added.Length > 0)
+                        await PollSwapState(added, cancellationToken);
 
                     _swapsIdToWatch = newSwapIdSet;
 
-                    var newRestartCts = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token);
-                    _lastStreamTask = DoStatusCheck(newSwapIdSet, newRestartCts.Token);
-                    await _restartCts.CancelAsync();
-                    _restartCts = newRestartCts;
+                    if (added.Length > 0)
+                        await SubscribeOnWebsocketAsync(added, cancellationToken);
+                    if (removed.Length > 0)
+                        await UnsubscribeOnWebsocketAsync(removed, cancellationToken);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -413,6 +432,10 @@ public class SwapsManagementService : IAsyncDisposable
                         idToPoll, swapWithNewStatus.Status);
                     _scriptToSwapId.Remove(swapWithNewStatus.ContractScript, out _);
                     _swapsIdToWatch.Remove(swapWithNewStatus.SwapId);
+                    // Drop the subscription on the persistent websocket so we
+                    // don't keep receiving updates for a swap we no longer
+                    // care about. Best-effort — failure is non-fatal.
+                    await UnsubscribeOnWebsocketAsync([swapWithNewStatus.SwapId], cancellationToken);
                 }
             }
             catch (BoltzSwapNotFoundException)
@@ -654,30 +677,63 @@ public class SwapsManagementService : IAsyncDisposable
         return status is "transaction.server.mempool" or "transaction.server.confirmed";
     }
 
-    private async Task DoStatusCheck(HashSet<string> swapsIds, CancellationToken cancellationToken)
+    /// <summary>
+    /// Single long-lived task that owns the Boltz websocket connection.
+    /// Connects, subscribes to the current <see cref="_swapsIdToWatch"/>
+    /// snapshot, and listens until the connection drops; on drop it
+    /// reconnects with a 5-second backoff and re-subscribes to the
+    /// then-current watch set. Subscribe / unsubscribe ops for runtime set
+    /// changes ride this same connection via <see cref="SubscribeOnWebsocketAsync"/>
+    /// and <see cref="UnsubscribeOnWebsocketAsync"/> — there is no longer
+    /// a per-set-change connection restart.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors the model documented at
+    /// https://api.docs.boltz.exchange/api-v2.html#websocket — one
+    /// connection, repeated subscribe/unsubscribe ops keyed by swap id.
+    /// </remarks>
+    private async Task RunWebsocketLoop(CancellationToken cancellationToken)
     {
-        if (swapsIds.Count == 0) return;
-
         var wsUri = _boltzClient.DeriveWebSocketUri();
         while (!cancellationToken.IsCancellationRequested)
         {
+            BoltzWebsocketClient? client = null;
             try
             {
-                _logger?.LogInformation("Connecting to Boltz websocket at {Uri} for {Count} swap(s)", wsUri, swapsIds.Count);
-                await using var websocketClient = new BoltzWebsocketClient(wsUri);
-                websocketClient.OnAnyEventReceived += OnSwapEventReceived;
+                _logger?.LogInformation("Connecting to Boltz websocket at {Uri}", wsUri);
+                client = new BoltzWebsocketClient(wsUri);
+                client.OnAnyEventReceived += OnSwapEventReceived;
+                await client.ConnectAsync(cancellationToken);
+
+                // Publish under the lock so subscribe/unsubscribe callers
+                // see a consistent snapshot. Snapshot the watch set first so
+                // the initial Subscribe doesn't race a concurrent mutation.
+                string[] initialSubs;
+                await _websocketLock.WaitAsync(cancellationToken);
                 try
                 {
-                    await websocketClient.ConnectAsync(cancellationToken);
-                    await websocketClient.SubscribeAsync(swapsIds.ToArray(), cancellationToken);
-                    _logger?.LogInformation("Boltz websocket connected, subscribed to: {SwapIds}", string.Join(", ", swapsIds));
-                    await websocketClient.WaitUntilDisconnected(cancellationToken);
-                    _logger?.LogWarning("Boltz websocket disconnected");
+                    _websocket = client;
+                    initialSubs = _swapsIdToWatch.ToArray();
                 }
                 finally
                 {
-                    websocketClient.OnAnyEventReceived -= OnSwapEventReceived;
+                    _websocketLock.Release();
                 }
+
+                if (initialSubs.Length > 0)
+                {
+                    await client.SubscribeAsync(initialSubs, cancellationToken);
+                    _logger?.LogInformation(
+                        "Boltz websocket connected, subscribed to {Count} swap(s): [{SwapIds}]",
+                        initialSubs.Length, string.Join(", ", initialSubs));
+                }
+                else
+                {
+                    _logger?.LogInformation("Boltz websocket connected, no active swaps to subscribe yet");
+                }
+
+                await client.WaitUntilDisconnected(cancellationToken);
+                _logger?.LogWarning("Boltz websocket disconnected");
             }
             catch (OperationCanceledException)
             {
@@ -687,9 +743,82 @@ public class SwapsManagementService : IAsyncDisposable
             {
                 _logger?.LogError(ex, "Boltz websocket error, reconnecting in 5s");
             }
+            finally
+            {
+                // Clear the published reference under the same lock; pending
+                // sub/unsub callers will see _websocket==null and short-circuit
+                // (the next reconnect re-subscribes from _swapsIdToWatch).
+                await _websocketLock.WaitAsync(CancellationToken.None);
+                try
+                {
+                    if (client is not null) client.OnAnyEventReceived -= OnSwapEventReceived;
+                    if (ReferenceEquals(_websocket, client)) _websocket = null;
+                }
+                finally
+                {
+                    _websocketLock.Release();
+                }
+                if (client is not null) await client.DisposeAsync();
+            }
 
             if (!cancellationToken.IsCancellationRequested)
                 await Task.Delay(5000, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Subscribe additional swap ids on the current persistent websocket.
+    /// No-ops when the websocket is disconnected — the reconnect loop will
+    /// pick the ids up from <see cref="_swapsIdToWatch"/> on its next attempt.
+    /// </summary>
+    private async Task SubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken cancellationToken)
+    {
+        if (swapIds.Count == 0) return;
+        await _websocketLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_websocket is null)
+            {
+                _logger?.LogDebug("Skipping websocket Subscribe: connection not yet up; reconnect loop will pick up [{SwapIds}]",
+                    string.Join(", ", swapIds));
+                return;
+            }
+            await _websocket.SubscribeAsync(swapIds.ToArray(), cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "websocket Subscribe failed for [{SwapIds}]; reconnect loop will retry",
+                string.Join(", ", swapIds));
+        }
+        finally
+        {
+            _websocketLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Unsubscribe swap ids from the current persistent websocket. Failures
+    /// are logged and swallowed — leaving a terminal swap subscribed costs
+    /// only a stray status push that the channel reader will route to a
+    /// no-op poll.
+    /// </summary>
+    private async Task UnsubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken cancellationToken)
+    {
+        if (swapIds.Count == 0) return;
+        await _websocketLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_websocket is null) return;
+            await _websocket.UnsubscribeAsync(swapIds.ToArray(), cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogDebug(ex, "websocket Unsubscribe failed for [{SwapIds}]; swap is already terminal locally so this is non-fatal",
+                string.Join(", ", swapIds));
+        }
+        finally
+        {
+            _websocketLock.Release();
         }
     }
 
@@ -1494,12 +1623,14 @@ public class SwapsManagementService : IAsyncDisposable
 
         try
         {
-            if (_lastStreamTask is not null)
-                await _lastStreamTask;
+            if (_websocketTask is not null)
+                await _websocketTask;
         }
         catch
         {
             // ignored
         }
+
+        _websocketLock.Dispose();
     }
 }
