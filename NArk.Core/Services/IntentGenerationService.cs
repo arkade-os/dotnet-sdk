@@ -85,6 +85,7 @@ public class IntentGenerationService(
         foreach (var walletContracts in contracts)
         {
             var walletId = walletContracts.Key;
+            using var _walletScope = logger?.BeginScope(("WalletId", walletId));
 
             // Check for BatchInProgress intents. A batch resolves in seconds, so if an intent
             // has been stuck in BatchInProgress for over 5 minutes, it's orphaned — cancel it
@@ -566,6 +567,7 @@ public class IntentGenerationService(
 
     public async Task<string> GenerateManualIntent(string walletId, ArkIntentSpec spec, CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Generating manual intent for wallet {WalletId}", walletId);
         var intentTxId = await GenerateIntentFromSpec(walletId, spec, cancellationToken)
             ?? throw new InvalidOperationException("Intent generation returned null unexpectedly");

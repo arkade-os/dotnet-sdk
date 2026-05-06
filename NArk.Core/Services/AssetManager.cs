@@ -34,6 +34,7 @@ public class AssetManager(
     public async Task<IssuanceResult> IssueAsync(string walletId, IssuanceParams parameters,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Issuing {Amount} new asset units for wallet {WalletId}", parameters.Amount, walletId);
 
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
@@ -120,6 +121,7 @@ public class AssetManager(
     public async Task<string> ReissueAsync(string walletId, ReissuanceParams parameters,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Reissuing {Amount} units using control asset {AssetId} for wallet {WalletId}",
             parameters.Amount, parameters.AssetId, walletId);
 
@@ -195,6 +197,7 @@ public class AssetManager(
     public async Task<string> BurnAsync(string walletId, BurnParams parameters,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Burning {Amount} units of asset {AssetId} for wallet {WalletId}",
             parameters.Amount, parameters.AssetId, walletId);
 

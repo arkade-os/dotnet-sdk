@@ -14,6 +14,7 @@ public class OnchainService(IClientTransport clientTransport, IContractService c
     public async Task<string> InitiateCollaborativeExit(string walletId, ArkTxOut output,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Initiating collaborative exit for wallet {WalletId} with output value {Value}", walletId, output.Value);
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
 
@@ -74,6 +75,10 @@ public class OnchainService(IClientTransport clientTransport, IContractService c
 
     public async Task<string> InitiateCollaborativeExit(ArkCoin[] inputs, ArkTxOut[] outputs, CancellationToken cancellationToken = default)
     {
+        // walletId is uniform by construction (validated below); open the
+        // scope before the validations so any rejection log carries it.
+        var walletId = inputs.Length > 0 ? inputs[0].WalletIdentifier : null;
+        using var _walletScope = walletId is not null ? logger?.BeginScope(("WalletId", walletId)) : null;
         logger?.LogDebug("Initiating collaborative exit with {InputCount} inputs and {OutputCount} outputs", inputs.Length, outputs.Length);
         if (outputs.All(o => o.Type == ArkTxOutType.Vtxo))
         {

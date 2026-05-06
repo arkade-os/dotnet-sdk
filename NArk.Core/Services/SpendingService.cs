@@ -62,6 +62,7 @@ public class SpendingService(
     public async Task<uint256> Spend(string walletId, ArkCoin[] inputs, ArkTxOut[] outputs,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Spending {InputCount} inputs with {OutputCount} outputs for wallet {WalletId}", inputs.Length,
             outputs.Length, walletId);
         try
@@ -143,6 +144,7 @@ public class SpendingService(
     public async Task<IReadOnlySet<ArkCoin>> GetAvailableCoins(string walletId,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Getting available coins for wallet {WalletId}", walletId);
 
 
@@ -191,6 +193,7 @@ public class SpendingService(
 
     public async Task<uint256> Spend(string walletId, ArkTxOut[] outputs, CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Spending with automatic coin selection for wallet {WalletId} with {OutputCount} outputs",
             walletId, outputs.Length);
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
