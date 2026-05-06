@@ -16,4 +16,6 @@ public class SubmarineRequest
     [JsonPropertyName("refundPublicKey")]
     public required string RefundPublicKey { get; set; }
 
+    [JsonPropertyName("referralId")]
+    public string? ReferralId { get; set; }
 }
