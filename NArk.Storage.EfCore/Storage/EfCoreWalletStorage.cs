@@ -179,6 +179,32 @@ public class EfCoreWalletStorage : IWalletStorage
         await db.SaveChangesAsync(ct);
     }
 
+    public async Task SetMetadataValue(string walletId, string key, string? value, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(key);
+
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+
+        var wallet = await db.Set<ArkWalletEntity>().FindAsync([walletId], ct);
+        if (wallet == null)
+            throw new InvalidOperationException($"Wallet {walletId} not found.");
+
+        // Sparse update — clone the existing dict (if any) and apply only the
+        // single-key change, so concurrent writers targeting different keys
+        // don't clobber each other when their save round-trips race.
+        var metadata = wallet.Metadata is null
+            ? new Dictionary<string, string>()
+            : new Dictionary<string, string>(wallet.Metadata);
+
+        if (value is null)
+            metadata.Remove(key);
+        else
+            metadata[key] = value;
+
+        wallet.Metadata = metadata.Count == 0 ? null : metadata;
+        await db.SaveChangesAsync(ct);
+    }
+
     private static ArkWalletInfo MapToWalletInfo(ArkWalletEntity entity)
     {
         return new ArkWalletInfo(
@@ -187,7 +213,8 @@ public class EfCoreWalletStorage : IWalletStorage
             Destination: entity.WalletDestination,
             WalletType: entity.WalletType,
             AccountDescriptor: entity.AccountDescriptor,
-            LastUsedIndex: entity.LastUsedIndex
+            LastUsedIndex: entity.LastUsedIndex,
+            Metadata: entity.Metadata
         );
     }
 
@@ -200,7 +227,8 @@ public class EfCoreWalletStorage : IWalletStorage
             WalletDestination = info.Destination,
             WalletType = info.WalletType,
             AccountDescriptor = info.AccountDescriptor,
-            LastUsedIndex = info.LastUsedIndex
+            LastUsedIndex = info.LastUsedIndex,
+            Metadata = info.Metadata is null ? null : new Dictionary<string, string>(info.Metadata)
         };
     }
 }

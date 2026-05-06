@@ -1,14 +1,23 @@
+using System.Globalization;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
+using NArk.Abstractions.Wallets;
 using NArk.Core.Transport;
 
 namespace NArk.Core.Services;
 
 public class VtxoSynchronizationService : IAsyncDisposable
 {
+    /// <summary>
+    /// Metadata key on <see cref="ArkWalletInfo.Metadata"/> where the
+    /// per-wallet "last successful full-set poll" timestamp is stored.
+    /// Cold-start catch-up reads <c>MIN</c> across wallets; routine polls
+    /// write the same StartedAt to every wallet on success.
+    /// </summary>
+    public const string LastFullPollAtMetadataKey = "vtxo.lastFullPollAt";
     private readonly CancellationTokenSource _shutdownCts = new();
     private Task? _queryTask;
 
@@ -41,7 +50,43 @@ public class VtxoSynchronizationService : IAsyncDisposable
         TimeSpan.FromSeconds(8),
     ];
 
-    private readonly record struct PollRequest(HashSet<string> Scripts, DateTimeOffset? After);
+    /// <summary>
+    /// Internal poll work item.
+    /// </summary>
+    /// <param name="Scripts">Scripts to poll on this iteration.</param>
+    /// <param name="After">
+    /// Lower bound on VTXO last-update for the indexer query. <c>null</c>
+    /// means "full history" — used for newly-added scripts.
+    /// </param>
+    /// <param name="IsFullSetSnapshot">
+    /// When true, this poll covers the entire active script view at the time
+    /// of enqueuing, and on success the per-wallet
+    /// <see cref="LastFullPollAtMetadataKey"/> entries advance to
+    /// <see cref="StartedAt"/>. Stream-driven and newly-added-scripts polls
+    /// set this false.
+    /// </param>
+    /// <param name="StartedAt">
+    /// Wall-clock time the request was created. On a successful full-set
+    /// poll this becomes the new per-wallet
+    /// <see cref="LastFullPollAtMetadataKey"/> value — using "started"
+    /// not "completed" guarantees that any change which lands on arkd while
+    /// our poll is in flight is still inside the next poll's <c>after</c> window.
+    /// </param>
+    /// <param name="IsColdStartCatchup">
+    /// Marks the very first cold-start catch-up poll. On its successful
+    /// completion <c>_coldStartCatchupComplete</c> flips to true, ungating
+    /// the persistent cursor advance for subsequent <see cref="IsFullSetSnapshot"/>
+    /// polls. Until that happens, a failure-then-success sequence
+    /// (catch-up fails, routine poll succeeds) MUST NOT advance the cursor —
+    /// otherwise the window between the stored cursor and the routine
+    /// poll's lookback is permanently skipped.
+    /// </param>
+    private readonly record struct PollRequest(
+        HashSet<string> Scripts,
+        DateTimeOffset? After,
+        bool IsFullSetSnapshot = false,
+        DateTimeOffset StartedAt = default,
+        bool IsColdStartCatchup = false);
 
     // Unbounded: retry schedules + RoutinePoll + catchup can all enqueue at once,
     // and we never want stream-event processing to block on back-pressure. The
@@ -52,14 +97,38 @@ public class VtxoSynchronizationService : IAsyncDisposable
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IClientTransport _arkClientTransport;
     private readonly IEnumerable<IActiveScriptsProvider> _activeScriptsProviders;
+    private readonly IWalletStorage? _walletStorage;
     private readonly ILogger<VtxoSynchronizationService>? _logger;
+
+    /// <summary>
+    /// Set on startup, cleared after the first <see cref="UpdateScriptsView"/>
+    /// initial-catchup poll. While true, that initial poll reads the per-wallet
+    /// <see cref="LastFullPollAtMetadataKey"/> entries (taking <c>MIN</c>) as
+    /// its <c>after</c> filter so wallets with long history don't refetch every
+    /// VTXO on every cold start.
+    /// </summary>
+    private bool _isFirstStartupCatchup = true;
+
+    /// <summary>
+    /// Gate on writing the per-wallet <see cref="LastFullPollAtMetadataKey"/>
+    /// entries. Stays false until the cold-start catch-up poll succeeds at
+    /// least once; while false, even successful
+    /// <see cref="PollRequest.IsFullSetSnapshot"/> polls (i.e. routine polls)
+    /// leave the stored cursor untouched. This prevents a transient catch-up
+    /// failure followed by a routine-poll success from advancing the cursor
+    /// past the catch-up window — which would permanently skip any VTXO that
+    /// landed during the downtime. Initialised to true when no
+    /// <see cref="IWalletStorage"/> is wired, since there is nothing to gate.
+    /// </summary>
+    private volatile bool _coldStartCatchupComplete;
 
     public VtxoSynchronizationService(
         IEnumerable<IActiveScriptsProvider> activeScriptsProviders,
         IVtxoStorage vtxoStorage,
         IClientTransport arkClientTransport,
-        ILogger<VtxoSynchronizationService> logger)
-        : this(vtxoStorage, arkClientTransport, activeScriptsProviders)
+        ILogger<VtxoSynchronizationService> logger,
+        IWalletStorage? walletStorage = null)
+        : this(vtxoStorage, arkClientTransport, activeScriptsProviders, walletStorage)
     {
         _logger = logger;
     }
@@ -67,11 +136,17 @@ public class VtxoSynchronizationService : IAsyncDisposable
     public VtxoSynchronizationService(
         IVtxoStorage vtxoStorage,
         IClientTransport arkClientTransport,
-        IEnumerable<IActiveScriptsProvider> activeScriptsProviders)
+        IEnumerable<IActiveScriptsProvider> activeScriptsProviders,
+        IWalletStorage? walletStorage = null)
     {
         _vtxoStorage = vtxoStorage;
         _arkClientTransport = arkClientTransport;
         _activeScriptsProviders = activeScriptsProviders;
+        _walletStorage = walletStorage;
+        // Without a wallet storage there is no cursor to advance, so the
+        // gate is irrelevant — start in the "complete" state to keep the
+        // opt-out path identical to pre-cursor behaviour.
+        _coldStartCatchupComplete = walletStorage is null;
 
         foreach (var provider in _activeScriptsProviders)
         {
@@ -167,12 +242,17 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 if (scripts.Count == 0)
                     continue;
 
-                var after = DateTimeOffset.UtcNow - RoutinePollLookback;
+                var startedAt = DateTimeOffset.UtcNow;
+                var after = startedAt - RoutinePollLookback;
                 _logger?.LogDebug(
                     "RoutinePoll: re-polling {Count} active script(s) with after={After}",
                     scripts.Count, after.ToString("O"));
+                // IsFullSetSnapshot=true: on success the StartedAt timestamp will
+                // be persisted to every wallet's vtxo.lastFullPollAt metadata,
+                // bounding the next cold-start catch-up window.
                 await _readyToPoll.Writer.WriteAsync(
-                    new PollRequest(scripts, after), cancellationToken);
+                    new PollRequest(scripts, after, IsFullSetSnapshot: true, StartedAt: startedAt),
+                    cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -228,7 +308,55 @@ public class VtxoSynchronizationService : IAsyncDisposable
             // events for future changes). Skip when the set only shrank.
             if (newlyAdded.Count > 0)
             {
-                await _readyToPoll.Writer.WriteAsync(new PollRequest(newlyAdded, After: null), token);
+                // First-startup nuance: at this point _lastViewOfScripts WAS
+                // empty (we're populating it from cold), so "newly added" =
+                // entire set. Without a persisted cursor we'd re-fetch every
+                // script's full VTXO history every cold start. Use
+                // MIN(per-wallet vtxo.lastFullPollAt) as the `after` filter
+                // on this one call so the cold-start catch-up window equals
+                // "since last shutdown" rather than "all of history".
+                DateTimeOffset? catchupAfter = null;
+                var isInitialCatchup = _isFirstStartupCatchup;
+                if (isInitialCatchup && _walletStorage is not null)
+                {
+                    try
+                    {
+                        catchupAfter = await ReadCursorMinAcrossWalletsAsync(token);
+                        if (catchupAfter is not null)
+                        {
+                            _logger?.LogInformation(
+                                "First-startup catch-up: using MIN(per-wallet {Key})={After} as `after` filter for {Count} script(s)",
+                                LastFullPollAtMetadataKey, catchupAfter.Value.ToString("O"), newlyAdded.Count);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex,
+                            "First-startup catch-up: failed to read per-wallet {Key}; falling back to full-history fetch",
+                            LastFullPollAtMetadataKey);
+                    }
+                }
+                _isFirstStartupCatchup = false;
+
+                // The cold-start catch-up IS a full-set snapshot: at this moment
+                // newlyAdded equals the entire active script view (cold start →
+                // _lastViewOfScripts was empty before line 291), and `catchupAfter`
+                // is the stored cursor (or null for first-ever startup). On its
+                // successful completion we both flip the gate flag and advance
+                // the cursor to its StartedAt — eliminating the 5-second window
+                // between catch-up success and the first routine poll's cursor
+                // write. Subsequent UpdateScriptsView calls (script set grows
+                // mid-flight) only carry newly-added scripts and stay
+                // IsFullSetSnapshot=false.
+                var startedAt = isInitialCatchup ? DateTimeOffset.UtcNow : default;
+                await _readyToPoll.Writer.WriteAsync(
+                    new PollRequest(
+                        newlyAdded,
+                        catchupAfter,
+                        IsFullSetSnapshot: isInitialCatchup,
+                        StartedAt: startedAt,
+                        IsColdStartCatchup: isInitialCatchup),
+                    token);
             }
         }
         finally
@@ -333,6 +461,33 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 _logger?.LogInformation(
                     "StartQueryLogic: poll returned {Found} VTXO(s) across {Count} script(s) in {Elapsed}ms",
                     found, request.Scripts.Count, (int)(DateTimeOffset.UtcNow - started).TotalMilliseconds);
+
+                // Mark the cold-start catch-up as complete on its first
+                // successful poll. Until this flips, routine polls below
+                // are gated from advancing the cursor — protecting against
+                // the failure-then-success gap-loss scenario.
+                if (request.IsColdStartCatchup)
+                {
+                    _coldStartCatchupComplete = true;
+                }
+
+                // Advance the per-wallet full-poll cursor only after a successful
+                // poll that was enqueued as a full-set snapshot AND the cold-start
+                // catch-up has succeeded at least once. Per-script and stream-driven
+                // polls never advance it.
+                if (request.IsFullSetSnapshot && _coldStartCatchupComplete && _walletStorage is not null)
+                {
+                    try
+                    {
+                        await WriteCursorAcrossWalletsAsync(request.StartedAt, cancellationToken);
+                    }
+                    catch (Exception persistEx)
+                    {
+                        _logger?.LogWarning(persistEx,
+                            "Failed to persist per-wallet {Key}={At}; cold-start catch-up will fall back to a longer window",
+                            LastFullPollAtMetadataKey, request.StartedAt.ToString("O"));
+                    }
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -343,6 +498,73 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 _logger?.LogWarning(0, ex,
                     "StartQueryLogic: poll failed for {Count} script(s) after {Elapsed}ms; continuing loop",
                     request.Scripts.Count, (int)(DateTimeOffset.UtcNow - started).TotalMilliseconds);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads <c>MIN(parsed-timestamp)</c> across every wallet's
+    /// <see cref="LastFullPollAtMetadataKey"/> entry. Returns <c>null</c> if
+    /// any wallet has no cursor yet (so a fresh wallet forces a full-history
+    /// catch-up rather than skipping its window via someone else's cursor),
+    /// or if there are no wallets at all.
+    /// </summary>
+    private async Task<DateTimeOffset?> ReadCursorMinAcrossWalletsAsync(CancellationToken cancellationToken)
+    {
+        if (_walletStorage is null) return null;
+        var wallets = await _walletStorage.LoadAllWallets(cancellationToken);
+        if (wallets.Count == 0) return null;
+
+        DateTimeOffset? minCursor = null;
+        foreach (var w in wallets)
+        {
+            if (w.Metadata is null ||
+                !w.Metadata.TryGetValue(LastFullPollAtMetadataKey, out var raw) ||
+                string.IsNullOrEmpty(raw))
+            {
+                // A wallet without a cursor must trigger full-history catch-up —
+                // its first-time scripts have no upper bound that can be safely
+                // skipped. Bail to null.
+                return null;
+            }
+            if (!DateTimeOffset.TryParse(
+                    raw, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out var parsed))
+            {
+                _logger?.LogWarning(
+                    "Wallet {WalletId}: unparseable {Key}={Raw}; falling back to full-history catch-up",
+                    w.Id, LastFullPollAtMetadataKey, raw);
+                return null;
+            }
+            if (minCursor is null || parsed < minCursor.Value)
+                minCursor = parsed;
+        }
+        return minCursor;
+    }
+
+    /// <summary>
+    /// Writes <paramref name="value"/> to every wallet's
+    /// <see cref="LastFullPollAtMetadataKey"/> entry. Per-wallet failures are
+    /// logged and skipped — one wallet's storage hiccup shouldn't block the
+    /// rest of the cohort from advancing.
+    /// </summary>
+    private async Task WriteCursorAcrossWalletsAsync(DateTimeOffset value, CancellationToken cancellationToken)
+    {
+        if (_walletStorage is null) return;
+        var iso = value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+        var wallets = await _walletStorage.LoadAllWallets(cancellationToken);
+        foreach (var w in wallets)
+        {
+            try
+            {
+                await _walletStorage.SetMetadataValue(w.Id, LastFullPollAtMetadataKey, iso, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex,
+                    "Wallet {WalletId}: failed to persist {Key}={Iso}; will retry on next routine poll",
+                    w.Id, LastFullPollAtMetadataKey, iso);
             }
         }
     }
