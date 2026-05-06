@@ -82,6 +82,7 @@ public class DelegationMonitorService(
                 return;
 
             var walletId = contract.WalletIdentifier;
+            using var _walletScope = logger?.BeginScope(("WalletId", walletId));
             var serverInfo = await clientTransport.GetServerInfoAsync();
             var parsed = ArkContractParser.Parse(contract.Type, contract.AdditionalData, serverInfo.Network);
             if (parsed is null)

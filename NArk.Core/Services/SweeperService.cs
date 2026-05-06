@@ -194,6 +194,12 @@ public class SweeperService(
 
         foreach (var coin in coinsToSweep)
         {
+            // Tag every log line emitted during this coin's sweep with the
+            // owning wallet so per-wallet diagnostic-log capture can route
+            // them. The set may span multiple wallets; the scope is per
+            // iteration, not per call.
+            using var _walletScope = logger?.BeginScope(("WalletId", coin.WalletIdentifier));
+
             if (lockedOutpoints.Contains(coin.Outpoint))
             {
                 logger?.LogDebug("Sweep skipped for outpoint {Outpoint}: locked by pending intent", coin.Outpoint);
