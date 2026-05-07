@@ -26,6 +26,11 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
                     existing.Hex = tx.Hex;
                 if (tx.ExpiresAt is not null)
                     existing.ExpiresAt = tx.ExpiresAt;
+                // Only overwrite a previously-known type if the caller is
+                // upgrading from Unspecified (e.g. a partial Lite-mode
+                // record that's now being filled in with chain context).
+                if (tx.Type != ChainedTxType.Unspecified)
+                    existing.Type = tx.Type;
             }
             else
             {
@@ -33,7 +38,8 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
                 {
                     Txid = tx.Txid,
                     Hex = tx.Hex,
-                    ExpiresAt = tx.ExpiresAt
+                    ExpiresAt = tx.ExpiresAt,
+                    Type = tx.Type,
                 });
             }
         }
@@ -79,7 +85,7 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
             .Join(ctx.Set<VirtualTxEntity>(),
                 b => b.VirtualTxid,
                 v => v.Txid,
-                (b, v) => new VirtualTx(v.Txid, v.Hex, v.ExpiresAt))
+                (b, v) => new VirtualTx(v.Txid, v.Hex, v.ExpiresAt, v.Type))
             .ToListAsync(cancellationToken);
     }
 
@@ -87,7 +93,7 @@ public class EfCoreVirtualTxStorage(IArkDbContextFactory contextFactory) : IVirt
     {
         await using var ctx = await contextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await ctx.Set<VirtualTxEntity>().FindAsync([txid], cancellationToken);
-        return entity is null ? null : new VirtualTx(entity.Txid, entity.Hex, entity.ExpiresAt);
+        return entity is null ? null : new VirtualTx(entity.Txid, entity.Hex, entity.ExpiresAt, entity.Type);
     }
 
     public async Task PruneForSpentVtxoAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)

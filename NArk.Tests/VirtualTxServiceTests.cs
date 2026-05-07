@@ -24,7 +24,7 @@ public class VirtualTxServiceTests
     }
 
     [Test]
-    public async Task FetchAndStoreBranch_FullMode_StoresTxidsAndHex()
+    public async Task FetchAndStoreBranch_FullMode_StoresWholeChainWithTypes()
     {
         // Arrange
         _storage.HasBranchAsync(_testOutpoint, Arg.Any<CancellationToken>()).Returns(false);
@@ -38,29 +38,35 @@ public class VirtualTxServiceTests
         _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>())
             .Returns(chainEntries);
 
+        // GetVirtualTxs is only called for non-Commitment txs
         var hexList = new List<string> { "deadbeef01", "deadbeef02" };
         _transport.GetVirtualTxsAsync(
-            Arg.Is<IReadOnlyList<string>>(l => l.Count == 2),
+            Arg.Is<IReadOnlyList<string>>(l => l.Count == 2 &&
+                l[0] == "treetxid1" && l[1] == "treetxid2"),
             Arg.Any<CancellationToken>())
             .Returns(hexList);
 
         // Act
         await _service.FetchAndStoreBranchAsync(_testOutpoint, VirtualTxMode.Full);
 
-        // Assert
+        // Assert — full chain stored, types preserved, commitment kept hex-null
         await _storage.Received(1).UpsertVirtualTxsAsync(
             Arg.Is<IReadOnlyList<VirtualTx>>(txs =>
-                txs.Count == 2 &&
-                txs[0].Txid == "treetxid1" && txs[0].Hex == "deadbeef01" &&
-                txs[1].Txid == "treetxid2" && txs[1].Hex == "deadbeef02"),
+                txs.Count == 3 &&
+                txs[0].Txid == "commitmenttxid" && txs[0].Hex == null && txs[0].Type == ChainedTxType.Commitment &&
+                txs[1].Txid == "treetxid1" && txs[1].Hex == "deadbeef01" && txs[1].Type == ChainedTxType.Tree &&
+                txs[2].Txid == "treetxid2" && txs[2].Hex == "deadbeef02" && txs[2].Type == ChainedTxType.Tree),
             Arg.Any<CancellationToken>());
 
+        // Branch covers the whole chain so consumers can walk back to the
+        // anchor without re-querying the indexer.
         await _storage.Received(1).SetBranchAsync(
             _testOutpoint,
             Arg.Is<IReadOnlyList<VtxoBranch>>(b =>
-                b.Count == 2 &&
-                b[0].Position == 0 && b[0].VirtualTxid == "treetxid1" &&
-                b[1].Position == 1 && b[1].VirtualTxid == "treetxid2"),
+                b.Count == 3 &&
+                b[0].Position == 0 && b[0].VirtualTxid == "commitmenttxid" &&
+                b[1].Position == 1 && b[1].VirtualTxid == "treetxid1" &&
+                b[2].Position == 2 && b[2].VirtualTxid == "treetxid2"),
             Arg.Any<CancellationToken>());
     }
 
@@ -105,7 +111,7 @@ public class VirtualTxServiceTests
     }
 
     [Test]
-    public async Task FetchAndStoreBranch_FiltersOutCommitmentType()
+    public async Task FetchAndStoreBranch_FetchesHexOnlyForNonCommitmentEntries()
     {
         // Arrange
         _storage.HasBranchAsync(_testOutpoint, Arg.Any<CancellationToken>()).Returns(false);
@@ -117,15 +123,25 @@ public class VirtualTxServiceTests
         };
         _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>())
             .Returns(chainEntries);
-        _transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+        _transport.GetVirtualTxsAsync(
+            Arg.Is<IReadOnlyList<string>>(l => l.Count == 1 && l[0] == "treetx"),
+            Arg.Any<CancellationToken>())
             .Returns(new List<string> { "hex1" });
 
         // Act
         await _service.FetchAndStoreBranchAsync(_testOutpoint, VirtualTxMode.Full);
 
-        // Assert — only tree tx stored, commitment filtered out
+        // Assert — both entries stored (commitment with null hex, tree with
+        // its fetched hex). arkd's GetVirtualTxs is the wrong endpoint for
+        // commitment txs (those live on-chain), so we never request hex
+        // for them.
         await _storage.Received(1).UpsertVirtualTxsAsync(
-            Arg.Is<IReadOnlyList<VirtualTx>>(txs => txs.Count == 1 && txs[0].Txid == "treetx"),
+            Arg.Is<IReadOnlyList<VirtualTx>>(txs =>
+                txs.Count == 2 &&
+                txs[0].Txid == "commitmenttx" && txs[0].Hex == null &&
+                    txs[0].Type == ChainedTxType.Commitment &&
+                txs[1].Txid == "treetx" && txs[1].Hex == "hex1" &&
+                    txs[1].Type == ChainedTxType.Tree),
             Arg.Any<CancellationToken>());
     }
 

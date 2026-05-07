@@ -363,6 +363,10 @@ public class UnilateralExitTests
         }
         Assert.That(syncedBoarding, Is.Not.Null, "Boarding UTXO should sync via Esplora");
 
+        // Logger used across exit-pipeline services so failures surface
+        // in CI test output instead of being swallowed.
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+
         // ---- settle: intent gen + submit + batch session ----
         var chainTimeProvider = new ChainTimeProvider(info.Network, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(clientTransport, contractStorage,
@@ -407,10 +411,10 @@ public class UnilateralExitTests
         await intentSync.StartAsync(CancellationToken.None);
 
         // SimpleIntentScheduler derives the SendToSelf output contract as
-        // Inactive — PostBatchVtxoPollingHandler's isActive=true filter
-        // would skip it, so wire a custom handler that polls *all* wallet
-        // contracts (active or not) right after BatchFinalized. This is
-        // exactly the gap the test is trying to verify isn't reached.
+        // Inactive, so the SDK's stock post-batch polling (which filters
+        // isActive=true) would skip it. Drive the polling ourselves
+        // across *all* wallet contracts so the new !Unrolled VTXO lands
+        // in storage and our settledVtxoTcs above can fire.
         var batchPolledTcs = new TaskCompletionSource();
         var postBatchHandler = new InlineEventHandler<PostBatchSessionEvent>(async (evt, ct) =>
         {
@@ -443,6 +447,22 @@ public class UnilateralExitTests
             new IEventHandler<PostBatchSessionEvent>[] { postBatchHandler });
         await batchManager.StartAsync(CancellationToken.None);
 
+        // Auto-fetch the virtual-tx chain on every VTXO arrival. This is
+        // opt-in in the SDK (AddVirtualTxAutoFetch) — the test exercises
+        // it explicitly so StartExitAsync finds chain data already present.
+        var virtualTxOptions = Options.Create(new VirtualTxOptions
+        {
+            DefaultMode = VirtualTxMode.Full,
+            MinExitWorthAmount = 1000,
+        });
+        var autoFetchService = new VtxoChainAutoFetchService(
+            vtxoStorage,
+            new VirtualTxService(clientTransport, virtualTxStorage,
+                loggerFactory.CreateLogger<VirtualTxService>()),
+            virtualTxOptions,
+            loggerFactory.CreateLogger<VtxoChainAutoFetchService>());
+        await autoFetchService.StartAsync(CancellationToken.None);
+
         await newSuccessBatch.Task.WaitAsync(TimeSpan.FromMinutes(2));
         // Wait until the post-batch poll completes AND the new !Unrolled
         // VTXO has been observed via VtxosChanged. The poll itself can
@@ -455,11 +475,6 @@ public class UnilateralExitTests
         var explorerClient = new ExplorerClient(
             new NBXplorerNetworkProvider(info.Network.ChainName).GetBTC(),
             SharedArkInfrastructure.NbxplorerEndpoint);
-        // Wire a console logger so broadcaster rejections (RPC error
-        // messages from Bitcoin Core) are surfaced in CI test output.
-        // Otherwise we just see "Exceeded N broadcast retries" with no
-        // hint about WHY each attempt failed.
-        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
         var broadcaster = new NBXplorerOnchainBroadcaster(
             explorerClient, loggerFactory.CreateLogger<NBXplorerOnchainBroadcaster>());
         var virtualTxService = new VirtualTxService(
@@ -488,6 +503,7 @@ public class UnilateralExitTests
             new IAsyncDisposable[]
             {
                 intentGeneration, intentSync, batchManager, vtxoSync,
+                new HostedServiceAdapter(autoFetchService),
             });
     }
 
@@ -507,6 +523,14 @@ public class UnilateralExitTests
     {
         public Task HandleAsync(T @event, CancellationToken cancellationToken = default)
             => handle(@event, cancellationToken);
+    }
+
+    /// <summary>Bridges an IHostedService into the IAsyncDisposable contract
+    /// the test setup uses for cleanup.</summary>
+    private sealed class HostedServiceAdapter(Microsoft.Extensions.Hosting.IHostedService inner) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+            => await inner.StopAsync(CancellationToken.None);
     }
 
     private sealed class ExitTestSetup(

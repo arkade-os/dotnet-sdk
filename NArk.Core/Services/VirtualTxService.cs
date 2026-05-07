@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.VirtualTxs;
 using NArk.Core.Transport;
-using NArk.Core.Transport.Models;
 using NBitcoin;
 
 namespace NArk.Core.Services;
@@ -34,7 +33,11 @@ public class VirtualTxService(
 
         logger?.LogDebug("Fetching virtual tx chain for VTXO {Outpoint} (mode={Mode})", vtxoOutpoint, mode);
 
-        // 1. Get the chain from arkd indexer (commitment → leaf order)
+        // 1. Get the chain from arkd indexer (commitment → leaf order).
+        //    The full chain — including the on-chain commitment root — is
+        //    stored so consumers can walk back to the anchor without a
+        //    second indexer call. Each row carries its ChainedTxType so
+        //    UnilateralExitService can skip Commitment when broadcasting.
         var chainEntries = await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
 
         if (chainEntries.Count == 0)
@@ -43,49 +46,53 @@ public class VirtualTxService(
             return;
         }
 
-        // 2. Filter to only virtual tx types (skip Commitment — already on-chain)
-        var virtualEntries = chainEntries
-            .Where(e => e.Type is ChainedTxType.Tree or ChainedTxType.Ark or ChainedTxType.Checkpoint)
+        // 2. Create VirtualTx records — txid + expiry + type. Hex is null
+        //    for Lite mode (and for Commitment txs we never fetch hex for
+        //    even in Full mode, since they're already on-chain).
+        var virtualTxs = chainEntries
+            .Select(e => new VirtualTx(e.Txid, null, e.ExpiresAt, e.Type))
             .ToList();
 
-        if (virtualEntries.Count == 0)
-        {
-            logger?.LogDebug("No virtual txs in chain for VTXO {Outpoint} (all on-chain)", vtxoOutpoint);
-            return;
-        }
-
-        // 3. Create VirtualTx records (txid + expiry, hex is null in Lite mode)
-        var virtualTxs = virtualEntries
-            .Select(e => new VirtualTx(e.Txid, null, e.ExpiresAt))
-            .ToList();
-
-        // 4. In Full mode, fetch raw tx hex
+        // 3. In Full mode, fetch raw tx hex for the off-chain virtual txs
+        //    only. Commitment txs stay hex-null since arkd's GetVirtualTxs
+        //    is for tree/ark/checkpoint nodes.
         if (mode == VirtualTxMode.Full)
         {
-            var txids = virtualEntries.Select(e => e.Txid).ToList();
-            var hexList = await transport.GetVirtualTxsAsync(txids, cancellationToken);
+            var txidsToFetch = chainEntries
+                .Where(e => e.Type is ChainedTxType.Tree
+                                  or ChainedTxType.Ark
+                                  or ChainedTxType.Checkpoint)
+                .Select(e => e.Txid)
+                .ToList();
 
-            // Map hex back to virtual txs by index
-            if (hexList.Count == txids.Count)
+            if (txidsToFetch.Count > 0)
             {
-                for (var i = 0; i < virtualTxs.Count; i++)
+                var hexList = await transport.GetVirtualTxsAsync(txidsToFetch, cancellationToken);
+                if (hexList.Count == txidsToFetch.Count)
                 {
-                    virtualTxs[i] = virtualTxs[i] with { Hex = hexList[i] };
+                    var hexByTxid = txidsToFetch
+                        .Zip(hexList, (id, hex) => (id, hex))
+                        .ToDictionary(t => t.id, t => t.hex);
+                    for (var i = 0; i < virtualTxs.Count; i++)
+                    {
+                        if (hexByTxid.TryGetValue(virtualTxs[i].Txid, out var hex))
+                            virtualTxs[i] = virtualTxs[i] with { Hex = hex };
+                    }
                 }
-            }
-            else
-            {
-                logger?.LogWarning(
-                    "Virtual tx hex count mismatch for VTXO {Outpoint}: expected {Expected}, got {Actual}",
-                    vtxoOutpoint, txids.Count, hexList.Count);
+                else
+                {
+                    logger?.LogWarning(
+                        "Virtual tx hex count mismatch for VTXO {Outpoint}: expected {Expected}, got {Actual}",
+                        vtxoOutpoint, txidsToFetch.Count, hexList.Count);
+                }
             }
         }
 
-        // 5. Upsert VirtualTx records (shared across sibling VTXOs)
+        // 4. Upsert VirtualTx records (shared across sibling VTXOs)
         await storage.UpsertVirtualTxsAsync(virtualTxs, cancellationToken);
 
-        // 6. Create branch entries linking this VTXO to its chain
-        var branches = virtualEntries
+        // 5. Create branch entries linking this VTXO to its chain
+        var branches = chainEntries
             .Select((e, i) => new VtxoBranch(
                 vtxoOutpoint.Hash.ToString(),
                 vtxoOutpoint.N,
@@ -116,8 +123,12 @@ public class VirtualTxService(
             return;
         }
 
-        // Find txs missing hex
-        var missingHex = branch.Where(tx => tx.Hex is null).ToList();
+        // Find txs missing hex. Commitment txs are on-chain anchors;
+        // arkd's GetVirtualTxs doesn't carry hex for them, so skip those
+        // when deciding whether the branch is "populated".
+        var missingHex = branch
+            .Where(tx => tx.Hex is null && tx.Type != ChainedTxType.Commitment)
+            .ToList();
         if (missingHex.Count == 0)
         {
             logger?.LogDebug("All virtual txs already have hex for VTXO {Outpoint}", vtxoOutpoint);

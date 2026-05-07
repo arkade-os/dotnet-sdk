@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NArk.Abstractions.VirtualTxs;
 using NArk.Core.Transport.Models;
 using NBitcoin;
 

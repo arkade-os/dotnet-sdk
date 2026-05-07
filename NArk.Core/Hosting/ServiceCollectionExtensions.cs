@@ -265,6 +265,13 @@ public static class ServiceCollectionExtensions
     /// and watchtower monitoring. Caller must still register IOnchainBroadcaster, IVirtualTxStorage,
     /// and IExitSessionStorage.
     /// </summary>
+    /// <remarks>
+    /// Auto-fetching the virtual-tx chain on every VTXO arrival is OPT-IN —
+    /// call <see cref="AddVirtualTxAutoFetch"/> separately if the host wants
+    /// chains pre-stored ahead of any potential exit. Without it,
+    /// <see cref="UnilateralExitService.StartExitAsync"/> still fetches the
+    /// chain on demand via <see cref="VirtualTxService.EnsureHexPopulatedAsync"/>.
+    /// </remarks>
     public static IServiceCollection AddUnilateralExit(
         this IServiceCollection services,
         Action<VirtualTxOptions>? configureVirtualTx = null,
@@ -279,15 +286,34 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<UnilateralExitService>();
         services.AddSingleton<ExitWatchtowerService>();
 
-        // Event handlers: fetch virtual tx data after batch, prune after spend
-        services.AddSingleton<PostBatchVirtualTxFetchHandler>();
-        services.AddSingleton<IEventHandler<PostBatchSessionEvent>>(
-            sp => sp.GetRequiredService<PostBatchVirtualTxFetchHandler>());
-
+        // Prune-on-spend handler is registered automatically — it's a
+        // pure cleanup pass that's safe regardless of whether auto-fetch
+        // is enabled (no-op if there's nothing stored to prune).
         services.AddSingleton<PostSpendVirtualTxPruneHandler>();
         services.AddSingleton<IEventHandler<PostCoinsSpendActionEvent>>(
             sp => sp.GetRequiredService<PostSpendVirtualTxPruneHandler>());
 
+        return services;
+    }
+
+    /// <summary>
+    /// Opt-in: subscribes to <see cref="IVtxoStorage.VtxosChanged"/> and
+    /// fetches the virtual-tx chain for every new VTXO the wallet receives,
+    /// regardless of source (batch settlement, change from a spend, incoming
+    /// payment, swap claim, sweep, …). With this the wallet always has exit
+    /// data ready locally; without it, the chain is fetched lazily on the
+    /// first <see cref="UnilateralExitService.StartExitAsync"/> call for
+    /// each VTXO.
+    /// </summary>
+    /// <remarks>
+    /// Storage cost scales with the wallet's VTXO count — for a wallet that
+    /// rarely exits unilaterally, deferring the fetch can be the right call.
+    /// Call after <see cref="AddUnilateralExit"/>.
+    /// </remarks>
+    public static IServiceCollection AddVirtualTxAutoFetch(this IServiceCollection services)
+    {
+        services.AddSingleton<VtxoChainAutoFetchService>();
+        services.AddHostedService(sp => sp.GetRequiredService<VtxoChainAutoFetchService>());
         return services;
     }
 

@@ -1,4 +1,5 @@
 using Ark.V1;
+using NArk.Abstractions.VirtualTxs;
 using NArk.Core.Transport.Models;
 using NBitcoin;
 
