@@ -89,11 +89,17 @@ public class UnilateralExitTests
         Assert.That(session.ClaimAddress, Is.EqualTo(claimAddress.ToString()));
 
         // Branch must be populated as part of StartExit (EnsureHexPopulatedAsync).
+        // The whole chain (including the on-chain Commitment anchor) is
+        // stored — Commitment rows are intentionally hex-null since arkd's
+        // GetVirtualTxs only carries hex for off-chain rows.
         var branch = await setup.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint);
         Assert.That(branch, Has.Count.GreaterThan(0),
             "Virtual tx branch should be fetched during StartExitAsync");
-        Assert.That(branch.All(tx => tx.Hex is not null), Is.True,
-            "All virtual txs in the branch should have hex populated (Full mode)");
+        Assert.That(branch.Any(tx => tx.Type == ChainedTxType.Commitment), Is.True,
+            "Branch should include the on-chain Commitment row (whole-chain storage)");
+        Assert.That(branch.Where(tx => tx.Type != ChainedTxType.Commitment)
+                          .All(tx => tx.Hex is not null), Is.True,
+            "All non-Commitment virtual txs should have hex populated (Full mode)");
     }
 
     /// <summary>
