@@ -213,8 +213,11 @@ public class UnilateralExitService(
                     return;
                 }
 
-                // Not seen — broadcast
-                var tx = Transaction.Parse(vtx.Hex, network);
+                // Not seen — broadcast. arkd's GetVirtualTxs returns the
+                // tree txs as PSBT-encoded strings (the same format that
+                // BatchSession parses across the rest of the codebase) —
+                // not raw consensus-encoded transactions. Parse + extract.
+                var tx = ParseVirtualTx(vtx.Hex, network);
                 var success = await BroadcastWithCpfpAsync(tx, ct);
 
                 if (!success)
@@ -441,7 +444,7 @@ public class UnilateralExitService(
                 return;
             }
 
-            var parsedLeafTx = Transaction.Parse(leafTx.Hex, serverInfo.Network);
+            var parsedLeafTx = ParseVirtualTx(leafTx.Hex, serverInfo.Network);
 
             // Find the VTXO output in the leaf tx
             var vtxoTxOut = parsedLeafTx.Outputs.AsIndexedOutputs()
@@ -596,6 +599,21 @@ public class UnilateralExitService(
         claimTx.Outputs.Add(new TxOut(claimAmount, claimAddress));
 
         return claimTx;
+    }
+
+    /// <summary>
+    /// Parse a virtual tx as returned by arkd's <c>GetVirtualTxs</c>
+    /// indexer endpoint. arkd emits the tx as a PSBT-encoded string (the
+    /// same format <see cref="NArk.Core.Batches.BatchSession"/> consumes
+    /// elsewhere) rather than a raw consensus-encoded transaction. We
+    /// finalize the PSBT and extract the resulting signed transaction
+    /// for on-chain broadcast.
+    /// </summary>
+    private static Transaction ParseVirtualTx(string hex, Network network)
+    {
+        var psbt = PSBT.Parse(hex, network);
+        psbt.Finalize();
+        return psbt.ExtractTransaction();
     }
 
     private static Scripts.UnilateralPathArkTapScript? GetUnilateralPathTapScript(ArkContract contract)
