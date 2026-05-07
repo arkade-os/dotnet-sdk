@@ -653,7 +653,13 @@ public class UnilateralExitService(
                         "taproot key-path signature (PSBT_IN_TAP_KEY_SIG); arkd should " +
                         "have populated it during the batch round.");
                 }
-                tx.Inputs[i].WitScript = new WitScript(sig.ToBytes());
+                // The `true` flag tells NBitcoin these bytes are stack
+                // pushes, not a pre-serialized witness — same idiom as
+                // ChainSwapMusigSession / P2ACpfpBuilder elsewhere in
+                // the codebase. Without it the constructor tries to
+                // deserialize the sig bytes as a witness with a count
+                // prefix and throws "No more byte to read".
+                tx.Inputs[i].WitScript = new WitScript(new[] { sig.ToBytes() }, true);
             }
             return tx;
         }
