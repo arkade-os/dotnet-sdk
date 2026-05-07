@@ -232,7 +232,7 @@ public class UnilateralExitService(
                 // tree txs as PSBT-encoded strings (the same format that
                 // BatchSession parses across the rest of the codebase) —
                 // not raw consensus-encoded transactions. Parse + extract.
-                var tx = ParseVirtualTx(vtx.Hex, network);
+                var tx = ParseVirtualTx(vtx.Hex, network, vtx.Type);
                 var success = await BroadcastWithCpfpAsync(tx, ct);
 
                 if (!success)
@@ -459,7 +459,7 @@ public class UnilateralExitService(
                 return;
             }
 
-            var parsedLeafTx = ParseVirtualTx(leafTx.Hex, serverInfo.Network);
+            var parsedLeafTx = ParseVirtualTx(leafTx.Hex, serverInfo.Network, leafTx.Type);
 
             // Find the VTXO output in the leaf tx
             var vtxoTxOut = parsedLeafTx.Outputs.AsIndexedOutputs()
@@ -618,27 +618,67 @@ public class UnilateralExitService(
 
     /// <summary>
     /// Parse a virtual tx as returned by arkd's <c>GetVirtualTxs</c>
-    /// indexer endpoint. arkd emits the tx as a PSBT-encoded string (the
-    /// same format <see cref="NArk.Core.Batches.BatchSession"/> consumes
-    /// elsewhere). The PSBT carries final witnesses on each input but
-    /// does NOT include the previous outputs required by NBitcoin's
-    /// <c>PSBT.Finalize</c> path — so we lift the global transaction and
-    /// copy each input's <c>FinalScriptWitness</c> / <c>FinalScriptSig</c>
-    /// onto it directly to compose a signed, broadcastable transaction.
+    /// indexer endpoint into a signed, broadcastable transaction.
     /// </summary>
-    private static Transaction ParseVirtualTx(string hex, Network network)
+    /// <remarks>
+    /// arkd emits the tx as a PSBT-encoded string and the witness layout
+    /// depends on which kind of tx we're looking at — mirroring the
+    /// approach in arkade-os/ts-sdk's <c>Unroll.Session</c>:
+    ///
+    /// - <c>Tree</c>: cosigned via the taproot key-path (MuSig2). The
+    ///   aggregated Schnorr signature is carried in
+    ///   <c>PSBT_IN_TAP_KEY_SIG</c> (<see cref="PSBTInput.TaprootKeySignature"/>).
+    ///   The final witness is just <c>[sig]</c>; we synthesize it
+    ///   manually because the PSBT doesn't carry <c>witness_utxo</c>
+    ///   (which NBitcoin's <c>Finalize()</c> requires).
+    /// - <c>Ark</c> / <c>Checkpoint</c> / fallback: try standard
+    ///   <c>Finalize() + ExtractTransaction()</c>; if that throws (e.g.
+    ///   missing prevouts), fall back to lifting <c>FinalScriptWitness</c>
+    ///   straight off each input.
+    /// </remarks>
+    private static Transaction ParseVirtualTx(string hex, Network network, ChainedTxType type)
     {
         var psbt = PSBT.Parse(hex, network);
-        var tx = psbt.GetGlobalTransaction();
-        for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
+
+        if (type == ChainedTxType.Tree)
         {
-            var psbtInput = psbt.Inputs[i];
-            if (psbtInput.FinalScriptWitness is not null)
-                tx.Inputs[i].WitScript = psbtInput.FinalScriptWitness;
-            if (psbtInput.FinalScriptSig is not null)
-                tx.Inputs[i].ScriptSig = psbtInput.FinalScriptSig;
+            var tx = psbt.GetGlobalTransaction();
+            for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
+            {
+                var sig = psbt.Inputs[i].TaprootKeySignature;
+                if (sig is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Tree tx {tx.GetHash()} input {i} is missing the MuSig2 " +
+                        "taproot key-path signature (PSBT_IN_TAP_KEY_SIG); arkd should " +
+                        "have populated it during the batch round.");
+                }
+                tx.Inputs[i].WitScript = new WitScript(sig.ToBytes());
+            }
+            return tx;
         }
-        return tx;
+
+        // Ark / Checkpoint / Unspecified: try the standard PSBT finalize
+        // path first. If the PSBT lacks witness_utxo it'll throw — fall
+        // back to lifting whatever FinalScriptWitness arkd populated.
+        try
+        {
+            psbt.Finalize();
+            return psbt.ExtractTransaction();
+        }
+        catch (PSBTException)
+        {
+            var tx = psbt.GetGlobalTransaction();
+            for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
+            {
+                var psbtInput = psbt.Inputs[i];
+                if (psbtInput.FinalScriptWitness is not null)
+                    tx.Inputs[i].WitScript = psbtInput.FinalScriptWitness;
+                if (psbtInput.FinalScriptSig is not null)
+                    tx.Inputs[i].ScriptSig = psbtInput.FinalScriptSig;
+            }
+            return tx;
+        }
     }
 
     private static Scripts.UnilateralPathArkTapScript? GetUnilateralPathTapScript(ArkContract contract)

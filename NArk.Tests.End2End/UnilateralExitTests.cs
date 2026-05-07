@@ -149,7 +149,7 @@ public class UnilateralExitTests
     /// Re-enable once the broadcasting path produces a tx Bitcoin Core
     /// accepts.
     /// </remarks>
-    [Test, Ignore("Blocked on UnilateralExitService broadcasting fixes — see XML doc")]
+    [Test]
     [CancelAfter(180_000)]
     public async Task ProgressExits_AdvancesFromBroadcastingToAwaitingCsvDelay(CancellationToken token)
     {
@@ -217,7 +217,7 @@ public class UnilateralExitTests
     /// — the broadcaster never produces an accepted tx, so we never reach
     /// AwaitingCsvDelay to assert against.
     /// </remarks>
-    [Test, Ignore("Blocked on UnilateralExitService broadcasting fixes — see ProgressExits_... XML doc")]
+    [Test]
     [CancelAfter(240_000)]
     public async Task AwaitingCsvDelay_DoesNotAdvanceUntilDelayMatures(CancellationToken token)
     {
