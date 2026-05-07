@@ -605,15 +605,25 @@ public class UnilateralExitService(
     /// Parse a virtual tx as returned by arkd's <c>GetVirtualTxs</c>
     /// indexer endpoint. arkd emits the tx as a PSBT-encoded string (the
     /// same format <see cref="NArk.Core.Batches.BatchSession"/> consumes
-    /// elsewhere) rather than a raw consensus-encoded transaction. We
-    /// finalize the PSBT and extract the resulting signed transaction
-    /// for on-chain broadcast.
+    /// elsewhere). The PSBT carries final witnesses on each input but
+    /// does NOT include the previous outputs required by NBitcoin's
+    /// <c>PSBT.Finalize</c> path — so we lift the global transaction and
+    /// copy each input's <c>FinalScriptWitness</c> / <c>FinalScriptSig</c>
+    /// onto it directly to compose a signed, broadcastable transaction.
     /// </summary>
     private static Transaction ParseVirtualTx(string hex, Network network)
     {
         var psbt = PSBT.Parse(hex, network);
-        psbt.Finalize();
-        return psbt.ExtractTransaction();
+        var tx = psbt.GetGlobalTransaction();
+        for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
+        {
+            var psbtInput = psbt.Inputs[i];
+            if (psbtInput.FinalScriptWitness is not null)
+                tx.Inputs[i].WitScript = psbtInput.FinalScriptWitness;
+            if (psbtInput.FinalScriptSig is not null)
+                tx.Inputs[i].ScriptSig = psbtInput.FinalScriptSig;
+        }
+        return tx;
     }
 
     private static Scripts.UnilateralPathArkTapScript? GetUnilateralPathTapScript(ArkContract contract)
