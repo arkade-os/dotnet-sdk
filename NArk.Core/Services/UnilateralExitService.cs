@@ -65,7 +65,12 @@ public class UnilateralExitService(
                 continue;
             }
 
-            var missingHex = branch.Any(tx => tx.Hex is null);
+            // Commitment txs are on-chain anchors; arkd never serves hex
+            // for them via GetVirtualTxs, so a null hex on a Commitment
+            // row is expected. Only the off-chain rows (Tree / Ark /
+            // Checkpoint) need hex to be broadcastable.
+            var missingHex = branch.Any(tx =>
+                tx.Hex is null && tx.Type != ChainedTxType.Commitment);
             if (missingHex)
             {
                 logger?.LogError("Virtual tx branch for VTXO {Outpoint} has missing hex, cannot start exit", outpoint);
@@ -184,6 +189,16 @@ public class UnilateralExitService(
             for (var i = session.NextTxIndex; i < branch.Count; i++)
             {
                 var vtx = branch[i];
+
+                // Commitment is the on-chain anchor — already published by
+                // the operator at batch finalize. Nothing to broadcast for
+                // it, just verify and move on.
+                if (vtx.Type == ChainedTxType.Commitment)
+                {
+                    logger?.LogDebug("Skipping commitment-tx {Txid} (already on-chain)", vtx.Txid);
+                    continue;
+                }
+
                 if (vtx.Hex is null)
                 {
                     await FailSession(session, $"Missing hex for virtual tx {vtx.Txid}", ct);
