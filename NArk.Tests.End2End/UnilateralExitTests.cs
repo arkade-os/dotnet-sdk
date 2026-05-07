@@ -383,10 +383,22 @@ public class UnilateralExitTests
         var intentSync = new IntentSynchronizationService(intentStorage, clientTransport, safetyService);
         await intentSync.StartAsync(CancellationToken.None);
 
+        // PostBatchVtxoPollingHandler polls arkd directly for the new
+        // offchain VTXO after BatchFinalized, sidestepping any latency in
+        // the stream-based VtxoSync subscription picking up the just-derived
+        // SendToSelf contract.
+        var pollOptions = Options.Create(new VtxoPollingOptions
+        {
+            BatchSuccessPollingDelay = TimeSpan.FromMilliseconds(500),
+            TransactionBroadcastPollingDelay = TimeSpan.FromMilliseconds(500),
+        });
+        var postBatchHandler = new PostBatchVtxoPollingHandler(
+            vtxoSync, contractStorage, vtxoStorage, pollOptions);
+
         var batchManager = new BatchManagementService(
             intentStorage, clientTransport, vtxoStorage, contractStorage,
             walletProvider, coinService, safetyService,
-            Array.Empty<IEventHandler<PostBatchSessionEvent>>());
+            new IEventHandler<PostBatchSessionEvent>[] { postBatchHandler });
         await batchManager.StartAsync(CancellationToken.None);
 
         await newSuccessBatch.Task.WaitAsync(TimeSpan.FromMinutes(2));
