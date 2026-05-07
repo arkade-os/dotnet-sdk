@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
@@ -431,8 +432,16 @@ public class UnilateralExitTests
         var explorerClient = new ExplorerClient(
             new NBXplorerNetworkProvider(info.Network.ChainName).GetBTC(),
             SharedArkInfrastructure.NbxplorerEndpoint);
-        var broadcaster = new NBXplorerOnchainBroadcaster(explorerClient);
-        var virtualTxService = new VirtualTxService(clientTransport, virtualTxStorage);
+        // Wire a console logger so broadcaster rejections (RPC error
+        // messages from Bitcoin Core) are surfaced in CI test output.
+        // Otherwise we just see "Exceeded N broadcast retries" with no
+        // hint about WHY each attempt failed.
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        var broadcaster = new NBXplorerOnchainBroadcaster(
+            explorerClient, loggerFactory.CreateLogger<NBXplorerOnchainBroadcaster>());
+        var virtualTxService = new VirtualTxService(
+            clientTransport, virtualTxStorage,
+            loggerFactory.CreateLogger<VirtualTxService>());
         var exitService = new UnilateralExitService(
             clientTransport,
             virtualTxStorage,
@@ -443,7 +452,8 @@ public class UnilateralExitTests
             walletProvider,
             chainTimeProvider,
             virtualTxService,
-            feeWallet: null);
+            feeWallet: null,
+            logger: loggerFactory.CreateLogger<UnilateralExitService>());
 
         return new ExitTestSetup(
             walletId,
