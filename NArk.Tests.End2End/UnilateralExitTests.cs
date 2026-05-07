@@ -7,6 +7,7 @@ using NArk.Abstractions.Exit;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Safety;
+using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
@@ -289,12 +290,29 @@ public class UnilateralExitTests
         var virtualTxStorage = sp.GetRequiredService<IVirtualTxStorage>();
         var exitSessionStorage = sp.GetRequiredService<IExitSessionStorage>();
 
+        // Wait for the post-batch offchain VTXO to land in storage. The
+        // boarding UTXO is Unrolled=true and gets consumed by the batch;
+        // the new offchain output is Unrolled=false and must come through
+        // VtxoSynchronizationService's subscription stream below.
+        var settledVtxoTcs = new TaskCompletionSource();
+        vtxoStorage.VtxosChanged += (_, vtxo) =>
+        {
+            if (!vtxo.IsSpent() && !vtxo.Unrolled) settledVtxoTcs.TrySetResult();
+        };
+
         var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
         var info = await clientTransport.GetServerInfoAsync();
 
         var walletProvider = new InMemoryWalletProvider(clientTransport);
         var walletId = await walletProvider.CreateTestWallet();
         var contractService = new ContractService(walletProvider, contractStorage, clientTransport);
+
+        // Stream VTXO updates from arkd into vtxoStorage so the post-batch
+        // offchain VTXO becomes visible without manual indexer polling.
+        var vtxoSync = new VtxoSynchronizationService(
+            vtxoStorage, clientTransport,
+            [(IActiveScriptsProvider)vtxoStorage, (IActiveScriptsProvider)contractStorage]);
+        await vtxoSync.StartAsync(CancellationToken.None);
 
         // ---- board: derive boarding contract, faucet, confirm, sync ----
         var boardingContract = (ArkBoardingContract)await contractService.DeriveContract(
@@ -372,6 +390,11 @@ public class UnilateralExitTests
         await batchManager.StartAsync(CancellationToken.None);
 
         await newSuccessBatch.Task.WaitAsync(TimeSpan.FromMinutes(2));
+        // VtxoSync needs a moment to pick up the new offchain output. The
+        // settledVtxoTcs above completes when an unspent !Unrolled VTXO
+        // appears in storage (i.e. the batch's actual product, not the
+        // already-Unrolled boarding UTXO).
+        await settledVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         // ---- exit-side dependencies ----
         var explorerClient = new ExplorerClient(
@@ -399,7 +422,7 @@ public class UnilateralExitTests
             exitService,
             new IAsyncDisposable[]
             {
-                intentGeneration, intentSync, batchManager,
+                intentGeneration, intentSync, batchManager, vtxoSync,
             });
     }
 
