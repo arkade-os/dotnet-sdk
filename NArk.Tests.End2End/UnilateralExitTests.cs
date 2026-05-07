@@ -486,6 +486,16 @@ public class UnilateralExitTests
         var virtualTxService = new VirtualTxService(
             clientTransport, virtualTxStorage,
             loggerFactory.CreateLogger<VirtualTxService>());
+
+        // Tree txs are v3 (TRUC). Bitcoin Core won't accept a v3 child of a
+        // non-v3 parent (or any v3 tx with a 0-sat P2A anchor) on its own —
+        // the broadcaster has to wrap each tree tx in a 1p1c CPFP package
+        // via submitpackage. UnilateralExitService does that automatically
+        // when given an IFeeWallet; without one it falls back to direct
+        // sendrawtransaction and trips TRUC-violation. This test-side fee
+        // wallet self-funds via bitcoin-cli sendtoaddress.
+        var feeWallet = await TestFeeWallet.CreateFundedAsync();
+
         var exitService = new UnilateralExitService(
             clientTransport,
             virtualTxStorage,
@@ -496,7 +506,7 @@ public class UnilateralExitTests
             walletProvider,
             chainTimeProvider,
             virtualTxService,
-            feeWallet: null,
+            feeWallet: feeWallet,
             logger: loggerFactory.CreateLogger<UnilateralExitService>());
 
         return new ExitTestSetup(
