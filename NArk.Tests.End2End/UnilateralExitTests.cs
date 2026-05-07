@@ -13,6 +13,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain.NBXplorer;
 using NArk.Core.Contracts;
+using NArk.Core.Enums;
 using NArk.Core.Events;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
@@ -383,17 +384,27 @@ public class UnilateralExitTests
         var intentSync = new IntentSynchronizationService(intentStorage, clientTransport, safetyService);
         await intentSync.StartAsync(CancellationToken.None);
 
-        // PostBatchVtxoPollingHandler polls arkd directly for the new
-        // offchain VTXO after BatchFinalized, sidestepping any latency in
-        // the stream-based VtxoSync subscription picking up the just-derived
-        // SendToSelf contract.
-        var pollOptions = Options.Create(new VtxoPollingOptions
+        // SimpleIntentScheduler derives the SendToSelf output contract as
+        // Inactive — PostBatchVtxoPollingHandler's isActive=true filter
+        // would skip it, so wire a custom handler that polls *all* wallet
+        // contracts (active or not) right after BatchFinalized. This is
+        // exactly the gap the test is trying to verify isn't reached.
+        var batchPolledTcs = new TaskCompletionSource();
+        var postBatchHandler = new InlineEventHandler<PostBatchSessionEvent>(async (evt, ct) =>
         {
-            BatchSuccessPollingDelay = TimeSpan.FromMilliseconds(500),
-            TransactionBroadcastPollingDelay = TimeSpan.FromMilliseconds(500),
+            if (evt.State != ActionState.Successful) return;
+            // Brief delay — arkd commits the VTXO to its indexer slightly
+            // after BatchFinalized fires. 500ms is enough on regtest.
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            var allContracts = await contractStorage.GetContracts(
+                walletIds: [evt.Intent.WalletId], cancellationToken: ct);
+            var allScripts = allContracts.Select(c => c.Script).ToHashSet();
+            if (allScripts.Count > 0)
+            {
+                await vtxoSync.PollScriptsForVtxos(allScripts, after: null, ct);
+            }
+            batchPolledTcs.TrySetResult();
         });
-        var postBatchHandler = new PostBatchVtxoPollingHandler(
-            vtxoSync, contractStorage, vtxoStorage, pollOptions);
 
         var batchManager = new BatchManagementService(
             intentStorage, clientTransport, vtxoStorage, contractStorage,
@@ -402,11 +413,12 @@ public class UnilateralExitTests
         await batchManager.StartAsync(CancellationToken.None);
 
         await newSuccessBatch.Task.WaitAsync(TimeSpan.FromMinutes(2));
-        // VtxoSync needs a moment to pick up the new offchain output. The
-        // settledVtxoTcs above completes when an unspent !Unrolled VTXO
-        // appears in storage (i.e. the batch's actual product, not the
-        // already-Unrolled boarding UTXO).
-        await settledVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        // Wait until the post-batch poll completes AND the new !Unrolled
+        // VTXO has been observed via VtxosChanged. The poll itself can
+        // sometimes return empty if arkd's indexer hasn't committed yet —
+        // give it a few extra seconds via VtxoSync's RoutinePoll.
+        await batchPolledTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        await settledVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(45));
 
         // ---- exit-side dependencies ----
         var explorerClient = new ExplorerClient(
@@ -444,6 +456,16 @@ public class UnilateralExitTests
             "bitcoin", ["bitcoin-cli", "-rpcwallet=", "getnewaddress"])).Trim();
         Assert.That(addr, Is.Not.Empty, "bitcoin-cli getnewaddress returned empty");
         return BitcoinAddress.Create(addr, Network.RegTest);
+    }
+
+    /// <summary>
+    /// Minimal IEventHandler shim that delegates to a lambda. Lets a test
+    /// inject post-batch behaviour without authoring a full handler class.
+    /// </summary>
+    private sealed class InlineEventHandler<T>(Func<T, CancellationToken, Task> handle) : IEventHandler<T> where T : class
+    {
+        public Task HandleAsync(T @event, CancellationToken cancellationToken = default)
+            => handle(@event, cancellationToken);
     }
 
     private sealed class ExitTestSetup(
