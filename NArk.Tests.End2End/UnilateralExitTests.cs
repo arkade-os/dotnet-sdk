@@ -140,14 +140,15 @@ public class UnilateralExitTests
 
         // Drive the state machine. Each iteration: progress (broadcasts what
         // it can), mine 1 block to confirm what's in mempool, observe state.
+        // Use GetByVtxoAsync (not GetActiveSessionsAsync) so a Failed
+        // session is still surfaced — otherwise we'd silently lose it.
         ExitSession? current = null;
         for (var step = 0; step < 30 && !token.IsCancellationRequested; step++)
         {
             await setup.ExitService.ProgressExitsAsync(token);
             await DockerHelper.MineBlocks(1, token);
 
-            var active = await setup.ExitService.GetActiveSessionsAsync(setup.WalletId, token);
-            current = active.FirstOrDefault(s => s.Id == sessionId);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
             if (current is null) continue;
 
             TestContext.WriteLine(
@@ -205,8 +206,7 @@ public class UnilateralExitTests
         {
             await setup.ExitService.ProgressExitsAsync(token);
             await DockerHelper.MineBlocks(1, token);
-            current = (await setup.ExitService.GetActiveSessionsAsync(setup.WalletId, token))
-                .FirstOrDefault(s => s.Id == sessionId);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
             if (current?.State is ExitSessionState.AwaitingCsvDelay
                 or ExitSessionState.Claimable
                 or ExitSessionState.Claiming
@@ -230,8 +230,7 @@ public class UnilateralExitTests
         for (var probe = 0; probe < 5; probe++)
         {
             await setup.ExitService.ProgressExitsAsync(token);
-            current = (await setup.ExitService.GetActiveSessionsAsync(setup.WalletId, token))
-                .FirstOrDefault(s => s.Id == sessionId);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
             Assert.That(current?.State, Is.EqualTo(ExitSessionState.AwaitingCsvDelay),
                 $"Session should not advance to Claimable before CSV delay matures " +
                 $"(probe {probe}, observed state={current?.State})");
@@ -246,8 +245,7 @@ public class UnilateralExitTests
         for (var step = 0; step < 10 && !token.IsCancellationRequested; step++)
         {
             await setup.ExitService.ProgressExitsAsync(token);
-            current = (await setup.ExitService.GetActiveSessionsAsync(setup.WalletId, token))
-                .FirstOrDefault(s => s.Id == sessionId);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
             if (current?.State is not ExitSessionState.AwaitingCsvDelay) break;
             await Task.Delay(500, token);
         }
@@ -393,15 +391,24 @@ public class UnilateralExitTests
         var postBatchHandler = new InlineEventHandler<PostBatchSessionEvent>(async (evt, ct) =>
         {
             if (evt.State != ActionState.Successful) return;
-            // Brief delay — arkd commits the VTXO to its indexer slightly
-            // after BatchFinalized fires. 500ms is enough on regtest.
-            await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
             var allContracts = await contractStorage.GetContracts(
                 walletIds: [evt.Intent.WalletId], cancellationToken: ct);
             var allScripts = allContracts.Select(c => c.Script).ToHashSet();
-            if (allScripts.Count > 0)
+            if (allScripts.Count == 0)
             {
+                batchPolledTcs.TrySetResult();
+                return;
+            }
+            // arkd commits the new VTXO to its indexer somewhere between
+            // 0–10 seconds after BatchFinalized. Probe at a schedule that
+            // covers that window without spinning hot. Bail early once the
+            // !Unrolled VTXO has been observed (settledVtxoTcs) so we
+            // don't keep polling after the test has moved on.
+            foreach (var delay in new[] { 500, 1500, 3000, 5000, 8000 })
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(delay), ct);
                 await vtxoSync.PollScriptsForVtxos(allScripts, after: null, ct);
+                if (settledVtxoTcs.Task.IsCompleted) break;
             }
             batchPolledTcs.TrySetResult();
         });
@@ -417,8 +424,8 @@ public class UnilateralExitTests
         // VTXO has been observed via VtxosChanged. The poll itself can
         // sometimes return empty if arkd's indexer hasn't committed yet —
         // give it a few extra seconds via VtxoSync's RoutinePoll.
-        await batchPolledTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
-        await settledVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(45));
+        await batchPolledTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await settledVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(60));
 
         // ---- exit-side dependencies ----
         var explorerClient = new ExplorerClient(
@@ -442,6 +449,7 @@ public class UnilateralExitTests
             walletId,
             vtxoStorage,
             virtualTxStorage,
+            exitSessionStorage,
             clientTransport,
             exitService,
             new IAsyncDisposable[]
@@ -472,6 +480,7 @@ public class UnilateralExitTests
         string walletId,
         IVtxoStorage vtxoStorage,
         IVirtualTxStorage virtualTxStorage,
+        IExitSessionStorage exitSessionStorage,
         NArk.Core.Transport.IClientTransport clientTransport,
         UnilateralExitService exitService,
         IReadOnlyCollection<IAsyncDisposable> disposables) : IAsyncDisposable
@@ -479,6 +488,7 @@ public class UnilateralExitTests
         public string WalletId { get; } = walletId;
         public IVtxoStorage VtxoStorage { get; } = vtxoStorage;
         public IVirtualTxStorage VirtualTxStorage { get; } = virtualTxStorage;
+        public IExitSessionStorage ExitSessionStorage { get; } = exitSessionStorage;
         public NArk.Core.Transport.IClientTransport ClientTransport { get; } = clientTransport;
         public UnilateralExitService ExitService { get; } = exitService;
 
