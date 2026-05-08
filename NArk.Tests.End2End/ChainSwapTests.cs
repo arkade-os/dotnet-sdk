@@ -354,16 +354,29 @@ public class ChainSwapTests
     /// because no funds were ever sent.
     /// </summary>
     /// <remarks>
-    /// Equivalent to fulmine's <c>TestChainSwapMockBTCToARKUnilateralRefund</c>
-    /// without the mock-driven time warp — we lean on Boltz's regtest
-    /// timeout instead. Mines blocks aggressively to advance Boltz's BTC
-    /// chain past the lockup-confirmation window so the swap expires
-    /// inside the test budget rather than the real-time timeout. 10-min
-    /// budget covers Boltz's status-monitor lag — the wire timeout is
-    /// reached well before that, but Boltz's internal scanner only
-    /// re-checks every minute or so.
+    /// <para>
+    /// Disabled in CI: Boltz's chain-swap expiry on regtest is
+    /// wall-clock-time-based, not block-height-based — mining blocks
+    /// doesn't accelerate it. CI runs observed Boltz keeping the swap at
+    /// <c>swap.created</c> for the full 10-minute test budget without
+    /// transitioning to <c>swap.expired</c>, so the test never reaches
+    /// the terminal-status assertion. Re-enabling this requires either:
+    ///   - A mock Boltz that exposes admin endpoints to force expire
+    ///     (fulmine's pattern — see <c>TestChainSwapMockBTCToARKUnilateralRefund</c>);
+    ///   - Or wiring <c>bitcoin-cli setmocktime</c> + Boltz's mocktime
+    ///     plumbing into the regtest infrastructure.
+    /// </para>
+    /// <para>
+    /// The SDK code path this test was meant to exercise (the
+    /// "swap.expired with no observable lockup → mark Failed" branch in
+    /// <c>BoltzSwapProvider.PollSwapState</c>) is still correct and
+    /// covered by the unit tests in <c>NArk.Tests/SwapRecoveryTests.cs</c>;
+    /// it just needs the Boltz status flip to actually happen end-to-end
+    /// for an E2E run.
+    /// </para>
     /// </remarks>
     [Test]
+    [Ignore("Disabled in CI: Boltz regtest expiry is wall-clock-based, not block-height-based — mining doesn't help. Needs mock Boltz or setmocktime infrastructure to run end-to-end. SDK behaviour is verified by unit tests in SwapRecoveryTests.cs.")]
     [CancelAfter(600_000)]
     public async Task BtcToArkChainSwapMarksFailedWhenUserDoesNotFund(CancellationToken token)
     {
