@@ -542,6 +542,30 @@ public class BoltzSwapProvider : ISwapProvider
                     continue;
                 }
 
+                // BTC→ARK chain swap: try cooperative refund when Boltz reports
+                // a refundable status (transaction.lockupFailed after we already
+                // tried renegotiating, swap.expired, etc.). Refund spends the
+                // user's BTC lockup back to their stored refund destination.
+                if (swap.SwapType is ArkSwapType.ChainBtcToArk &&
+                    swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded) &&
+                    IsRefundableStatus(swapStatus.Status))
+                {
+                    _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable for BTC→ARK chain swap, attempting cooperative refund",
+                        idToPoll, swapStatus.Status);
+                    if (await CoopRefundBtcToArkChainSwap(swap, cancellationToken))
+                    {
+                        // Refunded — swap row is already updated.
+                        continue;
+                    }
+                    // Refund didn't succeed (Boltz refused, lockup not visible
+                    // yet, etc.). Don't transition to Failed below — leave the
+                    // swap Pending so the routine poll retries. The caller can
+                    // observe `IsRefundableStatus(swapStatus.Status)` and
+                    // surface an "awaiting cooperative refund" indication if
+                    // they want.
+                    continue;
+                }
+
                 // For ARK→BTC chain swaps: try to claim BTC when server has locked
                 if (swap.SwapType is ArkSwapType.ChainArkToBtc &&
                     IsChainSwapClaimableStatus(swapStatus.Status))
@@ -678,6 +702,115 @@ public class BoltzSwapProvider : ISwapProvider
     }
 
     // ─── Cooperative Refund ────────────────────────────────────────
+
+    /// <summary>
+    /// Cooperative refund of a BTC→ARK chain swap whose user-funded BTC
+    /// lockup couldn't be redeemed (renegotiation refused, swap expired,
+    /// etc.). Asks Boltz for a MuSig2 partial signature on a refund tx that
+    /// spends the lockup back to the user's stored BTC destination, signs
+    /// our half, broadcasts via Boltz's BTC broadcaster, and marks the
+    /// swap <see cref="ArkSwapStatus.Refunded"/>. Returns <c>false</c> on
+    /// any failure (Boltz refuses, lockup tx not yet observable, etc.) so
+    /// the routine poll loop will retry on the next tick.
+    /// </summary>
+    /// <remarks>
+    /// The signing primitive (<see cref="ChainSwapMusigSession.CooperativeRefundAsync"/>)
+    /// already existed; this method wires the lookup of the lockup tx,
+    /// outpoint discovery, refund-tx construction, and broadcast around it.
+    /// Mirrors the symmetry of <see cref="TryClaimBtcForChainSwap"/>.
+    /// </remarks>
+    private async Task<bool> CoopRefundBtcToArkChainSwap(ArkSwap swap, CancellationToken ct)
+    {
+        if (swap.SwapType != ArkSwapType.ChainBtcToArk) return false;
+        if (swap.Status == ArkSwapStatus.Refunded) return true;
+
+        var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
+        var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
+        var btcAddress = swap.Get(SwapMetadata.BtcAddress);
+
+        if (string.IsNullOrEmpty(ephemeralKeyHex) ||
+            string.IsNullOrEmpty(boltzResponseJson) ||
+            string.IsNullOrEmpty(btcAddress))
+        {
+            _logger?.LogWarning("Swap {SwapId}: missing chain-swap metadata for BTC refund", swap.SwapId);
+            return false;
+        }
+
+        try
+        {
+            var response = BoltzSwapService.DeserializeChainResponse(boltzResponseJson);
+            // For BTC→ARK refund the lockup is on BTC — held by `lockupDetails`,
+            // not `claimDetails` (claimDetails is for the Ark side which Boltz
+            // is going to reverse). Refund spends the user's BTC lockup back
+            // to the user-supplied refund destination.
+            var lockupDetails = response?.LockupDetails;
+            if (lockupDetails?.SwapTree is null || string.IsNullOrEmpty(lockupDetails.ServerPublicKey))
+            {
+                _logger?.LogWarning("Swap {SwapId}: BTC lockup details missing from Boltz response, can't refund", swap.SwapId);
+                return false;
+            }
+
+            var ephemeralKey = new Key(Convert.FromHexString(ephemeralKeyHex));
+            var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
+            var userPubKey = ecPrivKey.CreatePubKey();
+            var boltzPubKey = ECPubKey.Create(Convert.FromHexString(lockupDetails.ServerPublicKey));
+
+            var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
+            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
+                lockupDetails.SwapTree, userPubKey, boltzPubKey,
+                lockupDetails.LockupAddress, serverInfo.Network);
+            var refundDest = BitcoinAddress.Create(btcAddress, serverInfo.Network);
+
+            var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, ct);
+            if (string.IsNullOrEmpty(swapStatus?.Transaction?.Hex))
+            {
+                _logger?.LogDebug("Swap {SwapId}: BTC lockup tx not yet observable from Boltz, deferring refund", swap.SwapId);
+                return false;
+            }
+
+            var lockupTx = Transaction.Parse(swapStatus.Transaction.Hex, serverInfo.Network);
+            var lockupScript = BitcoinAddress.Create(lockupDetails.LockupAddress, serverInfo.Network).ScriptPubKey;
+            var vout = -1;
+            for (var i = 0; i < lockupTx.Outputs.Count; i++)
+            {
+                if (lockupTx.Outputs[i].ScriptPubKey == lockupScript) { vout = i; break; }
+            }
+            if (vout < 0)
+            {
+                _logger?.LogWarning("Swap {SwapId}: lockup tx has no output paying to {Address}", swap.SwapId, lockupDetails.LockupAddress);
+                return false;
+            }
+
+            var outpoint = new OutPoint(lockupTx.GetHash(), vout);
+            var prevOut = lockupTx.Outputs[vout];
+
+            // Same fee shape as TryClaimBtcForChainSwap. 250 sat at low-fee
+            // regimes is fine; high-fee mempools warrant a real estimator —
+            // the existing claim path has the same trade-off, hoist
+            // separately when needed.
+            const long feeSats = 250L;
+            var unsignedRefundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, feeSats);
+
+            _logger?.LogInformation("Swap {SwapId}: requesting MuSig2 cooperative BTC refund", swap.SwapId);
+            var signedTx = await _chainSwapMusig.CooperativeRefundAsync(
+                swap.SwapId, unsignedRefundTx, prevOut, inputIndex: 0,
+                ecPrivKey, boltzPubKey, spendInfo, ct);
+
+            var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(
+                new BroadcastRequest { Hex = signedTx.ToHex() }, ct);
+            _logger?.LogInformation("Swap {SwapId}: BTC refund broadcast — txid={TxId}", swap.SwapId, broadcastResult.Id);
+
+            await _swapsStorage.SaveSwap(swap.WalletId,
+                swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow },
+                ct);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogError(ex, "Swap {SwapId}: BTC cooperative refund failed", swap.SwapId);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Asks Boltz for a new chain-swap quote based on the amount actually
