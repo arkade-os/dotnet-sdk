@@ -542,27 +542,26 @@ public class BoltzSwapProvider : ISwapProvider
                     continue;
                 }
 
-                // BTC→ARK chain swap: try cooperative refund when Boltz reports
-                // a refundable status (transaction.lockupFailed after we already
-                // tried renegotiating, swap.expired, etc.). Refund spends the
-                // user's BTC lockup back to their stored refund destination.
-                if (swap.SwapType is ArkSwapType.ChainBtcToArk &&
+                // Chain swap cooperative refund: refundable status (after the
+                // renegotiation attempt above already failed or this swap is
+                // outright expired) means the user's locked funds need to come
+                // back. BTC→ARK refunds the BTC lockup; ARK→BTC refunds the
+                // Ark VHTLC. Both paths are best-effort — failure (Boltz
+                // refuses, lockup not yet visible) keeps the swap Pending so
+                // the routine poll retries.
+                if (swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc &&
                     swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded) &&
                     IsRefundableStatus(swapStatus.Status))
                 {
-                    _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable for BTC→ARK chain swap, attempting cooperative refund",
-                        idToPoll, swapStatus.Status);
-                    if (await CoopRefundBtcToArkChainSwap(swap, cancellationToken))
-                    {
-                        // Refunded — swap row is already updated.
-                        continue;
-                    }
-                    // Refund didn't succeed (Boltz refused, lockup not visible
-                    // yet, etc.). Don't transition to Failed below — leave the
-                    // swap Pending so the routine poll retries. The caller can
-                    // observe `IsRefundableStatus(swapStatus.Status)` and
-                    // surface an "awaiting cooperative refund" indication if
-                    // they want.
+                    _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable for {SwapType}, attempting cooperative refund",
+                        idToPoll, swapStatus.Status, swap.SwapType);
+                    var refunded = swap.SwapType is ArkSwapType.ChainBtcToArk
+                        ? await CoopRefundBtcToArkChainSwap(swap, cancellationToken)
+                        : await CoopRefundArkToBtcChainSwap(swap, cancellationToken);
+                    if (refunded) continue;
+                    // Refund didn't succeed (Boltz refused, VTXO/lockup not
+                    // yet visible, etc.). Don't transition to Failed below —
+                    // leave the swap Pending so the routine poll retries.
                     continue;
                 }
 
@@ -702,6 +701,113 @@ public class BoltzSwapProvider : ISwapProvider
     }
 
     // ─── Cooperative Refund ────────────────────────────────────────
+
+    /// <summary>
+    /// Cooperative refund of an ARK→BTC chain swap whose Ark VHTLC lockup
+    /// can't be redeemed (Boltz didn't lock BTC in time, swap expired,
+    /// etc.). Builds an Ark refund tx spending the user's VHTLC back to a
+    /// fresh receive address, asks Boltz to co-sign via
+    /// <c>POST /v2/swap/chain/{id}/refund/ark</c>, submits via the existing
+    /// Ark transaction builder, and marks the swap
+    /// <see cref="ArkSwapStatus.Refunded"/>. Mirrors
+    /// <see cref="RequestRefundCooperatively"/> for submarine swaps; the
+    /// only differences are the Boltz API endpoint and the swap-type guard.
+    /// </summary>
+    private async Task<bool> CoopRefundArkToBtcChainSwap(ArkSwap swap, CancellationToken ct)
+    {
+        if (swap.SwapType != ArkSwapType.ChainArkToBtc) return false;
+        if (swap.Status == ArkSwapStatus.Refunded) return true;
+
+        try
+        {
+            var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
+
+            var matchedSwapContracts =
+                await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript],
+                    cancellationToken: ct);
+            var matchedSwapContractEntity = matchedSwapContracts.SingleOrDefault(e => e.Type == VHTLCContract.ContractType);
+            if (matchedSwapContractEntity is null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: VHTLC contract row not found for ARK→BTC refund", swap.SwapId);
+                return false;
+            }
+            if (ArkContractParser.Parse(matchedSwapContractEntity.Type, matchedSwapContractEntity.AdditionalData,
+                    serverInfo.Network) is not VHTLCContract contract)
+            {
+                _logger?.LogWarning("Swap {SwapId}: failed to parse VHTLC contract for ARK→BTC refund", swap.SwapId);
+                return false;
+            }
+
+            // Same arkd refresh pattern the submarine refund uses — close the
+            // gap between the indexer subscription stream and what arkd
+            // actually has on the contract script right now.
+            await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                               new HashSet<string> { swap.ContractScript }, ct))
+            {
+                await _vtxoStorage.UpsertVtxo(freshVtxo, ct);
+            }
+
+            var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct);
+            if (vtxos.Count == 0)
+            {
+                _logger?.LogWarning("Swap {SwapId}: no VTXOs at VHTLC script for ARK→BTC refund", swap.SwapId);
+                return false;
+            }
+
+            var vtxo = vtxos.Single();
+            var timeHeight = await _chainTimeProvider.GetChainTime(ct);
+            if (!vtxo.CanSpendOffchain(timeHeight))
+            {
+                _logger?.LogDebug("Swap {SwapId}: VHTLC VTXO not yet spendable offchain", swap.SwapId);
+                return false;
+            }
+
+            var refundDest =
+                await _contractService.DeriveContract(swap.WalletId, NextContractPurpose.SendToSelf,
+                    ContractActivityState.AwaitingFundsBeforeDeactivate,
+                    metadata: new Dictionary<string, string> { ["Source"] = $"chain-swap-refund:{swap.SwapId}" },
+                    cancellationToken: ct);
+            if (refundDest is null)
+            {
+                _logger?.LogError("Swap {SwapId}: failed to derive ARK→BTC refund destination", swap.SwapId);
+                return false;
+            }
+
+            var arkCoin = contract.ToCoopRefundCoin(swap.WalletId, vtxo);
+
+            var (arkTx, checkpoints) = await _transactionBuilder.ConstructArkTransaction(
+                [arkCoin],
+                [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDest.GetArkAddress())],
+                serverInfo, ct);
+
+            var checkpoint = checkpoints.Single();
+
+            var refundResponse = await _boltzClient.RefundChainSwapArkAsync(swap.SwapId,
+                new ChainArkRefundRequest
+                {
+                    Transaction = arkTx.ToBase64(),
+                    Checkpoint = checkpoint.Psbt.ToBase64(),
+                }, ct);
+
+            var boltzSignedRefundPsbt = PSBT.Parse(refundResponse.Transaction, serverInfo.Network);
+            var boltzSignedCheckpointPsbt = PSBT.Parse(refundResponse.Checkpoint, serverInfo.Network);
+            arkTx.UpdateFrom(boltzSignedRefundPsbt);
+            checkpoint.Psbt.UpdateFrom(boltzSignedCheckpointPsbt);
+
+            await _transactionBuilder.SubmitArkTransaction([arkCoin], arkTx, [checkpoint], ct);
+
+            await _swapsStorage.SaveSwap(swap.WalletId,
+                swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow },
+                ct);
+            _logger?.LogInformation("Swap {SwapId}: ARK→BTC cooperative refund completed", swap.SwapId);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogError(ex, "Swap {SwapId}: ARK→BTC cooperative refund failed", swap.SwapId);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Cooperative refund of a BTC→ARK chain swap whose user-funded BTC
