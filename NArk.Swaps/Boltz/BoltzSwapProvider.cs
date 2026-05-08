@@ -548,7 +548,10 @@ public class BoltzSwapProvider : ISwapProvider
                 // back. BTC→ARK refunds the BTC lockup; ARK→BTC refunds the
                 // Ark VHTLC. Both paths are best-effort — failure (Boltz
                 // refuses, lockup not yet visible) keeps the swap Pending so
-                // the routine poll retries.
+                // the routine poll retries, EXCEPT when Boltz reported
+                // `swap.expired` and there's no lockup observable: at that
+                // point the swap is dead and there's nothing to refund, so
+                // we transition to Failed so callers can stop polling.
                 if (swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc &&
                     swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded) &&
                     IsRefundableStatus(swapStatus.Status))
@@ -559,9 +562,30 @@ public class BoltzSwapProvider : ISwapProvider
                         ? await CoopRefundBtcToArkChainSwap(swap, cancellationToken)
                         : await CoopRefundArkToBtcChainSwap(swap, cancellationToken);
                     if (refunded) continue;
-                    // Refund didn't succeed (Boltz refused, VTXO/lockup not
-                    // yet visible, etc.). Don't transition to Failed below —
-                    // leave the swap Pending so the routine poll retries.
+
+                    // Refund didn't succeed. If Boltz says `swap.expired`
+                    // and there are no funds at the lockup, the swap is
+                    // dead-with-nothing-to-recover — mark Failed so the
+                    // routine poll stops retrying and the caller can move on.
+                    var noBtcLockup = string.IsNullOrEmpty(swapStatus.Transaction?.Hex);
+                    var noArkLockup = swap.SwapType == ArkSwapType.ChainArkToBtc
+                        && (await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: cancellationToken)).Count == 0;
+                    var nothingToRefund = swap.SwapType == ArkSwapType.ChainBtcToArk ? noBtcLockup : noArkLockup;
+                    if (swapStatus.Status == "swap.expired" && nothingToRefund)
+                    {
+                        _logger?.LogInformation(
+                            "Swap {SwapId}: expired with no observable lockup — marking Failed (no funds to recover)",
+                            idToPoll);
+                        await _swapsStorage.SaveSwap(swap.WalletId,
+                            swap with
+                            {
+                                Status = ArkSwapStatus.Failed,
+                                FailReason = "Swap expired before any funds were locked",
+                                UpdatedAt = DateTimeOffset.UtcNow
+                            }, cancellationToken);
+                    }
+                    // Otherwise leave Pending so the next routine poll retries
+                    // the refund — the lockup might just not be visible yet.
                     continue;
                 }
 
