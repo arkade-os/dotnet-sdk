@@ -507,6 +507,26 @@ public class BoltzSwapProvider : ISwapProvider
                     }
                 }
 
+                // Chain swap renegotiation: Boltz reports transaction.lockupFailed
+                // when the funded amount doesn't match the quote it originally
+                // returned. We ask Boltz for a new quote based on the actual
+                // funded amount and accept it; if Boltz agrees the swap
+                // continues with the renegotiated amount. If Boltz refuses
+                // (amount outside limits etc.) we fall through to the refund
+                // path below. Mirrors arkade-os/boltz-swap's `quoteSwap`.
+                if (swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc &&
+                    swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded) &&
+                    swapStatus.Status == "transaction.lockupFailed")
+                {
+                    if (await TryRenegotiateChainSwap(swap, cancellationToken))
+                    {
+                        // Boltz accepted the new quote — let the next poll
+                        // observe the renegotiated swap making progress.
+                        continue;
+                    }
+                    // Renegotiation refused — fall through to refund.
+                }
+
                 // If not refunded and status is refundable, start a coop refund
                 if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
                     IsRefundableStatus(swapStatus.Status))
@@ -658,6 +678,53 @@ public class BoltzSwapProvider : ISwapProvider
     }
 
     // ─── Cooperative Refund ────────────────────────────────────────
+
+    /// <summary>
+    /// Asks Boltz for a new chain-swap quote based on the amount actually
+    /// funded at the lockup, and accepts it. Returns <c>true</c> on success
+    /// (quote returned and accepted, local <see cref="ArkSwap.ExpectedAmount"/>
+    /// updated). Returns <c>false</c> if Boltz refuses the quote — typically
+    /// because the funded amount falls outside Boltz's published limits, in
+    /// which case the caller should fall through to the refund path.
+    /// </summary>
+    /// <remarks>
+    /// Wired into <see cref="PollSwapState"/> on the
+    /// <c>transaction.lockupFailed</c> Boltz status, mirroring the
+    /// <c>quoteSwap</c> behaviour in <c>arkade-os/boltz-swap</c>'s TS SDK.
+    /// </remarks>
+    private async Task<bool> TryRenegotiateChainSwap(ArkSwap swap, CancellationToken ct)
+    {
+        try
+        {
+            var newQuote = await _boltzClient.GetChainQuoteAsync(swap.SwapId, ct);
+            if (newQuote is null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: Boltz returned a null chain quote", swap.SwapId);
+                return false;
+            }
+
+            await _boltzClient.AcceptChainQuoteAsync(swap.SwapId, newQuote, ct);
+            _logger?.LogInformation(
+                "Swap {SwapId}: chain quote renegotiated — original {Original} sats → new {New} sats",
+                swap.SwapId, swap.ExpectedAmount, newQuote.Amount);
+
+            var updated = swap with
+            {
+                ExpectedAmount = newQuote.Amount,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            await _swapsStorage.SaveSwap(swap.WalletId, updated, ct);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Boltz returns 4xx for funded amounts outside its limits —
+            // the caller treats this as "renegotiation refused, refund instead".
+            _logger?.LogWarning(ex,
+                "Swap {SwapId}: chain quote renegotiation refused by Boltz", swap.SwapId);
+            return false;
+        }
+    }
 
     internal async Task RequestRefundCooperatively(ArkSwap swap, CancellationToken cancellationToken = default)
     {

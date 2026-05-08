@@ -241,6 +241,103 @@ public class ChainSwapTests
     }
 
     /// <summary>
+    /// BTC→ARK chain swap unhappy path with renegotiation: the user funds
+    /// the BTC lockup with an amount that doesn't match the original
+    /// quote (here, ~3× the expected amount, mirroring fulmine's
+    /// <c>TestChainSwapBTCtoARKWithQuote</c>). Boltz emits
+    /// <c>transaction.lockupFailed</c>; the SDK's <c>PollSwapState</c>
+    /// asks Boltz for a new chain quote via
+    /// <c>BoltzClient.GetChainQuoteAsync</c>, accepts it via
+    /// <c>AcceptChainQuoteAsync</c>, and the swap proceeds with the
+    /// renegotiated amount. End state: <see cref="ArkSwapStatus.Settled"/>
+    /// with <c>ExpectedAmount</c> updated to reflect the new quote.
+    /// </summary>
+    [Test]
+    [CancelAfter(420_000)]
+    public async Task BtcToArkChainSwapRenegotiatesWhenLockupDiffers(CancellationToken token)
+    {
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+        var intentStorage = TestStorage.CreateIntentStorage();
+
+        var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
+        [
+            new PaymentContractTransformer(testingPrerequisite.walletProvider),
+            new HashLockedContractTransformer(testingPrerequisite.walletProvider),
+            new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
+        ]);
+
+        var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
+            testingPrerequisite.walletProvider, coinService, testingPrerequisite.contractService,
+            testingPrerequisite.clientTransport, new DefaultCoinSelector(),
+            testingPrerequisite.safetyService, intentStorage);
+
+        var boltzProvider = new BoltzSwapProvider(boltzClient,
+            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService, testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService,
+            testingPrerequisite.contracts, testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
+
+        var settledSwapTcs = new TaskCompletionSource();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[BTC→ARK reneg] {swap.SwapId} → {swap.Status} (expected {swap.ExpectedAmount}, fail: {swap.FailReason})");
+            if (swap.Status == ArkSwapStatus.Settled) settledSwapTcs.TrySetResult();
+        };
+
+        await swapMgr.StartAsync(token);
+
+        var (btcAddress, swapId, originalExpectedSats) = await FulmineLiquidityHelper.RetryWithSettle(() =>
+            swapMgr.InitiateBtcToArkChainSwap(testingPrerequisite.walletIdentifier, 50_000, token));
+        Console.WriteLine($"[BTC→ARK reneg] Swap {swapId} created, original expected lockup: {originalExpectedSats} sats");
+
+        // Fund with ~3× the expected amount so Boltz definitely emits
+        // transaction.lockupFailed (not just accepted-with-fee-tolerance) and
+        // a renegotiated quote becomes necessary. Mirrors the magnitude in
+        // fulmine's TestChainSwapBTCtoARKWithQuote.
+        var fundAmount = originalExpectedSats * 3;
+        var btcAmount = (fundAmount / 100_000_000m).ToString("0.########");
+        var sendResult = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, btcAmount])
+            .ExecuteBufferedAsync(token);
+        Console.WriteLine($"[BTC→ARK reneg] Funded {fundAmount} sats (3× original {originalExpectedSats}), exit={sendResult.ExitCode}");
+        Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
+
+        // Mine + poll until Boltz settles. Renegotiation happens implicitly
+        // inside PollSwapState when Boltz emits transaction.lockupFailed.
+        for (var i = 0; i < 30 && !token.IsCancellationRequested && !settledSwapTcs.Task.IsCompleted; i++)
+        {
+            await DockerHelper.MineBlocks(2, token);
+            try
+            {
+                var status = await boltzClient.GetSwapStatusAsync(swapId, token);
+                Console.WriteLine($"[BTC→ARK reneg] Mine round {i}: Boltz status = {status?.Status ?? "<null>"}");
+            }
+            catch { /* swallow */ }
+            await Task.Delay(TimeSpan.FromSeconds(5), token);
+        }
+
+        await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
+
+        var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
+        Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Settled));
+        Assert.That(finalSwap.ExpectedAmount, Is.Not.EqualTo(originalExpectedSats),
+            "Renegotiation should have updated ExpectedAmount to the renegotiated quote amount");
+        Console.WriteLine($"[BTC→ARK reneg] Final ExpectedAmount: {finalSwap.ExpectedAmount} (was {originalExpectedSats})");
+    }
+
+    /// <summary>
     /// BTC→ARK chain swap unhappy path: the user creates the swap (gets a
     /// BTC lockup address from Boltz) but never funds it. Boltz's BTC-side
     /// timeout eventually elapses and the swap should transition to a
