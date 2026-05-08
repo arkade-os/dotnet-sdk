@@ -172,6 +172,7 @@ public class SwapsManagementService : IAsyncDisposable
     public async Task<string> InitiateSubmarineSwap(string walletId, BOLT11PaymentRequest invoice, bool autoPay = true,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
         var boltz = GetBoltzProvider();
 
         _logger?.LogInformation("Initiating submarine swap for wallet {WalletId}, autoPay={AutoPay}", walletId, autoPay);
@@ -242,6 +243,7 @@ public class SwapsManagementService : IAsyncDisposable
     public async Task<uint256> PayExistingSubmarineSwap(string walletId, string swapId,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
         var swaps = await _swapsStorage.GetSwaps(walletIds: [walletId], swapIds: [swapId],
             cancellationToken: cancellationToken);
         var swap = swaps.FirstOrDefault()
@@ -269,6 +271,7 @@ public class SwapsManagementService : IAsyncDisposable
     public async Task<string> InitiateReverseSwap(string walletId, CreateInvoiceParams invoiceParams,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
         var boltz = GetBoltzProvider();
 
         _logger?.LogInformation("Initiating reverse swap for wallet {WalletId}, amount={Amount}",
@@ -320,6 +323,7 @@ public class SwapsManagementService : IAsyncDisposable
         long amountSats,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
         var boltz = GetBoltzProvider();
 
         _logger?.LogInformation("Initiating BTC->ARK chain swap for wallet {WalletId}, amount={Amount}",
@@ -386,6 +390,7 @@ public class SwapsManagementService : IAsyncDisposable
         BitcoinAddress btcDestination,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
         var boltz = GetBoltzProvider();
 
         _logger?.LogInformation("Initiating ARK->BTC chain swap for wallet {WalletId}, amount={Amount}, dest={Dest}",

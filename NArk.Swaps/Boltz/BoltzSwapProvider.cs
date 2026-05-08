@@ -382,6 +382,15 @@ public class BoltzSwapProvider : ISwapProvider
                     _logger?.LogWarning("Swap {SwapId}: not found in storage", idToPoll);
                     continue;
                 }
+
+                // Tag every log line emitted during this iteration with the
+                // owning wallet so per-wallet diagnostic-log capture can route
+                // them — including transitive calls into TryClaimBtcForChainSwap,
+                // TrySignBoltzBtcClaim, RequestRefundCooperatively. The using
+                // block targets the foreach iteration body; its finally disposes
+                // the scope before continue/break exits this iteration.
+                using var _walletScope = _logger?.BeginScope(("WalletId", swap.WalletId));
+
                 _scriptToSwapId[swap.ContractScript] = swap.SwapId;
 
                 // Terminal states: nothing to do
