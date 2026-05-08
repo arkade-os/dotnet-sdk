@@ -104,3 +104,38 @@ Typical states recorded against each `ArkSwap`:
 ## Restore After Data Loss
 
 `SwapsManagementService.RestoreSwaps(walletId, ...)` rebuilds local swap state from Boltz's `/v2/swap/restore` endpoint, using wallet keys to identify owned swaps. Useful after re-importing a wallet from a mnemonic or nsec.
+
+## Chain Swap Recovery (Renegotiation + Cooperative Refund)
+
+Chain swaps can fail to settle when the user funds the lockup with an amount that doesn't match Boltz's original quote, when an LN invoice times out, or when the swap window expires. The SDK handles these cases automatically inside the routine status-poll loop in `BoltzSwapProvider.PollSwapState`:
+
+| Boltz status                  | SDK behaviour                                                                                                                                                                                                          |
+|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `transaction.lockupFailed`    | Calls `GET /v2/swap/chain/{id}/quote` to obtain a renegotiated amount, accepts via `POST` if Boltz allows it, updates the local `ArkSwap.ExpectedAmount`, and lets the swap proceed. Falls through to refund on refusal. |
+| `swap.expired`, `transaction.failed`, `transaction.refunded` | Triggers cooperative refund: BTC→ARK refunds the BTC lockup via MuSig2 with Boltz; ARK→BTC refunds the Ark VHTLC via Boltz's `POST /v2/swap/chain/{id}/refund/ark`. Marks the swap `Refunded` on success. |
+| `swap.expired` with no funds  | If the lockup was never funded, the swap is marked `Failed` with no recovery work needed.                                                                                                                              |
+
+No manual call required — the same routine poll that drives the happy-path claim flow drives recovery. Hosts can subscribe to `ISwapStorage.SwapsChanged` to observe the resulting state transitions (`Refunded`, `Failed`).
+
+### Inspecting Recovery State
+
+When you want to surface a "recovery available" indicator in a wallet UI without committing to a recovery transaction, use the read-only inspection helpers:
+
+```csharp
+// Single swap — refreshes VTXOs from arkd before reporting
+var info = await swapMgr.InspectSwapRecoveryAsync(walletId, swapId);
+
+if (info.Status == SwapRecoveryStatus.Recoverable)
+{
+    Console.WriteLine($"Swap {info.SwapId} has {info.AmountSats} sats stranded — recovery will run automatically.");
+}
+
+// Bulk audit — useful after a wallet restore
+var report = await swapMgr.ScanRecoverableSwapsAsync(walletId);
+foreach (var entry in report.Where(r => r.Status == SwapRecoveryStatus.Recoverable))
+{
+    Console.WriteLine($"  {entry.SwapId}: {entry.AmountSats} sats at {entry.VtxoCount} vtxo(s)");
+}
+```
+
+`SwapRecoveryStatus` values: `SwapNotFound`, `StillPending`, `AlreadySettled`, `AlreadyRefunded`, `NoFunds`, `Recoverable`, `InspectionError`. These methods are side-effect-free — recovery itself happens automatically inside the provider's poll loop.
