@@ -333,6 +333,92 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
     new ArkTxOut(bitcoinAddress, Money.Satoshis(50_000)));
 ```
 
+## Querying Intents by Proof
+
+Retrieve registered intents by proving ownership of any input coin via a BIP-322-style proof:
+
+```csharp
+// Create a signed ownership proof for a coin
+var (proof, message) = await IntentProofHelper.CreateIntentOwnershipProofAsync(
+    coin, signer, network);
+
+// Query arkd for intents registered with this coin
+var intents = await transport.GetIntentsByProofAsync(proof, message);
+```
+
+The `IntentProofHelper.CreateBip322Psbt` and `IntentProofHelper.SignBip322Proof` building blocks are also available separately for delegation and other proof flows.
+
+## Boarding (On-chain → Arkade)
+
+Boarding lets users move on-chain Bitcoin UTXOs into the Arkade VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the boarding UTXO is automatically picked up by the intent/batch pipeline — no manual intervention needed.
+
+### 1. Derive a Boarding Address
+
+```csharp
+var boardingContract = (ArkBoardingContract)await contractService.DeriveContract(
+    walletId,
+    NextContractPurpose.Boarding);
+
+// Get the on-chain P2TR (bc1p...) address for the user to deposit BTC to
+var onchainAddress = boardingContract.GetOnchainAddress(network);
+```
+
+### 2. Sync On-chain UTXOs
+
+`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It takes an `IBoardingUtxoProvider` — choose **Esplora** or **NBXplorer** depending on your setup:
+
+```csharp
+// Option A: Esplora (mempool.space, Chopsticks, etc.)
+IBoardingUtxoProvider utxoProvider = new EsploraBoardingUtxoProvider(
+    new Uri("https://mempool.space/api/"));
+
+// Option B: NBXplorer (BTCPay Server, self-hosted)
+IBoardingUtxoProvider utxoProvider = new NBXplorerBoardingUtxoProvider(
+    network, new Uri("http://localhost:32838"));
+
+// Register the sync service and provider
+services.AddSingleton<IBoardingUtxoProvider>(utxoProvider);
+services.AddSingleton<BoardingUtxoSyncService>();
+
+// Register the poll service — automatically polls every 30s
+// when unspent boarding VTXOs exist
+services.AddSingleton<BoardingUtxoPollService>();
+services.AddHostedService(sp => sp.GetRequiredService<BoardingUtxoPollService>());
+```
+
+The `BoardingUtxoPollService` automatically checks for unspent boarding VTXOs every 30 seconds and syncs confirmation state changes. It complements event-driven sync (e.g., NBXplorer transaction events) to catch missed events during provider reconnects or block confirmations.
+
+Once a boarding UTXO is synced and confirmed, the SDK's `IntentGenerationService` automatically creates an intent for it. The next batch moves it into the VTXO tree.
+
+### 3. Handle Expired Boarding UTXOs (Optional)
+
+If a boarding UTXO isn't batched before its CSV timelock expires, `OnchainSweepService` detects it. Register a custom `IOnchainSweepHandler` to control what happens:
+
+```csharp
+public class MySweepHandler : IOnchainSweepHandler
+{
+    public async Task<bool> HandleExpiredUtxoAsync(
+        string walletId, ArkVtxo vtxo, ArkContractEntity contract,
+        CancellationToken ct)
+    {
+        // Sweep to a new boarding address, cold storage, etc.
+        return true; // true = handled, false = fall back to default
+    }
+}
+
+services.AddSingleton<IOnchainSweepHandler, MySweepHandler>();
+```
+
+Then call `SweepExpiredUtxosAsync()` periodically:
+
+```csharp
+var sweepService = new OnchainSweepService(
+    vtxoStorage, contractStorage, chainTimeProvider,
+    contractService, walletProvider, sweepHandler);
+
+await sweepService.SweepExpiredUtxosAsync(ct);
+```
+
 ## Contracts
 
 Derive receiving addresses and manage contracts:
