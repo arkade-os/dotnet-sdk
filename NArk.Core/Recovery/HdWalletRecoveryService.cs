@@ -45,6 +45,7 @@ public class HdWalletRecoveryService(
         RecoveryOptions? options = null,
         CancellationToken cancellationToken = default)
     {
+        using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         options ??= RecoveryOptions.Default;
         options.Validate();
 

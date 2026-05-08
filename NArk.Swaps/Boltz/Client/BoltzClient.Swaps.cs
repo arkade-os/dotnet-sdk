@@ -14,9 +14,31 @@ public partial class BoltzClient
     /// </summary>
     /// <param name="swapId">The ID of the swap.</param>
     /// <returns>The status response for the swap.</returns>
+    /// <exception cref="BoltzSwapNotFoundException">
+    /// The configured Boltz instance has no record of this swap (HTTP 404 with
+    /// a "could not find swap with id" body). Distinct from generic HTTP errors
+    /// so callers can treat it as "swap unknown to this provider" rather than
+    /// a transient failure.
+    /// </exception>
     public virtual async Task<SwapStatusResponse?> GetSwapStatusAsync(string swapId, CancellationToken cancellation)
     {
-        return await _httpClient.GetFromJsonAsync<SwapStatusResponse>($"v2/swap/{swapId}", cancellation);
+        using var resp = await _httpClient.GetAsync($"v2/swap/{swapId}", cancellation);
+
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // Defensive: only treat as "swap unknown" if the body matches the
+            // shape Boltz returns for missing swaps. A 404 from a renamed
+            // route or proxy misconfiguration shouldn't trip the safety net.
+            var body = await resp.Content.ReadAsStringAsync(cancellation);
+            if (body.Contains("could not find swap", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new BoltzSwapNotFoundException(swapId, body);
+            }
+            throw new HttpRequestException(body, null, resp.StatusCode);
+        }
+
+        resp.EnsureSuccessStatusCode();
+        return await resp.Content.ReadFromJsonAsync<SwapStatusResponse>(cancellation);
     }
 
     // Submarine Swaps

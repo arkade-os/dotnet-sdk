@@ -88,6 +88,73 @@ public class EfCoreWalletStorageTests
         Assert.That(loaded!.LastUsedIndex, Is.EqualTo(12));
     }
 
+    [Test]
+    public async Task SetMetadataValue_AddsKeyToEmptyMetadata()
+    {
+        await _storage.UpsertWallet(MakeWallet("wallet-meta-1"));
+        await _storage.SetMetadataValue("wallet-meta-1", "vtxo.lastFullPollAt", "2026-05-03T10:00:00Z");
+
+        var loaded = await _storage.GetWalletById("wallet-meta-1");
+        Assert.That(loaded!.Metadata, Is.Not.Null);
+        Assert.That(loaded.Metadata!["vtxo.lastFullPollAt"], Is.EqualTo("2026-05-03T10:00:00Z"));
+    }
+
+    [Test]
+    public async Task SetMetadataValue_PreservesUnrelatedKeys()
+    {
+        // Concurrent writers for different concerns must not clobber each other.
+        await _storage.UpsertWallet(MakeWallet("wallet-meta-2"));
+        await _storage.SetMetadataValue("wallet-meta-2", "vtxo.lastFullPollAt", "2026-01-01T00:00:00Z");
+        await _storage.SetMetadataValue("wallet-meta-2", "recovery.completedAt", "2026-02-02T00:00:00Z");
+
+        var loaded = await _storage.GetWalletById("wallet-meta-2");
+        Assert.That(loaded!.Metadata!.Count, Is.EqualTo(2));
+        Assert.That(loaded.Metadata["vtxo.lastFullPollAt"], Is.EqualTo("2026-01-01T00:00:00Z"));
+        Assert.That(loaded.Metadata["recovery.completedAt"], Is.EqualTo("2026-02-02T00:00:00Z"));
+    }
+
+    [Test]
+    public async Task SetMetadataValue_OverwritesExistingKey()
+    {
+        await _storage.UpsertWallet(MakeWallet("wallet-meta-3"));
+        await _storage.SetMetadataValue("wallet-meta-3", "vtxo.lastFullPollAt", "old");
+        await _storage.SetMetadataValue("wallet-meta-3", "vtxo.lastFullPollAt", "new");
+
+        var loaded = await _storage.GetWalletById("wallet-meta-3");
+        Assert.That(loaded!.Metadata!["vtxo.lastFullPollAt"], Is.EqualTo("new"));
+    }
+
+    [Test]
+    public async Task SetMetadataValue_NullRemovesKey()
+    {
+        await _storage.UpsertWallet(MakeWallet("wallet-meta-4"));
+        await _storage.SetMetadataValue("wallet-meta-4", "k1", "v1");
+        await _storage.SetMetadataValue("wallet-meta-4", "k2", "v2");
+        await _storage.SetMetadataValue("wallet-meta-4", "k1", null);
+
+        var loaded = await _storage.GetWalletById("wallet-meta-4");
+        Assert.That(loaded!.Metadata!.ContainsKey("k1"), Is.False);
+        Assert.That(loaded.Metadata.ContainsKey("k2"), Is.True);
+    }
+
+    [Test]
+    public async Task SetMetadataValue_NullsOutMetadataWhenLastKeyRemoved()
+    {
+        await _storage.UpsertWallet(MakeWallet("wallet-meta-5"));
+        await _storage.SetMetadataValue("wallet-meta-5", "only", "v");
+        await _storage.SetMetadataValue("wallet-meta-5", "only", null);
+
+        var loaded = await _storage.GetWalletById("wallet-meta-5");
+        Assert.That(loaded!.Metadata, Is.Null);
+    }
+
+    [Test]
+    public void SetMetadataValue_ThrowsOnUnknownWallet()
+    {
+        Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await _storage.SetMetadataValue("nope", "k", "v"));
+    }
+
     private static ArkWalletInfo MakeWallet(string id, int lastUsedIndex = 0) =>
         new(id, "secret-" + id, null, WalletType.HD, null, lastUsedIndex);
 

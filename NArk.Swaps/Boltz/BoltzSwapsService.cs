@@ -40,6 +40,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
                 (extractedSender.PubKey?.ToBytes() ?? extractedSender.XOnlyPubKey.ToBytes()).ToHexStringLower(),
             From = "ARK",
             To = "BTC",
+            ReferralId = boltzClient.ReferralId,
         }, cancellationToken);
 
         if (invoice.PaymentHash is null)
@@ -99,6 +100,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             DescriptionHash = createInvoiceRequest.DescriptionHash?.ToString(),
             Description = createInvoiceRequest.Description,
             InvoiceExpirySeconds = Convert.ToInt32(createInvoiceRequest.Expiry.TotalSeconds),
+            ReferralId = boltzClient.ReferralId,
         };
 
         var response = await boltzClient.CreateReverseSwapAsync(request, cancellationToken);
@@ -185,7 +187,8 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             PreimageHash = Encoders.Hex.EncodeData(preimageHash),
             ClaimPublicKey = claimPubKeyHex,
             RefundPublicKey = Encoders.Hex.EncodeData(ephemeralKey.PubKey.ToBytes()),
-            ServerLockAmount = amountSats
+            ServerLockAmount = amountSats,
+            ReferralId = boltzClient.ReferralId,
         };
 
         var response = await boltzClient.CreateChainSwapAsync(request, ct);
@@ -256,7 +259,8 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             PreimageHash = Encoders.Hex.EncodeData(preimageHash),
             ClaimPublicKey = Encoders.Hex.EncodeData(ephemeralKey.PubKey.ToBytes()),
             RefundPublicKey = refundPubKeyHex,
-            UserLockAmount = amountSats
+            UserLockAmount = amountSats,
+            ReferralId = boltzClient.ReferralId,
         };
 
         var response = await boltzClient.CreateChainSwapAsync(request, ct);

@@ -28,6 +28,14 @@ public partial class BoltzClient
     }
 
     /// <summary>
+    /// Referral identifier configured for this client (or null if not set).
+    /// Stamped on every swap-creation request by <see cref="BoltzSwapService"/>
+    /// so Boltz can credit the originating integration. See
+    /// <see cref="BoltzClientOptions.ReferralId"/>.
+    /// </summary>
+    public string? ReferralId => _options.Value.ReferralId;
+
+    /// <summary>
     /// Derives the WebSocket URI from the base HTTP URI.
     /// </summary>
     /// <param name="baseHttpUri">The base HTTP URI of the Boltz API.</param>
