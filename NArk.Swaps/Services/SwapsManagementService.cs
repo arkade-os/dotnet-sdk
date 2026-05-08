@@ -458,6 +458,106 @@ public class SwapsManagementService : IAsyncDisposable
         return result.Swap.Id;
     }
 
+    // ─── Swap Recovery Inspection ──────────────────────────────────
+
+    /// <summary>
+    /// Diagnostic, side-effect-free inspection of a swap to determine
+    /// whether funds are still recoverable from the on-chain / off-chain
+    /// lockup. Useful for wallet UIs that want to surface "X sats
+    /// recoverable" indicators on Failed swaps without committing to a
+    /// recovery transaction. Refreshes the local VTXO snapshot from arkd
+    /// so newly-arrived VTXOs at the swap script are visible to the call.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors arkade-os/boltz-swap's <c>inspectSubmarineRecovery</c> /
+    /// <c>inspectChainSwapRecovery</c> APIs. The actual recovery happens
+    /// automatically inside <c>BoltzSwapProvider.PollSwapState</c> when
+    /// the swap reaches a refundable status — this method is purely a
+    /// reporting helper.
+    /// </remarks>
+    public async Task<SwapRecoveryInfo> InspectSwapRecoveryAsync(
+        string walletId, string swapId, CancellationToken ct = default)
+    {
+        var swap = (await _swapsStorage.GetSwaps(walletIds: [walletId], swapIds: [swapId], cancellationToken: ct))
+            .FirstOrDefault();
+        if (swap is null)
+            return new SwapRecoveryInfo { SwapId = swapId, Status = SwapRecoveryStatus.SwapNotFound };
+
+        if (swap.Status is ArkSwapStatus.Refunded)
+            return new SwapRecoveryInfo { SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.AlreadyRefunded };
+        if (swap.Status is ArkSwapStatus.Settled)
+            return new SwapRecoveryInfo { SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.AlreadySettled };
+
+        // Refresh the local VTXO snapshot so a freshly-arrived VTXO at the
+        // swap's contract script (e.g. user funded the lockup just before
+        // this scan) shows up.
+        if (!string.IsNullOrEmpty(swap.ContractScript))
+        {
+            try
+            {
+                await foreach (var fresh in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                                   new HashSet<string> { swap.ContractScript }, ct))
+                {
+                    await _vtxoStorage.UpsertVtxo(fresh, ct);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return new SwapRecoveryInfo
+                {
+                    SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.InspectionError,
+                    Error = $"Failed to refresh VTXOs: {ex.Message}",
+                };
+            }
+        }
+
+        var vtxos = string.IsNullOrEmpty(swap.ContractScript)
+            ? []
+            : (await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct))
+              .Where(v => !v.IsSpent()).ToList();
+        var amount = vtxos.Sum(v => (long)v.Amount);
+
+        return new SwapRecoveryInfo
+        {
+            SwapId = swapId,
+            Swap = swap,
+            Status = vtxos.Count > 0 ? SwapRecoveryStatus.Recoverable : SwapRecoveryStatus.NoFunds,
+            VtxoCount = vtxos.Count,
+            AmountSats = amount,
+        };
+    }
+
+    /// <summary>
+    /// Bulk recovery scan: walks all locally-known non-pending swaps for
+    /// the wallet and reports each swap's recovery state. The result is a
+    /// snapshot suitable for "audit my swap history for stranded funds"
+    /// flows after a wallet restore. Skips swaps still in
+    /// <see cref="ArkSwapStatus.Pending"/> since those aren't recovery
+    /// candidates yet.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors arkade-os/boltz-swap's <c>scanRecoverableSubmarineSwaps</c>
+    /// but covers all swap types (submarine, reverse, chain in both
+    /// directions). Calls <see cref="InspectSwapRecoveryAsync"/> per
+    /// candidate; runs a fresh arkd VTXO snapshot per swap so callers get
+    /// a real-time view rather than a cached one.
+    /// </remarks>
+    public async Task<IReadOnlyList<SwapRecoveryInfo>> ScanRecoverableSwapsAsync(
+        string walletId, CancellationToken ct = default)
+    {
+        var allSwaps = await _swapsStorage.GetSwaps(walletIds: [walletId], cancellationToken: ct);
+        var candidates = allSwaps
+            .Where(s => s.Status is not ArkSwapStatus.Pending)
+            .ToList();
+
+        var results = new List<SwapRecoveryInfo>(candidates.Count);
+        foreach (var swap in candidates)
+        {
+            results.Add(await InspectSwapRecoveryAsync(walletId, swap.SwapId, ct));
+        }
+        return results;
+    }
+
     // ─── Swap Restoration ──────────────────────────────────────────
 
     /// <summary>
