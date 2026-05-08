@@ -59,7 +59,17 @@ public class BoltzSwapProvider : ISwapProvider
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
 
-    private HashSet<string> _swapsIdToWatch = [];
+    /// <summary>
+    /// Set of swap ids currently being watched on the persistent Boltz
+    /// websocket. Concurrent because <see cref="RunWebsocketLoop"/> reads
+    /// it (under <see cref="_websocketLock"/>) on the websocket task while
+    /// <see cref="DoUpdateStorage"/> and <see cref="PollSwapState"/> /
+    /// <see cref="MarkSwapAsUnknownToProvider"/> mutate it on the channel
+    /// reader thread. Modelled as a dictionary because there is no
+    /// <c>ConcurrentHashSet&lt;T&gt;</c> in .NET; the byte payload is a
+    /// placeholder and presence-of-key is the membership predicate.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _swapsIdToWatch = new();
     private readonly ConcurrentDictionary<string, string> _scriptToSwapId = [];
 
     /// <summary>
@@ -201,7 +211,34 @@ public class BoltzSwapProvider : ISwapProvider
 
     public Task StopAsync(CancellationToken ct)
     {
-        return Task.CompletedTask;
+        // Graceful shutdown: cancel the shutdown CTS and await the background
+        // pumps. Without this, the IHostedService lifecycle calls StopAsync,
+        // returns immediately, and the background tasks (websocket loop,
+        // routine poll, channel reader) keep running until the host process
+        // exits — leaking event handler subscriptions and emitting log lines
+        // on a dying host. DisposeAsync is the safety net for non-hosted
+        // scenarios; it short-circuits when the CTS is already cancelled.
+        return ShutdownAsync();
+    }
+
+    private int _shutdownStarted;
+
+    private async Task ShutdownAsync()
+    {
+        if (Interlocked.Exchange(ref _shutdownStarted, 1) == 1) return;
+
+        _logger?.LogInformation("Shutting down Boltz swap provider");
+        try { await _shutdownCts.CancelAsync(); } catch { /* already cancelled */ }
+
+        async Task Drain(Task? t)
+        {
+            if (t is null) return;
+            try { await t; } catch { /* expected on cancel */ }
+        }
+
+        await Drain(_cacheTask);
+        await Drain(_routinePollTask);
+        await Drain(_websocketTask);
     }
 
     public async Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct)
@@ -340,7 +377,7 @@ public class BoltzSwapProvider : ISwapProvider
 
                     // If we already watch this swap, just poll — the
                     // persistent websocket already has it subscribed.
-                    if (_swapsIdToWatch.Contains(swapId))
+                    if (_swapsIdToWatch.ContainsKey(swapId))
                     {
                         _logger?.LogDebug("Swap {SwapId} update triggered (already monitored), polling state", swapId);
                         await PollSwapState([swapId], cancellationToken);
@@ -353,7 +390,7 @@ public class BoltzSwapProvider : ISwapProvider
                         // Add to in-memory watch set + send a Subscribe op
                         // through the persistent websocket. No connection
                         // restart — that's the whole point of this fix.
-                        _swapsIdToWatch = [.. _swapsIdToWatch, swapId];
+                        _swapsIdToWatch.TryAdd(swapId, 0);
                         await SubscribeOnWebsocketAsync([swapId], cancellationToken);
                     }
                 }
@@ -364,7 +401,8 @@ public class BoltzSwapProvider : ISwapProvider
                     var newSwapIdSet =
                         activeSwaps.Select(s => s.SwapId).ToHashSet();
 
-                    if (_swapsIdToWatch.SetEquals(newSwapIdSet))
+                    var currentIds = _swapsIdToWatch.Keys.ToHashSet();
+                    if (currentIds.SetEquals(newSwapIdSet))
                     {
                         // Set unchanged, but still poll as a failsafe in case
                         // the websocket was disconnected between events.
@@ -376,16 +414,17 @@ public class BoltzSwapProvider : ISwapProvider
                         continue;
                     }
 
-                    var added = newSwapIdSet.Except(_swapsIdToWatch).ToArray();
-                    var removed = _swapsIdToWatch.Except(newSwapIdSet).ToArray();
+                    var added = newSwapIdSet.Except(currentIds).ToArray();
+                    var removed = currentIds.Except(newSwapIdSet).ToArray();
                     _logger?.LogInformation(
                         "Active swap set changed: {OldCount} -> {NewCount} swap(s); subscribing {Added}, unsubscribing {Removed}",
-                        _swapsIdToWatch.Count, newSwapIdSet.Count, added.Length, removed.Length);
+                        currentIds.Count, newSwapIdSet.Count, added.Length, removed.Length);
 
                     if (added.Length > 0)
                         await PollSwapState(added, cancellationToken);
 
-                    _swapsIdToWatch = newSwapIdSet;
+                    foreach (var id in added) _swapsIdToWatch.TryAdd(id, 0);
+                    foreach (var id in removed) _swapsIdToWatch.TryRemove(id, out _);
 
                     if (added.Length > 0)
                         await SubscribeOnWebsocketAsync(added, cancellationToken);
@@ -528,7 +567,7 @@ public class BoltzSwapProvider : ISwapProvider
                     _logger?.LogInformation("Swap {SwapId}: terminal state {Status}, removing from watch list",
                         idToPoll, swapWithNewStatus.Status);
                     _scriptToSwapId.Remove(swapWithNewStatus.ContractScript, out _);
-                    _swapsIdToWatch.Remove(swapWithNewStatus.SwapId);
+                    _swapsIdToWatch.TryRemove(swapWithNewStatus.SwapId, out _);
 
                     // Drop the subscription on the persistent websocket so we
                     // don't keep receiving updates for a swap we no longer
@@ -588,7 +627,7 @@ public class BoltzSwapProvider : ISwapProvider
         if (!swap.Status.IsActive())
         {
             _consecutiveUnknown.TryRemove(swapId, out _);
-            _swapsIdToWatch.Remove(swapId);
+            _swapsIdToWatch.TryRemove(swapId, out _);
             return;
         }
 
@@ -614,7 +653,7 @@ public class BoltzSwapProvider : ISwapProvider
 
         // Stop polling and clear the counter. NotifySwapChanged handles
         // _scriptToSwapId eviction via the SaveSwap event we just emitted.
-        _swapsIdToWatch.Remove(swapId);
+        _swapsIdToWatch.TryRemove(swapId, out _);
         _consecutiveUnknown.TryRemove(swapId, out _);
     }
 
@@ -816,7 +855,7 @@ public class BoltzSwapProvider : ISwapProvider
                 try
                 {
                     _websocket = client;
-                    initialSubs = _swapsIdToWatch.ToArray();
+                    initialSubs = _swapsIdToWatch.Keys.ToArray();
                 }
                 finally
                 {
@@ -1164,40 +1203,10 @@ public class BoltzSwapProvider : ISwapProvider
 
     public async ValueTask DisposeAsync()
     {
-        _logger?.LogInformation("Disposing Boltz swap provider");
-
-        await _shutdownCts.CancelAsync();
-
-        try
-        {
-            if (_cacheTask is not null)
-                await _cacheTask;
-        }
-        catch
-        {
-            // ignored
-        }
-
-        try
-        {
-            if (_routinePollTask is not null)
-                await _routinePollTask;
-        }
-        catch
-        {
-            // ignored
-        }
-
-        try
-        {
-            if (_websocketTask is not null)
-                await _websocketTask;
-        }
-        catch
-        {
-            // ignored
-        }
-
+        // ShutdownAsync handles the cancel + drain. It's idempotent — safe
+        // to call after StopAsync has already run during host shutdown.
+        await ShutdownAsync();
         _websocketLock.Dispose();
+        _shutdownCts.Dispose();
     }
 }

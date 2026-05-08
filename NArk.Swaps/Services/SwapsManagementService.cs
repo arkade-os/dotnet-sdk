@@ -737,7 +737,11 @@ public class SwapsManagementService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _logger?.LogInformation("Disposing swap management service");
+        // Both events were subscribed in the ctor — both must come off, or
+        // OnVtxosChanged would still fire on a disposed router and reach
+        // providers that have themselves been disposed.
         _swapsStorage.SwapsChanged -= OnSwapsChanged;
+        _vtxoStorage.VtxosChanged -= OnVtxosChanged;
 
         foreach (var provider in _providers)
         {
