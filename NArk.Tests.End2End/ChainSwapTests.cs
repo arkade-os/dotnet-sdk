@@ -252,10 +252,13 @@ public class ChainSwapTests
     /// without the mock-driven time warp — we lean on Boltz's regtest
     /// timeout instead. Mines blocks aggressively to advance Boltz's BTC
     /// chain past the lockup-confirmation window so the swap expires
-    /// inside the test budget rather than the real-time timeout.
+    /// inside the test budget rather than the real-time timeout. 10-min
+    /// budget covers Boltz's status-monitor lag — the wire timeout is
+    /// reached well before that, but Boltz's internal scanner only
+    /// re-checks every minute or so.
     /// </remarks>
     [Test]
-    [CancelAfter(300_000)]
+    [CancelAfter(600_000)]
     public async Task BtcToArkChainSwapMarksFailedWhenUserDoesNotFund(CancellationToken token)
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
@@ -315,7 +318,13 @@ public class ChainSwapTests
         // can see the moment it gives up — the SDK's transition to
         // Failed/Refunded follows from the polling loop in
         // BoltzSwapProvider.PollSwapState.
-        for (var i = 0; i < 30 && !token.IsCancellationRequested; i++)
+        //
+        // Boltz's chain-swap status monitor re-checks once per minute on
+        // regtest, so even after we mine well past the timeout block height
+        // we have to wait for the next monitor tick. 60 rounds × (2s mine +
+        // 5s sleep) ≈ 7 minutes of grinding, with the terminal-state TCS
+        // short-circuiting as soon as Boltz reports the swap as expired.
+        for (var i = 0; i < 60 && !token.IsCancellationRequested; i++)
         {
             await DockerHelper.MineBlocks(20, token);
             try
@@ -329,10 +338,10 @@ public class ChainSwapTests
             }
 
             if (terminalTcs.Task.IsCompleted) break;
-            await Task.Delay(TimeSpan.FromSeconds(3), token);
+            await Task.Delay(TimeSpan.FromSeconds(5), token);
         }
 
-        var terminalStatus = await terminalTcs.Task.WaitAsync(TimeSpan.FromMinutes(3), token);
+        var terminalStatus = await terminalTcs.Task.WaitAsync(TimeSpan.FromMinutes(8), token);
         Assert.That(terminalStatus, Is.AnyOf(ArkSwapStatus.Failed, ArkSwapStatus.Refunded),
             $"BTC→ARK chain swap with no user funding should reach Failed (or Refunded if the SDK chooses to surface it that way); got {terminalStatus}");
 

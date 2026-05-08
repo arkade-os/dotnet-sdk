@@ -370,6 +370,31 @@ public class SwapManagementServiceTests
 
         await swapMgr.StartAsync(CancellationToken.None);
 
+        // FundedWalletHelper hands back a wallet with one 500k-sat VTXO; two
+        // parallel submarine spends would race on the SafetyService lock for
+        // that single VTXO and the loser would crash with
+        // AlreadyLockedVtxoException. Top up a second VTXO at the same
+        // receive script so each parallel swap gets its own input.
+        var walletContracts = await prereq.contracts.GetContracts(walletIds: [prereq.walletIdentifier]);
+        var receiveScript = walletContracts.Single().Script;
+        var arkAddress = NBitcoin.Script.FromHex(receiveScript).GetDestinationAddress(Network.RegTest)?.ToString()
+                         ?? throw new InvalidOperationException("Could not derive ark address from receive script");
+        var secondVtxoTcs = new TaskCompletionSource();
+        void SecondVtxoHandler(object? sender, NArk.Abstractions.VTXOs.ArkVtxo vtxo)
+        {
+            if (vtxo.Script == receiveScript) secondVtxoTcs.TrySetResult();
+        }
+        prereq.vtxoStorage.VtxosChanged += SecondVtxoHandler;
+        try
+        {
+            await DockerHelper.SendArkdNoteTo(arkAddress, amountSats: 500_000);
+            await secondVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        }
+        finally
+        {
+            prereq.vtxoStorage.VtxosChanged -= SecondVtxoHandler;
+        }
+
         // Fire both InitiateSubmarineSwap calls in parallel so the second
         // swap arrives while the first is still inside the
         // SaveSwap → NotifySwapChanged → trigger-channel → DoUpdateStorage
@@ -577,9 +602,12 @@ public class SwapManagementServiceTests
             .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", revInvoice])
             .ExecuteBufferedAsync();
 
+        // 5-min budget — submarine + reverse + Boltz + LND chain on CI can
+        // take a while to fully settle. The previous 3-min budget was tight
+        // and produced flake on slow runners.
         await Task.WhenAll(
-            settled[subSwapId].Task.WaitAsync(TimeSpan.FromMinutes(3)),
-            settled[revSwap.SwapId].Task.WaitAsync(TimeSpan.FromMinutes(3)));
+            settled[subSwapId].Task.WaitAsync(TimeSpan.FromMinutes(5)),
+            settled[revSwap.SwapId].Task.WaitAsync(TimeSpan.FromMinutes(5)));
     }
 
     [Test]

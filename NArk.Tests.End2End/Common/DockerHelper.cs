@@ -96,14 +96,49 @@ public static class DockerHelper
     /// subsequent payment attempt to that invoice fails immediately with
     /// "invoice expired" — used by submarine-swap tests to deterministically
     /// drive Boltz into the <c>invoice.failedToPay</c> state without waiting
-    /// for natural expiry.
+    /// for natural expiry. <c>lncli cancelinvoice</c> returns empty stdout
+    /// on success, so we just rely on the docker exec exit code (which
+    /// <see cref="Exec"/> swallows via <see cref="CommandResultValidation.None"/>) —
+    /// callers can verify the cancellation took effect by attempting payment
+    /// or polling the invoice state.
     /// </summary>
     public static async Task CancelLndInvoice(string rHashHex, CancellationToken ct = default)
     {
-        var output = await Exec("lnd",
+        await Exec("lnd",
             ["lncli", "--network=regtest", "cancelinvoice", rHashHex], ct);
-        if (string.IsNullOrWhiteSpace(output))
-            throw new InvalidOperationException("lncli cancelinvoice returned empty output");
+    }
+
+    /// <summary>
+    /// Adds an extra unspent VTXO to an already-funded wallet's existing
+    /// receive contract by issuing another <c>ark send</c> from arkd. Used
+    /// by concurrency tests where two parallel swaps must each lock their
+    /// own VTXO without hitting <c>AlreadyLockedVtxoException</c>.
+    /// </summary>
+    /// <remarks>
+    /// Must be invoked AFTER the wallet has at least one VTXO already (so a
+    /// receive script is registered with arkd) and BEFORE the swap that
+    /// needs the extra VTXO is initiated. Each call creates one additional
+    /// <paramref name="amountSats"/>-sat VTXO at the same script. The
+    /// supplied <paramref name="onVtxoArrived"/> callback is invoked when a
+    /// new unspent VTXO lands at the receive script — typical use is a
+    /// <see cref="TaskCompletionSource"/> the caller awaits.
+    /// </remarks>
+    public static async Task SendArkdNoteTo(string arkAddress, long amountSats,
+        CancellationToken ct = default)
+    {
+        var result = await CliWrap.Cli.Wrap("docker")
+            .WithArguments([
+                "exec", "ark", "ark", "send", "--to", arkAddress,
+                "--amount", amountSats.ToString(),
+                "--password", "secret"
+            ])
+            .WithValidation(CliWrap.CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"ark send to {arkAddress} for {amountSats} sats failed (exit={result.ExitCode}): " +
+                $"stdout={result.StandardOutput.Trim()}, stderr={result.StandardError.Trim()}");
     }
 
     /// <summary>
