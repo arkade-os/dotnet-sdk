@@ -388,7 +388,18 @@ public class SwapManagementServiceTests
         try
         {
             await DockerHelper.SendArkdNoteTo(arkAddress, amountSats: 500_000);
-            await secondVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            // ark send goes through a batch; mining blocks settles the boarding
+            // input and the VtxoSync gRPC stream picks the new VTXO up. 15s was
+            // too tight on a busy CI runner — give the batch + sync ~60s.
+            for (var i = 0; i < 6 && !secondVtxoTcs.Task.IsCompleted; i++)
+            {
+                await DockerHelper.MineBlocks(2);
+                try { await secondVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
+                catch (TimeoutException) { /* try another mine round */ }
+            }
+            if (!secondVtxoTcs.Task.IsCompleted)
+                throw new TimeoutException(
+                    "Second VTXO did not arrive at receive script within 60s after ark send + 6 mine rounds.");
         }
         finally
         {
