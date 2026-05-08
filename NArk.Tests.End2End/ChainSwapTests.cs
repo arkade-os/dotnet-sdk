@@ -239,4 +239,109 @@ public class ChainSwapTests
         var finalSwap = swaps.First(s => s.SwapId == swapId);
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Settled));
     }
+
+    /// <summary>
+    /// BTC→ARK chain swap unhappy path: the user creates the swap (gets a
+    /// BTC lockup address from Boltz) but never funds it. Boltz's BTC-side
+    /// timeout eventually elapses and the swap should transition to a
+    /// terminal failed state on the SDK side. The user has lost nothing
+    /// because no funds were ever sent.
+    /// </summary>
+    /// <remarks>
+    /// Equivalent to fulmine's <c>TestChainSwapMockBTCToARKUnilateralRefund</c>
+    /// without the mock-driven time warp — we lean on Boltz's regtest
+    /// timeout instead. Mines blocks aggressively to advance Boltz's BTC
+    /// chain past the lockup-confirmation window so the swap expires
+    /// inside the test budget rather than the real-time timeout.
+    /// </remarks>
+    [Test]
+    [CancelAfter(300_000)]
+    public async Task BtcToArkChainSwapMarksFailedWhenUserDoesNotFund(CancellationToken token)
+    {
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+        var intentStorage = TestStorage.CreateIntentStorage();
+
+        var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
+        [
+            new PaymentContractTransformer(testingPrerequisite.walletProvider),
+            new HashLockedContractTransformer(testingPrerequisite.walletProvider),
+            new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
+        ]);
+
+        var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
+            testingPrerequisite.walletProvider, coinService, testingPrerequisite.contractService,
+            testingPrerequisite.clientTransport, new DefaultCoinSelector(),
+            testingPrerequisite.safetyService, intentStorage);
+
+        var boltzProvider = new BoltzSwapProvider(boltzClient,
+            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService, testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService,
+            testingPrerequisite.contracts, testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
+
+        var terminalTcs = new TaskCompletionSource<ArkSwapStatus>();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[BTC→ARK no-fund] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            if (swap.Status is ArkSwapStatus.Failed or ArkSwapStatus.Refunded)
+                terminalTcs.TrySetResult(swap.Status);
+            else if (swap.Status == ArkSwapStatus.Settled)
+                terminalTcs.TrySetException(new InvalidOperationException(
+                    $"Swap {swap.SwapId} unexpectedly Settled without any user funding"));
+        };
+
+        await swapMgr.StartAsync(token);
+
+        var (btcAddress, swapId, expectedLockupSats) = await FulmineLiquidityHelper.RetryWithSettle(() =>
+            swapMgr.InitiateBtcToArkChainSwap(
+                testingPrerequisite.walletIdentifier, 50_000, token));
+        Console.WriteLine($"[BTC→ARK no-fund] Swap {swapId} created, lockup address {btcAddress}, expected {expectedLockupSats} sats — NOT funding deliberately");
+        Assert.That(swapId, Is.Not.Null.And.Not.Empty);
+
+        // Mine blocks aggressively to advance Boltz's BTC chain past the
+        // lockup-confirmation timeout window. We poll Boltz directly so we
+        // can see the moment it gives up — the SDK's transition to
+        // Failed/Refunded follows from the polling loop in
+        // BoltzSwapProvider.PollSwapState.
+        for (var i = 0; i < 30 && !token.IsCancellationRequested; i++)
+        {
+            await DockerHelper.MineBlocks(20, token);
+            try
+            {
+                var status = await boltzClient.GetSwapStatusAsync(swapId, token);
+                Console.WriteLine($"[BTC→ARK no-fund] Mine round {i}: Boltz status = {status?.Status ?? "<null>"}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[BTC→ARK no-fund] Mine round {i}: status poll error: {ex.Message}");
+            }
+
+            if (terminalTcs.Task.IsCompleted) break;
+            await Task.Delay(TimeSpan.FromSeconds(3), token);
+        }
+
+        var terminalStatus = await terminalTcs.Task.WaitAsync(TimeSpan.FromMinutes(3), token);
+        Assert.That(terminalStatus, Is.AnyOf(ArkSwapStatus.Failed, ArkSwapStatus.Refunded),
+            $"BTC→ARK chain swap with no user funding should reach Failed (or Refunded if the SDK chooses to surface it that way); got {terminalStatus}");
+
+        var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
+        Assert.That(finalSwap.Status, Is.AnyOf(ArkSwapStatus.Failed, ArkSwapStatus.Refunded));
+        // Sanity: no funds left the user's wallet.
+        var vtxos = await testingPrerequisite.vtxoStorage.GetVtxos(walletIds: [testingPrerequisite.walletIdentifier]);
+        var spent = vtxos.Count(v => v.IsSpent());
+        Assert.That(spent, Is.Zero,
+            "User VTXOs must be untouched when the BTC lockup was never funded");
+    }
 }

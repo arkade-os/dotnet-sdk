@@ -59,6 +59,54 @@ public static class DockerHelper
     }
 
     /// <summary>
+    /// Creates an LND invoice and returns both the BOLT11 string and its
+    /// hex-encoded payment hash. The hash is needed by
+    /// <see cref="CancelLndInvoice"/> to deterministically fail the invoice
+    /// before Boltz tries to pay it.
+    /// </summary>
+    public static async Task<(string PaymentRequest, string RHashHex)> CreateLndInvoiceWithHash(
+        long amtSats = 10000, int expirySecs = 30, CancellationToken ct = default)
+    {
+        var args = new List<string>
+        {
+            "lncli", "--network=regtest", "addinvoice", "--amt", amtSats.ToString()
+        };
+        if (expirySecs > 0)
+        {
+            args.AddRange(["--expiry", expirySecs.ToString(CultureInfo.InvariantCulture)]);
+        }
+
+        var output = await Exec("lnd", args.ToArray(), ct);
+        var json = JsonSerializer.Deserialize<JsonObject>(output)
+                   ?? throw new InvalidOperationException($"LND addinvoice returned non-JSON: {output}");
+
+        var paymentRequest = json["payment_request"]?.GetValue<string>()
+            ?? throw new InvalidOperationException($"Invoice creation on LND failed (no payment_request). Output: {output}");
+
+        // LND returns r_hash as base64; lncli's cancelinvoice expects hex.
+        var rHashB64 = json["r_hash"]?.GetValue<string>()
+            ?? throw new InvalidOperationException($"Invoice creation on LND failed (no r_hash). Output: {output}");
+        var rHashHex = Convert.ToHexString(Convert.FromBase64String(rHashB64)).ToLowerInvariant();
+
+        return (paymentRequest.Trim(), rHashHex);
+    }
+
+    /// <summary>
+    /// Cancels a pending LND invoice by payment hash. Once cancelled, any
+    /// subsequent payment attempt to that invoice fails immediately with
+    /// "invoice expired" — used by submarine-swap tests to deterministically
+    /// drive Boltz into the <c>invoice.failedToPay</c> state without waiting
+    /// for natural expiry.
+    /// </summary>
+    public static async Task CancelLndInvoice(string rHashHex, CancellationToken ct = default)
+    {
+        var output = await Exec("lnd",
+            ["lncli", "--network=regtest", "cancelinvoice", rHashHex], ct);
+        if (string.IsNullOrWhiteSpace(output))
+            throw new InvalidOperationException("lncli cancelinvoice returned empty output");
+    }
+
+    /// <summary>
     /// Creates an arkd note via docker exec.
     /// Returns the note string.
     /// </summary>
