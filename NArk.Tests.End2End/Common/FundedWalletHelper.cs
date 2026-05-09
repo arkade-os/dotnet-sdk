@@ -64,11 +64,29 @@ internal static class FundedWalletHelper
         );
         await contractService.ImportContract(fp1, contract);
 
-        // Pay <vtxoCount> separate VTXOs to the contract address. Each `ark send`
-        // produces an independent VTXO of <amountSatsPerVtxo> sats so concurrent
-        // tests that need parallel coin selection don't race on a shared input.
+        // Pay <vtxoCount> separate VTXOs to the contract address. Each
+        // ark send produces an independent VTXO of <amountSatsPerVtxo> sats
+        // so concurrent tests that need parallel coin selection don't race
+        // on a shared input.
+        //
+        // Each call is preceded by a fresh `arkd note + ark redeem-notes`
+        // top-up so the shared CLI wallet's offchain balance never depletes
+        // mid-suite. start-env.sh only redeems once at startup; after a few
+        // dozen tests the 100M-sat reservoir would otherwise run out.
         for (var i = 0; i < vtxoCount; i++)
         {
+            var topUpResult = await Cli.Wrap("docker")
+                .WithArguments([
+                    "exec", "ark", "sh", "-c",
+                    $"NOTE=$(arkd note --amount {amountSatsPerVtxo + 1000}) && ark redeem-notes -n \"$NOTE\" --password secret"
+                ])
+                .WithValidation(CommandResultValidation.None)
+                .ExecuteBufferedAsync();
+
+            if (!topUpResult.IsSuccess)
+                throw new InvalidOperationException(
+                    $"ark redeem-notes top-up #{i + 1} failed (exit={topUpResult.ExitCode}): stdout={topUpResult.StandardOutput}, stderr={topUpResult.StandardError}");
+
             var sendResult = await Cli.Wrap("docker")
                 .WithArguments([
                     "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",

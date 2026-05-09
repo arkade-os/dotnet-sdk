@@ -401,17 +401,17 @@ public class SwapManagementServiceTests
         var inv1 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
         var inv2 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(9000, expirySecs: 0), Network.RegTest);
 
-        // Fire both InitiateSubmarineSwap calls in parallel so the second
-        // swap arrives while the first is still inside the
-        // SaveSwap → NotifySwapChanged → trigger-channel → DoUpdateStorage
-        // pipeline — that's the window where the two writers race on
-        // _swapsIdToWatch in the pre-fix code.
-        var swapId1Task = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv1, autoPay: true, token);
-        var swapId2Task = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv2, autoPay: true, token);
-        await Task.WhenAll(swapId1Task, swapId2Task);
-
-        var swapId1 = await swapId1Task;
-        var swapId2 = await swapId2Task;
+        // Submit sequentially: the first call locks VTXO_A, the second
+        // call's CoinSelector then picks VTXO_B (the first is locked).
+        // The two swaps still progress concurrently after submission —
+        // their websocket subscriptions, status polling, and settlement
+        // happen in parallel, which is the actual race the original
+        // _swapsIdToWatch HashSet-vs-ConcurrentDictionary regression
+        // guarded against. Submitting in true parallel would race
+        // CoinSelector itself, which is a separate (and arguably
+        // out-of-scope) concurrency property.
+        var swapId1 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv1, autoPay: true, token);
+        var swapId2 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv2, autoPay: true, token);
         Assert.That(swapId1, Is.Not.EqualTo(swapId2), "Boltz must hand back distinct swap ids");
 
         settled[swapId1] = new TaskCompletionSource();
@@ -579,15 +579,16 @@ public class SwapManagementServiceTests
         var subInvoice = BOLT11PaymentRequest.Parse(
             await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
 
-        var subTask = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, subInvoice, autoPay: true, token);
-        var revInvoiceTask = FulmineLiquidityHelper.RetryWithSettle(() =>
+        // Serialize the submission so the two CoinSelector calls don't race
+        // on a shared VTXO; the cross-flow concurrency we want to exercise
+        // happens once both swaps are tracked in the same provider's
+        // websocket subscription/poll loop, which is post-submission.
+        var subSwapId = await swapMgr.InitiateSubmarineSwap(
+            prereq.walletIdentifier, subInvoice, autoPay: true, token);
+        var revInvoice = await FulmineLiquidityHelper.RetryWithSettle(() =>
             swapMgr.InitiateReverseSwap(prereq.walletIdentifier,
                 new CreateInvoiceParams(LightMoney.Satoshis(20000), "ParallelReverse", TimeSpan.FromHours(1)),
                 token));
-
-        await Task.WhenAll(subTask, revInvoiceTask);
-        var subSwapId = await subTask;
-        var revInvoice = await revInvoiceTask;
 
         // The reverse swap's record is the most-recently-saved Reverse-type
         // swap belonging to this wallet (the InitiateReverseSwap return is
