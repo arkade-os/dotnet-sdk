@@ -59,46 +59,6 @@ public static class DockerHelper
     }
 
     /// <summary>
-    /// Creates an LND invoice and returns the BOLT11 string. Used by tests
-    /// that need a regular (non-hold) invoice that Boltz can pay through
-    /// its standard pathway. To deterministically FAIL the payment use
-    /// <see cref="StopContainer"/> on the LND node so Boltz can't reach it.
-    /// </summary>
-    public static async Task<string> CreateLndInvoiceForCancellation(
-        long amtSats = 10000, int expirySecs = 3600, CancellationToken ct = default)
-    {
-        var args = new List<string>
-        {
-            "lncli", "--network=regtest", "addinvoice", "--amt", amtSats.ToString(CultureInfo.InvariantCulture),
-            "--expiry", expirySecs.ToString(CultureInfo.InvariantCulture)
-        };
-
-        var output = await Exec("lnd", args.ToArray(), ct);
-        var json = JsonSerializer.Deserialize<JsonObject>(output)
-                   ?? throw new InvalidOperationException($"LND addinvoice returned non-JSON: {output}");
-
-        return json["payment_request"]?.GetValue<string>()
-            ?? throw new InvalidOperationException($"Invoice creation failed (no payment_request). Output: {output}");
-    }
-
-    /// <summary>
-    /// Cancels a pending LND invoice by payment hash. Once cancelled, any
-    /// subsequent payment attempt to that invoice fails immediately with
-    /// "invoice expired" — used by submarine-swap tests to deterministically
-    /// drive Boltz into the <c>invoice.failedToPay</c> state without waiting
-    /// for natural expiry. <c>lncli cancelinvoice</c> returns empty stdout
-    /// on success, so we just rely on the docker exec exit code (which
-    /// <see cref="Exec"/> swallows via <see cref="CommandResultValidation.None"/>) —
-    /// callers can verify the cancellation took effect by attempting payment
-    /// or polling the invoice state.
-    /// </summary>
-    public static async Task CancelLndInvoice(string rHashHex, CancellationToken ct = default)
-    {
-        await Exec("lnd",
-            ["lncli", "--network=regtest", "cancelinvoice", rHashHex], ct);
-    }
-
-    /// <summary>
     /// Adds an extra unspent VTXO to an already-funded wallet's existing
     /// receive contract by issuing another <c>ark send</c> from arkd. Used
     /// by concurrency tests where two parallel swaps must each lock their
