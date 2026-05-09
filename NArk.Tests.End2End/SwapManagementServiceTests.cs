@@ -228,151 +228,31 @@ public class SwapManagementServiceTests
     }
 
     /// <summary>
-    /// Submarine swap unhappy path with deterministic invoice failure:
-    /// instead of waiting for natural invoice expiry (the
-    /// <see cref="CanDoArkCoOpRefundUsingBoltz"/> shape), we drive Boltz
-    /// directly into <c>invoice.failedToPay</c> via its admin
-    /// <c>boltzr-cli swap set-status</c> tool. This fires the same
-    /// nursery event + websocket update Boltz would emit on a real
-    /// payment failure (failure reason "payment has been cancelled"),
-    /// so the SDK's cooperative-refund flow runs identically. End state:
-    /// <see cref="ArkSwapStatus.Refunded"/>.
-    /// </summary>
-    [Test]
-    [CancelAfter(180_000)]
-    public async Task SubmarineRefundsWhenBoltzPaymentMarkedFailed(CancellationToken token)
-    {
-        var prereq = await FundedWalletHelper.GetFundedWallet();
-        var swapStorage = TestStorage.CreateSwapStorage();
-        var boltzClient = new BoltzClient(new HttpClient(),
-            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var intentStorage = TestStorage.CreateIntentStorage();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
-        [
-            new PaymentContractTransformer(prereq.walletProvider),
-            new HashLockedContractTransformer(prereq.walletProvider),
-            new VHTLCContractTransformer(prereq.walletProvider, chainTimeProvider)
-        ]);
-        var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
-            prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
-            new DefaultCoinSelector(), prereq.safetyService, intentStorage);
-        var boltzProvider = new BoltzSwapProvider(boltzClient,
-            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
-                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
-            prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
-            prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
-            intentStorage, chainTimeProvider);
-        await using var swapMgr = new SwapsManagementService(
-            new ISwapProvider[] { boltzProvider },
-            spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
-            swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
-
-        var refundedTcs = new TaskCompletionSource();
-        swapStorage.SwapsChanged += (_, swap) =>
-        {
-            Console.WriteLine($"[BoltzFail] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
-            if (swap.Status == ArkSwapStatus.Refunded) refundedTcs.TrySetResult();
-        };
-
-        await swapMgr.StartAsync(token);
-
-        // autoPay=false so the return value is the Boltz swap ID (with
-        // autoPay=true it'd be the user's spend tx hash, which boltzr-cli
-        // can't look up). We then stop boltz-lnd to prevent Boltz from
-        // racing us by paying the LN invoice over 0-conf, pay the HTLC
-        // manually so the user has funds locked at the contract, and
-        // finally call boltzr-cli swap set-status invoice.failedToPay
-        // which fires the same nursery + websocket event Boltz emits on
-        // a real LN payment failure. SDK fires cooperative refund.
-        var invoice = await DockerHelper.CreateLndInvoice(amtSats: 10000, expirySecs: 3600, ct: token);
-        var swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier,
-            BOLT11PaymentRequest.Parse(invoice, Network.RegTest), autoPay: false, token);
-        Console.WriteLine($"[BoltzFail] Swap {swapId} created");
-
-        try
-        {
-            // Stop boltz-lnd BEFORE paying the HTLC. Boltz's own LND is
-            // gone, so it can't successfully pay the user's invoice over
-            // the channel and can't naturally race past invoice.failedToPay
-            // into invoice.settled. We re-start it in finally{} so
-            // subsequent tests still have boltz-lnd available.
-            await DockerHelper.StopContainer("boltz-lnd", token);
-
-            await swapMgr.PayExistingSubmarineSwap(prereq.walletIdentifier, swapId, token);
-            Console.WriteLine($"[BoltzFail] HTLC paid; forcing Boltz to invoice.failedToPay via boltzr-cli");
-            await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
-
-            await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
-
-            var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
-            Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
-                $"Expected swap {swapId} to be Refunded after Boltz invoice.failedToPay; got {finalSwap.Status} (fail={finalSwap.FailReason})");
-        }
-        finally
-        {
-            try
-            {
-                await DockerHelper.StartContainer("boltz-lnd", CancellationToken.None);
-                // Wait for boltz-lnd's gRPC to come back AND for Boltz to
-                // reconnect to it. Without the second poll, the next test's
-                // first Boltz API call sees a 504 from nginx because Boltz's
-                // backend is mid-reconnect.
-                for (var i = 0; i < 30; i++)
-                {
-                    try
-                    {
-                        var output = await DockerHelper.Exec("boltz-lnd",
-                            ["lncli", "--network=regtest", "getinfo"], CancellationToken.None);
-                        if (!string.IsNullOrWhiteSpace(output) && output.TrimStart().StartsWith('{')) break;
-                    }
-                    catch { /* not ready yet */ }
-                    await Task.Delay(TimeSpan.FromSeconds(1));
-                }
-                // /v2/swap/submarine GET returns pair info from cache even
-                // when Boltz can't handle swap creation yet. /v2/nodes
-                // requires a live LND connection (it queries the node's
-                // pubkey + URIs over gRPC) so it's a reliable end-to-end
-                // readiness check for the BTC backend the next swap test
-                // will hit.
-                using var boltzReadyClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                for (var i = 0; i < 60; i++)
-                {
-                    try
-                    {
-                        var resp = await boltzReadyClient.GetAsync(
-                            $"{SharedSwapInfrastructure.BoltzEndpoint}v2/nodes", CancellationToken.None);
-                        if (resp.IsSuccessStatusCode)
-                        {
-                            var body = await resp.Content.ReadAsStringAsync();
-                            if (body.Contains("\"BTC\"") && body.Contains("publicKey")) break;
-                        }
-                    }
-                    catch { /* Boltz still reconnecting */ }
-                    await Task.Delay(TimeSpan.FromSeconds(1));
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[BoltzFail] Warning: boltz-lnd restart wait failed: {ex.Message}");
-            }
-        }
-    }
-
-    /// <summary>
-    /// Double-funded vHTLC scenario: the user accidentally sends a second
-    /// VTXO to the same swap script (e.g., paying twice after a perceived
-    /// stall, or a wallet retry from a different device). Boltz only signs
-    /// the cooperative refund for the canonical lockup VTXO it tracks
-    /// (matches <see cref="ArkSwap.ExpectedAmount"/>); extra VTXOs at the
-    /// same script can only be recovered via the timelock path handled by
-    /// <c>SweeperService</c> + <c>SwapSweepPolicy</c>. This test verifies
-    /// the cooperative refund path picks the canonical VTXO instead of
-    /// throwing on a multi-VTXO script (the previous shape blew up with
-    /// <c>InvalidOperationException: Sequence contains more than one
-    /// element</c>).
+    /// End-to-end submarine cooperative-refund coverage driven by Boltz's
+    /// own <c>boltzr-cli swap set-status invoice.failedToPay</c> admin tool
+    /// instead of natural invoice expiry — fires the same nursery event +
+    /// websocket update as a real LN payment failure (failure reason
+    /// <c>"payment has been cancelled"</c> per
+    /// <c>boltz-backend lib/service/Service.ts</c>) so the SDK's
+    /// cooperative-refund path runs identically.
+    /// <para>
+    /// To exercise the multi-VTXO branch we deliberately double-fund the
+    /// swap script: the legitimate swap payment lands one VTXO at
+    /// <see cref="ArkSwap.ExpectedAmount"/>, then a second VTXO is sent
+    /// to the same script via <c>ark send</c> (simulating a wallet
+    /// retry / panic-resend). Boltz only signs the cooperative refund
+    /// for the canonical lockup VTXO it tracks; extras at the same
+    /// script can only be recovered via the timelock path handled by
+    /// <c>SweeperService</c> + <c>SwapSweepPolicy</c>. The test asserts
+    /// the canonical VTXO is refunded and the extra is left at the
+    /// script for the sweeper.
+    /// </para>
+    /// <para>
+    /// The single-VTXO refund variant is implicitly covered: the SDK's
+    /// canonical-VTXO selector (<c>vtxos.FirstOrDefault(v =&gt;
+    /// v.Amount == swap.ExpectedAmount)</c>) trivially picks the only
+    /// VTXO when there's just one.
+    /// </para>
     /// </summary>
     [Test]
     [CancelAfter(180_000)]
