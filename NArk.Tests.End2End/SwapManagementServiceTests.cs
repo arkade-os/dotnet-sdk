@@ -3,10 +3,15 @@ using CliWrap.Buffered;
 using BTCPayServer.Lightning;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Safety;
+using NArk.Abstractions.VTXOs;
 using NArk.Blockchain.NBXplorer;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
+using NArk.Core.Transport;
+using NArk.Core.Wallet;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
@@ -235,19 +240,10 @@ public class SwapManagementServiceTests
     /// failure state on demand via the LND admin API. Mirrors the
     /// "should automatically refund failed submarine swap" pattern from
     /// <c>arkade-os/boltz-swap</c>'s e2e suite.
-    /// <para>
-    /// Disabled in CI: Boltz on regtest doesn't reliably propagate
-    /// <c>invoice.failedToPay</c> for explicitly-cancelled invoices —
-    /// the swap can sit at <c>swap.created</c> for the full test budget
-    /// before the LND-side cancellation reaches Boltz. The cooperative
-    /// refund code path itself is covered by the natural-expiry variant
-    /// <see cref="CanDoArkCoOpRefundUsingBoltz"/> (which passes) and by
-    /// unit tests in <c>NArk.Tests/SwapRecoveryTests.cs</c>.
-    /// </para>
     /// </remarks>
     [Test]
-    [Ignore("Disabled in CI: Boltz regtest doesn't reliably propagate invoice.failedToPay for cancelled invoices. CoOp-refund code path is covered by CanDoArkCoOpRefundUsingBoltz (passing) and SwapRecoveryTests unit tests.")]
-    public async Task SubmarineRefundsWhenInvoiceCancelled()
+    [CancelAfter(420_000)]
+    public async Task SubmarineRefundsWhenInvoiceCancelled(CancellationToken token)
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
         var swapStorage = TestStorage.CreateSwapStorage();
@@ -292,7 +288,7 @@ public class SwapManagementServiceTests
                 refundedSwapTcs.TrySetResult();
         };
 
-        await swapMgr.StartAsync(CancellationToken.None);
+        await swapMgr.StartAsync(token);
 
         // Long-expiry invoice we then explicitly cancel — the cancel happens
         // before Boltz tries to pay so the swap path is `invoice.failedToPay`
@@ -305,10 +301,28 @@ public class SwapManagementServiceTests
             testingPrerequisite.walletIdentifier,
             BOLT11PaymentRequest.Parse(invoice, Network.RegTest),
             autoPay: true,
-            CancellationToken.None);
+            token);
         Console.WriteLine($"[CancelInvoice] Swap {swapId} created against cancelled invoice; waiting for cooperative refund");
 
-        await refundedSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
+        // Drive the system: mine blocks so Boltz's HTLC monitor advances,
+        // and surface intermediate Boltz status so a stall is diagnosable.
+        for (var i = 0; i < 30 && !token.IsCancellationRequested && !refundedSwapTcs.Task.IsCompleted; i++)
+        {
+            await DockerHelper.MineBlocks(2, token);
+            try
+            {
+                var status = await boltzClient.GetSwapStatusAsync(swapId, token);
+                Console.WriteLine($"[CancelInvoice] Mine round {i}: Boltz status = {status?.Status ?? "<null>"}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CancelInvoice] Mine round {i}: status poll error: {ex.Message}");
+            }
+            if (refundedSwapTcs.Task.IsCompleted) break;
+            await Task.Delay(TimeSpan.FromSeconds(5), token);
+        }
+
+        await refundedSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
 
         var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
@@ -331,25 +345,19 @@ public class SwapManagementServiceTests
     /// Single wallet so the contention point we want to exercise — provider's
     /// internal state when multiple swap IDs are subscribed and resolved at
     /// staggered times on the same websocket — is actually hit. Per-wallet
-    /// coin-selection is serialised by <c>SafetyService</c> locks, so
-    /// running two swaps from one wallet is safe.
-    /// <para>
-    /// Disabled in CI: the test depends on a second VTXO landing at the
-    /// receive script via <c>ark send</c>, but on a busy CI runner the
-    /// arkd batch + VtxoSync poll cycle can take well over a minute,
-    /// well beyond a deterministic budget. The
-    /// <c>_swapsIdToWatch HashSet→ConcurrentDictionary</c> regression
-    /// this test was designed to guard is exercised by other concurrent
-    /// flows in the suite (multi-script subscriptions in
-    /// <see cref="CanRestoreSwapsFromBoltz"/>, etc.) and by direct
-    /// inspection of the provider's state-mutation paths.
-    /// </para>
+    /// coin-selection is serialised by <c>SafetyService</c> locks, so the
+    /// wallet is funded with two independent VTXOs (via
+    /// <see cref="FundedWalletHelper.GetFundedWallet"/>) so each swap gets
+    /// its own input without racing on a single locked VTXO.
     /// </remarks>
     [Test]
-    [Ignore("Disabled in CI: arkd batch + VtxoSync poll for the second 'ark send' VTXO is non-deterministic on busy runners (ranges from ~5s to >60s). Concurrency invariants are exercised by other multi-subscription flows in the suite.")]
-    public async Task ConcurrentSubmarineSwapsBothComplete()
+    [CancelAfter(360_000)]
+    public async Task ConcurrentSubmarineSwapsBothComplete(CancellationToken token)
     {
-        var prereq = await FundedWalletHelper.GetFundedWallet();
+        // Two independent VTXOs at the same wallet's receive script, funded
+        // upfront by FundedWalletHelper. Each parallel swap claims its own
+        // VTXO so the SafetyService lock contention never trips.
+        var prereq = await FundedWalletHelper.GetFundedWallet(vtxoCount: 2);
         var swapStorage = TestStorage.CreateSwapStorage();
         var intentStorage = TestStorage.CreateIntentStorage();
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
@@ -377,8 +385,6 @@ public class SwapManagementServiceTests
             spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
             swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
 
-        // Track each swap's settlement independently so we can verify both
-        // reached terminal Settled and neither prematurely flipped Failed.
         var settled = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource>();
         swapStorage.SwapsChanged += (_, swap) =>
         {
@@ -390,54 +396,18 @@ public class SwapManagementServiceTests
                     $"swap {swap.SwapId} hit terminal {swap.Status} before Settled (fail={swap.FailReason})"));
         };
 
-        await swapMgr.StartAsync(CancellationToken.None);
+        await swapMgr.StartAsync(token);
 
-        // FundedWalletHelper hands back a wallet with one 500k-sat VTXO; two
-        // parallel submarine spends would race on the SafetyService lock for
-        // that single VTXO and the loser would crash with
-        // AlreadyLockedVtxoException. Top up a second VTXO at the same
-        // receive script so each parallel swap gets its own input.
-        var walletContracts = await prereq.contracts.GetContracts(walletIds: [prereq.walletIdentifier]);
-        var receiveScript = walletContracts.Single().Script;
-        var arkAddress = NBitcoin.Script.FromHex(receiveScript).GetDestinationAddress(Network.RegTest)?.ToString()
-                         ?? throw new InvalidOperationException("Could not derive ark address from receive script");
-        var secondVtxoTcs = new TaskCompletionSource();
-        void SecondVtxoHandler(object? sender, NArk.Abstractions.VTXOs.ArkVtxo vtxo)
-        {
-            if (vtxo.Script == receiveScript) secondVtxoTcs.TrySetResult();
-        }
-        prereq.vtxoStorage.VtxosChanged += SecondVtxoHandler;
-        try
-        {
-            await DockerHelper.SendArkdNoteTo(arkAddress, amountSats: 500_000);
-            // ark send goes through a batch; mining blocks settles the boarding
-            // input and the VtxoSync gRPC stream picks the new VTXO up. 15s was
-            // too tight on a busy CI runner — give the batch + sync ~60s.
-            for (var i = 0; i < 6 && !secondVtxoTcs.Task.IsCompleted; i++)
-            {
-                await DockerHelper.MineBlocks(2);
-                try { await secondVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
-                catch (TimeoutException) { /* try another mine round */ }
-            }
-            if (!secondVtxoTcs.Task.IsCompleted)
-                throw new TimeoutException(
-                    "Second VTXO did not arrive at receive script within 60s after ark send + 6 mine rounds.");
-        }
-        finally
-        {
-            prereq.vtxoStorage.VtxosChanged -= SecondVtxoHandler;
-        }
+        var inv1 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
+        var inv2 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(9000, expirySecs: 0), Network.RegTest);
 
         // Fire both InitiateSubmarineSwap calls in parallel so the second
         // swap arrives while the first is still inside the
         // SaveSwap → NotifySwapChanged → trigger-channel → DoUpdateStorage
         // pipeline — that's the window where the two writers race on
         // _swapsIdToWatch in the pre-fix code.
-        var inv1 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
-        var inv2 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(9000, expirySecs: 0), Network.RegTest);
-
-        var swapId1Task = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv1, autoPay: true);
-        var swapId2Task = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv2, autoPay: true);
+        var swapId1Task = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv1, autoPay: true, token);
+        var swapId2Task = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv2, autoPay: true, token);
         await Task.WhenAll(swapId1Task, swapId2Task);
 
         var swapId1 = await swapId1Task;
@@ -457,8 +427,8 @@ public class SwapManagementServiceTests
         }
 
         await Task.WhenAll(
-            settled[swapId1].Task.WaitAsync(TimeSpan.FromMinutes(3)),
-            settled[swapId2].Task.WaitAsync(TimeSpan.FromMinutes(3)));
+            settled[swapId1].Task.WaitAsync(TimeSpan.FromMinutes(5), token),
+            settled[swapId2].Task.WaitAsync(TimeSpan.FromMinutes(5), token));
     }
 
     /// <summary>
@@ -532,20 +502,15 @@ public class SwapManagementServiceTests
     /// <c>TestConcurrentSwaps/submarine and reverse swaps</c>.
     /// </summary>
     /// <remarks>
-    /// Disabled in CI for the same reason as
-    /// <see cref="ConcurrentSubmarineSwapsBothComplete"/>: parallel swap
-    /// settlement on a single wallet sharing a single 500k-sat VTXO
-    /// requires deterministic batch / VtxoSync timing that the regtest
-    /// stack doesn't currently guarantee, and the cross-type concurrency
-    /// invariants are exercised by the suite's existing happy-path
-    /// flows. Re-enable once the test runner can drive arkd batch
-    /// settlement on demand instead of waiting for the next batch.
+    /// Wallet is funded with two 500k-sat VTXOs upfront so the submarine
+    /// + reverse swaps can run truly in parallel without colliding on a
+    /// single locked input.
     /// </remarks>
     [Test]
-    [Ignore("Disabled in CI: parallel swap settlement requires deterministic arkd batch + VtxoSync timing on a busy CI runner. Cross-type concurrency invariants are covered by existing happy-path flows in the suite.")]
-    public async Task SubmarineAndReverseSwapsCompleteInParallel()
+    [CancelAfter(420_000)]
+    public async Task SubmarineAndReverseSwapsCompleteInParallel(CancellationToken token)
     {
-        var prereq = await FundedWalletHelper.GetFundedWallet();
+        var prereq = await FundedWalletHelper.GetFundedWallet(vtxoCount: 2);
         var swapStorage = TestStorage.CreateSwapStorage();
         var intentStorage = TestStorage.CreateIntentStorage();
         var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
@@ -578,7 +543,7 @@ public class SwapManagementServiceTests
             spendingService, intentStorage,
             new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions
             { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider, []);
-        await sweepMgr.StartAsync(CancellationToken.None);
+        await sweepMgr.StartAsync(token);
 
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
@@ -606,7 +571,7 @@ public class SwapManagementServiceTests
                     $"{swap.SwapType} {swap.SwapId} hit {swap.Status} before Settled (fail={swap.FailReason})"));
         };
 
-        await swapMgr.StartAsync(CancellationToken.None);
+        await swapMgr.StartAsync(token);
 
         // Fire submarine + reverse in parallel. The submarine pays an LND
         // invoice; the reverse generates an LN invoice that we settle by
@@ -614,11 +579,11 @@ public class SwapManagementServiceTests
         var subInvoice = BOLT11PaymentRequest.Parse(
             await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
 
-        var subTask = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, subInvoice, autoPay: true);
+        var subTask = swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, subInvoice, autoPay: true, token);
         var revInvoiceTask = FulmineLiquidityHelper.RetryWithSettle(() =>
             swapMgr.InitiateReverseSwap(prereq.walletIdentifier,
                 new CreateInvoiceParams(LightMoney.Satoshis(20000), "ParallelReverse", TimeSpan.FromHours(1)),
-                CancellationToken.None));
+                token));
 
         await Task.WhenAll(subTask, revInvoiceTask);
         var subSwapId = await subTask;
@@ -650,8 +615,8 @@ public class SwapManagementServiceTests
         // take a while to fully settle. The previous 3-min budget was tight
         // and produced flake on slow runners.
         await Task.WhenAll(
-            settled[subSwapId].Task.WaitAsync(TimeSpan.FromMinutes(5)),
-            settled[revSwap.SwapId].Task.WaitAsync(TimeSpan.FromMinutes(5)));
+            settled[subSwapId].Task.WaitAsync(TimeSpan.FromMinutes(5), token),
+            settled[revSwap.SwapId].Task.WaitAsync(TimeSpan.FromMinutes(5), token));
     }
 
     [Test]

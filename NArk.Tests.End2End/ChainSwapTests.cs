@@ -243,32 +243,17 @@ public class ChainSwapTests
     /// <summary>
     /// BTC→ARK chain swap unhappy path with renegotiation: the user funds
     /// the BTC lockup with an amount that doesn't match the original
-    /// quote (here, ~3× the expected amount, mirroring fulmine's
-    /// <c>TestChainSwapBTCtoARKWithQuote</c>). Boltz emits
-    /// <c>transaction.lockupFailed</c>; the SDK's <c>PollSwapState</c>
-    /// asks Boltz for a new chain quote via
+    /// quote — even +1 sat — so Boltz emits
+    /// <c>transaction.lockupFailed</c> (chain swaps have zero overpay
+    /// tolerance per <c>OverpaymentProtector</c> in boltz-backend). The
+    /// SDK's <c>PollSwapState</c> asks Boltz for a new chain quote via
     /// <c>BoltzClient.GetChainQuoteAsync</c>, accepts it via
     /// <c>AcceptChainQuoteAsync</c>, and the swap proceeds with the
     /// renegotiated amount. End state: <see cref="ArkSwapStatus.Settled"/>
-    /// with <c>ExpectedAmount</c> updated to reflect the new quote.
+    /// with <c>ExpectedAmount</c> reflecting the renegotiated quote.
     /// </summary>
-    /// <remarks>
-    /// Disabled in CI: Boltz on regtest does not reliably emit
-    /// <c>transaction.lockupFailed</c> for over-funded chain swaps —
-    /// the production deployment uses fee-tolerance heuristics that
-    /// behave differently on regtest, so the swap can sit at
-    /// <c>transaction.server.mempool</c> indefinitely without ever
-    /// transitioning to a renegotiable state. The renegotiation code
-    /// path itself (GET/POST <c>/v2/swap/chain/{id}/quote</c> handling
-    /// inside <c>BoltzSwapProvider.PollSwapState</c>) is verified by
-    /// unit tests in <c>NArk.Tests/SwapRecoveryTests.cs</c>; running
-    /// it end-to-end requires either a mock Boltz exposing admin
-    /// endpoints to force the lockupFailed transition, or a regtest
-    /// Boltz config tuned to advertise narrower fee tolerance.
-    /// </remarks>
     [Test]
-    [Ignore("Disabled in CI: Boltz regtest does not reliably emit transaction.lockupFailed for over-funded chain swaps — fee-tolerance differs from production. Renegotiation code path is covered by unit tests in SwapRecoveryTests.cs. Re-enable once we have a mock Boltz or tightened regtest fee config.")]
-    [CancelAfter(420_000)]
+    [CancelAfter(600_000)]
     public async Task BtcToArkChainSwapRenegotiatesWhenLockupDiffers(CancellationToken token)
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
@@ -309,6 +294,9 @@ public class ChainSwapTests
         {
             Console.WriteLine($"[BTC→ARK reneg] {swap.SwapId} → {swap.Status} (expected {swap.ExpectedAmount}, fail: {swap.FailReason})");
             if (swap.Status == ArkSwapStatus.Settled) settledSwapTcs.TrySetResult();
+            else if (swap.Status is ArkSwapStatus.Failed or ArkSwapStatus.Refunded)
+                settledSwapTcs.TrySetException(new InvalidOperationException(
+                    $"Renegotiation should settle the swap, not transition to {swap.Status} (fail={swap.FailReason})"));
         };
 
         await swapMgr.StartAsync(token);
@@ -317,21 +305,22 @@ public class ChainSwapTests
             swapMgr.InitiateBtcToArkChainSwap(testingPrerequisite.walletIdentifier, 50_000, token));
         Console.WriteLine($"[BTC→ARK reneg] Swap {swapId} created, original expected lockup: {originalExpectedSats} sats");
 
-        // Fund with ~3× the expected amount so Boltz definitely emits
-        // transaction.lockupFailed (not just accepted-with-fee-tolerance) and
-        // a renegotiated quote becomes necessary. Mirrors the magnitude in
-        // fulmine's TestChainSwapBTCtoARKWithQuote.
-        var fundAmount = originalExpectedSats * 3;
+        // Boltz chain swaps have zero overpay tolerance — any actual != expected
+        // triggers transaction.lockupFailed (boltz-backend OverpaymentProtector).
+        // +1000 sats is a clean unambiguous mismatch that's still trivially
+        // covered by the test wallet's UTXO budget.
+        var fundAmount = originalExpectedSats + 1000;
         var btcAmount = (fundAmount / 100_000_000m).ToString("0.########");
         var sendResult = await Cli.Wrap("docker")
             .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, btcAmount])
             .ExecuteBufferedAsync(token);
-        Console.WriteLine($"[BTC→ARK reneg] Funded {fundAmount} sats (3× original {originalExpectedSats}), exit={sendResult.ExitCode}");
+        Console.WriteLine($"[BTC→ARK reneg] Funded {fundAmount} sats (expected+1000), exit={sendResult.ExitCode}");
         Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
 
-        // Mine + poll until Boltz settles. Renegotiation happens implicitly
-        // inside PollSwapState when Boltz emits transaction.lockupFailed.
-        for (var i = 0; i < 30 && !token.IsCancellationRequested && !settledSwapTcs.Task.IsCompleted; i++)
+        // Mine to confirm the lockup. The SDK's own websocket subscription
+        // and PollSwapState drive the state transitions; we just need to
+        // give Boltz blocks to confirm the user's tx and tick its monitor.
+        for (var i = 0; i < 20 && !token.IsCancellationRequested && !settledSwapTcs.Task.IsCompleted; i++)
         {
             await DockerHelper.MineBlocks(2, token);
             try
@@ -339,7 +328,11 @@ public class ChainSwapTests
                 var status = await boltzClient.GetSwapStatusAsync(swapId, token);
                 Console.WriteLine($"[BTC→ARK reneg] Mine round {i}: Boltz status = {status?.Status ?? "<null>"}");
             }
-            catch { /* swallow */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[BTC→ARK reneg] Mine round {i}: status poll error: {ex.Message}");
+            }
+            if (settledSwapTcs.Task.IsCompleted) break;
             await Task.Delay(TimeSpan.FromSeconds(5), token);
         }
 
@@ -347,51 +340,21 @@ public class ChainSwapTests
 
         var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Settled),
-            $"Over-funded chain swap should still settle (renegotiation succeeds or Boltz accepts within tolerance). Got {finalSwap.Status} (fail={finalSwap.FailReason})");
-
-        // Whether renegotiation actually fired depends on Boltz's
-        // fee/dust tolerance vs our 3× overfund. Either outcome is
-        // acceptable here — the SDK either renegotiated (and we'll see
-        // ExpectedAmount differ) or Boltz accepted silently (Boltz's
-        // call). Both end at Settled with no funds lost. Log which
-        // happened so test failures elsewhere are diagnosable.
-        if (finalSwap.ExpectedAmount != originalExpectedSats)
-            Console.WriteLine($"[BTC→ARK reneg] Renegotiation fired: ExpectedAmount {originalExpectedSats} → {finalSwap.ExpectedAmount}");
-        else
-            Console.WriteLine($"[BTC→ARK reneg] Boltz accepted overfund silently (ExpectedAmount unchanged at {originalExpectedSats})");
+            $"Renegotiated chain swap should settle. Got {finalSwap.Status} (fail={finalSwap.FailReason})");
+        Console.WriteLine($"[BTC→ARK reneg] Final ExpectedAmount {originalExpectedSats} → {finalSwap.ExpectedAmount}");
     }
 
     /// <summary>
     /// BTC→ARK chain swap unhappy path: the user creates the swap (gets a
     /// BTC lockup address from Boltz) but never funds it. Boltz's BTC-side
-    /// timeout eventually elapses and the swap should transition to a
-    /// terminal failed state on the SDK side. The user has lost nothing
+    /// timeout (controlled by <c>[pairs.timeoutDelta] chain</c> in the
+    /// regtest Boltz config — tuned down to 144 blocks for CI) eventually
+    /// elapses and the swap transitions to <c>swap.expired</c>. The SDK
+    /// observes that and marks the swap <see cref="ArkSwapStatus.Failed"/>
+    /// since there's no user lockup to refund. The user has lost nothing
     /// because no funds were ever sent.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Disabled in CI: Boltz's chain-swap expiry on regtest is
-    /// wall-clock-time-based, not block-height-based — mining blocks
-    /// doesn't accelerate it. CI runs observed Boltz keeping the swap at
-    /// <c>swap.created</c> for the full 10-minute test budget without
-    /// transitioning to <c>swap.expired</c>, so the test never reaches
-    /// the terminal-status assertion. Re-enabling this requires either:
-    ///   - A mock Boltz that exposes admin endpoints to force expire
-    ///     (fulmine's pattern — see <c>TestChainSwapMockBTCToARKUnilateralRefund</c>);
-    ///   - Or wiring <c>bitcoin-cli setmocktime</c> + Boltz's mocktime
-    ///     plumbing into the regtest infrastructure.
-    /// </para>
-    /// <para>
-    /// The SDK code path this test was meant to exercise (the
-    /// "swap.expired with no observable lockup → mark Failed" branch in
-    /// <c>BoltzSwapProvider.PollSwapState</c>) is still correct and
-    /// covered by the unit tests in <c>NArk.Tests/SwapRecoveryTests.cs</c>;
-    /// it just needs the Boltz status flip to actually happen end-to-end
-    /// for an E2E run.
-    /// </para>
-    /// </remarks>
     [Test]
-    [Ignore("Disabled in CI: Boltz regtest expiry is wall-clock-based, not block-height-based — mining doesn't help. Needs mock Boltz or setmocktime infrastructure to run end-to-end. SDK behaviour is verified by unit tests in SwapRecoveryTests.cs.")]
     [CancelAfter(600_000)]
     public async Task BtcToArkChainSwapMarksFailedWhenUserDoesNotFund(CancellationToken token)
     {
