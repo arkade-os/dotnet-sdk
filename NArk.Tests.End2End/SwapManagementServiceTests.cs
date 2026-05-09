@@ -401,17 +401,38 @@ public class SwapManagementServiceTests
         var inv1 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
         var inv2 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(9000, expirySecs: 0), Network.RegTest);
 
-        // Submit sequentially: the first call locks VTXO_A, the second
-        // call's CoinSelector then picks VTXO_B (the first is locked).
+        // Submit sequentially: the first call spends VTXO_A; the second
+        // call's CoinSelector must see VTXO_A as spent and pick VTXO_B.
         // The two swaps still progress concurrently after submission —
         // their websocket subscriptions, status polling, and settlement
         // happen in parallel, which is the actual race the original
         // _swapsIdToWatch HashSet-vs-ConcurrentDictionary regression
-        // guarded against. Submitting in true parallel would race
-        // CoinSelector itself, which is a separate (and arguably
-        // out-of-scope) concurrency property.
-        var swapId1 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv1, autoPay: true, token);
-        var swapId2 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv2, autoPay: true, token);
+        // guarded against.
+        //
+        // We wait for the first swap's spend to land in our local
+        // vtxoStorage before kicking off the second InitiateSubmarineSwap
+        // (the SafetyService lock releases as soon as the ark tx is
+        // submitted, but VtxoSync polls and has a small window where
+        // the spent VTXO still looks unspent locally — without this
+        // wait, the second call's CoinSelector would re-pick VTXO_A
+        // and arkd would reject the intent with AlreadyLockedVtxo).
+        string swapId1, swapId2;
+        var firstSpendObserved = new TaskCompletionSource();
+        void OnFirstSpend(object? _, NArk.Abstractions.VTXOs.ArkVtxo v)
+        {
+            if (v.IsSpent()) firstSpendObserved.TrySetResult();
+        }
+        prereq.vtxoStorage.VtxosChanged += OnFirstSpend;
+        try
+        {
+            swapId1 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv1, autoPay: true, token);
+            await firstSpendObserved.Task.WaitAsync(TimeSpan.FromSeconds(30), token);
+            swapId2 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv2, autoPay: true, token);
+        }
+        finally
+        {
+            prereq.vtxoStorage.VtxosChanged -= OnFirstSpend;
+        }
         Assert.That(swapId1, Is.Not.EqualTo(swapId2), "Boltz must hand back distinct swap ids");
 
         settled[swapId1] = new TaskCompletionSource();
