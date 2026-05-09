@@ -279,16 +279,19 @@ public class SwapManagementServiceTests
 
         await swapMgr.StartAsync(token);
 
-        // Long-expiry invoice — we don't rely on expiry; we drive the
-        // failure via boltzr-cli below.
+        // autoPay=false so the return value is the Boltz swap ID (with
+        // autoPay=true it'd be the user's spend tx hash, which boltzr-cli
+        // can't look up). We then pay the HTLC manually so the user has
+        // funds locked at the contract — RequestRefundCooperatively
+        // returns early when there's nothing to refund.
         var invoice = await DockerHelper.CreateLndInvoice(amtSats: 10000, expirySecs: 3600, ct: token);
         var swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier,
-            BOLT11PaymentRequest.Parse(invoice, Network.RegTest), autoPay: true, token);
-        Console.WriteLine($"[BoltzFail] Swap {swapId} created (autoPay=true)");
+            BOLT11PaymentRequest.Parse(invoice, Network.RegTest), autoPay: false, token);
+        Console.WriteLine($"[BoltzFail] Swap {swapId} created");
 
-        // Wait briefly so the user-side spend lands and Boltz observes the
-        // HTLC. Setting status to invoice.failedToPay before the HTLC is
-        // present can race with Boltz's own state machine.
+        await swapMgr.PayExistingSubmarineSwap(prereq.walletIdentifier, swapId, token);
+        Console.WriteLine($"[BoltzFail] HTLC paid; waiting for Boltz to observe lockup");
+
         for (var i = 0; i < 12; i++)
         {
             try
