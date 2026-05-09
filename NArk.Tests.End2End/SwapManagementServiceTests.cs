@@ -290,27 +290,26 @@ public class SwapManagementServiceTests
 
         await swapMgr.StartAsync(token);
 
-        // Create a regular invoice on the user's LND, then stop the LND
-        // container so Boltz can't reach it when it tries to pay. Boltz
-        // can't deliver the LN payment, eventually emits invoice.failedToPay,
-        // and the SDK fires the cooperative-refund path. Restoring the
-        // container in finally{} so subsequent tests have LND available.
+        // Sequence: create invoice while LND is reachable so Boltz accepts
+        // the swap (it validates routability at create time), then create
+        // the swap WITHOUT auto-pay so Boltz hasn't attempted payment yet,
+        // THEN docker-stop the user's LND, THEN trigger payment via
+        // PayExistingSubmarineSwap. Boltz's payment attempt now fails at
+        // the network level → invoice.failedToPay → SDK refunds.
         var invoice = await DockerHelper.CreateLndInvoiceForCancellation(amtSats: 10000, expirySecs: 3600, token);
-        Console.WriteLine($"[CancelInvoice] Created invoice; stopping user LND so Boltz's payment attempt fails");
+        var swapId = await swapMgr.InitiateSubmarineSwap(
+            testingPrerequisite.walletIdentifier,
+            BOLT11PaymentRequest.Parse(invoice, Network.RegTest),
+            autoPay: false,
+            token);
+        Console.WriteLine($"[CancelInvoice] Swap {swapId} created; stopping user LND so the upcoming payment attempt fails");
 
         try
         {
             await DockerHelper.StopContainer("lnd", token);
+            await swapMgr.PayExistingSubmarineSwap(testingPrerequisite.walletIdentifier, swapId, token);
+            Console.WriteLine($"[CancelInvoice] HTLC locked, waiting for invoice.failedToPay → cooperative refund");
 
-            var swapId = await swapMgr.InitiateSubmarineSwap(
-                testingPrerequisite.walletIdentifier,
-                BOLT11PaymentRequest.Parse(invoice, Network.RegTest),
-                autoPay: true,
-                token);
-            Console.WriteLine($"[CancelInvoice] Swap {swapId} created against unreachable invoice; waiting for cooperative refund");
-
-            // Drive the system: mine blocks so Boltz's HTLC monitor advances,
-            // and surface intermediate Boltz status so a stall is diagnosable.
             for (var i = 0; i < 30 && !token.IsCancellationRequested && !refundedSwapTcs.Task.IsCompleted; i++)
             {
                 await DockerHelper.MineBlocks(2, token);
@@ -335,11 +334,26 @@ public class SwapManagementServiceTests
         }
         finally
         {
-            // Restart user's LND so subsequent tests in the suite still have
-            // an LN node to talk to. Best-effort — failure here would surface
-            // as cascading failures in those tests.
-            try { await DockerHelper.StartContainer("lnd", CancellationToken.None); }
-            catch (Exception ex) { Console.WriteLine($"[CancelInvoice] Warning: LND restart failed: {ex.Message}"); }
+            // Restart user's LND and wait for it to be ready before the next
+            // test runs. Subsequent tests call lncli addinvoice immediately,
+            // and a docker-start that hasn't finished yet returns empty
+            // stdout which then breaks JSON parsing.
+            try
+            {
+                await DockerHelper.StartContainer("lnd", CancellationToken.None);
+                for (var i = 0; i < 30; i++)
+                {
+                    try
+                    {
+                        var output = await DockerHelper.Exec("lnd",
+                            ["lncli", "--network=regtest", "getinfo"], CancellationToken.None);
+                        if (!string.IsNullOrWhiteSpace(output) && output.TrimStart().StartsWith('{')) break;
+                    }
+                    catch { /* lnd not yet responsive */ }
+                    await Task.Delay(TimeSpan.FromSeconds(1));
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[CancelInvoice] Warning: LND restart wait failed: {ex.Message}"); }
         }
     }
 
