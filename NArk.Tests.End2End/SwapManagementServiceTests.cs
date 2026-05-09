@@ -316,8 +316,10 @@ public class SwapManagementServiceTests
             try
             {
                 await DockerHelper.StartContainer("boltz-lnd", CancellationToken.None);
-                // Wait for boltz-lnd's gRPC to come back so the next test's
-                // Boltz-side operations don't race a half-booted node.
+                // Wait for boltz-lnd's gRPC to come back AND for Boltz to
+                // reconnect to it. Without the second poll, the next test's
+                // first Boltz API call sees a 504 from nginx because Boltz's
+                // backend is mid-reconnect.
                 for (var i = 0; i < 30; i++)
                 {
                     try
@@ -327,6 +329,18 @@ public class SwapManagementServiceTests
                         if (!string.IsNullOrWhiteSpace(output) && output.TrimStart().StartsWith('{')) break;
                     }
                     catch { /* not ready yet */ }
+                    await Task.Delay(TimeSpan.FromSeconds(1));
+                }
+                using var boltzReadyClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                for (var i = 0; i < 60; i++)
+                {
+                    try
+                    {
+                        var resp = await boltzReadyClient.GetAsync(
+                            $"{SharedSwapInfrastructure.BoltzEndpoint}v2/swap/submarine", CancellationToken.None);
+                        if (resp.IsSuccessStatusCode) break;
+                    }
+                    catch { /* Boltz still reconnecting */ }
                     await Task.Delay(TimeSpan.FromSeconds(1));
                 }
             }
