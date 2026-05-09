@@ -59,40 +59,26 @@ public static class DockerHelper
     }
 
     /// <summary>
-    /// Creates a HOLD LND invoice and returns the BOLT11 string + its
-    /// hex-encoded payment hash. Hold invoices are the only kind LND lets
-    /// us cancel via <c>lncli cancelinvoice</c>; regular <c>addinvoice</c>
-    /// invoices cannot be deterministically failed without waiting for
-    /// natural expiry.
+    /// Creates an LND invoice and returns the BOLT11 string. Used by tests
+    /// that need a regular (non-hold) invoice that Boltz can pay through
+    /// its standard pathway. To deterministically FAIL the payment use
+    /// <see cref="StopContainer"/> on the LND node so Boltz can't reach it.
     /// </summary>
-    public static async Task<(string PaymentRequest, string RHashHex)> CreateLndInvoiceWithHash(
-        long amtSats = 10000, int expirySecs = 30, CancellationToken ct = default)
+    public static async Task<string> CreateLndInvoiceForCancellation(
+        long amtSats = 10000, int expirySecs = 3600, CancellationToken ct = default)
     {
-        // Generate a random 32-byte preimage; LND wants the SHA256 hash of it
-        // as the addholdinvoice argument. We never settle this invoice — the
-        // test cancels it before Boltz tries to pay — so the preimage itself
-        // is throwaway.
-        var preimage = NBitcoin.RandomUtils.GetBytes(32);
-        var hash = NBitcoin.Crypto.Hashes.SHA256(preimage);
-        var hashHex = Convert.ToHexString(hash).ToLowerInvariant();
-
         var args = new List<string>
         {
-            "lncli", "--network=regtest", "addholdinvoice", hashHex, "--amt", amtSats.ToString(CultureInfo.InvariantCulture)
+            "lncli", "--network=regtest", "addinvoice", "--amt", amtSats.ToString(CultureInfo.InvariantCulture),
+            "--expiry", expirySecs.ToString(CultureInfo.InvariantCulture)
         };
-        if (expirySecs > 0)
-        {
-            args.AddRange(["--expiry", expirySecs.ToString(CultureInfo.InvariantCulture)]);
-        }
 
         var output = await Exec("lnd", args.ToArray(), ct);
         var json = JsonSerializer.Deserialize<JsonObject>(output)
-                   ?? throw new InvalidOperationException($"LND addholdinvoice returned non-JSON: {output}");
+                   ?? throw new InvalidOperationException($"LND addinvoice returned non-JSON: {output}");
 
-        var paymentRequest = json["payment_request"]?.GetValue<string>()
-            ?? throw new InvalidOperationException($"Hold invoice creation on LND failed (no payment_request). Output: {output}");
-
-        return (paymentRequest.Trim(), hashHex);
+        return json["payment_request"]?.GetValue<string>()
+            ?? throw new InvalidOperationException($"Invoice creation failed (no payment_request). Output: {output}");
     }
 
     /// <summary>
