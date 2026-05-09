@@ -341,115 +341,85 @@ public class SwapManagementServiceTests
     /// reference.
     /// </summary>
     /// <remarks>
-    /// Mirrors fulmine's <c>TestConcurrentSwaps/distinct submarine swaps</c>.
-    /// Single wallet so the contention point we want to exercise — provider's
-    /// internal state when multiple swap IDs are subscribed and resolved at
-    /// staggered times on the same websocket — is actually hit. Per-wallet
-    /// coin-selection is serialised by <c>SafetyService</c> locks, so the
-    /// wallet is funded with two independent VTXOs (via
-    /// <see cref="FundedWalletHelper.GetFundedWallet"/>) so each swap gets
-    /// its own input without racing on a single locked VTXO.
+    /// Two fully-independent funded wallets, each with its own
+    /// <see cref="SwapsManagementService"/> + <see cref="BoltzSwapProvider"/>
+    /// and storage stack, run a submarine swap in parallel. This ensures
+    /// the suite handles two simultaneous Boltz websocket subscriptions,
+    /// independent status-polling loops, and concurrent settlement
+    /// without sharing any local state that could mask races. The
+    /// original <c>_swapsIdToWatch HashSet→ConcurrentDictionary</c>
+    /// regression is exercised on the websocket-subscription side
+    /// because both providers connect to the same Boltz instance.
     /// </remarks>
     [Test]
     [CancelAfter(360_000)]
     public async Task ConcurrentSubmarineSwapsBothComplete(CancellationToken token)
     {
-        // Two independent VTXOs at the same wallet's receive script, funded
-        // upfront by FundedWalletHelper. Each parallel swap claims its own
-        // VTXO so the SafetyService lock contention never trips.
-        var prereq = await FundedWalletHelper.GetFundedWallet(vtxoCount: 2);
-        var swapStorage = TestStorage.CreateSwapStorage();
-        var intentStorage = TestStorage.CreateIntentStorage();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
-        [
-            new PaymentContractTransformer(prereq.walletProvider),
-            new HashLockedContractTransformer(prereq.walletProvider)
-        ]);
-        var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
-            prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
-            new DefaultCoinSelector(), prereq.safetyService, intentStorage);
+        var prereq1 = await FundedWalletHelper.GetFundedWallet();
+        var prereq2 = await FundedWalletHelper.GetFundedWallet();
 
-        var boltzClient = new BoltzClient(new HttpClient(),
-            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var boltzProvider = new BoltzSwapProvider(boltzClient,
-            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+        var settledA = new TaskCompletionSource();
+        var settledB = new TaskCompletionSource();
+
+        async Task<string> RunSwapAsync(
+            (ISafetyService safetyService, InMemoryWalletProvider walletProvider, string walletIdentifier,
+                IVtxoStorage vtxoStorage, ContractService contractService, IContractStorage contracts,
+                IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) prereq,
+            string label, long invoiceSats, TaskCompletionSource settledTcs)
+        {
+            var swapStorage = TestStorage.CreateSwapStorage();
+            var intentStorage = TestStorage.CreateIntentStorage();
+            var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+            var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
+            [
+                new PaymentContractTransformer(prereq.walletProvider),
+                new HashLockedContractTransformer(prereq.walletProvider)
+            ]);
+            var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
+                prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
+                new DefaultCoinSelector(), prereq.safetyService, intentStorage);
+
+            var boltzClient = new BoltzClient(new HttpClient(),
                 new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
-            prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
-            prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
-            intentStorage, chainTimeProvider);
-        await using var swapMgr = new SwapsManagementService(
-            new ISwapProvider[] { boltzProvider },
-            spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
-            swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+            var boltzProvider = new BoltzSwapProvider(boltzClient,
+                new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                    new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                    { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+                prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
+                prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
+                intentStorage, chainTimeProvider);
+            var swapMgr = new SwapsManagementService(
+                new ISwapProvider[] { boltzProvider },
+                spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
+                swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
 
-        var settled = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource>();
-        swapStorage.SwapsChanged += (_, swap) =>
-        {
-            Console.WriteLine($"[Concurrent] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
-            if (!settled.TryGetValue(swap.SwapId, out var tcs)) return;
-            if (swap.Status == ArkSwapStatus.Settled) tcs.TrySetResult();
-            else if (swap.Status is ArkSwapStatus.Failed or ArkSwapStatus.Refunded)
-                tcs.TrySetException(new InvalidOperationException(
-                    $"swap {swap.SwapId} hit terminal {swap.Status} before Settled (fail={swap.FailReason})"));
-        };
+            swapStorage.SwapsChanged += (_, swap) =>
+            {
+                Console.WriteLine($"[{label}] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+                if (swap.Status == ArkSwapStatus.Settled) settledTcs.TrySetResult();
+                else if (swap.Status is ArkSwapStatus.Failed or ArkSwapStatus.Refunded)
+                    settledTcs.TrySetException(new InvalidOperationException(
+                        $"[{label}] swap {swap.SwapId} hit terminal {swap.Status} before Settled (fail={swap.FailReason})"));
+            };
 
-        await swapMgr.StartAsync(token);
+            await swapMgr.StartAsync(token);
 
-        var inv1 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
-        var inv2 = BOLT11PaymentRequest.Parse(await DockerHelper.CreateLndInvoice(9000, expirySecs: 0), Network.RegTest);
+            var invoice = BOLT11PaymentRequest.Parse(
+                await DockerHelper.CreateLndInvoice(invoiceSats, expirySecs: 0), Network.RegTest);
+            var swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, invoice, autoPay: true, token);
 
-        // Submit sequentially: the first call spends VTXO_A; the second
-        // call's CoinSelector must see VTXO_A as spent and pick VTXO_B.
-        // The two swaps still progress concurrently after submission —
-        // their websocket subscriptions, status polling, and settlement
-        // happen in parallel, which is the actual race the original
-        // _swapsIdToWatch HashSet-vs-ConcurrentDictionary regression
-        // guarded against.
-        //
-        // We wait for the first swap's spend to land in our local
-        // vtxoStorage before kicking off the second InitiateSubmarineSwap
-        // (the SafetyService lock releases as soon as the ark tx is
-        // submitted, but VtxoSync polls and has a small window where
-        // the spent VTXO still looks unspent locally — without this
-        // wait, the second call's CoinSelector would re-pick VTXO_A
-        // and arkd would reject the intent with AlreadyLockedVtxo).
-        string swapId1, swapId2;
-        var firstSpendObserved = new TaskCompletionSource();
-        void OnFirstSpend(object? _, NArk.Abstractions.VTXOs.ArkVtxo v)
-        {
-            if (v.IsSpent()) firstSpendObserved.TrySetResult();
-        }
-        prereq.vtxoStorage.VtxosChanged += OnFirstSpend;
-        try
-        {
-            swapId1 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv1, autoPay: true, token);
-            await firstSpendObserved.Task.WaitAsync(TimeSpan.FromSeconds(30), token);
-            swapId2 = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, inv2, autoPay: true, token);
-        }
-        finally
-        {
-            prereq.vtxoStorage.VtxosChanged -= OnFirstSpend;
-        }
-        Assert.That(swapId1, Is.Not.EqualTo(swapId2), "Boltz must hand back distinct swap ids");
-
-        settled[swapId1] = new TaskCompletionSource();
-        settled[swapId2] = new TaskCompletionSource();
-
-        // Race window: a swap may already have been Settled by the time we
-        // attached the TCS above (the SwapsChanged handler short-circuits on
-        // a missing key). Reconcile from storage to catch that case.
-        foreach (var (swapId, tcs) in settled)
-        {
-            var current = (await swapStorage.GetSwaps(swapIds: [swapId])).SingleOrDefault();
-            if (current?.Status == ArkSwapStatus.Settled) tcs.TrySetResult();
+            await settledTcs.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
+            await swapMgr.DisposeAsync();
+            return swapId;
         }
 
-        await Task.WhenAll(
-            settled[swapId1].Task.WaitAsync(TimeSpan.FromMinutes(5), token),
-            settled[swapId2].Task.WaitAsync(TimeSpan.FromMinutes(5), token));
+        var taskA = RunSwapAsync(prereq1, "ConcurrentA", 8000, settledA);
+        var taskB = RunSwapAsync(prereq2, "ConcurrentB", 9000, settledB);
+        var swapIds = await Task.WhenAll(taskA, taskB);
+
+        Assert.That(swapIds[0], Is.Not.EqualTo(swapIds[1]),
+            "Boltz must hand back distinct swap ids for the two parallel swaps");
     }
 
     /// <summary>
@@ -523,122 +493,126 @@ public class SwapManagementServiceTests
     /// <c>TestConcurrentSwaps/submarine and reverse swaps</c>.
     /// </summary>
     /// <remarks>
-    /// Wallet is funded with two 500k-sat VTXOs upfront so the submarine
-    /// + reverse swaps can run truly in parallel without colliding on a
-    /// single locked input.
+    /// Two fully-independent funded wallets, each with its own
+    /// <see cref="SwapsManagementService"/> and storage stack — one runs
+    /// a submarine swap and the other runs a reverse swap in parallel.
+    /// Eliminates intra-wallet coin-selection contention entirely; the
+    /// concurrency we exercise is across the two BoltzSwapProvider
+    /// instances on shared Boltz infrastructure.
     /// </remarks>
     [Test]
     [CancelAfter(420_000)]
     public async Task SubmarineAndReverseSwapsCompleteInParallel(CancellationToken token)
     {
-        var prereq = await FundedWalletHelper.GetFundedWallet(vtxoCount: 2);
-        var swapStorage = TestStorage.CreateSwapStorage();
-        var intentStorage = TestStorage.CreateIntentStorage();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
-        [
-            new PaymentContractTransformer(prereq.walletProvider),
-            new HashLockedContractTransformer(prereq.walletProvider),
-            new VHTLCContractTransformer(prereq.walletProvider, chainTimeProvider)
-        ]);
+        var prereqSub = await FundedWalletHelper.GetFundedWallet();
+        var prereqRev = await FundedWalletHelper.GetFundedWallet();
 
-        var scheduler = new SimpleIntentScheduler(
-            new DefaultFeeEstimator(prereq.clientTransport, chainTimeProvider),
-            prereq.clientTransport, prereq.contractService, chainTimeProvider,
-            new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions
-            { Threshold = TimeSpan.FromHours(2), ThresholdHeight = 2000 }));
+        var subSettled = new TaskCompletionSource();
+        var revSettled = new TaskCompletionSource();
 
-        await using var intentGeneration = new IntentGenerationService(prereq.clientTransport,
-            new DefaultFeeEstimator(prereq.clientTransport, chainTimeProvider), coinService,
-            prereq.walletProvider, intentStorage, prereq.safetyService,
-            prereq.contracts, prereq.vtxoStorage, scheduler,
-            new OptionsWrapper<IntentGenerationServiceOptions>(new IntentGenerationServiceOptions
-            { PollInterval = TimeSpan.FromMinutes(5) }));
-
-        var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
-            prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
-            new DefaultCoinSelector(), prereq.safetyService, intentStorage);
-
-        await using var sweepMgr = new SweeperService(
-            [new SwapSweepPolicy()], prereq.vtxoStorage, coinService, prereq.contracts,
-            spendingService, intentStorage,
-            new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions
-            { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider, []);
-        await sweepMgr.StartAsync(token);
-
-        var boltzClient = new BoltzClient(new HttpClient(),
-            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
-        var boltzProvider = new BoltzSwapProvider(boltzClient,
-            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+        async Task RunSubmarineAsync(
+            (ISafetyService safetyService, InMemoryWalletProvider walletProvider, string walletIdentifier,
+                IVtxoStorage vtxoStorage, ContractService contractService, IContractStorage contracts,
+                IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) prereq)
+        {
+            var swapStorage = TestStorage.CreateSwapStorage();
+            var intentStorage = TestStorage.CreateIntentStorage();
+            var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+            var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
+            [
+                new PaymentContractTransformer(prereq.walletProvider),
+                new HashLockedContractTransformer(prereq.walletProvider),
+                new VHTLCContractTransformer(prereq.walletProvider, chainTimeProvider)
+            ]);
+            var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
+                prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
+                new DefaultCoinSelector(), prereq.safetyService, intentStorage);
+            var boltzClient = new BoltzClient(new HttpClient(),
                 new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
-                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
-            prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
-            prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
-            intentStorage, chainTimeProvider);
-        await using var swapMgr = new SwapsManagementService(
-            new ISwapProvider[] { boltzProvider },
-            spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
-            swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+            var boltzProvider = new BoltzSwapProvider(boltzClient,
+                new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                    new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                    { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+                prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
+                prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
+                intentStorage, chainTimeProvider);
+            var swapMgr = new SwapsManagementService(
+                new ISwapProvider[] { boltzProvider },
+                spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
+                swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
 
-        var settled = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource>();
-        swapStorage.SwapsChanged += (_, swap) =>
-        {
-            Console.WriteLine($"[Cross] {swap.SwapType} {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
-            if (!settled.TryGetValue(swap.SwapId, out var tcs)) return;
-            if (swap.Status == ArkSwapStatus.Settled) tcs.TrySetResult();
-            else if (swap.Status is ArkSwapStatus.Failed or ArkSwapStatus.Refunded)
-                tcs.TrySetException(new InvalidOperationException(
-                    $"{swap.SwapType} {swap.SwapId} hit {swap.Status} before Settled (fail={swap.FailReason})"));
-        };
+            swapStorage.SwapsChanged += (_, swap) =>
+            {
+                Console.WriteLine($"[ParallelSub] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+                if (swap.Status == ArkSwapStatus.Settled) subSettled.TrySetResult();
+                else if (swap.Status is ArkSwapStatus.Failed or ArkSwapStatus.Refunded)
+                    subSettled.TrySetException(new InvalidOperationException(
+                        $"submarine {swap.SwapId} hit {swap.Status} (fail={swap.FailReason})"));
+            };
 
-        await swapMgr.StartAsync(token);
-
-        // Fire submarine + reverse in parallel. The submarine pays an LND
-        // invoice; the reverse generates an LN invoice that we settle by
-        // having LND pay it from the boltz LN node.
-        var subInvoice = BOLT11PaymentRequest.Parse(
-            await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
-
-        // Serialize the submission so the two CoinSelector calls don't race
-        // on a shared VTXO; the cross-flow concurrency we want to exercise
-        // happens once both swaps are tracked in the same provider's
-        // websocket subscription/poll loop, which is post-submission.
-        var subSwapId = await swapMgr.InitiateSubmarineSwap(
-            prereq.walletIdentifier, subInvoice, autoPay: true, token);
-        var revInvoice = await FulmineLiquidityHelper.RetryWithSettle(() =>
-            swapMgr.InitiateReverseSwap(prereq.walletIdentifier,
-                new CreateInvoiceParams(LightMoney.Satoshis(20000), "ParallelReverse", TimeSpan.FromHours(1)),
-                token));
-
-        // The reverse swap's record is the most-recently-saved Reverse-type
-        // swap belonging to this wallet (the InitiateReverseSwap return is
-        // the BOLT11 string, not the swap id).
-        var revSwap = (await swapStorage.GetSwaps(walletIds: [prereq.walletIdentifier],
-                swapTypes: [ArkSwapType.ReverseSubmarine]))
-            .OrderByDescending(s => s.CreatedAt).First();
-
-        settled[subSwapId] = new TaskCompletionSource();
-        settled[revSwap.SwapId] = new TaskCompletionSource();
-
-        // Race-window reconciliation (same pattern as ConcurrentSubmarineSwapsBothComplete).
-        foreach (var (id, tcs) in settled)
-        {
-            var current = (await swapStorage.GetSwaps(swapIds: [id])).SingleOrDefault();
-            if (current?.Status == ArkSwapStatus.Settled) tcs.TrySetResult();
+            await swapMgr.StartAsync(token);
+            var invoice = BOLT11PaymentRequest.Parse(
+                await DockerHelper.CreateLndInvoice(8000, expirySecs: 0), Network.RegTest);
+            await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, invoice, autoPay: true, token);
+            await subSettled.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
+            await swapMgr.DisposeAsync();
         }
 
-        // Pay the reverse swap's invoice from LND so Boltz claims its hold.
-        await Cli.Wrap("docker")
-            .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", revInvoice])
-            .ExecuteBufferedAsync();
+        async Task RunReverseAsync(
+            (ISafetyService safetyService, InMemoryWalletProvider walletProvider, string walletIdentifier,
+                IVtxoStorage vtxoStorage, ContractService contractService, IContractStorage contracts,
+                IClientTransport clientTransport, VtxoSynchronizationService vtxoSync) prereq)
+        {
+            var swapStorage = TestStorage.CreateSwapStorage();
+            var intentStorage = TestStorage.CreateIntentStorage();
+            var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+            var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
+            [
+                new PaymentContractTransformer(prereq.walletProvider),
+                new HashLockedContractTransformer(prereq.walletProvider),
+                new VHTLCContractTransformer(prereq.walletProvider, chainTimeProvider)
+            ]);
+            var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
+                prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
+                new DefaultCoinSelector(), prereq.safetyService, intentStorage);
+            var boltzClient = new BoltzClient(new HttpClient(),
+                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+            var boltzProvider = new BoltzSwapProvider(boltzClient,
+                new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                    new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                    { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+                prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
+                prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
+                intentStorage, chainTimeProvider);
+            var swapMgr = new SwapsManagementService(
+                new ISwapProvider[] { boltzProvider },
+                spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
+                swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
 
-        // 5-min budget — submarine + reverse + Boltz + LND chain on CI can
-        // take a while to fully settle. The previous 3-min budget was tight
-        // and produced flake on slow runners.
-        await Task.WhenAll(
-            settled[subSwapId].Task.WaitAsync(TimeSpan.FromMinutes(5), token),
-            settled[revSwap.SwapId].Task.WaitAsync(TimeSpan.FromMinutes(5), token));
+            swapStorage.SwapsChanged += (_, swap) =>
+            {
+                Console.WriteLine($"[ParallelRev] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+                if (swap.Status == ArkSwapStatus.Settled) revSettled.TrySetResult();
+                else if (swap.Status is ArkSwapStatus.Failed or ArkSwapStatus.Refunded)
+                    revSettled.TrySetException(new InvalidOperationException(
+                        $"reverse {swap.SwapId} hit {swap.Status} (fail={swap.FailReason})"));
+            };
+
+            await swapMgr.StartAsync(token);
+            var revInvoice = await FulmineLiquidityHelper.RetryWithSettle(() =>
+                swapMgr.InitiateReverseSwap(prereq.walletIdentifier,
+                    new CreateInvoiceParams(LightMoney.Satoshis(20000), "ParallelReverse", TimeSpan.FromHours(1)),
+                    token));
+            await Cli.Wrap("docker")
+                .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", revInvoice])
+                .ExecuteBufferedAsync(token);
+            await revSettled.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
+            await swapMgr.DisposeAsync();
+        }
+
+        await Task.WhenAll(RunSubmarineAsync(prereqSub), RunReverseAsync(prereqRev));
     }
 
     [Test]
