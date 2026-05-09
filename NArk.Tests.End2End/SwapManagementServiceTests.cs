@@ -281,38 +281,60 @@ public class SwapManagementServiceTests
 
         // autoPay=false so the return value is the Boltz swap ID (with
         // autoPay=true it'd be the user's spend tx hash, which boltzr-cli
-        // can't look up). We then pay the HTLC manually so the user has
-        // funds locked at the contract — RequestRefundCooperatively
-        // returns early when there's nothing to refund.
+        // can't look up). We then stop boltz-lnd to prevent Boltz from
+        // racing us by paying the LN invoice over 0-conf, pay the HTLC
+        // manually so the user has funds locked at the contract, and
+        // finally call boltzr-cli swap set-status invoice.failedToPay
+        // which fires the same nursery + websocket event Boltz emits on
+        // a real LN payment failure. SDK fires cooperative refund.
         var invoice = await DockerHelper.CreateLndInvoice(amtSats: 10000, expirySecs: 3600, ct: token);
         var swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier,
             BOLT11PaymentRequest.Parse(invoice, Network.RegTest), autoPay: false, token);
         Console.WriteLine($"[BoltzFail] Swap {swapId} created");
 
-        await swapMgr.PayExistingSubmarineSwap(prereq.walletIdentifier, swapId, token);
-        Console.WriteLine($"[BoltzFail] HTLC paid; waiting for Boltz to observe lockup");
+        try
+        {
+            // Stop boltz-lnd BEFORE paying the HTLC. Boltz's own LND is
+            // gone, so it can't successfully pay the user's invoice over
+            // the channel and can't naturally race past invoice.failedToPay
+            // into invoice.settled. We re-start it in finally{} so
+            // subsequent tests still have boltz-lnd available.
+            await DockerHelper.StopContainer("boltz-lnd", token);
 
-        for (var i = 0; i < 12; i++)
+            await swapMgr.PayExistingSubmarineSwap(prereq.walletIdentifier, swapId, token);
+            Console.WriteLine($"[BoltzFail] HTLC paid; forcing Boltz to invoice.failedToPay via boltzr-cli");
+            await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
+
+            await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
+
+            var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
+            Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
+                $"Expected swap {swapId} to be Refunded after Boltz invoice.failedToPay; got {finalSwap.Status} (fail={finalSwap.FailReason})");
+        }
+        finally
         {
             try
             {
-                var status = await boltzClient.GetSwapStatusAsync(swapId, token);
-                Console.WriteLine($"[BoltzFail] Pre-fail poll {i}: {status?.Status ?? "<null>"}");
-                if (status?.Status is "transaction.mempool" or "transaction.confirmed"
-                    or "invoice.set" or "invoice.pending") break;
+                await DockerHelper.StartContainer("boltz-lnd", CancellationToken.None);
+                // Wait for boltz-lnd's gRPC to come back so the next test's
+                // Boltz-side operations don't race a half-booted node.
+                for (var i = 0; i < 30; i++)
+                {
+                    try
+                    {
+                        var output = await DockerHelper.Exec("boltz-lnd",
+                            ["lncli", "--network=regtest", "getinfo"], CancellationToken.None);
+                        if (!string.IsNullOrWhiteSpace(output) && output.TrimStart().StartsWith('{')) break;
+                    }
+                    catch { /* not ready yet */ }
+                    await Task.Delay(TimeSpan.FromSeconds(1));
+                }
             }
-            catch { /* ignore — early polls may 404 if swap row hasn't been written yet */ }
-            await Task.Delay(TimeSpan.FromSeconds(2), token);
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[BoltzFail] Warning: boltz-lnd restart wait failed: {ex.Message}");
+            }
         }
-
-        Console.WriteLine($"[BoltzFail] Forcing Boltz to emit invoice.failedToPay via boltzr-cli");
-        await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
-
-        await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
-
-        var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
-        Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
-            $"Expected swap {swapId} to be Refunded after Boltz invoice.failedToPay; got {finalSwap.Status} (fail={finalSwap.FailReason})");
     }
 
     /// <summary>
