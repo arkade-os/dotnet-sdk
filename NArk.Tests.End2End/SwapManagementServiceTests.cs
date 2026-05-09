@@ -228,6 +228,91 @@ public class SwapManagementServiceTests
     }
 
     /// <summary>
+    /// Submarine swap unhappy path with deterministic invoice failure:
+    /// instead of waiting for natural invoice expiry (the
+    /// <see cref="CanDoArkCoOpRefundUsingBoltz"/> shape), we drive Boltz
+    /// directly into <c>invoice.failedToPay</c> via its admin
+    /// <c>boltzr-cli swap set-status</c> tool. This fires the same
+    /// nursery event + websocket update Boltz would emit on a real
+    /// payment failure (failure reason "payment has been cancelled"),
+    /// so the SDK's cooperative-refund flow runs identically. End state:
+    /// <see cref="ArkSwapStatus.Refunded"/>.
+    /// </summary>
+    [Test]
+    [CancelAfter(180_000)]
+    public async Task SubmarineRefundsWhenBoltzPaymentMarkedFailed(CancellationToken token)
+    {
+        var prereq = await FundedWalletHelper.GetFundedWallet();
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+        var intentStorage = TestStorage.CreateIntentStorage();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
+        [
+            new PaymentContractTransformer(prereq.walletProvider),
+            new HashLockedContractTransformer(prereq.walletProvider),
+            new VHTLCContractTransformer(prereq.walletProvider, chainTimeProvider)
+        ]);
+        var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
+            prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
+            new DefaultCoinSelector(), prereq.safetyService, intentStorage);
+        var boltzProvider = new BoltzSwapProvider(boltzClient,
+            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
+            prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
+            intentStorage, chainTimeProvider);
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
+            swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
+
+        var refundedTcs = new TaskCompletionSource();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[BoltzFail] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            if (swap.Status == ArkSwapStatus.Refunded) refundedTcs.TrySetResult();
+        };
+
+        await swapMgr.StartAsync(token);
+
+        // Long-expiry invoice — we don't rely on expiry; we drive the
+        // failure via boltzr-cli below.
+        var invoice = await DockerHelper.CreateLndInvoice(amtSats: 10000, expirySecs: 3600, ct: token);
+        var swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier,
+            BOLT11PaymentRequest.Parse(invoice, Network.RegTest), autoPay: true, token);
+        Console.WriteLine($"[BoltzFail] Swap {swapId} created (autoPay=true)");
+
+        // Wait briefly so the user-side spend lands and Boltz observes the
+        // HTLC. Setting status to invoice.failedToPay before the HTLC is
+        // present can race with Boltz's own state machine.
+        for (var i = 0; i < 12; i++)
+        {
+            try
+            {
+                var status = await boltzClient.GetSwapStatusAsync(swapId, token);
+                Console.WriteLine($"[BoltzFail] Pre-fail poll {i}: {status?.Status ?? "<null>"}");
+                if (status?.Status is "transaction.mempool" or "transaction.confirmed"
+                    or "invoice.set" or "invoice.pending") break;
+            }
+            catch { /* ignore — early polls may 404 if swap row hasn't been written yet */ }
+            await Task.Delay(TimeSpan.FromSeconds(2), token);
+        }
+
+        Console.WriteLine($"[BoltzFail] Forcing Boltz to emit invoice.failedToPay via boltzr-cli");
+        await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
+
+        await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
+
+        var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
+        Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
+            $"Expected swap {swapId} to be Refunded after Boltz invoice.failedToPay; got {finalSwap.Status} (fail={finalSwap.FailReason})");
+    }
+
+    /// <summary>
     /// Concurrent submarine swap stress test: a single wallet + a single
     /// <see cref="BoltzSwapProvider"/> instance host two simultaneous
     /// submarine swaps, both must reach <see cref="ArkSwapStatus.Settled"/>.
