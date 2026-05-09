@@ -338,6 +338,142 @@ public class SwapManagementServiceTests
     }
 
     /// <summary>
+    /// Double-funded vHTLC scenario: the user accidentally sends a second
+    /// VTXO to the same swap script (e.g., paying twice after a perceived
+    /// stall, or a wallet retry from a different device). Boltz only signs
+    /// the cooperative refund for the canonical lockup VTXO it tracks
+    /// (matches <see cref="ArkSwap.ExpectedAmount"/>); extra VTXOs at the
+    /// same script can only be recovered via the timelock path handled by
+    /// <c>SweeperService</c> + <c>SwapSweepPolicy</c>. This test verifies
+    /// the cooperative refund path picks the canonical VTXO instead of
+    /// throwing on a multi-VTXO script (the previous shape blew up with
+    /// <c>InvalidOperationException: Sequence contains more than one
+    /// element</c>).
+    /// </summary>
+    [Test]
+    [CancelAfter(180_000)]
+    public async Task SubmarineRefundsCanonicalVtxoWhenSwapScriptIsDoubleFunded(CancellationToken token)
+    {
+        var prereq = await FundedWalletHelper.GetFundedWallet();
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+        var intentStorage = TestStorage.CreateIntentStorage();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
+        [
+            new PaymentContractTransformer(prereq.walletProvider),
+            new HashLockedContractTransformer(prereq.walletProvider),
+            new VHTLCContractTransformer(prereq.walletProvider, chainTimeProvider)
+        ]);
+        var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
+            prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
+            new DefaultCoinSelector(), prereq.safetyService, intentStorage);
+        var boltzProvider = new BoltzSwapProvider(boltzClient,
+            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
+            prereq.contractService, prereq.contracts, prereq.safetyService, spendingService,
+            intentStorage, chainTimeProvider);
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService, prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
+            swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage, chainTimeProvider);
+
+        var refundedTcs = new TaskCompletionSource();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[DoubleFund] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            if (swap.Status == ArkSwapStatus.Refunded) refundedTcs.TrySetResult();
+        };
+
+        await swapMgr.StartAsync(token);
+
+        var invoice = await DockerHelper.CreateLndInvoice(amtSats: 50000, expirySecs: 3600, ct: token);
+        var swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier,
+            BOLT11PaymentRequest.Parse(invoice, Network.RegTest), autoPay: false, token);
+        Console.WriteLine($"[DoubleFund] Swap {swapId} created");
+
+        try
+        {
+            // Stop boltz-lnd before paying so Boltz can't race past
+            // invoice.failedToPay with a successful 0-conf payment.
+            await DockerHelper.StopContainer("boltz-lnd", token);
+
+            // 1st funding: the legitimate swap payment via the SDK.
+            await swapMgr.PayExistingSubmarineSwap(prereq.walletIdentifier, swapId, token);
+
+            // 2nd funding: send a small extra VTXO to the same swap script
+            // (i.e., simulating a wallet retry / panic-resend by the user).
+            // We wait for the canonical lockup to be visible at the script
+            // first, then add the extra so both end up there.
+            var arkSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
+            var canonicalLockupAmount = arkSwap.ExpectedAmount;
+            var lockupAddress = arkSwap.Address;
+            for (var i = 0; i < 30; i++)
+            {
+                var found = (await prereq.vtxoStorage.GetVtxos(scripts: [arkSwap.ContractScript], cancellationToken: token))
+                    .Any(v => (long)v.Amount == canonicalLockupAmount && !v.IsSpent());
+                if (found) break;
+                await Task.Delay(TimeSpan.FromSeconds(1), token);
+            }
+            const long extraAmount = 5000;
+            Console.WriteLine($"[DoubleFund] Sending extra {extraAmount}-sat VTXO to swap script {lockupAddress}");
+            await DockerHelper.SendArkdNoteTo(lockupAddress, extraAmount, token);
+
+            // Wait until BOTH VTXOs are visible at the script in our local
+            // VTXO storage (the multi-VTXO state we want to assert on).
+            for (var i = 0; i < 30; i++)
+            {
+                var current = await prereq.vtxoStorage.GetVtxos(scripts: [arkSwap.ContractScript], cancellationToken: token);
+                if (current.Count(v => !v.IsSpent()) >= 2) break;
+                await Task.Delay(TimeSpan.FromSeconds(1), token);
+            }
+
+            Console.WriteLine($"[DoubleFund] Forcing Boltz invoice.failedToPay via boltzr-cli");
+            await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
+            await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
+
+            var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
+            Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
+                $"Cooperative refund should pick the canonical VTXO and complete; got {finalSwap.Status} (fail={finalSwap.FailReason})");
+
+            // The 50k canonical VTXO should now be spent (refunded). The
+            // 5k extra remains at the script — the SweeperService takes it
+            // via the timelock path eventually, but that's outside the
+            // scope of this test.
+            var afterRefund = await prereq.vtxoStorage.GetVtxos(scripts: [arkSwap.ContractScript], cancellationToken: token);
+            var unspentExtras = afterRefund.Where(v => !v.IsSpent() && (long)v.Amount != canonicalLockupAmount).ToList();
+            Assert.That(unspentExtras, Is.Not.Empty,
+                "Extra VTXO should still be at the swap script after cooperative refund (sweeper claims it via timelock)");
+        }
+        finally
+        {
+            try
+            {
+                await DockerHelper.StartContainer("boltz-lnd", CancellationToken.None);
+                for (var i = 0; i < 30; i++)
+                {
+                    try
+                    {
+                        var output = await DockerHelper.Exec("boltz-lnd",
+                            ["lncli", "--network=regtest", "getinfo"], CancellationToken.None);
+                        if (!string.IsNullOrWhiteSpace(output) && output.TrimStart().StartsWith('{')) break;
+                    }
+                    catch { /* not ready yet */ }
+                    await Task.Delay(TimeSpan.FromSeconds(1));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DoubleFund] Warning: boltz-lnd restart wait failed: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
     /// Concurrent submarine swap stress test: a single wallet + a single
     /// <see cref="BoltzSwapProvider"/> instance host two simultaneous
     /// submarine swaps, both must reach <see cref="ArkSwapStatus.Settled"/>.

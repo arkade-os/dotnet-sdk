@@ -778,7 +778,23 @@ public class BoltzSwapProvider : ISwapProvider
                 return false;
             }
 
-            var vtxo = vtxos.Single();
+            // Same multi-VTXO handling as the submarine refund path: Boltz
+            // only signs the canonical lockup VTXO; extras are recovered by
+            // SweeperService via the timelock path.
+            var vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
+            if (vtxo is null)
+            {
+                _logger?.LogWarning(
+                    "Swap {SwapId}: no unspent VTXO of expected amount {ExpectedAmount} at swap script (have {Total}); SweeperService will pick up extras via timelock",
+                    swap.SwapId, swap.ExpectedAmount, vtxos.Count);
+                return false;
+            }
+            if (vtxos.Count > 1)
+            {
+                _logger?.LogInformation(
+                    "Swap {SwapId}: swap script has {Total} VTXO(s); refunding canonical {ExpectedAmount}-sat lockup, leaving {Extras} extra(s) for SweeperService",
+                    swap.SwapId, vtxos.Count, swap.ExpectedAmount, vtxos.Count - 1);
+            }
             var timeHeight = await _chainTimeProvider.GetChainTime(ct);
             if (!vtxo.CanSpendOffchain(timeHeight))
             {
@@ -1032,8 +1048,28 @@ public class BoltzSwapProvider : ISwapProvider
             return;
         }
 
-        // Use the first VTXO (should only be one for a swap)
-        var vtxo = vtxos.Single();
+        // Boltz only cooperatively signs a refund for the canonical lockup
+        // VTXO it tracks for this swap (matches swap.ExpectedAmount). If the
+        // user accidentally double-funded the swap script (e.g., paid twice
+        // after a perceived stall), additional VTXOs sitting at the same
+        // script can only be recovered via the timelock path — which is
+        // exactly what SweeperService + SwapSweepPolicy handle once the
+        // refund CSV elapses. So here we narrow to the canonical VTXO and
+        // leave any extras for the sweeper.
+        var vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
+        if (vtxo is null)
+        {
+            _logger?.LogWarning(
+                "Swap {SwapId}: no unspent VTXO of expected amount {ExpectedAmount} found among {Total} VTXO(s) at swap script — extras will be handled by SweeperService via timelock",
+                swap.SwapId, swap.ExpectedAmount, vtxos.Count);
+            return;
+        }
+        if (vtxos.Count > 1)
+        {
+            _logger?.LogInformation(
+                "Swap {SwapId}: swap script has {Total} VTXO(s); cooperatively refunding the canonical {ExpectedAmount}-sat lockup, leaving {Extras} extra(s) for SweeperService",
+                swap.SwapId, vtxos.Count, swap.ExpectedAmount, vtxos.Count - 1);
+        }
 
         var timeHeight = await _chainTimeProvider.GetChainTime(cancellationToken);
         if (!vtxo.CanSpendOffchain(timeHeight))
