@@ -576,6 +576,17 @@ public class SwapManagementServiceTests
             var spendingService = new SpendingService(prereq.vtxoStorage, prereq.contracts,
                 prereq.walletProvider, coinService, prereq.contractService, prereq.clientTransport,
                 new DefaultCoinSelector(), prereq.safetyService, intentStorage);
+
+            // Mirror the working CanReceiveArkFundsUsingReverseSwap shape:
+            // SweeperService + SwapSweepPolicy is what actually claims the
+            // user's vHTLC VTXO once Boltz locks ARK on it.
+            var sweepMgr = new SweeperService(
+                [new SwapSweepPolicy()], prereq.vtxoStorage, coinService, prereq.contracts,
+                spendingService, intentStorage,
+                new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions
+                { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider, []);
+            await sweepMgr.StartAsync(token);
+
             var boltzClient = new BoltzClient(new HttpClient(),
                 new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
                 { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
@@ -610,6 +621,7 @@ public class SwapManagementServiceTests
                 .ExecuteBufferedAsync(token);
             await revSettled.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
             await swapMgr.DisposeAsync();
+            await sweepMgr.DisposeAsync();
         }
 
         await Task.WhenAll(RunSubmarineAsync(prereqSub), RunReverseAsync(prereqRev));
