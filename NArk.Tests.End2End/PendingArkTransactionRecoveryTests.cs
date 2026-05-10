@@ -83,12 +83,24 @@ public class PendingArkTransactionRecoveryTests
         var failures = new List<PendingTxRecoveryFailureEventArgs>();
         recovery.RecoveryFailed += (_, e) => failures.Add(e);
 
-        var finalized = await recovery.FinalizePendingArkTransactionsAsync(
-            walletDetails.walletIdentifier, CancellationToken.None);
+        // arkd's "spent_by_pending" projection that exposes the VTXO via GetPendingTx
+        // runs async (watermill event bus) — give it up to 10s to catch up before
+        // declaring the recovery a failure. Production never races this projection
+        // because recovery runs at host startup, well after the crash.
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        IReadOnlyList<string> finalized = [];
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            finalized = await recovery.FinalizePendingArkTransactionsAsync(
+                walletDetails.walletIdentifier, CancellationToken.None);
+            if (finalized.Count > 0) break;
+            await Task.Delay(250);
+        }
 
         Assert.That(failures, Is.Empty,
             $"No per-tx failures expected, got: {string.Join(", ", failures.Select(f => f.Exception.Message))}");
-        Assert.That(finalized, Is.Not.Empty, "Recovery must finalize at least one pending arkTxId");
+        Assert.That(finalized, Is.Not.Empty,
+            "Recovery must finalize at least one pending arkTxId once arkd's projection catches up");
 
         // Idempotency: a second recovery call observes nothing left to finalize —
         // the server only returns pending txs that are still in flight.

@@ -32,6 +32,16 @@ namespace NArk.Core.Services;
 /// logged and skipped so a single bad pending tx never blocks the wallet from booting —
 /// the next start-up retries any unfinalized leftovers.
 /// </para>
+/// <para>
+/// <b>Timing note:</b> the Arkade server marks input VTXOs as pending-spent via an async
+/// event projection that runs after <c>SubmitTx</c> returns. Calling recovery in the
+/// same process as the original <c>SubmitTx</c> may race that projection (the server
+/// returns an empty pending list until the projection catches up). The hands-off path
+/// (host startup) never races this — by the time the host restarts, the projection has
+/// long since run. If you call <see cref="FinalizePendingArkTransactionsAsync"/> in the
+/// same process that just crashed mid-Submit, retry briefly until it returns a non-empty
+/// list (the projection is typically caught up within a second).
+/// </para>
 /// </remarks>
 public class PendingArkTransactionRecoveryService(
     IClientTransport clientTransport,
