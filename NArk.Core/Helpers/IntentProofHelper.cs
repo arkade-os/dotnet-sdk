@@ -41,6 +41,31 @@ public static class IntentProofHelper
     }
 
     /// <summary>
+    /// Creates a signed BIP-322 proof for <see cref="Transport.IClientTransport.GetPendingTxAsync"/>:
+    /// the SDK proves it owns the given input(s) and the server returns any non-finalized
+    /// Arkade transactions that referenced them so the SDK can finalize and unlock the user's
+    /// coins after a crash between SubmitTx and FinalizeTx. Mirrors the
+    /// <c>{"type":"get-pending-tx","expire_at":0}</c> envelope used by the TS and Go SDKs.
+    /// </summary>
+    public static async Task<(string Proof, string Message)> CreateGetPendingTxOwnershipProofAsync(
+        ArkCoin coin,
+        IArkadeWalletSigner signer,
+        Network network,
+        CancellationToken cancellationToken = default)
+    {
+        var message = JsonSerializer.Serialize(new
+        {
+            type = "get-pending-tx",
+            expire_at = 0
+        });
+
+        var psbt = CreateBip322Psbt(message, network, coin);
+        await SignBip322Proof(psbt, coin, signer, network, cancellationToken);
+
+        return (psbt.ToBase64(), message);
+    }
+
+    /// <summary>
     /// Creates the unsigned BIP-322-style PSBT structure (toSpend → toSign) for a single coin.
     /// Reused by delegation and intent proof flows.
     /// </summary>

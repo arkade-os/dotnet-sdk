@@ -8,7 +8,8 @@ public class ArkHostedLifecycle(
     IntentGenerationService intentGenerationService,
     IntentSynchronizationService intentSynchronizationService,
     BatchManagementService batchManagementService,
-    SweeperService sweeperService) : IHostedLifecycleService
+    SweeperService sweeperService,
+    PendingArkTransactionRecoveryService pendingArkTransactionRecoveryService) : IHostedLifecycleService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -17,6 +18,11 @@ public class ArkHostedLifecycle(
         await intentSynchronizationService.StartAsync(cancellationToken);
         await intentGenerationService.StartAsync(cancellationToken);
         await vtxoSynchronizationService.StartAsync(cancellationToken);
+
+        // Run AFTER vtxo sync so the recovery loop has fresh local VTXO state to
+        // resolve checkpoint inputs against. Best-effort: failures inside here
+        // are absorbed and logged so they never block the host from starting.
+        await pendingArkTransactionRecoveryService.RecoverAllWalletsAsync(cancellationToken);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

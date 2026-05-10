@@ -98,4 +98,37 @@ public partial class RestClientTransport
 
         return intents.ToArray();
     }
+
+    public async Task<NArk.Core.Transport.Models.PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
+        CancellationToken cancellationToken = default)
+    {
+        var body = new
+        {
+            intent = new
+            {
+                proof,
+                message
+            }
+        };
+
+        var response = await _http.PostAsJsonAsync("/v1/tx/pending", body, JsonOpts, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, cancellationToken);
+
+        var pending = new List<NArk.Core.Transport.Models.PendingArkTransaction>();
+        if (json.TryGetProperty("pendingTxs", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var p in arr.EnumerateArray())
+            {
+                var arkTxId = p.GetProperty("arkTxid").GetString() ?? string.Empty;
+                var finalArkTx = p.GetProperty("finalArkTx").GetString() ?? string.Empty;
+                var checkpoints = p.TryGetProperty("signedCheckpointTxs", out var cArr) && cArr.ValueKind == JsonValueKind.Array
+                    ? cArr.EnumerateArray().Select(x => x.GetString() ?? string.Empty).ToArray()
+                    : Array.Empty<string>();
+                pending.Add(new NArk.Core.Transport.Models.PendingArkTransaction(arkTxId, finalArkTx, checkpoints));
+            }
+        }
+
+        return pending.ToArray();
+    }
 }

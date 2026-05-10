@@ -159,4 +159,8 @@ public class CachingClientTransport : IClientTransport
 
     public Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default)
         => _inner.GetIntentsByProofAsync(proof, message, cancellationToken);
+
+    public Task<Models.PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
+        CancellationToken cancellationToken = default)
+        => _inner.GetPendingTxAsync(proof, message, cancellationToken);
 }

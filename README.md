@@ -454,6 +454,32 @@ Console.WriteLine($"Discovered {report.DiscoveredContracts.Count} contract(s)");
 
 Custom discovery sources are added by implementing `IContractDiscoveryProvider` and registering it in DI; the orchestrator picks them up automatically. See [docs/articles/recovery.md](docs/articles/recovery.md) for the full API and tuning guidance.
 
+## Pending Arkade Transaction Recovery
+
+Arkade off-chain transactions are a two-phase **Submit → Finalize** flow. If the process crashes between phases, the server holds the inputs as in-flight and only allows the original pending tx to be finalized — without recovery, those coins are stuck.
+
+`PendingArkTransactionRecoveryService` reconciles this on every host startup. It pulls the server's view of pending transactions for each wallet, signs the checkpoint PSBTs locally, and finalizes them. It's registered automatically by `AddArkCoreServices` and wired into `ArkHostedLifecycle`, so the hands-off path requires no extra setup.
+
+For deterministic timing (e.g. immediately after a user unlock) call it explicitly per-wallet:
+
+```csharp
+var recovery = serviceProvider.GetRequiredService<PendingArkTransactionRecoveryService>();
+
+var finalizedTxIds = await recovery.FinalizePendingArkTransactionsAsync(walletId, ct);
+foreach (var txId in finalizedTxIds)
+    Console.WriteLine($"Recovered & finalized pending tx {txId}");
+```
+
+Per-tx failures are logged + raised on `RecoveryFailed` and the loop continues — one bad pending tx never blocks the rest, and the next host start retries any leftovers. Subscribe to surface a banner or telemetry:
+
+```csharp
+recovery.RecoveryFailed += (_, e) =>
+    Logger.LogWarning("Recovery failed for {ArkTxId} on {WalletId}: {Error}",
+        e.ArkTxId, e.WalletId, e.Exception.Message);
+```
+
+See [docs/articles/pending-tx-recovery.md](docs/articles/pending-tx-recovery.md) for the full flow, sequence diagram, and edge cases.
+
 ## EF Core Storage
 
 `NArk.Storage.EfCore` provides ready-made storage implementations. It is **provider-agnostic** — no dependency on Npgsql or any specific database driver.
