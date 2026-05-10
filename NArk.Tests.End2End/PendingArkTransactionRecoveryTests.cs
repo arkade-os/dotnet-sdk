@@ -68,53 +68,6 @@ public class PendingArkTransactionRecoveryTests
         Assert.That(crashTransport.FinalizeAttempts, Is.GreaterThanOrEqualTo(1),
             "FinalizeTx must have been attempted (so the inputs are now server-pending)");
 
-        // Diagnostic: dump the wallet's VTXO outpoints and what arkd reports for them.
-        // If the server isn't holding our pending tx (projection lag, signature mismatch,
-        // wrong outpoint format), this surfaces the gap directly.
-        var allVtxos = (await walletDetails.vtxoStorage.GetVtxos(
-            walletIds: [walletDetails.walletIdentifier],
-            includeSpent: true)).ToList();
-        TestContext.Out.WriteLine($"[recovery diag] wallet has {allVtxos.Count} local VTXO(s):");
-        foreach (var v in allVtxos)
-            TestContext.Out.WriteLine($"  - {v.OutPoint} swept={v.Swept} spent_by={v.SpentByTransactionId ?? "(null)"} settled_by={v.SettledByTransactionId ?? "(null)"} ark_tx={v.ArkTxid ?? "(null)"}");
-        TestContext.Out.WriteLine($"[recovery diag] crash transport: Submit={crashTransport.SubmitCallCount}, Finalize attempts={crashTransport.FinalizeAttempts}");
-        TestContext.Out.WriteLine($"[recovery diag] crash exception: {caught!.GetType().Name}: {caught.Message}");
-
-        // Ask arkd directly what it thinks of these outpoints. If arkd sees them as spent
-        // (with ark_txid set), the SDK proof should match a pending tx; if arkd sees
-        // them as unspent, the projection hasn't fired and recovery has nothing to do.
-        var arkdView = new List<ArkVtxo>();
-        await foreach (var vtxo in realTransport.GetVtxosByOutpoints(
-            allVtxos.Select(v => v.OutPoint).ToArray()))
-        {
-            arkdView.Add(vtxo);
-        }
-        TestContext.Out.WriteLine($"[recovery diag] arkd reports {arkdView.Count} VTXO(s) for those outpoints:");
-        foreach (var v in arkdView)
-            TestContext.Out.WriteLine(
-                $"  - {v.OutPoint} spent_by={v.SpentByTransactionId ?? "(null)"} settled_by={v.SettledByTransactionId ?? "(null)"} " +
-                $"ark_tx={v.ArkTxid ?? "(null)"} swept={v.Swept} unrolled={v.Unrolled} preconfirmed={v.Preconfirmed}");
-
-        // Look for any VTXO at the pending arkTxId — if arkd has already created
-        // output VTXOs at that txid, the NOT EXISTS clause in GetPendingSpentVtxos
-        // is broken and recovery will silently see an empty list.
-        var pendingArkTxId = arkdView.FirstOrDefault()?.ArkTxid;
-        if (!string.IsNullOrEmpty(pendingArkTxId))
-        {
-            var outputProbes = new[]
-            {
-                new OutPoint(uint256.Parse(pendingArkTxId), 0),
-                new OutPoint(uint256.Parse(pendingArkTxId), 1),
-                new OutPoint(uint256.Parse(pendingArkTxId), 2),
-            };
-            var hits = new List<ArkVtxo>();
-            await foreach (var v in realTransport.GetVtxosByOutpoints(outputProbes))
-                hits.Add(v);
-            TestContext.Out.WriteLine($"[recovery diag] vtxos at pending tx {pendingArkTxId}: {hits.Count}");
-            foreach (var h in hits)
-                TestContext.Out.WriteLine($"  - {h.OutPoint} spent_by={h.SpentByTransactionId ?? "(null)"} settled_by={h.SettledByTransactionId ?? "(null)"}");
-        }
-
         // Now run recovery against the real arkd. Recovery must:
         //   1. authenticate with a BIP-322 proof anchored on a wallet VTXO,
         //   2. retrieve the pending tx the server is holding,
@@ -130,40 +83,18 @@ public class PendingArkTransactionRecoveryTests
         var failures = new List<PendingTxRecoveryFailureEventArgs>();
         recovery.RecoveryFailed += (_, e) => failures.Add(e);
 
-        // arkd's "spent_by_pending" projection that exposes the VTXO via GetPendingTx
-        // runs async (watermill event bus) — give it up to 10s to catch up before
-        // declaring the recovery a failure. Production never races this projection
-        // because recovery runs at host startup, well after the crash.
-        // Pre-recovery direct probe: build the proof ourselves and call GetPendingTx.
-        // If this returns the pending tx, the issue is in the recovery service plumbing;
-        // if it returns empty, the issue is in our proof construction (signature, format).
-        var probeAnchor = await coinService.GetCoin(allVtxos[0], walletDetails.walletIdentifier, default);
-        var serverInfo = await realTransport.GetServerInfoAsync();
-        var signer = (await walletDetails.walletProvider.GetSignerAsync(walletDetails.walletIdentifier))!;
-        var probe = await NArk.Core.Helpers.IntentProofHelper
-            .CreateGetPendingTxOwnershipProofAsync(probeAnchor, signer, serverInfo.Network);
-        var directHits = await realTransport.GetPendingTxAsync(probe.Proof, probe.Message);
-        TestContext.Out.WriteLine($"[recovery diag] direct GetPendingTx returned {directHits.Length} pending tx(s)");
-        foreach (var h in directHits)
-            TestContext.Out.WriteLine($"  - {h.ArkTxId} checkpoints={h.SignedCheckpointTxs.Length}");
-
+        // arkd's "spent_by_pending" projection runs async (watermill event bus) — give
+        // it up to 10s to catch up before declaring the recovery a failure. Production
+        // never races this projection because recovery runs at host startup, well after
+        // the crash.
         var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
         IReadOnlyList<string> finalized = [];
-        var attempts = 0;
         while (DateTimeOffset.UtcNow < deadline)
         {
-            attempts++;
             finalized = await recovery.FinalizePendingArkTransactionsAsync(
                 walletDetails.walletIdentifier, CancellationToken.None);
             if (finalized.Count > 0) break;
             await Task.Delay(250);
-        }
-        TestContext.Out.WriteLine(
-            $"[recovery diag] {attempts} recovery attempt(s); finalized={finalized.Count}; failures={failures.Count}");
-        if (failures.Count > 0)
-        {
-            foreach (var f in failures)
-                TestContext.Out.WriteLine($"  - failure {f.ArkTxId}: {f.Exception.GetType().Name}: {f.Exception.Message}");
         }
 
         Assert.That(failures, Is.Empty,
