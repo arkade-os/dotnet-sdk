@@ -68,6 +68,18 @@ public class PendingArkTransactionRecoveryTests
         Assert.That(crashTransport.FinalizeAttempts, Is.GreaterThanOrEqualTo(1),
             "FinalizeTx must have been attempted (so the inputs are now server-pending)");
 
+        // Diagnostic: dump the wallet's VTXO outpoints and what arkd reports for them.
+        // If the server isn't holding our pending tx (projection lag, signature mismatch,
+        // wrong outpoint format), this surfaces the gap directly.
+        var allVtxos = (await walletDetails.vtxoStorage.GetVtxos(
+            walletIds: [walletDetails.walletIdentifier],
+            includeSpent: true)).ToList();
+        TestContext.Out.WriteLine($"[recovery diag] wallet has {allVtxos.Count} local VTXO(s):");
+        foreach (var v in allVtxos)
+            TestContext.Out.WriteLine($"  - {v.OutPoint} swept={v.Swept} spent_by={v.SpentByTransactionId ?? "(null)"} settled_by={v.SettledByTransactionId ?? "(null)"}");
+        TestContext.Out.WriteLine($"[recovery diag] crash transport: Submit={crashTransport.SubmitCallCount}, Finalize attempts={crashTransport.FinalizeAttempts}");
+        TestContext.Out.WriteLine($"[recovery diag] crash exception: {caught!.GetType().Name}: {caught.Message}");
+
         // Now run recovery against the real arkd. Recovery must:
         //   1. authenticate with a BIP-322 proof anchored on a wallet VTXO,
         //   2. retrieve the pending tx the server is holding,
@@ -89,12 +101,21 @@ public class PendingArkTransactionRecoveryTests
         // because recovery runs at host startup, well after the crash.
         var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
         IReadOnlyList<string> finalized = [];
+        var attempts = 0;
         while (DateTimeOffset.UtcNow < deadline)
         {
+            attempts++;
             finalized = await recovery.FinalizePendingArkTransactionsAsync(
                 walletDetails.walletIdentifier, CancellationToken.None);
             if (finalized.Count > 0) break;
             await Task.Delay(250);
+        }
+        TestContext.Out.WriteLine(
+            $"[recovery diag] {attempts} recovery attempt(s); finalized={finalized.Count}; failures={failures.Count}");
+        if (failures.Count > 0)
+        {
+            foreach (var f in failures)
+                TestContext.Out.WriteLine($"  - failure {f.ArkTxId}: {f.Exception.GetType().Name}: {f.Exception.Message}");
         }
 
         Assert.That(failures, Is.Empty,
