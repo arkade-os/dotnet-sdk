@@ -76,9 +76,22 @@ public class PendingArkTransactionRecoveryTests
             includeSpent: true)).ToList();
         TestContext.Out.WriteLine($"[recovery diag] wallet has {allVtxos.Count} local VTXO(s):");
         foreach (var v in allVtxos)
-            TestContext.Out.WriteLine($"  - {v.OutPoint} swept={v.Swept} spent_by={v.SpentByTransactionId ?? "(null)"} settled_by={v.SettledByTransactionId ?? "(null)"}");
+            TestContext.Out.WriteLine($"  - {v.OutPoint} swept={v.Swept} spent_by={v.SpentByTransactionId ?? "(null)"} settled_by={v.SettledByTransactionId ?? "(null)"} ark_tx={v.ArkTxid ?? "(null)"}");
         TestContext.Out.WriteLine($"[recovery diag] crash transport: Submit={crashTransport.SubmitCallCount}, Finalize attempts={crashTransport.FinalizeAttempts}");
         TestContext.Out.WriteLine($"[recovery diag] crash exception: {caught!.GetType().Name}: {caught.Message}");
+
+        // Ask arkd directly what it thinks of these outpoints. If arkd sees them as spent
+        // (with ark_txid set), the SDK proof should match a pending tx; if arkd sees
+        // them as unspent, the projection hasn't fired and recovery has nothing to do.
+        var arkdView = new List<ArkVtxo>();
+        await foreach (var vtxo in realTransport.GetVtxosByOutpoints(
+            allVtxos.Select(v => v.OutPoint).ToArray()))
+        {
+            arkdView.Add(vtxo);
+        }
+        TestContext.Out.WriteLine($"[recovery diag] arkd reports {arkdView.Count} VTXO(s) for those outpoints:");
+        foreach (var v in arkdView)
+            TestContext.Out.WriteLine($"  - {v.OutPoint} spent_by={v.SpentByTransactionId ?? "(null)"} ark_tx={v.ArkTxid ?? "(null)"} swept={v.Swept}");
 
         // Now run recovery against the real arkd. Recovery must:
         //   1. authenticate with a BIP-322 proof anchored on a wallet VTXO,
