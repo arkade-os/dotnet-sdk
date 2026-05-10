@@ -91,7 +91,29 @@ public class PendingArkTransactionRecoveryTests
         }
         TestContext.Out.WriteLine($"[recovery diag] arkd reports {arkdView.Count} VTXO(s) for those outpoints:");
         foreach (var v in arkdView)
-            TestContext.Out.WriteLine($"  - {v.OutPoint} spent_by={v.SpentByTransactionId ?? "(null)"} ark_tx={v.ArkTxid ?? "(null)"} swept={v.Swept}");
+            TestContext.Out.WriteLine(
+                $"  - {v.OutPoint} spent_by={v.SpentByTransactionId ?? "(null)"} settled_by={v.SettledByTransactionId ?? "(null)"} " +
+                $"ark_tx={v.ArkTxid ?? "(null)"} swept={v.Swept} unrolled={v.Unrolled} preconfirmed={v.Preconfirmed}");
+
+        // Look for any VTXO at the pending arkTxId — if arkd has already created
+        // output VTXOs at that txid, the NOT EXISTS clause in GetPendingSpentVtxos
+        // is broken and recovery will silently see an empty list.
+        var pendingArkTxId = arkdView.FirstOrDefault()?.ArkTxid;
+        if (!string.IsNullOrEmpty(pendingArkTxId))
+        {
+            var outputProbes = new[]
+            {
+                new OutPoint(uint256.Parse(pendingArkTxId), 0),
+                new OutPoint(uint256.Parse(pendingArkTxId), 1),
+                new OutPoint(uint256.Parse(pendingArkTxId), 2),
+            };
+            var hits = new List<ArkVtxo>();
+            await foreach (var v in realTransport.GetVtxosByOutpoints(outputProbes))
+                hits.Add(v);
+            TestContext.Out.WriteLine($"[recovery diag] vtxos at pending tx {pendingArkTxId}: {hits.Count}");
+            foreach (var h in hits)
+                TestContext.Out.WriteLine($"  - {h.OutPoint} spent_by={h.SpentByTransactionId ?? "(null)"} settled_by={h.SettledByTransactionId ?? "(null)"}");
+        }
 
         // Now run recovery against the real arkd. Recovery must:
         //   1. authenticate with a BIP-322 proof anchored on a wallet VTXO,
