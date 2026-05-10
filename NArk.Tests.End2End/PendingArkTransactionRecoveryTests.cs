@@ -134,6 +134,19 @@ public class PendingArkTransactionRecoveryTests
         // runs async (watermill event bus) — give it up to 10s to catch up before
         // declaring the recovery a failure. Production never races this projection
         // because recovery runs at host startup, well after the crash.
+        // Pre-recovery direct probe: build the proof ourselves and call GetPendingTx.
+        // If this returns the pending tx, the issue is in the recovery service plumbing;
+        // if it returns empty, the issue is in our proof construction (signature, format).
+        var probeAnchor = await coinService.GetCoin(allVtxos[0], walletDetails.walletIdentifier, default);
+        var serverInfo = await realTransport.GetServerInfoAsync();
+        var signer = (await walletDetails.walletProvider.GetSignerAsync(walletDetails.walletIdentifier))!;
+        var probe = await NArk.Core.Helpers.IntentProofHelper
+            .CreateGetPendingTxOwnershipProofAsync(probeAnchor, signer, serverInfo.Network);
+        var directHits = await realTransport.GetPendingTxAsync(probe.Proof, probe.Message);
+        TestContext.Out.WriteLine($"[recovery diag] direct GetPendingTx returned {directHits.Length} pending tx(s)");
+        foreach (var h in directHits)
+            TestContext.Out.WriteLine($"  - {h.ArkTxId} checkpoints={h.SignedCheckpointTxs.Length}");
+
         var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
         IReadOnlyList<string> finalized = [];
         var attempts = 0;
