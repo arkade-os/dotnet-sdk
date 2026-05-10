@@ -35,7 +35,7 @@ public static class IntentProofHelper
         });
 
         var psbt = CreateBip322Psbt(message, network, coin);
-        await SignBip322Proof(psbt, coin, signer, network, cancellationToken);
+        psbt = await SignBip322Proof(psbt, coin, signer, network, cancellationToken);
 
         return (psbt.ToBase64(), message);
     }
@@ -60,7 +60,7 @@ public static class IntentProofHelper
         });
 
         var psbt = CreateBip322Psbt(message, network, coin);
-        await SignBip322Proof(psbt, coin, signer, network, cancellationToken);
+        psbt = await SignBip322Proof(psbt, coin, signer, network, cancellationToken);
 
         return (psbt.ToBase64(), message);
     }
@@ -100,8 +100,10 @@ public static class IntentProofHelper
 
     /// <summary>
     /// Signs both inputs of a BIP-322 proof PSBT (input[0] = toSpend reference, input[1] = real coin).
+    /// Returns the signed PSBT — callers MUST use the returned instance, not the input,
+    /// because <see cref="PSBT.UpdateFrom"/> creates a new packet rather than mutating in place.
     /// </summary>
-    internal static async Task SignBip322Proof(PSBT psbt, ArkCoin coin, IArkadeWalletSigner signer,
+    internal static async Task<PSBT> SignBip322Proof(PSBT psbt, ArkCoin coin, IArkadeWalletSigner signer,
         Network network, CancellationToken cancellationToken = default)
     {
         var gtx = psbt.GetGlobalTransaction();
@@ -120,5 +122,7 @@ public static class IntentProofHelper
             cancellationToken: cancellationToken);
         await PsbtHelpers.SignAndFillPsbt(signer, coin, psbt, precomputed,
             cancellationToken: cancellationToken);
+
+        return psbt;
     }
 }

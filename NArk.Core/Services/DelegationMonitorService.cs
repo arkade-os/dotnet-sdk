@@ -170,7 +170,7 @@ public class DelegationMonitorService(
             }
         }
 
-        await IntentProofHelper.SignBip322Proof(intentPsbt, intentCoin, signer, serverInfo.Network);
+        intentPsbt = await IntentProofHelper.SignBip322Proof(intentPsbt, intentCoin, signer, serverInfo.Network);
 
         // Build forfeit tx using the delegate path, signed with SIGHASH_ALL|ANYONECANPAY
         var forfeitCoin = new ArkCoin(
