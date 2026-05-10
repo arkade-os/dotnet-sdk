@@ -106,22 +106,28 @@ public class PendingArkTransactionRecoveryService(
             return [];
         }
 
-        var spendableVtxos = (await vtxoStorage.GetVtxos(
+        // Include spent VTXOs as proof material: the BIP-322 proof only authenticates
+        // wallet identity (it signs a message; it never spends the anchor VTXO), and the
+        // VTXOs we want to recover are the ones the server is *holding as in-flight* —
+        // arkd reports those as spent in the indexer, and VtxoSync propagates that to
+        // local storage. Filtering to !IsSpent here would empty the proof set in the
+        // exact scenario this service exists to handle.
+        var proofVtxos = (await vtxoStorage.GetVtxos(
             walletIds: [walletId],
-            includeSpent: false,
+            includeSpent: true,
             cancellationToken: cancellationToken))
             .Where(v => !v.Swept)
             .ToList();
 
-        if (spendableVtxos.Count == 0)
+        if (proofVtxos.Count == 0)
         {
-            logger?.LogDebug("Pending-tx recovery: wallet {WalletId} has no spendable VTXOs to prove ownership over, skipping",
+            logger?.LogDebug("Pending-tx recovery: wallet {WalletId} has no VTXOs to prove ownership over, skipping",
                 walletId);
             return [];
         }
 
-        var coins = new List<ArkCoin>(spendableVtxos.Count);
-        foreach (var vtxo in spendableVtxos)
+        var coins = new List<ArkCoin>(proofVtxos.Count);
+        foreach (var vtxo in proofVtxos)
         {
             try
             {

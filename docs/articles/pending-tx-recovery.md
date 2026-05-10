@@ -84,7 +84,7 @@ Subscribers must not throw — handler exceptions are observed and logged but ne
 
 ## When recovery cannot help
 
-- **No spendable VTXOs**. Recovery uses VTXO-anchored BIP-322 proofs; a wallet with zero spendable VTXOs has nothing to authenticate with. This is correct — a brand-new wallet has nothing to recover.
+- **No VTXOs at all (ever)**. Recovery uses VTXO-anchored BIP-322 proofs; a wallet that has never received a VTXO has nothing to authenticate with. Spent VTXOs are valid proof material — the proof only signs an identity message, it never spends the anchor — so a wallet whose only inputs are now in flight (the very scenario this service exists to handle) still has proof material.
 - **Local VTXO state out of sync**. Checkpoint inputs are resolved against `IVtxoStorage`. If a checkpoint references a VTXO the local index never saw, recovery throws *for that one tx* (the rest of the batch still proceeds). For HD wallets, run `HdWalletRecoveryService.ScanAsync` first, then re-trigger pending-tx recovery — the next host start does this automatically.
 - **Signer not available**. If `IWalletProvider.GetSignerAsync` returns `null` (e.g. wallet locked, key custody gateway offline), recovery skips that wallet with a warning and tries again next start.
 
