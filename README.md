@@ -685,7 +685,27 @@ var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
 
 | Provider | Routes | Features |
 |----------|--------|----------|
-| **Boltz** | Arkade &harr; Lightning, Arkade &harr; BTC on-chain | Submarine/reverse swaps, chain swaps, MuSig2 cooperative claiming, VHTLC management, WebSocket status updates |
+| **Boltz** | Arkade &harr; Lightning, Arkade &harr; BTC on-chain | Submarine/reverse swaps, chain swaps with renegotiation, MuSig2 cooperative claiming **and refunding** (both BTC and Arkade sides), VHTLC management, WebSocket status updates |
+
+### Recovery (Renegotiation + Cooperative Refund)
+
+When a chain swap can't settle as originally quoted — user funds the lockup with the wrong amount, an LN invoice times out, or Boltz expires the swap — the SDK handles recovery automatically inside `BoltzSwapProvider.PollSwapState`. No manual call is needed.
+
+* **`transaction.lockupFailed`** → asks Boltz for a renegotiated quote via `GET/POST /v2/swap/chain/{id}/quote` and updates `ArkSwap.ExpectedAmount` if Boltz accepts.
+* **`swap.expired` / `transaction.failed` / `transaction.refunded`** → cooperative refund: BTC→Arkade refunds the BTC lockup with MuSig2 (`/v2/swap/chain/{id}/refund`); Arkade→BTC refunds the Ark VHTLC via `/v2/swap/chain/{id}/refund/ark`. Marks the swap `Refunded`.
+* **`swap.expired` with no funds locked** → marked `Failed` (nothing to recover).
+
+Subscribe to `ISwapStorage.SwapsChanged` to observe transitions. To surface a "recovery available" indicator without committing to a refund, use the read-only inspectors:
+
+```csharp
+// Single swap
+var info = await swapMgr.InspectSwapRecoveryAsync(walletId, swapId);
+if (info.Status == SwapRecoveryStatus.Recoverable)
+    Console.WriteLine($"{info.AmountSats} sats stranded — recovery runs automatically");
+
+// Bulk audit (e.g. after wallet restore)
+var report = await swapMgr.ScanRecoverableSwapsAsync(walletId);
+```
 
 ### Implementing a Custom Provider
 
