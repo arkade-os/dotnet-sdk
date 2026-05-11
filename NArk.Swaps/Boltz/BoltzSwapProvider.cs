@@ -798,7 +798,12 @@ public class BoltzSwapProvider : ISwapProvider
             var timeHeight = await _chainTimeProvider.GetChainTime(ct);
             if (!vtxo.CanSpendOffchain(timeHeight))
             {
-                _logger?.LogDebug("Swap {SwapId}: VHTLC VTXO not yet spendable offchain", swap.SwapId);
+                // CanSpendOffchain checks IsSpent || Swept || Expired — NOT the script's
+                // CSV timelock. The cooperative keypath spend is fine while CSV is unmet
+                // (that's its whole point). If we hit this branch the VHTLC VTXO is
+                // either already spent locally, swept by arkd, or past its Arkade-level
+                // expiry — in all three cases the cooperative refund can't proceed.
+                _logger?.LogDebug("Swap {SwapId}: VHTLC VTXO not spendable offchain (spent/swept/expired)", swap.SwapId);
                 return false;
             }
 
@@ -843,7 +848,17 @@ public class BoltzSwapProvider : ISwapProvider
                 [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundAddress)],
                 serverInfo, ct);
 
-            var checkpoint = checkpoints.Single();
+            // ConstructArkTransaction emits exactly one checkpoint per Arkade tx input.
+            // We pass a single ArkCoin, so the checkpoint list must have length 1; a
+            // mismatch indicates a protocol/SDK change rather than a recoverable error,
+            // so surface it with an actionable message instead of a bare Single() throw.
+            if (checkpoints.Count != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Swap {swap.SwapId}: expected exactly 1 checkpoint for a single-input ARK→BTC refund, " +
+                    $"got {checkpoints.Count}. Protocol invariant violated or SDK out of sync.");
+            }
+            var checkpoint = checkpoints.First();
 
             var refundResponse = await _boltzClient.RefundChainSwapArkAsync(swap.SwapId,
                 new ChainArkRefundRequest
@@ -1037,8 +1052,33 @@ public class BoltzSwapProvider : ISwapProvider
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Boltz returns 4xx for funded amounts outside its limits —
-            // the caller treats this as "renegotiation refused, refund instead".
+            // Boltz returns 4xx for funded amounts outside its limits — but it also
+            // returns 4xx if the quote was already accepted (e.g. an overlapping
+            // PollSwapState tick won the race and called AcceptChainQuoteAsync first).
+            // Treating both as "refund instead" would fire a refund on a swap that
+            // was just legitimately renegotiated. Disambiguate by re-reading the
+            // server-side status: if Boltz has moved the swap past lockupFailed,
+            // the renegotiation effectively succeeded — return true.
+            try
+            {
+                var currentStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, ct);
+                if (currentStatus is not null &&
+                    !string.Equals(currentStatus.Status, "transaction.lockupFailed", StringComparison.Ordinal))
+                {
+                    _logger?.LogInformation(
+                        "Swap {SwapId}: AcceptChainQuoteAsync 4xx'd but Boltz status is {Status} — " +
+                        "treating as renegotiated by a concurrent poll",
+                        swap.SwapId, currentStatus.Status);
+                    return true;
+                }
+            }
+            catch (Exception probeEx) when (probeEx is not OperationCanceledException)
+            {
+                _logger?.LogDebug(probeEx,
+                    "Swap {SwapId}: status probe after renegotiation failure also failed; falling back to refund",
+                    swap.SwapId);
+            }
+
             _logger?.LogWarning(ex,
                 "Swap {SwapId}: chain quote renegotiation refused by Boltz", swap.SwapId);
             return false;

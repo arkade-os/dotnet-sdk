@@ -549,6 +549,14 @@ public class SwapsManagementService : IAsyncDisposable
     /// directions). Calls <see cref="InspectSwapRecoveryAsync"/> per
     /// candidate; runs a fresh arkd VTXO snapshot per swap so callers get
     /// a real-time view rather than a cached one.
+    /// <para>
+    /// <b>Cost:</b> this is an O(N) sequential operation — one arkd
+    /// <c>GetVtxoByScriptsAsSnapshot</c> round-trip per non-pending swap
+    /// candidate, plus one <c>GetSwaps</c> read each. Intended for
+    /// recovery-audit flows after a wallet restore, not for hot-path UI.
+    /// Wallets with many historical swaps should expect a few hundred ms
+    /// per candidate against a local arkd; budget accordingly.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<SwapRecoveryInfo>> ScanRecoverableSwapsAsync(
         string walletId, CancellationToken ct = default)
