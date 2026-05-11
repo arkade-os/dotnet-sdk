@@ -231,6 +231,21 @@ public class PendingArkTransactionRecoveryServiceTests
         await _walletStorage.Received(1).LoadAllWallets(Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    public async Task RecoverAllWallets_AbsorbsWalletStorageFailure_SoHostStartupNeverBlocks()
+    {
+        // walletStorage.LoadAllWallets throws (DB timeout, connection error, etc.).
+        // RecoverAllWalletsAsync is wired into ArkHostedLifecycle.StartAsync so
+        // anything that escapes here kills host startup. The service must absorb it.
+        _walletStorage.LoadAllWallets(Arg.Any<CancellationToken>())
+            .Returns<IReadOnlySet<ArkWalletInfo>>(_ => throw new InvalidOperationException("DB down"));
+
+        var service = CreateService();
+
+        Assert.DoesNotThrowAsync(async () =>
+            await service.RecoverAllWalletsAsync(CancellationToken.None));
+    }
+
     private void SetUpVtxoAndCoin(ArkCoin coin) => SetUpVtxoAndCoins([coin]);
 
     private void SetUpVtxoAndCoins(IReadOnlyList<ArkCoin> coins)

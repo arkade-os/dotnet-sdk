@@ -94,6 +94,15 @@ public class PendingArkTransactionRecoveryService(
         {
             // host shutting down — nothing to do
         }
+        catch (Exception ex)
+        {
+            // Absorb anything else (e.g. walletStorage.LoadAllWallets throwing on a DB
+            // timeout or connection error). This is a best-effort sweep on host startup —
+            // a transient storage failure must not block the host from coming up. The
+            // next start-up retries.
+            logger?.LogError(ex,
+                "Pending-tx recovery sweep aborted before iterating wallets; host startup continues");
+        }
     }
 
     /// <summary>
@@ -215,10 +224,18 @@ public class PendingArkTransactionRecoveryService(
         {
             var checkpoint = PSBT.Parse(checkpointBase64, network);
 
-            // Each checkpoint has exactly one input (the original VTXO outpoint).
-            // Resolve back to a coin via local storage so we can fill the spending
-            // witness and sign with the wallet's signer.
-            var inputPrevOut = checkpoint.Inputs.Single().PrevOut;
+            // Each checkpoint has exactly one input (the original VTXO outpoint) —
+            // see arkd's checkpoint construction (one-input-per-spent-VTXO). Guard the
+            // invariant explicitly: a malformed server response should fail this one tx
+            // with an actionable message rather than a bare InvalidOperationException
+            // from Single().
+            if (checkpoint.Inputs.Count != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Pending-tx recovery: expected exactly 1 input on checkpoint PSBT for {pending.ArkTxId}, " +
+                    $"got {checkpoint.Inputs.Count}. Server-side protocol violation or stale SDK.");
+            }
+            var inputPrevOut = checkpoint.Inputs[0].PrevOut;
             var coin = await ResolveCheckpointInputAsync(walletId, inputPrevOut, cancellationToken);
 
             await SignCheckpointAsync(coin, checkpoint, signer, cancellationToken);

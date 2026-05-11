@@ -120,7 +120,12 @@ public partial class RestClientTransport
         {
             foreach (var p in arr.EnumerateArray())
             {
-                var arkTxId = p.GetProperty("arkTxid").GetString() ?? string.Empty;
+                var arkTxId = p.GetProperty("arkTxid").GetString();
+                // Skip entries the server returns without an arkTxid — coercing to ""
+                // would collide multiple null-arkTxid entries through the recovery
+                // service's HashSet<string> dedup, silently dropping pending txs.
+                if (string.IsNullOrEmpty(arkTxId)) continue;
+
                 var finalArkTx = p.GetProperty("finalArkTx").GetString() ?? string.Empty;
                 var checkpoints = p.TryGetProperty("signedCheckpointTxs", out var cArr) && cArr.ValueKind == JsonValueKind.Array
                     ? cArr.EnumerateArray().Select(x => x.GetString() ?? string.Empty).ToArray()
