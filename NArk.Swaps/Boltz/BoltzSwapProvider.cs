@@ -1063,6 +1063,7 @@ public class BoltzSwapProvider : ISwapProvider
             {
                 var currentStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, ct);
                 if (currentStatus is not null &&
+                    !string.IsNullOrEmpty(currentStatus.Status) &&
                     !string.Equals(currentStatus.Status, "transaction.lockupFailed", StringComparison.Ordinal))
                 {
                     _logger?.LogInformation(
