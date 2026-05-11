@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using System.Threading.Channels;
 using BTCPayServer.Lightning;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
@@ -12,23 +10,17 @@ using NArk.Abstractions.Wallets;
 using NArk.Core;
 using NArk.Core.Contracts;
 using NArk.Core.Extensions;
-using NArk.Core.Helpers;
 using NArk.Core.Services;
 using NArk.Swaps.Abstractions;
-using NArk.Swaps.Extensions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Restore;
-using NArk.Swaps.Boltz.Models.Swaps.Chain;
-using NArk.Swaps.Boltz.Models.Swaps.Submarine;
-using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Models;
 using NArk.Core.Transport;
 using NArk.Swaps.Utils;
 using NBitcoin;
 using NBitcoin.Scripting;
-using NBitcoin.Secp256k1;
 using OutputDescriptorHelpers = NArk.Abstractions.Extensions.OutputDescriptorHelpers;
 
 namespace NArk.Swaps.Services;
@@ -43,63 +35,15 @@ public class SwapsManagementService : IAsyncDisposable
     private readonly IContractService _contractService;
     private readonly IContractStorage _contractStorage;
     private readonly ISafetyService _safetyService;
-    private readonly BoltzSwapService _boltzService;
-    private readonly ChainSwapMusigSession _chainSwapMusig;
-    private readonly BoltzClient _boltzClient;
     private readonly IChainTimeProvider _chainTimeProvider;
-    private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
     private readonly ILogger<SwapsManagementService>? _logger;
+    private readonly IReadOnlyList<ISwapProvider> _providers;
 
-    private readonly CancellationTokenSource _shutdownCts = new();
-    private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
-
-    private HashSet<string> _swapsIdToWatch = [];
-    private readonly ConcurrentDictionary<string, string> _scriptToSwapId = [];
-
-    /// <summary>
-    /// Per-swap counter of consecutive <see cref="BoltzSwapNotFoundException"/>
-    /// responses from <c>GetSwapStatusAsync</c>. Reset to zero on any successful
-    /// status response. When a swap reaches
-    /// <see cref="UnknownToProviderThreshold"/> consecutive 404s, the safety net
-    /// in <see cref="MarkSwapAsUnknownToProvider"/> trips and the swap is
-    /// transitioned to a terminal state. Concurrent because <c>NotifySwapChanged</c>
-    /// (storage event thread) and <c>PollSwapState</c> (channel reader thread)
-    /// can both touch the map.
-    /// </summary>
-    private readonly ConcurrentDictionary<string, int> _consecutiveUnknown = [];
-
-    /// <summary>
-    /// Number of consecutive Boltz 404s that must elapse before
-    /// <c>PollSwapState</c> gives up on a swap and transitions it to a terminal
-    /// state. At the 1-minute routine-poll cadence this is roughly a
-    /// 10-minute grace window — long enough to ride out a transient Boltz
-    /// route blip, short enough that a real "swap unknown to this provider"
-    /// surfaces inside a working day.
-    /// </summary>
-    private const int UnknownToProviderThreshold = 10;
-
-    private Task? _cacheTask;
-    private Task? _routinePollTask;
-
-    /// <summary>
-    /// Long-lived task that owns the persistent Boltz websocket connection.
-    /// One task for the lifetime of the service — replaces the previous
-    /// "cancel and recreate on every set change" pattern. Per the Boltz spec
-    /// (https://api.docs.boltz.exchange/api-v2.html#websocket) the right
-    /// model is one connection plus subscribe/unsubscribe for set changes.
-    /// </summary>
-    private Task? _websocketTask;
-    /// <summary>The currently-connected client, or null when reconnecting / shutting down.</summary>
-    private BoltzWebsocketClient? _websocket;
-    /// <summary>
-    /// Serialises subscribe/unsubscribe calls so two storage events firing
-    /// at once can't interleave their websocket sends mid-payload.
-    /// </summary>
-    private readonly SemaphoreSlim _websocketLock = new(1, 1);
-    private Network? _network;
-    private ECXOnlyPubKey? _serverKey;
+    // Convenience accessor for backward-compatible Boltz-specific methods
+    private readonly BoltzSwapProvider? _boltzProvider;
 
     public SwapsManagementService(
+        IEnumerable<ISwapProvider> providers,
         SpendingService spendingService,
         IClientTransport clientTransport,
         IVtxoStorage vtxoStorage,
@@ -109,11 +53,10 @@ public class SwapsManagementService : IAsyncDisposable
         IContractStorage contractStorage,
         ISafetyService safetyService,
         IIntentStorage intentStorage,
-        BoltzClient boltzClient,
         IChainTimeProvider chainTimeProvider,
-        ILogger<SwapsManagementService>? logger = null
-    )
+        ILogger<SwapsManagementService>? logger = null)
     {
+        _providers = providers.ToList();
         _spendingService = spendingService;
         _clientTransport = clientTransport;
         _vtxoStorage = vtxoStorage;
@@ -122,753 +65,115 @@ public class SwapsManagementService : IAsyncDisposable
         _contractService = contractService;
         _contractStorage = contractStorage;
         _safetyService = safetyService;
-        _boltzClient = boltzClient;
         _chainTimeProvider = chainTimeProvider;
         _logger = logger;
-        _boltzService = new BoltzSwapService(
-            _boltzClient,
-            _clientTransport
-        );
-        _chainSwapMusig = new ChainSwapMusigSession(_boltzClient);
-        _transactionBuilder =
-            new TransactionHelpers.ArkTransactionBuilder(clientTransport, safetyService, walletProvider, intentStorage);
 
+        // Find the Boltz provider for backward-compatible methods
+        _boltzProvider = _providers.OfType<BoltzSwapProvider>().FirstOrDefault();
+
+        // Wire up events: route storage and VTXO changes to the appropriate provider
         swapsStorage.SwapsChanged += OnSwapsChanged;
-        // It is possible to listen for vtxos on scripts and use them to figure out the state of swaps
         vtxoStorage.VtxosChanged += OnVtxosChanged;
     }
 
+    // ─── Provider Resolution ───────────────────────────────────────
+
+    /// <summary>
+    /// Resolves the best provider for a given route, optionally preferring a specific provider.
+    /// </summary>
+    public ISwapProvider ResolveProvider(SwapRoute route, string? preferredProviderId = null)
+    {
+        var candidates = _providers.Where(p => p.SupportsRoute(route)).ToList();
+        if (candidates.Count == 0)
+            throw new InvalidOperationException($"No provider supports route {route}");
+        if (preferredProviderId != null)
+        {
+            var preferred = candidates.FirstOrDefault(p => p.ProviderId == preferredProviderId);
+            if (preferred != null) return preferred;
+        }
+        return candidates[0];
+    }
+
+    /// <summary>
+    /// Returns all registered swap providers.
+    /// </summary>
+    public IReadOnlyList<ISwapProvider> Providers => _providers;
+
+    // ─── Event Routing ─────────────────────────────────────────────
+
     private void OnVtxosChanged(object? sender, ArkVtxo e)
     {
-        if (_network is null || _serverKey is null) return;
-
-        try
-        {
-            if (_scriptToSwapId.TryGetValue(e.Script, out var id))
-            {
-                _logger?.LogInformation(
-                    "OnVtxosChanged: VTXO {Outpoint} on swap {SwapId}'s contract script (amount={Amount}, spent={Spent}) — triggering status poll",
-                    e.OutPoint, id, e.Amount, e.SpentByTransactionId is not null);
-                _triggerChannel.Writer.TryWrite($"id:{id}");
-            }
-            else
-            {
-                _logger?.LogDebug(
-                    "OnVtxosChanged: VTXO {Outpoint} on script {Script} — no swap mapping, ignoring",
-                    e.OutPoint, e.Script);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "OnVtxosChanged: error dispatching VTXO {Outpoint}", e.OutPoint);
-        }
+        // Route to all providers via the interface — each provider decides
+        // whether it cares (default ISwapProvider.NotifyVtxoChanged is a no-op).
+        foreach (var provider in _providers)
+            provider.NotifyVtxoChanged(e);
     }
 
     private void OnSwapsChanged(object? sender, ArkSwap swapChanged)
     {
-        // Keep the script→swap map up-to-date synchronously on every storage write.
-        // Previously the map was only populated inside PollSwapState, so a VTXO
-        // arriving on the swap contract between "swap saved" and "first poll
-        // completes" would fire VtxosChanged, OnVtxosChanged would not find the
-        // script in _scriptToSwapId, and the swap would stall until the next
-        // routine poll (or a manual sync) populated the map.
-        if (!string.IsNullOrEmpty(swapChanged.ContractScript))
-        {
-            if (swapChanged.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled or ArkSwapStatus.Failed)
-            {
-                if (_scriptToSwapId.TryRemove(swapChanged.ContractScript, out _))
-                    _logger?.LogInformation(
-                        "OnSwapsChanged: swap {SwapId} reached terminal {Status} — removed contract-script mapping",
-                        swapChanged.SwapId, swapChanged.Status);
-            }
-            else
-            {
-                _scriptToSwapId[swapChanged.ContractScript] = swapChanged.SwapId;
-                _logger?.LogInformation(
-                    "OnSwapsChanged: swap {SwapId} storage event (type={Type}, status={Status}) — map now has {Count} entries",
-                    swapChanged.SwapId, swapChanged.SwapType, swapChanged.Status, _scriptToSwapId.Count);
-            }
-        }
-        else
-        {
-            _logger?.LogDebug(
-                "OnSwapsChanged: swap {SwapId} storage event (type={Type}, status={Status}) — no contract script yet",
-                swapChanged.SwapId, swapChanged.SwapType, swapChanged.Status);
-        }
-
-        _triggerChannel.Writer.TryWrite($"id:{swapChanged.SwapId}");
+        foreach (var provider in _providers)
+            provider.NotifySwapChanged(swapChanged);
     }
+
+    // ─── Lifecycle ─────────────────────────────────────────────────
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        _logger?.LogInformation("Starting swap management service");
-        var multiToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCts.Token);
-
-        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
-        _serverKey = OutputDescriptorHelpers.Extract(serverInfo.SignerKey).XOnlyPubKey;
-        _network = serverInfo.Network;
-
-        // Seed the script→swap map from persistent storage so VTXOs arriving before
-        // the first routine poll are still dispatched correctly. Without this, a
-        // VTXO that hits a swap contract within the first minute after a restart
-        // (or any pending swap carried over across restarts) silently no-ops in
-        // OnVtxosChanged and the swap stalls until the user manually syncs.
-        try
+        _logger?.LogInformation("Starting swap management service with {Count} provider(s)", _providers.Count);
+        foreach (var provider in _providers)
         {
-            var existingActiveSwaps = await _swapsStorage.GetSwaps(active: true, cancellationToken: cancellationToken);
-            foreach (var swap in existingActiveSwaps.Where(s => !string.IsNullOrEmpty(s.ContractScript)))
-                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
-            _logger?.LogInformation("Seeded script→swap map with {Count} active swap(s)", _scriptToSwapId.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "Failed to seed script→swap map from storage; RoutinePoll will populate it on next tick");
-        }
-
-        _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
-        _cacheTask = DoUpdateStorage(multiToken.Token);
-        _websocketTask = RunWebsocketLoop(multiToken.Token);
-    }
-
-    private async Task RoutinePoll(TimeSpan interval, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            _triggerChannel.Writer.TryWrite("");
-            await Task.Delay(interval, cancellationToken);
+            _logger?.LogInformation("Starting swap provider: {ProviderId} ({DisplayName})", provider.ProviderId, provider.DisplayName);
+            await provider.StartAsync(cancellationToken);
         }
     }
 
+    // ─── Generic Entry Points ──────────────────────────────────────
 
-    private async Task DoUpdateStorage(CancellationToken cancellationToken)
+    /// <summary>
+    /// Gets limits for a given swap route from the best matching provider.
+    /// </summary>
+    public async Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct)
     {
-        await foreach (var eventDetails in _triggerChannel.Reader.ReadAllAsync(cancellationToken))
-        {
-            try
-            {
-                if (eventDetails.StartsWith("id:"))
-                {
-                    var swapId = eventDetails[3..];
-
-                    // If we already watch this swap, just poll — the
-                    // persistent websocket already has it subscribed.
-                    if (_swapsIdToWatch.Contains(swapId))
-                    {
-                        _logger?.LogDebug("Swap {SwapId} update triggered (already monitored), polling state", swapId);
-                        await PollSwapState([swapId], cancellationToken);
-                    }
-                    else
-                    {
-                        _logger?.LogInformation("New swap {SwapId} detected, subscribing on persistent websocket", swapId);
-                        await PollSwapState([swapId], cancellationToken);
-
-                        // Add to in-memory watch set + send a Subscribe op
-                        // through the persistent websocket. No connection
-                        // restart — that's the whole point of this fix.
-                        _swapsIdToWatch = [.. _swapsIdToWatch, swapId];
-                        await SubscribeOnWebsocketAsync([swapId], cancellationToken);
-                    }
-                }
-                else
-                {
-                    var activeSwaps =
-                        await _swapsStorage.GetSwaps(active: true, cancellationToken: cancellationToken);
-                    var newSwapIdSet =
-                        activeSwaps.Select(s => s.SwapId).ToHashSet();
-
-                    if (_swapsIdToWatch.SetEquals(newSwapIdSet))
-                    {
-                        // Set unchanged, but still poll as a failsafe in case
-                        // the websocket was disconnected between events.
-                        if (newSwapIdSet.Count > 0)
-                        {
-                            _logger?.LogDebug("Routine poll: {Count} active swap(s), polling states as failsafe", newSwapIdSet.Count);
-                            await PollSwapState(newSwapIdSet, cancellationToken);
-                        }
-                        continue;
-                    }
-
-                    var added = newSwapIdSet.Except(_swapsIdToWatch).ToArray();
-                    var removed = _swapsIdToWatch.Except(newSwapIdSet).ToArray();
-                    _logger?.LogInformation(
-                        "Active swap set changed: {OldCount} -> {NewCount} swap(s); subscribing {Added}, unsubscribing {Removed}",
-                        _swapsIdToWatch.Count, newSwapIdSet.Count, added.Length, removed.Length);
-
-                    if (added.Length > 0)
-                        await PollSwapState(added, cancellationToken);
-
-                    _swapsIdToWatch = newSwapIdSet;
-
-                    if (added.Length > 0)
-                        await SubscribeOnWebsocketAsync(added, cancellationToken);
-                    if (removed.Length > 0)
-                        await UnsubscribeOnWebsocketAsync(removed, cancellationToken);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger?.LogError(ex, "Error processing swap update trigger: {Details}", eventDetails);
-            }
-        }
-    }
-
-    private async Task PollSwapState(IEnumerable<string> idsToPoll, CancellationToken cancellationToken)
-    {
-        foreach (var idToPoll in idsToPoll)
-        {
-            try
-            {
-                _logger?.LogDebug("PollSwapState: querying Boltz for {SwapId}", idToPoll);
-                var swapStatus = await _boltzClient.GetSwapStatusAsync(idToPoll, _shutdownCts.Token);
-                // A successful response (any non-throwing path past GetSwapStatusAsync)
-                // means Boltz still recognises this swap — clear the unknown counter.
-                _consecutiveUnknown.TryRemove(idToPoll, out _);
-                if (swapStatus?.Status is null)
-                {
-                    _logger?.LogDebug("Swap {SwapId}: Boltz returned null status", idToPoll);
-                    continue;
-                }
-                _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}'", idToPoll, swapStatus.Status);
-
-                await using var @lock = await _safetyService.LockKeyAsync($"swap::{idToPoll}", cancellationToken);
-                var swaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
-                var swap = swaps.FirstOrDefault();
-                if (swap == null)
-                {
-                    _logger?.LogWarning("Swap {SwapId}: not found in storage", idToPoll);
-                    continue;
-                }
-
-                // Tag every log emitted from here on with the owning wallet
-                // so per-wallet diagnostic-log capture (in BTCPay plugin)
-                // can route them to the right file. `continue` inside this
-                // using block still targets the foreach — the using's
-                // finally disposes the scope before the iteration exits.
-                using (_logger?.BeginScope(("WalletId", swap.WalletId)))
-                {
-                    _scriptToSwapId[swap.ContractScript] = swap.SwapId;
-
-                    // Terminal states: nothing to do
-                    if (swap.Status is ArkSwapStatus.Refunded or ArkSwapStatus.Settled) continue;
-
-                    // Refresh VTXO state for the swap's contract script directly against arkd.
-                    // We cannot rely solely on the indexer subscription stream here: arkd does
-                    // not retroactively replay events, so if a VTXO lands between the moment
-                    // we subscribe and the moment we start reading the stream (or if a stream
-                    // reconnect drops a message), it never reaches OnVtxosChanged and the
-                    // swap stalls until a manual sync. Polling the single contract script per
-                    // status-check is cheap and closes that gap.
-                    if (!string.IsNullOrEmpty(swap.ContractScript))
-                    {
-                        var freshCount = 0;
-                        try
-                        {
-                            await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
-                                               new HashSet<string> { swap.ContractScript }, cancellationToken))
-                            {
-                                freshCount++;
-                                await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
-                            }
-                            _logger?.LogInformation(
-                                "Swap {SwapId}: refreshed contract script — arkd returned {Count} VTXO(s)",
-                                idToPoll, freshCount);
-                        }
-                        catch (Exception ex) when (ex is not OperationCanceledException)
-                        {
-                            _logger?.LogWarning(ex, "Swap {SwapId}: failed to refresh VTXOs for contract script during status poll", idToPoll);
-                        }
-                    }
-
-                    // If not refunded and status is refundable, start a coop refund
-                    if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
-                        IsRefundableStatus(swapStatus.Status))
-                    {
-                        _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable, initiating cooperative refund",
-                            idToPoll, swapStatus.Status);
-                        var newSwap =
-                            swap with { Status = ArkSwapStatus.Failed, UpdatedAt = DateTimeOffset.Now };
-                        await RequestRefundCooperatively(newSwap, cancellationToken);
-                        // Don't map status to Failed below — if refund succeeded, status is already
-                        // Refunded in storage; if it returned early (e.g. VTXOs not yet available
-                        // due to batch round race), keep the swap Pending so routine polls retry.
-                        continue;
-                    }
-
-                    // For ARK→BTC chain swaps: try to claim BTC when server has locked
-                    if (swap.SwapType is ArkSwapType.ChainArkToBtc &&
-                        IsChainSwapClaimableStatus(swapStatus.Status))
-                    {
-                        await TryClaimBtcForChainSwap(swap, cancellationToken);
-                    }
-
-                    // For BTC→ARK chain swaps: provide cooperative cross-signature so Boltz
-                    // can claim our BTC lockup via key-path (more efficient than script-path).
-                    // This is non-critical — Boltz can eventually claim via script-path with preimage.
-                    if (swap.SwapType is ArkSwapType.ChainBtcToArk &&
-                        swapStatus.Status is "transaction.claim.pending")
-                    {
-                        await TrySignBoltzBtcClaim(swap, cancellationToken);
-                    }
-
-                    // Re-read swap — claim handlers may have updated status to terminal
-                    var updatedSwaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
-                    swap = updatedSwaps.FirstOrDefault() ?? swap;
-                    if (swap.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded) continue;
-
-                    var newStatus = Map(swapStatus.Status);
-
-                    if (swap.Status == newStatus)
-                    {
-                        _logger?.LogDebug(
-                            "Swap {SwapId}: mapped Boltz '{BoltzStatus}' -> {Status}, unchanged",
-                            idToPoll, swapStatus.Status, newStatus);
-                        continue;
-                    }
-
-                    _logger?.LogInformation("Swap {SwapId}: status changed {OldStatus} -> {NewStatus} (Boltz: '{BoltzStatus}')",
-                        idToPoll, swap.Status, newStatus, swapStatus.Status);
-
-                    var swapWithNewStatus =
-                        swap with { Status = newStatus, UpdatedAt = DateTimeOffset.Now };
-
-                    await _swapsStorage.SaveSwap(swap.WalletId,
-                        swapWithNewStatus, cancellationToken: cancellationToken);
-
-                    if (swapWithNewStatus.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded)
-                    {
-                        _logger?.LogInformation("Swap {SwapId}: terminal state {Status}, removing from watch list",
-                            idToPoll, swapWithNewStatus.Status);
-                        _scriptToSwapId.Remove(swapWithNewStatus.ContractScript, out _);
-                        _swapsIdToWatch.Remove(swapWithNewStatus.SwapId);
-                        // Drop the subscription on the persistent websocket so we
-                        // don't keep receiving updates for a swap we no longer
-                        // care about. Best-effort — failure is non-fatal.
-                        await UnsubscribeOnWebsocketAsync([swapWithNewStatus.SwapId], cancellationToken);
-                    }
-                }
-            }
-            catch (BoltzSwapNotFoundException)
-            {
-                // Boltz has no record of this swap. This is the canonical failure
-                // mode after a Boltz endpoint switch — old swap IDs are unknown
-                // to the new instance. Track consecutive 404s; trip the safety
-                // net only after the threshold to ride out transient blips.
-                var count = _consecutiveUnknown.AddOrUpdate(idToPoll, 1, (_, c) => c + 1);
-                _logger?.LogWarning(
-                    "Swap {SwapId}: unknown to Boltz ({Count}/{Threshold} consecutive)",
-                    idToPoll, count, UnknownToProviderThreshold);
-                if (count >= UnknownToProviderThreshold)
-                {
-                    await MarkSwapAsUnknownToProvider(idToPoll, cancellationToken);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger?.LogError(ex, "Swap {SwapId}: error polling state from Boltz", idToPoll);
-            }
-        }
+        var provider = ResolveProvider(route);
+        return await provider.GetLimitsAsync(route, ct);
     }
 
     /// <summary>
-    /// Transitions a swap to <see cref="ArkSwapStatus.Failed"/> once Boltz has
-    /// consistently reported it unknown for <see cref="UnknownToProviderThreshold"/>
-    /// consecutive polls. Called from <see cref="PollSwapState"/>'s
-    /// <see cref="BoltzSwapNotFoundException"/> handler — at this point the
-    /// swap is presumed permanently lost to the configured Boltz instance,
-    /// typically because the operator pointed the SDK at a different Boltz
-    /// endpoint than the one the swap was created on. After this transition
-    /// the user must recover funds on-chain via the contract's script-path
-    /// after CSV expiry; cooperative refund is no longer available because
-    /// the original Boltz instance is unreachable.
+    /// Gets a fee quote for a given swap route and amount.
     /// </summary>
-    private async Task MarkSwapAsUnknownToProvider(string swapId, CancellationToken cancellationToken)
+    public async Task<SwapQuote> GetQuoteAsync(SwapRoute route, long amount, CancellationToken ct)
     {
-        await using var @lock = await _safetyService.LockKeyAsync($"swap::{swapId}", cancellationToken);
-
-        var swap = (await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken))
-            .FirstOrDefault();
-        if (swap is null)
-        {
-            _logger?.LogDebug("MarkSwapAsUnknownToProvider: swap {SwapId} no longer in storage", swapId);
-            _consecutiveUnknown.TryRemove(swapId, out _);
-            return;
-        }
-
-        // Idempotency: another caller (or a previous trip of this safety net)
-        // may have already moved it terminal — nothing to do.
-        if (!swap.Status.IsActive())
-        {
-            _consecutiveUnknown.TryRemove(swapId, out _);
-            _swapsIdToWatch.Remove(swapId);
-            return;
-        }
-
-        var newMetadata = swap.Metadata is null
-            ? new Dictionary<string, string>()
-            : new Dictionary<string, string>(swap.Metadata);
-        newMetadata["unknownToProvider"] = "true";
-
-        var newSwap = swap with
-        {
-            Status = ArkSwapStatus.Failed,
-            FailReason = "Boltz no longer recognises this swap. " +
-                         "Recover funds on-chain via the contract's script-path after CSV expiry.",
-            UpdatedAt = DateTimeOffset.UtcNow,
-            Metadata = newMetadata,
-        };
-
-        await _swapsStorage.SaveSwap(swap.WalletId, newSwap, cancellationToken: cancellationToken);
-
-        _logger?.LogWarning(
-            "Swap {SwapId}: marked Failed after {Threshold} consecutive Boltz 404s — swap is unknown to the configured Boltz instance",
-            swapId, UnknownToProviderThreshold);
-
-        // Stop polling and clear the counter. NotifySwapChanged handles
-        // _scriptToSwapId eviction via the SaveSwap event we just emitted.
-        _swapsIdToWatch.Remove(swapId);
-        _consecutiveUnknown.TryRemove(swapId, out _);
-    }
-
-    private async Task RequestRefundCooperatively(ArkSwap swap, CancellationToken cancellationToken = default)
-    {
-        if (swap.SwapType != ArkSwapType.Submarine)
-        {
-            throw new InvalidOperationException("Only submarine swaps can be refunded");
-        }
-
-        if (swap.Status == ArkSwapStatus.Refunded)
-        {
-            return;
-        }
-
-        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
-        var matchedSwapContracts =
-            await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript],
-                cancellationToken: cancellationToken);
-
-        var matchedSwapContractForSwapWallet =
-            matchedSwapContracts.Single(entity => entity.Type == VHTLCContract.ContractType);
-
-        // Parse the VHTLC contract
-        if (ArkContractParser.Parse(matchedSwapContractForSwapWallet.Type,
-                matchedSwapContractForSwapWallet.AdditionalData, serverInfo.Network) is not VHTLCContract contract)
-        {
-            throw new InvalidOperationException("Failed to parse VHTLC contract for refund");
-        }
-
-        // Poll arkd directly for VTXOs at the swap script.
-        // The VtxoSynchronizationService may not have received them yet if
-        // its gRPC stream was restarted during the Spend call (the change-address
-        // DeriveContract fires ActiveScriptsChanged, restarting the subscription,
-        // and the batch-round event can be lost between the old and new streams).
-        await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
-                           new HashSet<string> { swap.ContractScript }, cancellationToken))
-        {
-            await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
-        }
-
-        // Get VTXOs for this contract
-        var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript],
-            cancellationToken: cancellationToken);
-        if (vtxos.Count == 0)
-        {
-            _logger?.LogWarning("Swap {SwapId}: no VTXOs found for cooperative refund", swap.SwapId);
-            return;
-        }
-
-        // Use the first VTXO (should only be one for a swap)
-        var vtxo = vtxos.Single();
-
-        var timeHeight = await _chainTimeProvider.GetChainTime(cancellationToken);
-        if (!vtxo.CanSpendOffchain(timeHeight))
-            return;
-
-        // Get the user's wallet address for refund destination
-        // Use AwaitingFundsBeforeDeactivate so it auto-deactivates after receiving the refund
-        var refundAddress =
-            await _contractService.DeriveContract(swap.WalletId, NextContractPurpose.SendToSelf,
-                ContractActivityState.AwaitingFundsBeforeDeactivate,
-                metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.SwapId}" },
-                cancellationToken: cancellationToken);
-        if (refundAddress == null)
-        {
-            throw new InvalidOperationException("Failed to get refund address");
-        }
-
-        try
-        {
-            var arkCoin = contract.ToCoopRefundCoin(swap.WalletId, vtxo);
-
-            var (arkTx, checkpoints) =
-                await _transactionBuilder.ConstructArkTransaction([arkCoin],
-                    [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundAddress.GetArkAddress())],
-                    serverInfo, cancellationToken);
-
-            var checkpoint = checkpoints.Single();
-
-            // Request Boltz to co-sign the refund
-            var refundRequest = new SubmarineRefundRequest
-            {
-                Transaction = arkTx.ToBase64(),
-                Checkpoint = checkpoint.Psbt.ToBase64()
-            };
-
-            var refundResponse =
-                await _boltzClient.RefundSubmarineSwapAsync(swap.SwapId, refundRequest, cancellationToken);
-
-            // Parse Boltz-signed transactions
-            var boltzSignedRefundPsbt = PSBT.Parse(refundResponse.Transaction, serverInfo.Network);
-            var boltzSignedCheckpointPsbt = PSBT.Parse(refundResponse.Checkpoint, serverInfo.Network);
-
-            // Combine signatures
-            arkTx.UpdateFrom(boltzSignedRefundPsbt);
-            checkpoint.Psbt.UpdateFrom(boltzSignedCheckpointPsbt);
-
-            await _transactionBuilder.SubmitArkTransaction([arkCoin], arkTx, [checkpoint],
-                cancellationToken);
-
-            var newSwap =
-                swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.Now };
-
-            await _swapsStorage.SaveSwap(newSwap.WalletId, newSwap, cancellationToken);
-            _logger?.LogInformation("Swap {SwapId}: cooperative refund completed successfully", swap.SwapId);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "Swap {SwapId}: cooperative refund failed, deactivating refund contract", swap.SwapId);
-            //coop swap failed, let's not keep listening for something that will never happen
-            await _contractStorage.SaveContract(
-                refundAddress.ToEntity(swap.WalletId, activityState: ContractActivityState.Inactive),
-                cancellationToken);
-            throw;
-        }
-
-        // Synchronization barrier: wait until any concurrent operation using
-        // this contract key completes before returning. Runs outside the
-        // try/catch so cancellation during disposal doesn't incorrectly
-        // trigger refund-failure recovery.
-        try
-        {
-            await using var @lock =
-                await _safetyService.LockKeyAsync($"contract::{contract.GetArkAddress().ScriptPubKey.ToHex()}",
-                    cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            // Refund already succeeded — cancellation during disposal is benign.
-        }
-    }
-
-    private static ArkSwapStatus Map(string status)
-    {
-        return status switch
-        {
-            "swap.created" or "invoice.set" => ArkSwapStatus.Pending,
-            "invoice.failedToPay" or "invoice.expired" or "swap.expired" or "transaction.failed"
-                or "transaction.refunded" =>
-                ArkSwapStatus.Failed,
-            "transaction.mempool" or "transaction.confirmed" => ArkSwapStatus.Pending,
-            "invoice.settled" or "transaction.claimed" => ArkSwapStatus.Settled,
-            // Chain swap specific statuses
-            "transaction.server.mempool" or "transaction.server.confirmed"
-                or "transaction.claim.pending" => ArkSwapStatus.Pending,
-            "transaction.lockupFailed" => ArkSwapStatus.Failed,
-            _ => ArkSwapStatus.Unknown
-        };
+        var provider = ResolveProvider(route);
+        return await provider.GetQuoteAsync(route, amount, ct);
     }
 
     /// <summary>
-    /// Checks if a chain swap status indicates the server has locked funds and we can claim.
-    /// Used for ARK→BTC where we claim BTC ourselves.
+    /// Returns all routes supported across all registered providers.
     /// </summary>
-    private static bool IsChainSwapClaimableStatus(string status)
+    public async Task<IReadOnlyCollection<SwapRoute>> GetAvailableRoutesAsync(CancellationToken ct)
     {
-        return status is "transaction.server.mempool" or "transaction.server.confirmed";
+        var routes = new List<SwapRoute>();
+        foreach (var provider in _providers)
+        {
+            var providerRoutes = await provider.GetAvailableRoutesAsync(ct);
+            routes.AddRange(providerRoutes);
+        }
+        return routes.Distinct().ToList();
     }
 
-    /// <summary>
-    /// Single long-lived task that owns the Boltz websocket connection.
-    /// Connects, subscribes to the current <see cref="_swapsIdToWatch"/>
-    /// snapshot, and listens until the connection drops; on drop it
-    /// reconnects with a 5-second backoff and re-subscribes to the
-    /// then-current watch set. Subscribe / unsubscribe ops for runtime set
-    /// changes ride this same connection via <see cref="SubscribeOnWebsocketAsync"/>
-    /// and <see cref="UnsubscribeOnWebsocketAsync"/> — there is no longer
-    /// a per-set-change connection restart.
-    /// </summary>
-    /// <remarks>
-    /// Mirrors the model documented at
-    /// https://api.docs.boltz.exchange/api-v2.html#websocket — one
-    /// connection, repeated subscribe/unsubscribe ops keyed by swap id.
-    /// </remarks>
-    private async Task RunWebsocketLoop(CancellationToken cancellationToken)
-    {
-        var wsUri = _boltzClient.DeriveWebSocketUri();
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            BoltzWebsocketClient? client = null;
-            try
-            {
-                _logger?.LogInformation("Connecting to Boltz websocket at {Uri}", wsUri);
-                client = new BoltzWebsocketClient(wsUri);
-                client.OnAnyEventReceived += OnSwapEventReceived;
-                await client.ConnectAsync(cancellationToken);
-
-                // Publish under the lock so subscribe/unsubscribe callers
-                // see a consistent snapshot. Snapshot the watch set first so
-                // the initial Subscribe doesn't race a concurrent mutation.
-                string[] initialSubs;
-                await _websocketLock.WaitAsync(cancellationToken);
-                try
-                {
-                    _websocket = client;
-                    initialSubs = _swapsIdToWatch.ToArray();
-                }
-                finally
-                {
-                    _websocketLock.Release();
-                }
-
-                if (initialSubs.Length > 0)
-                {
-                    await client.SubscribeAsync(initialSubs, cancellationToken);
-                    _logger?.LogInformation(
-                        "Boltz websocket connected, subscribed to {Count} swap(s): [{SwapIds}]",
-                        initialSubs.Length, string.Join(", ", initialSubs));
-                }
-                else
-                {
-                    _logger?.LogInformation("Boltz websocket connected, no active swaps to subscribe yet");
-                }
-
-                await client.WaitUntilDisconnected(cancellationToken);
-                _logger?.LogWarning("Boltz websocket disconnected");
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "Boltz websocket error, reconnecting in 5s");
-            }
-            finally
-            {
-                // Clear the published reference under the same lock; pending
-                // sub/unsub callers will see _websocket==null and short-circuit
-                // (the next reconnect re-subscribes from _swapsIdToWatch).
-                await _websocketLock.WaitAsync(CancellationToken.None);
-                try
-                {
-                    if (client is not null) client.OnAnyEventReceived -= OnSwapEventReceived;
-                    if (ReferenceEquals(_websocket, client)) _websocket = null;
-                }
-                finally
-                {
-                    _websocketLock.Release();
-                }
-                if (client is not null) await client.DisposeAsync();
-            }
-
-            if (!cancellationToken.IsCancellationRequested)
-                await Task.Delay(5000, cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// Subscribe additional swap ids on the current persistent websocket.
-    /// No-ops when the websocket is disconnected — the reconnect loop will
-    /// pick the ids up from <see cref="_swapsIdToWatch"/> on its next attempt.
-    /// </summary>
-    private async Task SubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken cancellationToken)
-    {
-        if (swapIds.Count == 0) return;
-        await _websocketLock.WaitAsync(cancellationToken);
-        try
-        {
-            if (_websocket is null)
-            {
-                _logger?.LogDebug("Skipping websocket Subscribe: connection not yet up; reconnect loop will pick up [{SwapIds}]",
-                    string.Join(", ", swapIds));
-                return;
-            }
-            await _websocket.SubscribeAsync(swapIds.ToArray(), cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger?.LogWarning(ex, "websocket Subscribe failed for [{SwapIds}]; reconnect loop will retry",
-                string.Join(", ", swapIds));
-        }
-        finally
-        {
-            _websocketLock.Release();
-        }
-    }
-
-    /// <summary>
-    /// Unsubscribe swap ids from the current persistent websocket. Failures
-    /// are logged and swallowed — leaving a terminal swap subscribed costs
-    /// only a stray status push that the channel reader will route to a
-    /// no-op poll.
-    /// </summary>
-    private async Task UnsubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken cancellationToken)
-    {
-        if (swapIds.Count == 0) return;
-        await _websocketLock.WaitAsync(cancellationToken);
-        try
-        {
-            if (_websocket is null) return;
-            await _websocket.UnsubscribeAsync(swapIds.ToArray(), cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger?.LogDebug(ex, "websocket Unsubscribe failed for [{SwapIds}]; swap is already terminal locally so this is non-fatal",
-                string.Join(", ", swapIds));
-        }
-        finally
-        {
-            _websocketLock.Release();
-        }
-    }
-
-    private Task OnSwapEventReceived(WebSocketResponse? response)
-    {
-        try
-        {
-            if (response is null)
-                return Task.CompletedTask;
-
-            if (response.Event == "update" && response is { Channel: "swap.update", Args.Count: > 0 })
-            {
-                var swapUpdate = response.Args[0];
-                if (swapUpdate != null)
-                {
-                    var id = swapUpdate["id"]!.GetValue<string>();
-                    var status = swapUpdate["status"]?.GetValue<string>();
-                    _logger?.LogDebug("Websocket event: swap {SwapId} status '{Status}'", id, status);
-                    _triggerChannel.Writer.TryWrite($"id:{id}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "Error processing websocket event");
-            // ignored
-        }
-
-        return Task.CompletedTask;
-    }
-
+    // ─── Backward-Compatible Public API ────────────────────────────
 
     public async Task<string> InitiateSubmarineSwap(string walletId, BOLT11PaymentRequest invoice, bool autoPay = true,
         CancellationToken cancellationToken = default)
     {
         using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
+        var boltz = GetBoltzProvider();
+
         _logger?.LogInformation("Initiating submarine swap for wallet {WalletId}, autoPay={AutoPay}", walletId, autoPay);
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
 
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
-        var swap = await _boltzService.CreateSubmarineSwap(invoice,
+        var swap = await boltz.BoltzService.CreateSubmarineSwap(invoice,
             await addressProvider!.GetNextSigningDescriptor(cancellationToken),
             cancellationToken);
         await _contractService.ImportContract(walletId, swap.Contract,
@@ -890,7 +195,11 @@ public class SwapsManagementService : IAsyncDisposable
                 DateTimeOffset.UtcNow,
                 DateTimeOffset.UtcNow,
                 invoice.Hash.ToString()
-            ), cancellationToken);
+            )
+            {
+                ProviderId = BoltzSwapProvider.Id,
+                Route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning)
+            }, cancellationToken);
         try
         {
             return autoPay
@@ -916,7 +225,11 @@ public class SwapsManagementService : IAsyncDisposable
                     DateTimeOffset.UtcNow,
                     DateTimeOffset.UtcNow,
                     invoice.Hash.ToString()
-                ), cancellationToken);
+                )
+                {
+                    ProviderId = BoltzSwapProvider.Id,
+                    Route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning)
+                }, cancellationToken);
             throw;
         }
     }
@@ -953,12 +266,14 @@ public class SwapsManagementService : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
+        var boltz = GetBoltzProvider();
+
         _logger?.LogInformation("Initiating reverse swap for wallet {WalletId}, amount={Amount}",
             walletId, invoiceParams.Amount);
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
         var destinationDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
         var revSwap =
-            await _boltzService.CreateReverseSwap(
+            await boltz.BoltzService.CreateReverseSwap(
                 invoiceParams,
                 destinationDescriptor,
                 cancellationToken
@@ -982,7 +297,11 @@ public class SwapsManagementService : IAsyncDisposable
                 DateTimeOffset.UtcNow,
                 DateTimeOffset.UtcNow,
                 new uint256(revSwap.Hash).ToString()
-            ), cancellationToken);
+            )
+            {
+                ProviderId = BoltzSwapProvider.Id,
+                Route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc)
+            }, cancellationToken);
 
         return revSwap.Swap.Invoice;
     }
@@ -990,7 +309,7 @@ public class SwapsManagementService : IAsyncDisposable
     // Chain Swaps
 
     /// <summary>
-    /// Initiates a BTC→ARK chain swap. Customer pays BTC on-chain, store receives Ark VTXOs.
+    /// Initiates a BTC to ARK chain swap. Customer pays BTC on-chain, store receives Ark VTXOs.
     /// Returns the BTC lockup address where the customer should send BTC.
     /// </summary>
     public async Task<(string BtcAddress, string SwapId, long ExpectedLockupSats)> InitiateBtcToArkChainSwap(
@@ -999,13 +318,15 @@ public class SwapsManagementService : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
-        _logger?.LogInformation("Initiating BTC→ARK chain swap for wallet {WalletId}, amount={Amount}",
+        var boltz = GetBoltzProvider();
+
+        _logger?.LogInformation("Initiating BTC->ARK chain swap for wallet {WalletId}, amount={Amount}",
             walletId, amountSats);
 
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
         var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
 
-        var result = await _boltzService.CreateBtcToArkSwapAsync(
+        var result = await boltz.BoltzService.CreateBtcToArkSwapAsync(
             amountSats, claimDescriptor, cancellationToken);
 
         var btcAddress = result.Swap.LockupDetails?.LockupAddress
@@ -1040,20 +361,22 @@ public class SwapsManagementService : IAsyncDisposable
                 [SwapMetadata.EphemeralKey] = Convert.ToHexString(result.EphemeralBtcKey.ToBytes()).ToLowerInvariant(),
                 [SwapMetadata.BoltzResponse] = BoltzSwapService.SerializeChainResponse(result.Swap),
                 [SwapMetadata.BtcAddress] = btcAddress
-            }
+            },
+            ProviderId = BoltzSwapProvider.Id,
+            Route = new SwapRoute(SwapAsset.BtcOnchain, SwapAsset.ArkBtc)
         };
 
         await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
 
         var expectedLockupSats = result.Swap.LockupDetails!.Amount;
-        _logger?.LogInformation("BTC→ARK chain swap {SwapId} created, BTC lockup: {BtcAddress}, expected: {Amount} sats",
+        _logger?.LogInformation("BTC->ARK chain swap {SwapId} created, BTC lockup: {BtcAddress}, expected: {Amount} sats",
             result.Swap.Id, btcAddress, expectedLockupSats);
 
         return (btcAddress, result.Swap.Id, expectedLockupSats);
     }
 
     /// <summary>
-    /// Initiates an ARK→BTC chain swap. User sends Ark VTXOs, receives BTC on-chain.
+    /// Initiates an ARK to BTC chain swap. User sends Ark VTXOs, receives BTC on-chain.
     /// </summary>
     public async Task<string> InitiateArkToBtcChainSwap(
         string walletId,
@@ -1062,7 +385,9 @@ public class SwapsManagementService : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
-        _logger?.LogInformation("Initiating ARK→BTC chain swap for wallet {WalletId}, amount={Amount}, dest={Dest}",
+        var boltz = GetBoltzProvider();
+
+        _logger?.LogInformation("Initiating ARK->BTC chain swap for wallet {WalletId}, amount={Amount}, dest={Dest}",
             walletId, amountSats, btcDestination);
 
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
@@ -1073,7 +398,7 @@ public class SwapsManagementService : IAsyncDisposable
         var refundPubKeyHex = Convert.ToHexString(
             extractedRefund.PubKey?.ToBytes() ?? extractedRefund.XOnlyPubKey.ToBytes()).ToLowerInvariant();
 
-        var result = await _boltzService.CreateArkToBtcSwapAsync(
+        var result = await boltz.BoltzService.CreateArkToBtcSwapAsync(
             amountSats, refundPubKeyHex, cancellationToken);
 
         // Parse the Ark lockup address (Boltz's fulmine created the VHTLC)
@@ -1101,7 +426,9 @@ public class SwapsManagementService : IAsyncDisposable
                 [SwapMetadata.EphemeralKey] = Convert.ToHexString(result.EphemeralBtcKey.ToBytes()).ToLowerInvariant(),
                 [SwapMetadata.BoltzResponse] = BoltzSwapService.SerializeChainResponse(result.Swap),
                 [SwapMetadata.BtcAddress] = btcDestination.ToString()
-            }
+            },
+            ProviderId = BoltzSwapProvider.Id,
+            Route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain)
         };
 
         await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
@@ -1121,225 +448,141 @@ public class SwapsManagementService : IAsyncDisposable
             throw;
         }
 
-        _logger?.LogInformation("ARK→BTC chain swap {SwapId} created, Ark locked", result.Swap.Id);
+        _logger?.LogInformation("ARK->BTC chain swap {SwapId} created, Ark locked", result.Swap.Id);
         return result.Swap.Id;
     }
 
+    // ─── Swap Recovery Inspection ──────────────────────────────────
+
     /// <summary>
-    /// Attempts cooperative MuSig2 claim of BTC for an ARK→BTC chain swap.
-    /// Called when Boltz has locked BTC and we need to claim it.
+    /// Diagnostic, side-effect-free inspection of a swap to determine
+    /// whether funds are still recoverable from the on-chain / off-chain
+    /// lockup. Useful for wallet UIs that want to surface "X sats
+    /// recoverable" indicators on Failed swaps without committing to a
+    /// recovery transaction. Refreshes the local VTXO snapshot from arkd
+    /// so newly-arrived VTXOs at the swap script are visible to the call.
     /// </summary>
-    private async Task TryClaimBtcForChainSwap(ArkSwap swap, CancellationToken cancellationToken)
+    /// <remarks>
+    /// Mirrors arkade-os/boltz-swap's <c>inspectSubmarineRecovery</c> /
+    /// <c>inspectChainSwapRecovery</c> APIs. The actual recovery happens
+    /// automatically inside <c>BoltzSwapProvider.PollSwapState</c> when
+    /// the swap reaches a refundable status — this method is purely a
+    /// reporting helper.
+    /// </remarks>
+    public async Task<SwapRecoveryInfo> InspectSwapRecoveryAsync(
+        string walletId, string swapId, CancellationToken ct = default)
     {
-        if (swap.SwapType != ArkSwapType.ChainArkToBtc)
-            return;
+        var swap = (await _swapsStorage.GetSwaps(walletIds: [walletId], swapIds: [swapId], cancellationToken: ct))
+            .FirstOrDefault();
+        if (swap is null)
+            return new SwapRecoveryInfo { SwapId = swapId, Status = SwapRecoveryStatus.SwapNotFound };
 
-        var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
-        var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
-        var preimageHex = swap.Get(SwapMetadata.Preimage);
-        var btcAddress = swap.Get(SwapMetadata.BtcAddress);
+        if (swap.Status is ArkSwapStatus.Refunded)
+            return new SwapRecoveryInfo { SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.AlreadyRefunded };
+        if (swap.Status is ArkSwapStatus.Settled)
+            return new SwapRecoveryInfo { SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.AlreadySettled };
 
-        if (string.IsNullOrEmpty(ephemeralKeyHex) ||
-            string.IsNullOrEmpty(boltzResponseJson) ||
-            string.IsNullOrEmpty(preimageHex) ||
-            string.IsNullOrEmpty(btcAddress))
+        // A Pending swap is mid-flight, not stranded. VTXOs at its contract
+        // script are the live lockup — reporting them as Recoverable would
+        // make a wallet UI show "X sats stranded" for every active swap.
+        // ScanRecoverableSwapsAsync filters Pending out before reaching here,
+        // but this method is public and callers can hit it directly.
+        if (swap.Status is ArkSwapStatus.Pending)
+            return new SwapRecoveryInfo { SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.StillPending };
+
+        // Refresh the local VTXO snapshot so a freshly-arrived VTXO at the
+        // swap's contract script (e.g. user funded the lockup just before
+        // this scan) shows up.
+        if (!string.IsNullOrEmpty(swap.ContractScript))
         {
-            _logger?.LogWarning("Swap {SwapId}: missing chain swap metadata for BTC claim", swap.SwapId);
-            return;
-        }
-
-        try
-        {
-            var response = BoltzSwapService.DeserializeChainResponse(boltzResponseJson);
-            if (response == null)
-            {
-                _logger?.LogWarning("Swap {SwapId}: failed to deserialize Boltz response", swap.SwapId);
-                return;
-            }
-
-            var claimDetails = response.ClaimDetails;
-            if (claimDetails?.SwapTree == null || claimDetails.ServerPublicKey == null)
-            {
-                _logger?.LogWarning("Swap {SwapId}: no BTC claim details (swapTree or serverPublicKey is null)", swap.SwapId);
-                return;
-            }
-
-            var ephemeralKey = new Key(Convert.FromHexString(ephemeralKeyHex));
-            var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
-            var userPubKey = ecPrivKey.CreatePubKey();
-            var boltzPubKey = ECPubKey.Create(Convert.FromHexString(claimDetails.ServerPublicKey));
-
-            var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
-
-            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
-                claimDetails.SwapTree, userPubKey, boltzPubKey,
-                claimDetails.LockupAddress, serverInfo.Network);
-            var btcDest = BitcoinAddress.Create(btcAddress, serverInfo.Network);
-
-            // Get the lockup transaction from Boltz's status response
-            var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, cancellationToken);
-            if (swapStatus?.Transaction?.Hex == null)
-            {
-                _logger?.LogDebug("Swap {SwapId}: lockup tx hex not yet available", swap.SwapId);
-                return;
-            }
-
-            // Parse the lockup tx and find the output matching the HTLC address
-            var lockupTx = Transaction.Parse(swapStatus.Transaction.Hex, serverInfo.Network);
-            var lockupScript = BitcoinAddress.Create(claimDetails.LockupAddress, serverInfo.Network).ScriptPubKey;
-            var vout = -1;
-            for (var i = 0; i < lockupTx.Outputs.Count; i++)
-            {
-                if (lockupTx.Outputs[i].ScriptPubKey == lockupScript)
-                {
-                    vout = i;
-                    break;
-                }
-            }
-
-            if (vout < 0)
-            {
-                _logger?.LogWarning("Swap {SwapId}: no output matching HTLC address {Address}", swap.SwapId, claimDetails.LockupAddress);
-                return;
-            }
-
-            var outpoint = new OutPoint(lockupTx.GetHash(), vout);
-            var prevOut = lockupTx.Outputs[vout];
-
-            // Build unsigned claim tx
-            var feeSats = 250L;
-            var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, feeSats);
-
-            Transaction signedTx;
             try
             {
-                _logger?.LogInformation("Swap {SwapId}: attempting MuSig2 cooperative BTC claim", swap.SwapId);
-                signedTx = await _chainSwapMusig.CooperativeClaimAsync(
-                    swap.SwapId, preimageHex, unsignedClaimTx, prevOut, 0,
-                    ecPrivKey, boltzPubKey, spendInfo, cancellationToken);
+                await foreach (var fresh in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                                   new HashSet<string> { swap.ContractScript }, ct))
+                {
+                    await _vtxoStorage.UpsertVtxo(fresh, ct);
+                }
             }
-            catch (Exception coopEx)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger?.LogWarning(coopEx, "Swap {SwapId}: MuSig2 cooperative claim failed, falling back to script-path", swap.SwapId);
-
-                // Fallback: script-path claim with preimage
-                var claimLeaf = BtcHtlcScripts.GetClaimLeaf(claimDetails.SwapTree);
-                var preimageBytes = Convert.FromHexString(preimageHex);
-                BtcTransactionBuilder.SignScriptPathClaim(
-                    unsignedClaimTx, 0, prevOut, spendInfo, claimLeaf,
-                    preimageBytes, ephemeralKey);
-                signedTx = unsignedClaimTx;
+                return new SwapRecoveryInfo
+                {
+                    SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.InspectionError,
+                    Error = $"Failed to refresh VTXOs: {ex.Message}",
+                };
             }
-
-            // Broadcast the signed claim transaction
-            var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(
-                new BroadcastRequest { Hex = signedTx.ToHex() }, cancellationToken);
-
-            _logger?.LogInformation("Swap {SwapId}: BTC claimed! txid={TxId}", swap.SwapId, broadcastResult.Id);
-
-            await _swapsStorage.SaveSwap(swap.WalletId,
-                swap with { Status = ArkSwapStatus.Settled, UpdatedAt = DateTimeOffset.UtcNow },
-                cancellationToken);
         }
-        catch (Exception ex)
+
+        var vtxos = string.IsNullOrEmpty(swap.ContractScript)
+            ? []
+            : (await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct))
+              .Where(v => !v.IsSpent()).ToList();
+        var amount = vtxos.Sum(v => (long)v.Amount);
+
+        return new SwapRecoveryInfo
         {
-            _logger?.LogError(ex, "Swap {SwapId}: error claiming BTC", swap.SwapId);
-        }
+            SwapId = swapId,
+            Swap = swap,
+            Status = vtxos.Count > 0 ? SwapRecoveryStatus.Recoverable : SwapRecoveryStatus.NoFunds,
+            VtxoCount = vtxos.Count,
+            AmountSats = amount,
+        };
     }
 
     /// <summary>
-    /// Provides a cooperative MuSig2 cross-signature for a BTC→ARK chain swap so Boltz
-    /// can claim the user's BTC lockup via efficient key-path spend.
-    /// Called when status is transaction.claim.pending (ARK VTXOs already claimed by sweeper).
-    /// Non-critical: if this fails, Boltz can still claim via script-path with preimage.
+    /// Bulk recovery scan: walks all locally-known non-pending swaps for
+    /// the wallet and reports each swap's recovery state. The result is a
+    /// snapshot suitable for "audit my swap history for stranded funds"
+    /// flows after a wallet restore. Skips swaps still in
+    /// <see cref="ArkSwapStatus.Pending"/> since those aren't recovery
+    /// candidates yet.
     /// </summary>
-    private async Task TrySignBoltzBtcClaim(ArkSwap swap, CancellationToken cancellationToken)
+    /// <remarks>
+    /// Mirrors arkade-os/boltz-swap's <c>scanRecoverableSubmarineSwaps</c>
+    /// but covers all swap types (submarine, reverse, chain in both
+    /// directions). Calls <see cref="InspectSwapRecoveryAsync"/> per
+    /// candidate; runs a fresh arkd VTXO snapshot per swap so callers get
+    /// a real-time view rather than a cached one.
+    /// <para>
+    /// <b>Cost:</b> this is an O(N) sequential operation — one arkd
+    /// <c>GetVtxoByScriptsAsSnapshot</c> round-trip per non-pending swap
+    /// candidate, plus one <c>GetSwaps</c> read each. Intended for
+    /// recovery-audit flows after a wallet restore, not for hot-path UI.
+    /// Wallets with many historical swaps should expect a few hundred ms
+    /// per candidate against a local arkd; budget accordingly.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<SwapRecoveryInfo>> ScanRecoverableSwapsAsync(
+        string walletId, CancellationToken ct = default)
     {
-        if (swap.SwapType != ArkSwapType.ChainBtcToArk)
-            return;
+        var allSwaps = await _swapsStorage.GetSwaps(walletIds: [walletId], cancellationToken: ct);
+        var candidates = allSwaps
+            .Where(s => s.Status is not ArkSwapStatus.Pending)
+            .ToList();
 
-        // Only cross-sign once — avoid sending duplicate signatures on repeated polls
-        if (swap.Get(SwapMetadata.CrossSigned) == "true")
-            return;
-
-        var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
-        var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
-
-        if (string.IsNullOrEmpty(ephemeralKeyHex) || string.IsNullOrEmpty(boltzResponseJson))
+        var results = new List<SwapRecoveryInfo>(candidates.Count);
+        foreach (var swap in candidates)
         {
-            _logger?.LogWarning("Swap {SwapId}: missing chain swap metadata for cooperative BTC claim signing", swap.SwapId);
-            return;
+            results.Add(await InspectSwapRecoveryAsync(walletId, swap.SwapId, ct));
         }
-
-        try
-        {
-            var response = BoltzSwapService.DeserializeChainResponse(boltzResponseJson);
-            if (response == null)
-            {
-                _logger?.LogWarning("Swap {SwapId}: failed to deserialize Boltz response for cross-signing", swap.SwapId);
-                return;
-            }
-
-            // For BTC→ARK, the BTC lockup details contain the swap tree and server public key
-            var lockupDetails = response.LockupDetails;
-            if (lockupDetails?.SwapTree == null || lockupDetails.ServerPublicKey == null)
-            {
-                _logger?.LogWarning("Swap {SwapId}: no BTC lockup details (swapTree or serverPublicKey is null)", swap.SwapId);
-                return;
-            }
-
-            var ephemeralKey = new Key(Convert.FromHexString(ephemeralKeyHex));
-            var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
-            var userPubKey = ecPrivKey.CreatePubKey();
-            var boltzPubKey = ECPubKey.Create(Convert.FromHexString(lockupDetails.ServerPublicKey));
-
-            var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
-
-            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
-                lockupDetails.SwapTree, userPubKey, boltzPubKey,
-                lockupDetails.LockupAddress, serverInfo.Network);
-
-            _logger?.LogInformation("Swap {SwapId}: providing cooperative MuSig2 cross-signature for Boltz BTC claim", swap.SwapId);
-            await _chainSwapMusig.CrossSignBoltzClaimAsync(
-                swap.SwapId, ecPrivKey, boltzPubKey, spendInfo, cancellationToken);
-
-            _logger?.LogInformation("Swap {SwapId}: cooperative cross-signature sent successfully", swap.SwapId);
-
-            // Mark as cross-signed to avoid sending duplicate signatures
-            var metadata = new Dictionary<string, string>(swap.Metadata ?? [])
-            {
-                [SwapMetadata.CrossSigned] = "true"
-            };
-            await _swapsStorage.SaveSwap(swap.WalletId,
-                swap with { Metadata = metadata, UpdatedAt = DateTimeOffset.UtcNow },
-                cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            // Non-critical: Boltz can still claim via script-path with the preimage
-            _logger?.LogWarning(ex, "Swap {SwapId}: cooperative cross-signing failed (non-critical, Boltz will use script-path)", swap.SwapId);
-        }
+        return results;
     }
 
-    // Swap Restoration
+    // ─── Swap Restoration ──────────────────────────────────────────
 
     /// <summary>
     /// Restores swaps from Boltz for the given descriptors.
     /// Caller determines which descriptors to pass (current key, all used indexes, etc.)
     /// </summary>
-    /// <param name="walletId">The wallet identifier to associate restored swaps with.</param>
-    /// <param name="descriptors">Array of output descriptors to search for in swaps.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>List of restored swaps that were not previously known.</returns>
     public async Task<IReadOnlyList<ArkSwap>> RestoreSwaps(
         string walletId,
         OutputDescriptor[] descriptors,
         CancellationToken cancellationToken = default)
     {
-        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
         if (descriptors.Length == 0)
             return [];
 
+        var boltz = GetBoltzProvider();
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
 
         // Extract public keys from all descriptors
@@ -1350,8 +593,7 @@ public class SwapsManagementService : IAsyncDisposable
             .Distinct()
             .ToArray();
 
-        var restoredSwaps = (await _boltzClient.RestoreSwapsAsync(publicKeys, cancellationToken))
-            .Where(swap => swap.From == "ARK" || swap.To == "ARK").ToArray();
+        var restoredSwaps = await boltz.RestoreSwapsFromBoltzAsync(publicKeys, cancellationToken);
         var results = new List<ArkSwap>();
 
         var existingSwapIds =
@@ -1411,12 +653,15 @@ public class SwapsManagementService : IAsyncDisposable
             ExpectedAmount: details.Amount ?? 0,
             ContractScript: "", // Will be updated after contract reconstruction
             Address: details.LockupAddress,
-            Status: Map(restored.Status),
+            Status: BoltzSwapProvider.MapBoltzStatus(restored.Status),
             FailReason: null,
             CreatedAt: DateTimeOffset.FromUnixTimeSeconds(restored.CreatedAt),
             UpdatedAt: DateTimeOffset.UtcNow,
             Hash: restored.PreimageHash ?? ""
-        );
+        )
+        {
+            ProviderId = BoltzSwapProvider.Id
+        };
     }
 
     private VHTLCContract? ReconstructContract(
@@ -1452,7 +697,6 @@ public class SwapsManagementService : IAsyncDisposable
             if (!string.IsNullOrEmpty(restored.PreimageHash))
             {
                 // Boltz uses SHA256 for preimage hash, we need RIPEMD160(SHA256(preimage))
-                // The preimageHash from restore is the SHA256 hash
                 var sha256Hash = Convert.FromHexString(restored.PreimageHash);
                 hash = new uint160(NBitcoin.Crypto.Hashes.RIPEMD160(sha256Hash), false);
             }
@@ -1467,14 +711,14 @@ public class SwapsManagementService : IAsyncDisposable
             if (restored.IsReverseSwap)
             {
                 // Reverse swap: we are the receiver (claiming)
-                sender = KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
+                sender = Extensions.KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
                 receiver = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
             }
             else
             {
                 // Submarine swap: we are the sender (refunding)
                 sender = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
-                receiver = KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
+                receiver = Extensions.KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
             }
 
             return new VHTLCContract(
@@ -1508,15 +752,12 @@ public class SwapsManagementService : IAsyncDisposable
         return descriptors.Length > 0 ? descriptors[0] : null;
     }
 
-    // Enrichment Methods
+    // ─── Enrichment Methods ────────────────────────────────────────
 
     /// <summary>
     /// Enriches a restored reverse swap with the preimage needed for claiming.
     /// Validates the preimage matches the stored hash before updating.
     /// </summary>
-    /// <param name="swapId">The swap ID to enrich.</param>
-    /// <param name="preimage">The preimage bytes.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task EnrichReverseSwapPreimage(
         string swapId,
         byte[] preimage,
@@ -1565,9 +806,6 @@ public class SwapsManagementService : IAsyncDisposable
     /// Enriches a restored submarine swap with the invoice.
     /// Validates the invoice payment hash matches the stored hash.
     /// </summary>
-    /// <param name="swapId">The swap ID to enrich.</param>
-    /// <param name="invoice">The BOLT11 invoice string.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task EnrichSubmarineSwapInvoice(
         string swapId,
         string invoice,
@@ -1596,56 +834,35 @@ public class SwapsManagementService : IAsyncDisposable
         await _swapsStorage.SaveSwap(swap.WalletId, enrichedSwap, cancellationToken);
     }
 
-    private static bool IsRefundableStatus(string status)
+    // ─── Helpers ───────────────────────────────────────────────────
+
+    private BoltzSwapProvider GetBoltzProvider()
     {
-        // Statuses that indicate a submarine swap can be cooperatively refunded
-        return status switch
-        {
-            "invoice.failedToPay" => true,
-            "invoice.expired" => true,
-            "swap.expired" => true,
-            "transaction.lockupFailed" => true,
-            _ => false
-        };
+        return _boltzProvider
+            ?? throw new InvalidOperationException("Boltz swap provider is not registered");
     }
+
+    // ─── Disposal ──────────────────────────────────────────────────
 
     public async ValueTask DisposeAsync()
     {
         _logger?.LogInformation("Disposing swap management service");
+        // Both events were subscribed in the ctor — both must come off, or
+        // OnVtxosChanged would still fire on a disposed router and reach
+        // providers that have themselves been disposed.
         _swapsStorage.SwapsChanged -= OnSwapsChanged;
+        _vtxoStorage.VtxosChanged -= OnVtxosChanged;
 
-        await _shutdownCts.CancelAsync();
-
-        try
+        foreach (var provider in _providers)
         {
-            if (_cacheTask is not null)
-                await _cacheTask;
+            try
+            {
+                await provider.DisposeAsync();
+            }
+            catch
+            {
+                // ignored
+            }
         }
-        catch
-        {
-            // ignored
-        }
-
-        try
-        {
-            if (_routinePollTask is not null)
-                await _routinePollTask;
-        }
-        catch
-        {
-            // ignored
-        }
-
-        try
-        {
-            if (_websocketTask is not null)
-                await _websocketTask;
-        }
-        catch
-        {
-            // ignored
-        }
-
-        _websocketLock.Dispose();
     }
 }

@@ -276,6 +276,12 @@ public class BoltzLimitsValidator
 public record BoltzLimits(
     long MinAmount,
     long MaxAmount,
+    /// <summary>
+    /// Fee as a decimal fraction (e.g. <c>0.005</c> for 0.5%) — NOT percent.
+    /// Boltz's wire <c>Percentage</c> field is in percent and this record
+    /// normalises it to a fraction at construction so callers can multiply
+    /// directly: <c>fee = amount * FeePercentage</c>.
+    /// </summary>
     decimal FeePercentage,
     long MinerFee);
 

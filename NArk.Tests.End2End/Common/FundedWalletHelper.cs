@@ -23,13 +23,20 @@ internal static class FundedWalletHelper
             string walletIdentifier,
             IVtxoStorage vtxoStorage, ContractService contractService, IContractStorage contracts,
             IClientTransport clientTransport, VtxoSynchronizationService vtxoSync)>
-        GetFundedWallet()
+        GetFundedWallet(int vtxoCount = 1, int amountSatsPerVtxo = 500_000)
     {
+        if (vtxoCount < 1) throw new ArgumentOutOfRangeException(nameof(vtxoCount), "must be >= 1");
+
         var safetyService = new AsyncSafetyService();
         var storage = new TestStorage(safetyService);
 
-        var receivedFirstVtxoTcs = new TaskCompletionSource();
-        storage.VtxoStorage.VtxosChanged += (sender, args) => receivedFirstVtxoTcs.TrySetResult();
+        var receivedVtxoCount = 0;
+        var receivedAllVtxosTcs = new TaskCompletionSource();
+        storage.VtxoStorage.VtxosChanged += (sender, args) =>
+        {
+            if (Interlocked.Increment(ref receivedVtxoCount) >= vtxoCount)
+                receivedAllVtxosTcs.TrySetResult();
+        };
         var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
 
         var info = await clientTransport.GetServerInfoAsync();
@@ -57,21 +64,26 @@ internal static class FundedWalletHelper
         );
         await contractService.ImportContract(fp1, contract);
 
-        // Pay a random amount to the contract address
-        const int randomAmount = 500000;
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
-                randomAmount.ToString(), "--password", "secret"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync();
+        // Pay <vtxoCount> separate VTXOs to the contract address. Each
+        // ark send produces an independent VTXO of <amountSatsPerVtxo> sats
+        // so concurrent tests that need parallel coin selection don't race
+        // on a shared input.
+        for (var i = 0; i < vtxoCount; i++)
+        {
+            var sendResult = await Cli.Wrap("docker")
+                .WithArguments([
+                    "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
+                    amountSatsPerVtxo.ToString(), "--password", "secret"
+                ])
+                .WithValidation(CommandResultValidation.None)
+                .ExecuteBufferedAsync();
 
-        if (!sendResult.IsSuccess)
-            throw new InvalidOperationException(
-                $"ark send failed (exit={sendResult.ExitCode}): stdout={sendResult.StandardOutput}, stderr={sendResult.StandardError}");
+            if (!sendResult.IsSuccess)
+                throw new InvalidOperationException(
+                    $"ark send #{i + 1} failed (exit={sendResult.ExitCode}): stdout={sendResult.StandardOutput}, stderr={sendResult.StandardError}");
+        }
 
-        await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await receivedAllVtxosTcs.Task.WaitAsync(TimeSpan.FromSeconds(15 * vtxoCount));
 
         return (safetyService, walletProvider, fp1, storage.VtxoStorage, contractService, storage.ContractStorage,
             clientTransport, vtxoSync);

@@ -39,6 +39,7 @@ public class ArkWalletService(
     SwapsManagementService swapsManagementService,
     BoltzLimitsValidator boltzLimitsValidator,
     HdWalletRecoveryService recoveryService,
+    PendingArkTransactionRecoveryService pendingTxRecoveryService,
     ArkNetworkConfig networkConfig)
 {
     // ── Wallets ──
@@ -70,6 +71,24 @@ public class ArkWalletService(
     public Task<RecoveryReport> RestoreWallet(string walletId, RecoveryOptions? options = null,
         CancellationToken cancellationToken = default)
         => recoveryService.ScanAsync(walletId, options, cancellationToken);
+
+    /// <summary>
+    /// Reconciles Arkade transactions that the server has registered as pending — i.e.
+    /// the SDK called <see cref="IClientTransport.SubmitTx"/> but the matching
+    /// <see cref="IClientTransport.FinalizeTx"/> never followed (process crash, network
+    /// drop, app close). Without recovery those coins are stuck because the server
+    /// only allows the original pending tx to be finalized.
+    /// </summary>
+    /// <remarks>
+    /// Startup recovery already runs automatically via <c>ArkHostedLifecycle</c>; call
+    /// this when you want deterministic timing — e.g. immediately after a user unlock
+    /// or restored backup, before showing the balance screen. Returns the arkTxIds
+    /// that were finalized; per-tx failures are absorbed and surfaced via
+    /// <c>PendingArkTransactionRecoveryService.RecoveryFailed</c>.
+    /// </remarks>
+    public Task<IReadOnlyList<string>> FinalizePendingArkTransactions(string walletId,
+        CancellationToken cancellationToken = default)
+        => pendingTxRecoveryService.FinalizePendingArkTransactionsAsync(walletId, cancellationToken);
 
     public async Task DeleteWallet(string walletId)
         => await walletStorage.DeleteWallet(walletId);
@@ -126,6 +145,15 @@ public class ArkWalletService(
 
     public async Task<IReadOnlyCollection<NArk.Swaps.Models.ArkSwap>> GetSwaps(string walletId)
         => await swapStorage.GetSwaps(walletIds: [walletId]);
+
+    /// <summary>
+    /// Bulk audit: surfaces every swap whose contract script still has
+    /// unspent VTXOs (or has hit a terminal state with no funds).
+    /// Used by the Swaps page to show "X sats stranded — recovery
+    /// runs automatically" indicators after a wallet restore.
+    /// </summary>
+    public async Task<IReadOnlyList<NArk.Swaps.Models.SwapRecoveryInfo>> ScanRecoverableSwaps(string walletId)
+        => await swapsManagementService.ScanRecoverableSwapsAsync(walletId);
 
     /// <summary>
     /// Initiates a reverse submarine swap (Lightning → Ark). Returns the Lightning invoice to pay.

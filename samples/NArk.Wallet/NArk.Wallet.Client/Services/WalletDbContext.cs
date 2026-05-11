@@ -19,5 +19,6 @@ public class WalletDbContext(DbContextOptions<WalletDbContext> options) : DbCont
     {
         base.OnModelCreating(modelBuilder);
         modelBuilder.ConfigureArkEntities();
+        modelBuilder.ConfigureArkPaymentEntities();
     }
 }

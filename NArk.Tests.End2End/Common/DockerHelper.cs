@@ -36,6 +36,37 @@ public static class DockerHelper
             ["bitcoin-cli", "-rpcwallet=", "-generate", count.ToString()], ct);
 
     /// <summary>
+    /// Drives a Boltz swap into a specific status on demand via the
+    /// boltzr-cli admin tool baked into the Boltz container. Only
+    /// <c>invoice.failedToPay</c> and <c>invoice.pending</c> are accepted —
+    /// any other value throws on the Boltz side.
+    /// </summary>
+    /// <remarks>
+    /// Setting <c>invoice.failedToPay</c> writes the swap's failure reason
+    /// to "payment has been cancelled" and fires the same nursery event +
+    /// websocket update the production failure path emits, so an SDK
+    /// listening to the websocket sees an indistinguishable
+    /// <c>invoice.failedToPay</c> and follows its cooperative-refund flow.
+    /// Source: <c>BoltzExchange/boltz-backend lib/service/Service.ts</c>.
+    /// </remarks>
+    public static async Task SetBoltzSwapStatus(string swapId, string status, CancellationToken ct = default)
+    {
+        var result = await Cli.Wrap("docker")
+            .WithArguments([
+                "exec", "boltz",
+                "/boltz-backend/target/release/boltzr-cli",
+                "-c", "/home/boltz/.boltz/certificates",
+                "swap", "set-status", swapId, status
+            ])
+            .WithValidation(CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"boltzr-cli swap set-status {swapId} {status} failed (exit={result.ExitCode}): " +
+                $"stdout={result.StandardOutput.Trim()}, stderr={result.StandardError.Trim()}");
+    }
+
+    /// <summary>
     /// Creates an LND invoice on the nigiri lnd container.
     /// Returns the BOLT11 payment request string.
     /// </summary>
@@ -56,6 +87,39 @@ public static class DockerHelper
                           ?.GetValue<string>()
                       ?? throw new InvalidOperationException($"Invoice creation on LND failed. Output: {output}");
         return invoice.Trim();
+    }
+
+    /// <summary>
+    /// Adds an extra unspent VTXO to an already-funded wallet's existing
+    /// receive contract by issuing another <c>ark send</c> from arkd. Used
+    /// by concurrency tests where two parallel swaps must each lock their
+    /// own VTXO without hitting <c>AlreadyLockedVtxoException</c>.
+    /// </summary>
+    /// <remarks>
+    /// Must be invoked AFTER the wallet has at least one VTXO already (so a
+    /// receive script is registered with arkd) and BEFORE the swap that
+    /// needs the extra VTXO is initiated. Each call creates one additional
+    /// <paramref name="amountSats"/>-sat VTXO at the same script. The
+    /// supplied <paramref name="onVtxoArrived"/> callback is invoked when a
+    /// new unspent VTXO lands at the receive script — typical use is a
+    /// <see cref="TaskCompletionSource"/> the caller awaits.
+    /// </remarks>
+    public static async Task SendArkdNoteTo(string arkAddress, long amountSats,
+        CancellationToken ct = default)
+    {
+        var result = await CliWrap.Cli.Wrap("docker")
+            .WithArguments([
+                "exec", "ark", "ark", "send", "--to", arkAddress,
+                "--amount", amountSats.ToString(),
+                "--password", "secret"
+            ])
+            .WithValidation(CliWrap.CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"ark send to {arkAddress} for {amountSats} sats failed (exit={result.ExitCode}): " +
+                $"stdout={result.StandardOutput.Trim()}, stderr={result.StandardError.Trim()}");
     }
 
     /// <summary>

@@ -117,6 +117,27 @@
             </div>
         }
 
+        <!-- Maintenance -->
+        <div class="section-header mt-24" style="padding:0;">
+            <span class="section-title">Maintenance</span>
+        </div>
+
+        <div class="glass-card mt-12 mb-16">
+            <p style="font-size:14px;font-weight:600;margin-bottom:4px;">Force pending-tx recovery</p>
+            <p class="text-secondary" style="font-size:12px;margin-bottom:8px;">
+                Re-runs the Arkade pending-tx sweep for this wallet. The host already does this
+                automatically on startup; use this button if a tx looks stuck after a crash and
+                you don't want to wait for the next restart.
+            </p>
+            <button class="btn btn-sm btn-secondary" @onclick="ForcePendingTxRecovery" disabled="@_recoveryInFlight">
+                @(_recoveryInFlight ? "Recovering..." : "Run recovery now")
+            </button>
+            @if (_recoveryMessage is not null)
+            {
+                <p class="text-secondary mt-12" style="font-size:11px;">@_recoveryMessage</p>
+            }
+        </div>
+
         <!-- Danger Zone -->
         <div class="section-header mt-24" style="padding:0;">
             <span class="section-title" style="color:var(--arkade-red);">Danger Zone</span>
@@ -170,6 +191,8 @@
     private int _intentCount;
     private string? _copiedField;
     private bool _confirmDelete;
+    private bool _recoveryInFlight;
+    private string? _recoveryMessage;
 
     protected override async Task OnInitializedAsync()
     {
@@ -220,6 +243,28 @@
             await Ark.DeleteWallet(State.ActiveWalletId);
             State.SetActiveWallet(null);
             _confirmDelete = false;
+        }
+    }
+
+    private async Task ForcePendingTxRecovery()
+    {
+        if (State.ActiveWalletId is null) return;
+        _recoveryInFlight = true;
+        _recoveryMessage = null;
+        try
+        {
+            var finalized = await Ark.FinalizePendingArkTransactions(State.ActiveWalletId);
+            _recoveryMessage = finalized.Count == 0
+                ? "No pending Arkade transactions to recover."
+                : $"Finalized {finalized.Count} pending tx(s): {string.Join(", ", finalized.Select(id => id[..Math.Min(12, id.Length)]))}.";
+        }
+        catch (Exception ex)
+        {
+            _recoveryMessage = $"Recovery failed: {ex.Message}";
+        }
+        finally
+        {
+            _recoveryInFlight = false;
         }
     }
 

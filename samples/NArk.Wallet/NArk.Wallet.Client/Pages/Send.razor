@@ -5,6 +5,7 @@
 @inject IJSRuntime JS
 @inject LnurlHelper Lnurl
 @using NArk.Wallet.Client.Services
+@using NArk.Abstractions.Payments
 @using NArk.Swaps.Boltz
 
 <div class="page-header">
@@ -262,52 +263,17 @@
 
         input = input.Trim();
 
-        // BIP21 URI: bitcoin:address?amount=X&ark=tark1q...&asset=...
-        if (input.StartsWith("bitcoin:", StringComparison.OrdinalIgnoreCase))
+        // Delegate BIP21 URIs, Ark/BTC addresses, and raw Lightning invoices to
+        // the SDK's ArkBip21.Parse — single source of truth for payment-string
+        // recognition. LNURL/Lightning-address still goes through LnurlHelper
+        // since the SDK parser doesn't resolve LNURL endpoints.
+        var info = ArkBip21.Parse(input);
+        if (info is not null)
         {
-            ParseBip21(input);
+            MapBip21PaymentInfo(info);
             return;
         }
 
-        // Lightning invoice
-        if (input.StartsWith("lnbc", StringComparison.OrdinalIgnoreCase) ||
-            input.StartsWith("lntbs", StringComparison.OrdinalIgnoreCase) ||
-            input.StartsWith("lntb", StringComparison.OrdinalIgnoreCase) ||
-            input.StartsWith("lnbcrt", StringComparison.OrdinalIgnoreCase))
-        {
-            _parsedType = "lightning";
-            _parsedAddress = input;
-            return;
-        }
-
-        // Ark address
-        if (input.StartsWith("tark1", StringComparison.OrdinalIgnoreCase) ||
-            input.StartsWith("ark1", StringComparison.OrdinalIgnoreCase))
-        {
-            _parsedType = "ark";
-            _parsedAddress = input;
-            return;
-        }
-
-        // On-chain Bitcoin address (bech32)
-        if (input.StartsWith("bc1", StringComparison.OrdinalIgnoreCase) ||
-            input.StartsWith("tb1", StringComparison.OrdinalIgnoreCase) ||
-            input.StartsWith("bcrt1", StringComparison.OrdinalIgnoreCase))
-        {
-            _parsedType = "onchain";
-            _parsedAddress = input;
-            return;
-        }
-
-        // Legacy addresses
-        if (input.StartsWith("1") || input.StartsWith("3") || input.StartsWith("m") || input.StartsWith("n") || input.StartsWith("2"))
-        {
-            _parsedType = "onchain";
-            _parsedAddress = input;
-            return;
-        }
-
-        // LNURL / Lightning Address
         if (LnurlHelper.IsLnurl(input))
         {
             _parsedType = "lnurl";
@@ -319,65 +285,28 @@
         _parseError = "Unrecognized address format";
     }
 
-    private void ParseBip21(string uri)
+    /// <summary>
+    /// Translates the SDK's <see cref="Bip21PaymentInfo"/> into the page's
+    /// existing <c>_parsedType</c>/<c>_parsedAddress</c>/<c>_parsedAmountSats</c>
+    /// fields so the rest of the rendering logic doesn't need to change.
+    /// </summary>
+    private void MapBip21PaymentInfo(Bip21PaymentInfo info)
     {
-        try
+        _parsedType = info.PreferredMethod switch
         {
-            // bitcoin:address?param=value&...
-            var withoutScheme = uri["bitcoin:".Length..];
-            var qIdx = withoutScheme.IndexOf('?');
-            var address = qIdx >= 0 ? withoutScheme[..qIdx] : withoutScheme;
-            var queryParams = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            ArkPaymentMethod.ArkSend         => "ark",
+            ArkPaymentMethod.SubmarineSwap   => "lightning",
+            ArkPaymentMethod.ChainSwap       => "onchain",
+            ArkPaymentMethod.CollaborativeExit => "onchain",
+            _ => null,
+        };
 
-            if (qIdx >= 0)
-            {
-                var queryString = withoutScheme[(qIdx + 1)..];
-                foreach (var pair in queryString.Split('&'))
-                {
-                    var eqIdx = pair.IndexOf('=');
-                    if (eqIdx > 0)
-                    {
-                        queryParams[Uri.UnescapeDataString(pair[..eqIdx])] = Uri.UnescapeDataString(pair[(eqIdx + 1)..]);
-                    }
-                }
-            }
+        _parsedAddress = info.Recipient;
+        _parsedAsset = info.AssetId;
+        _parsedAmountSats = info.AmountSats is { } sats ? (long)sats : 0L;
 
-            // Check for ark query parameter — takes priority
-            if (queryParams.TryGetValue("ark", out var arkAddress) && !string.IsNullOrWhiteSpace(arkAddress))
-            {
-                _parsedType = "ark";
-                _parsedAddress = arkAddress;
-            }
-            else if (!string.IsNullOrWhiteSpace(address))
-            {
-                _parsedType = "onchain";
-                _parsedAddress = address;
-            }
-
-            // Parse amount (BIP21 amount is in BTC)
-            if (queryParams.TryGetValue("amount", out var amountStr) &&
-                decimal.TryParse(amountStr, System.Globalization.NumberStyles.Any,
-                    System.Globalization.CultureInfo.InvariantCulture, out var btcAmount))
-            {
-                _parsedAmountSats = (long)(btcAmount * 100_000_000m);
-            }
-
-            // Asset param — restricts to Ark only
-            if (queryParams.TryGetValue("asset", out var assetId) && !string.IsNullOrWhiteSpace(assetId))
-            {
-                _parsedAsset = assetId;
-                _parsedType = "ark"; // Force Ark — assets can't traverse other channels
-                if (_parsedAddress is null && !string.IsNullOrWhiteSpace(address))
-                    _parsedAddress = address;
-            }
-
-            if (_parsedAddress is null)
-                _parseError = "Could not parse address from BIP21 URI";
-        }
-        catch
-        {
-            _parseError = "Invalid BIP21 URI";
-        }
+        if (_parsedAddress is null)
+            _parseError = "Could not extract a recipient from the payment string";
     }
 
     private bool IsWithinChainSwapLimits()
