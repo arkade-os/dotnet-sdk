@@ -46,6 +46,7 @@ public static class SwapServiceCollectionExtensions
             services.Configure(configure);
 
         services.AddSingleton<IContractDiscoveryProvider, BoltzSwapDiscoveryProvider>();
+
         services.AddSingleton<CachedBoltzClient>();
         services.AddSingleton<BoltzLimitsValidator>();
         services.AddSingleton<BoltzSwapProvider>();

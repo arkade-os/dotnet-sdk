@@ -33,6 +33,8 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
             existing.LightningInvoice = request.LightningInvoice;
             existing.ContractScripts = request.ContractScripts;
             existing.SwapId = request.SwapId;
+            existing.ExpectedAsset = request.ExpectedAsset;
+            existing.ReceivedAssets = request.ReceivedAssets;
             existing.Metadata = request.Metadata;
         }
         else
@@ -51,6 +53,8 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
                 LightningInvoice = request.LightningInvoice,
                 ContractScripts = request.ContractScripts,
                 SwapId = request.SwapId,
+                ExpectedAsset = request.ExpectedAsset,
+                ReceivedAssets = request.ReceivedAssets,
                 Metadata = request.Metadata,
                 CreatedAt = request.CreatedAt.ToUniversalTime(),
                 ExpiresAt = request.ExpiresAt?.ToUniversalTime()
@@ -121,6 +125,7 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
         ArkPaymentRequestStatus status,
         ulong receivedAmount,
         ulong overpayment = 0,
+        IReadOnlyList<NArk.Abstractions.VTXOs.VtxoAsset>? receivedAssets = null,
         CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -133,6 +138,8 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
         entity.Status = status;
         entity.ReceivedAmount = (long)receivedAmount;
         entity.Overpayment = (long)overpayment;
+        if (receivedAssets is not null)
+            entity.ReceivedAssets = receivedAssets;
 
         await db.SaveChangesAsync(cancellationToken);
         PaymentRequestChanged?.Invoke(this, MapToRequest(entity));
@@ -155,6 +162,8 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
         ContractScripts = e.ContractScripts,
         SwapId = e.SwapId,
         Overpayment = (ulong)e.Overpayment,
+        ExpectedAsset = e.ExpectedAsset,
+        ReceivedAssets = e.ReceivedAssets,
         Metadata = e.Metadata
     };
 }

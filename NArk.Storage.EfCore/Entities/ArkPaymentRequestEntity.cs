@@ -38,6 +38,32 @@ public class ArkPaymentRequestEntity
     /// </summary>
     public string? SwapId { get; set; }
 
+    /// <summary>
+    /// Expected asset for this payment request (JSON).
+    /// </summary>
+    [Column("ExpectedAsset", TypeName = "jsonb")]
+    public string? ExpectedAssetJson { get; set; }
+
+    [NotMapped]
+    public NArk.Abstractions.VTXOs.VtxoAsset? ExpectedAsset
+    {
+        get => ExpectedAssetJson is null ? null : JsonSerializer.Deserialize<NArk.Abstractions.VTXOs.VtxoAsset>(ExpectedAssetJson);
+        set => ExpectedAssetJson = value is null ? null : JsonSerializer.Serialize(value);
+    }
+
+    /// <summary>
+    /// Assets received so far (JSON array).
+    /// </summary>
+    [Column("ReceivedAssets", TypeName = "jsonb")]
+    public string? ReceivedAssetsJson { get; set; }
+
+    [NotMapped]
+    public IReadOnlyList<NArk.Abstractions.VTXOs.VtxoAsset>? ReceivedAssets
+    {
+        get => ReceivedAssetsJson is null ? null : JsonSerializer.Deserialize<List<NArk.Abstractions.VTXOs.VtxoAsset>>(ReceivedAssetsJson);
+        set => ReceivedAssetsJson = value is null ? null : JsonSerializer.Serialize(value);
+    }
+
     [Column("Metadata", TypeName = "jsonb")]
     public string? MetadataJson { get; set; }
 
@@ -62,6 +88,8 @@ public class ArkPaymentRequestEntity
         builder.Property(e => e.Status).IsRequired();
         builder.Property(e => e.CreatedAt).IsRequired();
         builder.Property(e => e.ContractScriptsJson).IsRequired();
+        builder.Property(e => e.ExpectedAssetJson).HasDefaultValue(null);
+        builder.Property(e => e.ReceivedAssetsJson).HasDefaultValue(null);
         builder.Property(e => e.MetadataJson).HasDefaultValue(null);
 
         builder.HasOne(e => e.Wallet)

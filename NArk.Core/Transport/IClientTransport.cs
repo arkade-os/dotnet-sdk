@@ -47,4 +47,16 @@ public interface IClientTransport
     /// Retrieves registered intents by providing a BIP-322 proof of ownership of any input.
     /// </summary>
     Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves Arkade transactions the server has registered as pending — i.e. the user
+    /// called <see cref="SubmitTx"/> (server locked the inputs as in-flight) but
+    /// <see cref="FinalizeTx"/> never followed. The server enforces "you must finalize that
+    /// exact pending tx; you cannot spend those inputs another way", so this endpoint is
+    /// the only way to recover stranded VTXOs after a crash between Submit and Finalize.
+    /// Authentication uses a BIP-322-style proof of ownership over any input the SDK
+    /// believes belongs to the wallet — same shape as <see cref="GetIntentsByProofAsync"/>.
+    /// </summary>
+    Task<Models.PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
+        CancellationToken cancellationToken = default);
 }
