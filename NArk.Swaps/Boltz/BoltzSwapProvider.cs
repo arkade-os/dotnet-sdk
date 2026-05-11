@@ -57,6 +57,21 @@ public class BoltzSwapProvider : ISwapProvider
     private readonly ILogger<BoltzSwapProvider>? _logger;
 
     private readonly CancellationTokenSource _shutdownCts = new();
+    /// <summary>
+    /// Linked CTS produced inside StartAsync that joins the caller's token and our
+    /// internal shutdown token. Stored as a field so it gets disposed on shutdown
+    /// instead of leaking the registration handle for the provider's lifetime.
+    /// </summary>
+    private CancellationTokenSource? _linkedStartCts;
+
+    /// <summary>
+    /// Flat fee in sats used for cooperative refund / claim BTC transactions.
+    /// 250 sats is ~1 sat/vB for a single-input single-output taproot key-path
+    /// spend, which is fine in low-fee regimes but becomes pessimistic when
+    /// the mempool is congested. TODO: plumb <c>IFeeEstimator</c> here so the
+    /// fee scales with the mempool rather than getting stuck.
+    /// </summary>
+    private const long DefaultRefundClaimFeeSats = 250L;
     private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
 
     /// <summary>
@@ -178,10 +193,11 @@ public class BoltzSwapProvider : ISwapProvider
         return Task.FromResult(routes);
     }
 
-    public async Task StartAsync(string walletId, CancellationToken ct)
+    public async Task StartAsync(CancellationToken ct)
     {
         _logger?.LogInformation("Starting Boltz swap provider");
-        var multiToken = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdownCts.Token);
+        _linkedStartCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdownCts.Token);
+        var multiToken = _linkedStartCts;
 
         var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
         _serverKey = OutputDescriptorHelpers.Extract(serverInfo.SignerKey).XOnlyPubKey;
@@ -239,6 +255,11 @@ public class BoltzSwapProvider : ISwapProvider
         await Drain(_cacheTask);
         await Drain(_routinePollTask);
         await Drain(_websocketTask);
+
+        // Dispose the linked CTS allocated in StartAsync so we don't leak the
+        // CancellationTokenRegistration that ties it back to the caller's token.
+        _linkedStartCts?.Dispose();
+        _linkedStartCts = null;
     }
 
     public async Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct)
@@ -274,6 +295,8 @@ public class BoltzSwapProvider : ISwapProvider
     public async Task<SwapQuote> GetQuoteAsync(SwapRoute route, long amount, CancellationToken ct)
     {
         var limits = await GetLimitsAsync(route, ct);
+        // FeePercentage is a fraction (e.g. 0.005 for 0.5%) — normalised at
+        // BoltzLimits construction. Direct multiplication is correct.
         var fee = (long)(amount * limits.FeePercentage) + limits.MinerFee;
         return new SwapQuote
         {
@@ -287,12 +310,40 @@ public class BoltzSwapProvider : ISwapProvider
 
     public event EventHandler<SwapStatusChangedEvent>? SwapStatusChanged;
 
+    /// <summary>
+    /// Raises <see cref="SwapStatusChanged"/> for <paramref name="swap"/>'s new status.
+    /// Subscriber exceptions are swallowed (logged) so a misbehaving consumer can't
+    /// take down the poll loop. Call this after persisting the new status to
+    /// storage so subscribers see a state consistent with the DB.
+    /// </summary>
+    private void RaiseSwapStatusChanged(ArkSwap swap, string? failReason = null)
+    {
+        var handler = SwapStatusChanged;
+        if (handler is null) return;
+
+        try
+        {
+            handler.Invoke(this, new SwapStatusChangedEvent(
+                SwapId: swap.SwapId,
+                WalletId: swap.WalletId,
+                ProviderId: ProviderId,
+                NewStatus: swap.Status,
+                FailReason: failReason));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex,
+                "Swap {SwapId}: SwapStatusChanged handler threw — recovery loop continues",
+                swap.SwapId);
+        }
+    }
+
     // ─── Monitoring ────────────────────────────────────────────────
 
     /// <summary>
     /// Called by the router when a VTXO changes on a script associated with a Boltz swap.
     /// </summary>
-    internal void NotifyVtxoChanged(ArkVtxo vtxo)
+    public void NotifyVtxoChanged(ArkVtxo vtxo)
     {
         if (_network is null || _serverKey is null) return;
 
@@ -321,7 +372,7 @@ public class BoltzSwapProvider : ISwapProvider
     /// <summary>
     /// Called by the router when a swap record changes in storage.
     /// </summary>
-    internal void NotifySwapChanged(ArkSwap swap)
+    public void NotifySwapChanged(ArkSwap swap)
     {
         // Keep the script→swap map up-to-date synchronously on every storage write.
         // Previously the map was only populated inside PollSwapState, so a VTXO
@@ -576,13 +627,14 @@ public class BoltzSwapProvider : ISwapProvider
                         _logger?.LogInformation(
                             "Swap {SwapId}: expired with no observable lockup — marking Failed (no funds to recover)",
                             idToPoll);
-                        await _swapsStorage.SaveSwap(swap.WalletId,
-                            swap with
-                            {
-                                Status = ArkSwapStatus.Failed,
-                                FailReason = "Swap expired before any funds were locked",
-                                UpdatedAt = DateTimeOffset.UtcNow
-                            }, cancellationToken);
+                        var failedSwap = swap with
+                        {
+                            Status = ArkSwapStatus.Failed,
+                            FailReason = "Swap expired before any funds were locked",
+                            UpdatedAt = DateTimeOffset.UtcNow
+                        };
+                        await _swapsStorage.SaveSwap(swap.WalletId, failedSwap, cancellationToken);
+                        RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
                     }
                     // Otherwise leave Pending so the next routine poll retries
                     // the refund — the lockup might just not be visible yet.
@@ -628,6 +680,8 @@ public class BoltzSwapProvider : ISwapProvider
 
                 await _swapsStorage.SaveSwap(swap.WalletId,
                     swapWithNewStatus, cancellationToken: cancellationToken);
+
+                RaiseSwapStatusChanged(swapWithNewStatus);
 
                 if (swapWithNewStatus.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded)
                 {
@@ -713,6 +767,7 @@ public class BoltzSwapProvider : ISwapProvider
         };
 
         await _swapsStorage.SaveSwap(swap.WalletId, newSwap, cancellationToken: cancellationToken);
+        RaiseSwapStatusChanged(newSwap, newSwap.FailReason);
 
         _logger?.LogWarning(
             "Swap {SwapId}: marked Failed after {Threshold} consecutive Boltz 404s — swap is unknown to the configured Boltz instance",
@@ -874,9 +929,9 @@ public class BoltzSwapProvider : ISwapProvider
 
             await _transactionBuilder.SubmitArkTransaction([arkCoin], arkTx, [checkpoint], ct);
 
-            await _swapsStorage.SaveSwap(swap.WalletId,
-                swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow },
-                ct);
+            var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
+            await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
+            RaiseSwapStatusChanged(refunded);
             _logger?.LogInformation("Swap {SwapId}: ARK→BTC cooperative refund completed", swap.SwapId);
             return true;
         }
@@ -968,12 +1023,9 @@ public class BoltzSwapProvider : ISwapProvider
             var outpoint = new OutPoint(lockupTx.GetHash(), vout);
             var prevOut = lockupTx.Outputs[vout];
 
-            // Same fee shape as TryClaimBtcForChainSwap. 250 sat at low-fee
-            // regimes is fine; high-fee mempools warrant a real estimator —
-            // the existing claim path has the same trade-off, hoist
-            // separately when needed.
-            const long feeSats = 250L;
-            var unsignedRefundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, feeSats);
+            // Same flat fee as TryClaimBtcForChainSwap — see DefaultRefundClaimFeeSats
+            // for the rationale + TODO to plumb in IFeeEstimator.
+            var unsignedRefundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, DefaultRefundClaimFeeSats);
 
             _logger?.LogInformation("Swap {SwapId}: requesting MuSig2 cooperative BTC refund", swap.SwapId);
             var signedTx = await _chainSwapMusig.CooperativeRefundAsync(
@@ -984,9 +1036,9 @@ public class BoltzSwapProvider : ISwapProvider
                 new BroadcastRequest { Hex = signedTx.ToHex() }, ct);
             _logger?.LogInformation("Swap {SwapId}: BTC refund broadcast — txid={TxId}", swap.SwapId, broadcastResult.Id);
 
-            await _swapsStorage.SaveSwap(swap.WalletId,
-                swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow },
-                ct);
+            var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
+            await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
+            RaiseSwapStatusChanged(refunded);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1203,6 +1255,7 @@ public class BoltzSwapProvider : ISwapProvider
                 swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.Now };
 
             await _swapsStorage.SaveSwap(newSwap.WalletId, newSwap, cancellationToken);
+            RaiseSwapStatusChanged(newSwap);
             _logger?.LogInformation("Swap {SwapId}: cooperative refund completed successfully", swap.SwapId);
         }
         catch (Exception ex)
@@ -1517,9 +1570,9 @@ public class BoltzSwapProvider : ISwapProvider
             var outpoint = new OutPoint(lockupTx.GetHash(), vout);
             var prevOut = lockupTx.Outputs[vout];
 
-            // Build unsigned claim tx
-            var feeSats = 250L;
-            var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, feeSats);
+            // Build unsigned claim tx — see DefaultRefundClaimFeeSats for the
+            // flat-fee rationale + TODO to plumb in IFeeEstimator.
+            var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, DefaultRefundClaimFeeSats);
 
             Transaction signedTx;
             try

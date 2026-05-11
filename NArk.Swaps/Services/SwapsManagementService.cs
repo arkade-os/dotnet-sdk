@@ -103,22 +103,16 @@ public class SwapsManagementService : IAsyncDisposable
 
     private void OnVtxosChanged(object? sender, ArkVtxo e)
     {
-        // Route to all providers that might care about this VTXO
+        // Route to all providers via the interface — each provider decides
+        // whether it cares (default ISwapProvider.NotifyVtxoChanged is a no-op).
         foreach (var provider in _providers)
-        {
-            if (provider is BoltzSwapProvider boltz)
-                boltz.NotifyVtxoChanged(e);
-        }
+            provider.NotifyVtxoChanged(e);
     }
 
     private void OnSwapsChanged(object? sender, ArkSwap swapChanged)
     {
-        // Route to all providers
         foreach (var provider in _providers)
-        {
-            if (provider is BoltzSwapProvider boltz)
-                boltz.NotifySwapChanged(swapChanged);
-        }
+            provider.NotifySwapChanged(swapChanged);
     }
 
     // ─── Lifecycle ─────────────────────────────────────────────────
@@ -129,7 +123,7 @@ public class SwapsManagementService : IAsyncDisposable
         foreach (var provider in _providers)
         {
             _logger?.LogInformation("Starting swap provider: {ProviderId} ({DisplayName})", provider.ProviderId, provider.DisplayName);
-            await provider.StartAsync("", cancellationToken);
+            await provider.StartAsync(cancellationToken);
         }
     }
 
