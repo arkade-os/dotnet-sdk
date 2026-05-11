@@ -37,6 +37,14 @@ public static class SwapMetadata
     public const string BtcAddress = "btcAddress";
     public const string CrossSigned = "crossSigned";
 
+    /// <summary>
+    /// Arkade address (string form) of the refund destination contract. Set the first
+    /// time a cooperative refund derives a destination so subsequent poll retries
+    /// reuse it instead of deriving fresh contracts and leaking orphan rows into
+    /// <c>IContractStorage</c>.
+    /// </summary>
+    public const string RefundDestination = "refundDestination";
+
     // ── Persistence shim for the ProviderId / Route fields on ArkSwap.
     // These properties don't have dedicated columns on ArkSwapEntity (yet —
     // see issue #79 review), so EfCoreSwapStorage round-trips them through

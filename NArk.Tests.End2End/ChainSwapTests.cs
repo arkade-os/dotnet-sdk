@@ -444,4 +444,117 @@ public class ChainSwapTests
         Assert.That(scan.Any(s => s.SwapId == swapId && s.Status == SwapRecoveryStatus.Recoverable), Is.False,
             "Unfunded swap must not be flagged as Recoverable in the bulk scan");
     }
+
+    /// <summary>
+    /// ARK→BTC chain swap cooperative refund: the user funds the Arkade VHTLC
+    /// (lockup), then Boltz is forced into <c>invoice.failedToPay</c> via the
+    /// <c>boltzr-cli swap set-status</c> admin tool before it locks BTC for the
+    /// user to claim. The SDK's <c>PollSwapState</c> sees the refundable status
+    /// for a <see cref="ArkSwapType.ChainArkToBtc"/> swap and calls
+    /// <c>CoopRefundArkToBtcChainSwap</c>, which asks Boltz to co-sign an
+    /// Arkade tx that returns the locked VTXO to a wallet-derived destination.
+    /// <para>
+    /// Drives the same Boltz admin path as the submarine refund tests; chain
+    /// swaps accept the same status transitions (per boltz-backend's
+    /// <c>service set-status</c> handler). Asserts <c>swap.Status == Refunded</c>
+    /// — covers the new VTXO-moving refund code with end-to-end coverage.
+    /// </para>
+    /// </summary>
+    [Test]
+    [CancelAfter(360_000)]
+    public async Task ArkToBtcChainSwapRefundsCooperatively(CancellationToken token)
+    {
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+        var intentStorage = TestStorage.CreateIntentStorage();
+
+        var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
+        [
+            new PaymentContractTransformer(testingPrerequisite.walletProvider),
+            new HashLockedContractTransformer(testingPrerequisite.walletProvider),
+            new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
+        ]);
+
+        var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
+            testingPrerequisite.walletProvider, coinService, testingPrerequisite.contractService,
+            testingPrerequisite.clientTransport, new DefaultCoinSelector(),
+            testingPrerequisite.safetyService, intentStorage);
+
+        var boltzProvider = new BoltzSwapProvider(boltzClient,
+            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(),
+                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+                { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService, testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService,
+            testingPrerequisite.contracts, testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
+
+        // Wait for the Arkade VHTLC to be locked (status Pending with the
+        // SDK having committed a VTXO at the contract script), then for the
+        // cooperative refund to settle the swap as Refunded.
+        var lockedTcs = new TaskCompletionSource();
+        var refundedTcs = new TaskCompletionSource();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[ARK→BTC refund] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            if (swap.Status == ArkSwapStatus.Pending)
+                lockedTcs.TrySetResult();
+            if (swap.Status == ArkSwapStatus.Refunded)
+                refundedTcs.TrySetResult();
+        };
+
+        await swapMgr.StartAsync(token);
+
+        // Generate a BTC destination from the bitcoin node — Boltz needs a
+        // real BTC address even though we'll never reach the claim step.
+        var addrResult = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
+            .ExecuteBufferedAsync(token);
+        var btcDestination = BitcoinAddress.Create(addrResult.StandardOutput.Trim(), Network.RegTest);
+
+        var swapId = await swapMgr.InitiateArkToBtcChainSwap(
+            testingPrerequisite.walletIdentifier, 50_000, btcDestination, token);
+        Console.WriteLine($"[ARK→BTC refund] Swap created: {swapId}");
+        Assert.That(swapId, Is.Not.Null.And.Not.Empty);
+
+        // Wait for the SDK to lock the Arkade side. Without VTXOs at the
+        // VHTLC script the refund has nothing to spend, so we mine + poll
+        // until either the lockup lands or we give up.
+        var lockupDeadline = DateTimeOffset.UtcNow.AddMinutes(2);
+        while (DateTimeOffset.UtcNow < lockupDeadline && !lockedTcs.Task.IsCompleted)
+        {
+            await DockerHelper.MineBlocks(1, token);
+            await Task.WhenAny(lockedTcs.Task, Task.Delay(TimeSpan.FromSeconds(5), token));
+        }
+        await lockedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15), token);
+
+        // Force Boltz into invoice.failedToPay — same admin path that drives
+        // the submarine refund tests. The SDK's chain-swap refund branch
+        // observes this on the next poll and calls CoopRefundArkToBtcChainSwap.
+        Console.WriteLine($"[ARK→BTC refund] Forcing Boltz status invoice.failedToPay via boltzr-cli");
+        await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
+
+        // Wait for the SDK to observe the failure and settle the refund.
+        // Mine blocks alongside the poll because the Arkade tx the SDK
+        // broadcasts to recover the lockup needs batch progression.
+        var refundDeadline = DateTimeOffset.UtcNow.AddMinutes(3);
+        while (DateTimeOffset.UtcNow < refundDeadline && !refundedTcs.Task.IsCompleted)
+        {
+            await DockerHelper.MineBlocks(1, token);
+            await Task.WhenAny(refundedTcs.Task, Task.Delay(TimeSpan.FromSeconds(5), token));
+        }
+        await refundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30), token);
+
+        var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single(s => s.SwapId == swapId);
+        Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
+            "ARK→BTC swap should reach Refunded status after cooperative refund completes");
+    }
 }

@@ -488,6 +488,14 @@ public class SwapsManagementService : IAsyncDisposable
         if (swap.Status is ArkSwapStatus.Settled)
             return new SwapRecoveryInfo { SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.AlreadySettled };
 
+        // A Pending swap is mid-flight, not stranded. VTXOs at its contract
+        // script are the live lockup — reporting them as Recoverable would
+        // make a wallet UI show "X sats stranded" for every active swap.
+        // ScanRecoverableSwapsAsync filters Pending out before reaching here,
+        // but this method is public and callers can hit it directly.
+        if (swap.Status is ArkSwapStatus.Pending)
+            return new SwapRecoveryInfo { SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.StillPending };
+
         // Refresh the local VTXO snapshot so a freshly-arrived VTXO at the
         // swap's contract script (e.g. user funded the lockup just before
         // this scan) shows up.

@@ -98,6 +98,45 @@ public class SwapRecoveryTests
     }
 
     [Test]
+    public async Task InspectSwapRecovery_PendingSwap_ReportsStillPending_NotRecoverable()
+    {
+        // Pending = mid-flight swap. VTXOs at its contract script are the
+        // live lockup, NOT stranded funds. Without the guard, the method
+        // would fall through and report Recoverable (with VTXOs) or NoFunds
+        // (without) — both wrong for a working swap.
+        SetupSwap(ArkSwapStatus.Pending);
+        _vtxoStorage.GetVtxos(scripts: Arg.Any<IReadOnlyCollection<string>?>(),
+                outpoints: Arg.Any<IReadOnlyCollection<NBitcoin.OutPoint>?>(),
+                walletIds: Arg.Any<string[]?>(),
+                includeSpent: Arg.Any<bool>(),
+                searchText: Arg.Any<string?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns([new ArkVtxo(
+                Script: ContractScript,
+                TransactionId: new string('a', 64),
+                TransactionOutputIndex: 0,
+                Amount: 50_000,
+                SpentByTransactionId: null,
+                SettledByTransactionId: null,
+                Swept: false,
+                CreatedAt: DateTimeOffset.UtcNow,
+                ExpiresAt: DateTimeOffset.UtcNow.AddHours(1),
+                ExpiresAtHeight: null)]);
+
+        var info = await _sut.InspectSwapRecoveryAsync(WalletId, SwapId);
+
+        Assert.That(info.Status, Is.EqualTo(SwapRecoveryStatus.StillPending),
+            "Pending swaps must report StillPending — they're mid-flight, not stranded");
+        // The arkd snapshot probe must NOT run for Pending swaps either (no
+        // reason to talk to the network for a swap we know isn't recovery
+        // material yet).
+        await _transport.DidNotReceiveWithAnyArgs()
+            .GetVtxoByScriptsAsSnapshot(default!, default).ToListAsync();
+    }
+
+    [Test]
     public async Task InspectSwapRecovery_FailedSwapWithNoVtxos_ReportsNoFunds()
     {
         SetupSwap(ArkSwapStatus.Failed);

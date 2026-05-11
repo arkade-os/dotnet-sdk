@@ -514,8 +514,8 @@ public class BoltzSwapProvider : ISwapProvider
                 // continues with the renegotiated amount. If Boltz refuses
                 // (amount outside limits etc.) we fall through to the refund
                 // path below. Mirrors arkade-os/boltz-swap's `quoteSwap`.
-                if (swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc &&
-                    swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded) &&
+                if ((swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc) &&
+                    (swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded)) &&
                     swapStatus.Status == "transaction.lockupFailed")
                 {
                     if (await TryRenegotiateChainSwap(swap, cancellationToken))
@@ -552,8 +552,8 @@ public class BoltzSwapProvider : ISwapProvider
                 // `swap.expired` and there's no lockup observable: at that
                 // point the swap is dead and there's nothing to refund, so
                 // we transition to Failed so callers can stop polling.
-                if (swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc &&
-                    swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded) &&
+                if ((swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc) &&
+                    (swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded)) &&
                     IsRefundableStatus(swapStatus.Status))
                 {
                     _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable for {SwapType}, attempting cooperative refund",
@@ -802,22 +802,45 @@ public class BoltzSwapProvider : ISwapProvider
                 return false;
             }
 
-            var refundDest =
-                await _contractService.DeriveContract(swap.WalletId, NextContractPurpose.SendToSelf,
+            // Reuse a previously-derived refund destination if this is a retry.
+            // Without this, every poll retry calls DeriveContract again and leaks
+            // an orphan contract row into IContractStorage.
+            IDestination refundAddress;
+            if (swap.Get(SwapMetadata.RefundDestination) is { } cachedAddress)
+            {
+                refundAddress = ArkAddress.Parse(cachedAddress);
+            }
+            else
+            {
+                var refundDest = await _contractService.DeriveContract(
+                    swap.WalletId, NextContractPurpose.SendToSelf,
                     ContractActivityState.AwaitingFundsBeforeDeactivate,
                     metadata: new Dictionary<string, string> { ["Source"] = $"chain-swap-refund:{swap.SwapId}" },
                     cancellationToken: ct);
-            if (refundDest is null)
-            {
-                _logger?.LogError("Swap {SwapId}: failed to derive ARK→BTC refund destination", swap.SwapId);
-                return false;
+                if (refundDest is null)
+                {
+                    _logger?.LogError("Swap {SwapId}: failed to derive ARK→BTC refund destination", swap.SwapId);
+                    return false;
+                }
+                var addr = refundDest.GetArkAddress();
+                refundAddress = addr;
+                var swapWithDestination = swap with
+                {
+                    Metadata = new Dictionary<string, string>(swap.Metadata ?? new Dictionary<string, string>())
+                    {
+                        [SwapMetadata.RefundDestination] = addr.ToString(serverInfo.Network == Network.Main),
+                    },
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                };
+                await _swapsStorage.SaveSwap(swap.WalletId, swapWithDestination, ct);
+                swap = swapWithDestination;
             }
 
             var arkCoin = contract.ToCoopRefundCoin(swap.WalletId, vtxo);
 
             var (arkTx, checkpoints) = await _transactionBuilder.ConstructArkTransaction(
                 [arkCoin],
-                [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDest.GetArkAddress())],
+                [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundAddress)],
                 serverInfo, ct);
 
             var checkpoint = checkpoints.Single();
@@ -979,6 +1002,23 @@ public class BoltzSwapProvider : ISwapProvider
             if (newQuote is null)
             {
                 _logger?.LogWarning("Swap {SwapId}: Boltz returned a null chain quote", swap.SwapId);
+                return false;
+            }
+
+            // Bound the renegotiated amount before we accept it and persist it as the
+            // swap's new ExpectedAmount. A 0/negative quote is a parse/protocol bug;
+            // an amount outside Boltz's chain-swap limits would be rejected when we
+            // call AcceptChainQuoteAsync anyway, but checking locally avoids a wire
+            // round-trip and keeps malformed values out of swap storage.
+            var isBtcToArk = swap.SwapType is ArkSwapType.ChainBtcToArk;
+            var limits = await _limitsValidator.GetChainLimitsAsync(isBtcToArk, ct);
+            if (newQuote.Amount <= 0 ||
+                (limits is not null && (newQuote.Amount < limits.MinAmount || newQuote.Amount > limits.MaxAmount)))
+            {
+                _logger?.LogWarning(
+                    "Swap {SwapId}: rejecting renegotiated chain quote with out-of-bounds amount {Amount} sats " +
+                    "(Boltz limits: min={Min}, max={Max})",
+                    swap.SwapId, newQuote.Amount, limits?.MinAmount, limits?.MaxAmount);
                 return false;
             }
 
