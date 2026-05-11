@@ -23,10 +23,17 @@
             <div class="mt-12">
                 @{
                     var recoverable = _recoveryReport.Where(r => r.Status == SwapRecoveryStatus.Recoverable).ToList();
+                    var stillPending = _recoveryReport.Count(r => r.Status == SwapRecoveryStatus.StillPending);
                 }
                 @if (recoverable.Count == 0)
                 {
-                    <p class="text-secondary" style="font-size:12px;">No swaps with stranded funds.</p>
+                    <p class="text-secondary" style="font-size:12px;">
+                        No swaps with stranded funds.
+                        @if (stillPending > 0)
+                        {
+                            <span> @stillPending still in flight — recovery is a no-op until they settle or fail.</span>
+                        }
+                    </p>
                 }
                 else
                 {
@@ -37,6 +44,12 @@
                             <li>@entry.SwapId[..Math.Min(12, entry.SwapId.Length)]…  <strong>@entry.AmountSats.ToString("N0") sats</strong> at @entry.VtxoCount vtxo(s)</li>
                         }
                     </ul>
+                    @if (stillPending > 0)
+                    {
+                        <p class="text-secondary mt-12" style="font-size:11px;">
+                            (@stillPending swap(s) still in flight — those aren't recovery candidates yet.)
+                        </p>
+                    }
                 }
             </div>
         }
