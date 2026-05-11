@@ -1,4 +1,5 @@
 using Ark.V1;
+using NArk.Core.Transport.Models;
 using SubmitTxResponse = NArk.Core.Transport.Models.SubmitTxResponse;
 
 namespace NArk.Transport.GrpcClient;
@@ -31,5 +32,24 @@ public partial class GrpcClientTransport
         };
 
         await _serviceClient.FinalizeTxAsync(finalizeRequest, cancellationToken: cancellationToken);
+    }
+
+    public async Task<PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new GetPendingTxRequest
+        {
+            Intent = new Intent
+            {
+                Proof = proof,
+                Message = message,
+            },
+        };
+
+        var response = await _serviceClient.GetPendingTxAsync(request, cancellationToken: cancellationToken);
+
+        return response.PendingTxs
+            .Select(p => new PendingArkTransaction(p.ArkTxid, p.FinalArkTx, p.SignedCheckpointTxs.ToArray()))
+            .ToArray();
     }
 }
