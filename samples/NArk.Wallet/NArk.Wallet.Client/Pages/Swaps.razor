@@ -12,6 +12,37 @@
     <span class="page-title">Swaps</span>
 </div>
 
+@if (_swaps.Count > 0)
+{
+    <div class="px-20 mt-12">
+        <button class="btn btn-sm btn-secondary" @onclick="ScanRecovery" disabled="@_scanning">
+            @(_scanning ? "Scanning..." : "Scan recovery")
+        </button>
+        @if (_recoveryReport is not null)
+        {
+            <div class="mt-12">
+                @{
+                    var recoverable = _recoveryReport.Where(r => r.Status == SwapRecoveryStatus.Recoverable).ToList();
+                }
+                @if (recoverable.Count == 0)
+                {
+                    <p class="text-secondary" style="font-size:12px;">No swaps with stranded funds.</p>
+                }
+                else
+                {
+                    <p style="font-size:12px;font-weight:600;">@recoverable.Count swap(s) with recoverable funds — recovery runs automatically:</p>
+                    <ul class="text-secondary" style="font-size:11px;font-family:var(--font-mono);">
+                        @foreach (var entry in recoverable)
+                        {
+                            <li>@entry.SwapId[..Math.Min(12, entry.SwapId.Length)]…  <strong>@entry.AmountSats.ToString("N0") sats</strong> at @entry.VtxoCount vtxo(s)</li>
+                        }
+                    </ul>
+                }
+            </div>
+        }
+    </div>
+}
+
 <div class="px-20">
     @if (_loading)
     {
@@ -120,7 +151,9 @@
 
 @code {
     private bool _loading = true;
+    private bool _scanning;
     private IReadOnlyCollection<ArkSwap> _swaps = [];
+    private IReadOnlyList<SwapRecoveryInfo>? _recoveryReport;
     private string? _expandedId;
     private string? _copiedId;
 
@@ -131,6 +164,24 @@
             try { _swaps = await Ark.GetSwaps(State.ActiveWalletId); } catch { }
         }
         _loading = false;
+    }
+
+    private async Task ScanRecovery()
+    {
+        if (State.ActiveWalletId is null) return;
+        _scanning = true;
+        try
+        {
+            _recoveryReport = await Ark.ScanRecoverableSwaps(State.ActiveWalletId);
+        }
+        catch
+        {
+            _recoveryReport = [];
+        }
+        finally
+        {
+            _scanning = false;
+        }
     }
 
     private void ToggleDetail(string id)

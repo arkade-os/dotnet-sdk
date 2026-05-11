@@ -147,6 +147,15 @@ public class ArkWalletService(
         => await swapStorage.GetSwaps(walletIds: [walletId]);
 
     /// <summary>
+    /// Bulk audit: surfaces every swap whose contract script still has
+    /// unspent VTXOs (or has hit a terminal state with no funds).
+    /// Used by the Swaps page to show "X sats stranded — recovery
+    /// runs automatically" indicators after a wallet restore.
+    /// </summary>
+    public async Task<IReadOnlyList<NArk.Swaps.Models.SwapRecoveryInfo>> ScanRecoverableSwaps(string walletId)
+        => await swapsManagementService.ScanRecoverableSwapsAsync(walletId);
+
+    /// <summary>
     /// Initiates a reverse submarine swap (Lightning → Ark). Returns the Lightning invoice to pay.
     /// </summary>
     public async Task<string> InitiateReverseSwap(string walletId, long amountSats)

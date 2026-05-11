@@ -1,4 +1,5 @@
 using NArk.Abstractions.Contracts;
+using NArk.Swaps.Abstractions;
 
 namespace NArk.Swaps.Models;
 
@@ -21,6 +22,8 @@ public record ArkSwap(
     /// Chain swaps store preimage, ephemeral key, Boltz response, BTC address, etc.
     /// </summary>
     public Dictionary<string, string>? Metadata { get; init; }
+    public SwapRoute? Route { get; init; }
+    public string? ProviderId { get; init; }
 }
 
 /// <summary>
@@ -33,6 +36,25 @@ public static class SwapMetadata
     public const string BoltzResponse = "boltzResponse";
     public const string BtcAddress = "btcAddress";
     public const string CrossSigned = "crossSigned";
+
+    /// <summary>
+    /// Arkade address (string form) of the refund destination contract. Set the first
+    /// time a cooperative refund derives a destination so subsequent poll retries
+    /// reuse it instead of deriving fresh contracts and leaking orphan rows into
+    /// <c>IContractStorage</c>.
+    /// </summary>
+    public const string RefundDestination = "refundDestination";
+
+    // ── Persistence shim for the ProviderId / Route fields on ArkSwap.
+    // These properties don't have dedicated columns on ArkSwapEntity (yet —
+    // see issue #79 review), so EfCoreSwapStorage round-trips them through
+    // the existing Metadata jsonb column under these well-known keys. Having
+    // them as constants keeps the serialization symmetric and reviewable.
+    public const string ProviderId = "providerId";
+    public const string RouteSourceNetwork = "route.source.network";
+    public const string RouteSourceAssetId = "route.source.assetId";
+    public const string RouteDestinationNetwork = "route.destination.network";
+    public const string RouteDestinationAssetId = "route.destination.assetId";
 }
 
 /// <summary>

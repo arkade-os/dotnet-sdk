@@ -25,11 +25,13 @@ public class EfCoreSwapStorage : ISwapStorage
             s => s.SwapId == swap.SwapId && s.WalletId == walletId,
             cancellationToken);
 
+        var persistedMetadata = SerializeRouteAndProviderInto(swap);
+
         if (existing != null)
         {
             existing.Status = swap.Status;
             existing.Address = swap.Address;
-            existing.Metadata = swap.Metadata;
+            existing.Metadata = persistedMetadata;
             existing.UpdatedAt = swap.UpdatedAt.ToUniversalTime();
         }
         else
@@ -45,7 +47,7 @@ public class EfCoreSwapStorage : ISwapStorage
                 Address = swap.Address,
                 Status = swap.Status,
                 Hash = swap.Hash,
-                Metadata = swap.Metadata,
+                Metadata = persistedMetadata,
                 CreatedAt = swap.CreatedAt.ToUniversalTime(),
                 UpdatedAt = swap.UpdatedAt.ToUniversalTime()
             };
@@ -55,6 +57,45 @@ public class EfCoreSwapStorage : ISwapStorage
         await db.SaveChangesAsync(cancellationToken);
 
         SwapsChanged?.Invoke(this, swap);
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="swap"/>'s metadata dictionary with
+    /// the strongly-typed <see cref="ArkSwap.ProviderId"/> and
+    /// <see cref="ArkSwap.Route"/> serialised under the
+    /// <see cref="SwapMetadata"/> well-known keys, so a future restart can
+    /// reconstruct them via <see cref="MapToArkSwap"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ArkSwapEntity"/> has no dedicated columns for these fields
+    /// yet (see issue #79 review). Until a migration adds them, the existing
+    /// jsonb metadata column is the persistence channel — a quick, schema-
+    /// free fix that keeps router-level swap restoration working when more
+    /// than one provider is registered.
+    /// </para>
+    /// <para>Always returns a fresh dictionary, never mutates the input.</para>
+    /// </remarks>
+    private static Dictionary<string, string>? SerializeRouteAndProviderInto(ArkSwap swap)
+    {
+        if (swap.ProviderId is null && swap.Route is null) return swap.Metadata;
+
+        var copy = swap.Metadata is null
+            ? new Dictionary<string, string>()
+            : new Dictionary<string, string>(swap.Metadata);
+
+        if (swap.ProviderId is not null)
+            copy[SwapMetadata.ProviderId] = swap.ProviderId;
+
+        if (swap.Route is not null)
+        {
+            copy[SwapMetadata.RouteSourceNetwork] = swap.Route.Source.Network.ToString();
+            copy[SwapMetadata.RouteSourceAssetId] = swap.Route.Source.AssetId;
+            copy[SwapMetadata.RouteDestinationNetwork] = swap.Route.Destination.Network.ToString();
+            copy[SwapMetadata.RouteDestinationAssetId] = swap.Route.Destination.AssetId;
+        }
+
+        return copy;
     }
 
     public async Task<IReadOnlyCollection<ArkSwap>> GetSwaps(
@@ -146,6 +187,8 @@ public class EfCoreSwapStorage : ISwapStorage
 
     private static ArkSwap MapToArkSwap(ArkSwapEntity entity)
     {
+        var (providerId, route) = ReadRouteAndProviderFrom(entity.Metadata);
+
         return new ArkSwap(
             SwapId: entity.SwapId,
             WalletId: entity.WalletId,
@@ -161,7 +204,40 @@ public class EfCoreSwapStorage : ISwapStorage
             Hash: entity.Hash
         )
         {
-            Metadata = entity.Metadata
+            Metadata = entity.Metadata,
+            ProviderId = providerId,
+            Route = route,
         };
+    }
+
+    /// <summary>
+    /// Pulls the strongly-typed <see cref="ArkSwap.ProviderId"/> and
+    /// <see cref="ArkSwap.Route"/> back out of the jsonb metadata blob written
+    /// by <see cref="SerializeRouteAndProviderInto"/>. Returns
+    /// <c>(null, null)</c> for legacy rows persisted before the
+    /// multi-provider work landed; consumers that need a route or provider
+    /// for those rows should fall back to the configured default provider.
+    /// </summary>
+    private static (string? ProviderId, SwapRoute? Route) ReadRouteAndProviderFrom(
+        IReadOnlyDictionary<string, string>? metadata)
+    {
+        if (metadata is null) return (null, null);
+
+        metadata.TryGetValue(SwapMetadata.ProviderId, out var providerId);
+
+        SwapRoute? route = null;
+        if (metadata.TryGetValue(SwapMetadata.RouteSourceNetwork, out var srcN)
+            && metadata.TryGetValue(SwapMetadata.RouteSourceAssetId, out var srcA)
+            && metadata.TryGetValue(SwapMetadata.RouteDestinationNetwork, out var dstN)
+            && metadata.TryGetValue(SwapMetadata.RouteDestinationAssetId, out var dstA)
+            && Enum.TryParse<SwapNetwork>(srcN, out var sourceNetwork)
+            && Enum.TryParse<SwapNetwork>(dstN, out var destinationNetwork))
+        {
+            route = new SwapRoute(
+                new SwapAsset(sourceNetwork, srcA),
+                new SwapAsset(destinationNetwork, dstA));
+        }
+
+        return (providerId, route);
     }
 }
