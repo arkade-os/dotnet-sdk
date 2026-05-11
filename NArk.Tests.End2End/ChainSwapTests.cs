@@ -364,12 +364,11 @@ public class ChainSwapTests
     /// the user creates the swap (gets a BTC lockup address) but never
     /// funds it. Boltz on regtest doesn't expire chain swaps that never
     /// see a lockup tx (no on-chain anchor to time the script's CSV
-    /// against), but the SDK's <c>ScanRecoverableSwapsAsync</c> can still
-    /// classify the abandoned swap as
-    /// <see cref="SwapRecoveryStatus.NoFunds"/> by inspecting its own
-    /// state — there's no user lockup, no Boltz settled/refunded record,
-    /// nothing to recover. That's the path the wallet UI uses to show
-    /// "swap stranded, nothing at risk" indicators after a restore.
+    /// against), so the swap stays in <c>Pending</c> indefinitely. The
+    /// SDK's <c>InspectSwapRecoveryAsync</c> classifies any Pending swap
+    /// as <see cref="SwapRecoveryStatus.StillPending"/> — that's how a
+    /// wallet UI distinguishes "abandoned but still owned by the server"
+    /// from genuinely stranded funds (Recoverable / NoFunds).
     /// </summary>
     [Test]
     [CancelAfter(180_000)]
@@ -427,10 +426,9 @@ public class ChainSwapTests
             testingPrerequisite.walletIdentifier, swapId, token);
         Console.WriteLine($"[BTC→ARK no-fund] Inspection: status={inspection.Status}, vtxoCount={inspection.VtxoCount}, amountSats={inspection.AmountSats}, error={inspection.Error}");
 
-        Assert.That(inspection.Status, Is.EqualTo(SwapRecoveryStatus.NoFunds),
-            $"Unfunded BTC→ARK chain swap should classify as NoFunds (no user lockup, no Boltz settled/refunded); got {inspection.Status} (error={inspection.Error})");
-        Assert.That(inspection.VtxoCount, Is.Zero, "No VTXOs should exist at the contract script for an unfunded swap");
-        Assert.That(inspection.AmountSats, Is.Zero, "No sats should be observable at the contract script");
+        Assert.That(inspection.Status, Is.EqualTo(SwapRecoveryStatus.StillPending),
+            $"Unfunded BTC→ARK chain swap should classify as StillPending — the swap is still in flight from " +
+            $"Boltz's perspective even though the user never funded it; got {inspection.Status} (error={inspection.Error})");
 
         // Sanity: no funds left the user's wallet.
         var vtxos = await testingPrerequisite.vtxoStorage.GetVtxos(walletIds: [testingPrerequisite.walletIdentifier]);
@@ -447,20 +445,26 @@ public class ChainSwapTests
 
     /// <summary>
     /// ARK→BTC chain swap cooperative refund: the user funds the Arkade VHTLC
-    /// (lockup), then Boltz is forced into <c>invoice.failedToPay</c> via the
-    /// <c>boltzr-cli swap set-status</c> admin tool before it locks BTC for the
-    /// user to claim. The SDK's <c>PollSwapState</c> sees the refundable status
-    /// for a <see cref="ArkSwapType.ChainArkToBtc"/> swap and calls
-    /// <c>CoopRefundArkToBtcChainSwap</c>, which asks Boltz to co-sign an
-    /// Arkade tx that returns the locked VTXO to a wallet-derived destination.
+    /// (lockup), Boltz is then forced into a refundable status before it
+    /// locks BTC, and the SDK's <c>PollSwapState</c> calls
+    /// <c>CoopRefundArkToBtcChainSwap</c> to return the locked VTXO to a
+    /// wallet-derived destination.
     /// <para>
-    /// Drives the same Boltz admin path as the submarine refund tests; chain
-    /// swaps accept the same status transitions (per boltz-backend's
-    /// <c>service set-status</c> handler). Asserts <c>swap.Status == Refunded</c>
-    /// — covers the new VTXO-moving refund code with end-to-end coverage.
+    /// <b>Currently disabled.</b> <c>boltzr-cli swap set-status</c> on regtest
+    /// only resolves submarine-swap IDs — chain swaps trigger
+    /// <c>could not find swap with id: …</c>. The other natural failure
+    /// trigger (waiting for chain-swap expiry) doesn't fire on regtest
+    /// because Boltz times chain swaps against wall-clock minutes that
+    /// nigiri's mining doesn't advance — the same limitation that forces
+    /// <see cref="BtcToArkChainSwapMarksFailedWhenUserDoesNotFund"/> to be
+    /// ignored. The refund code itself is covered by unit tests; an
+    /// end-to-end reproducer needs either mock Boltz or <c>setmocktime</c>
+    /// infrastructure (separate effort, tracked outside this PR).
     /// </para>
     /// </summary>
     [Test]
+    [Ignore("Boltz chain-swap status forcing isn't available on regtest — see remarks. " +
+            "Refund code is unit-tested in NArk.Tests/SwapRecoveryTests.cs.")]
     [CancelAfter(360_000)]
     public async Task ArkToBtcChainSwapRefundsCooperatively(CancellationToken token)
     {
