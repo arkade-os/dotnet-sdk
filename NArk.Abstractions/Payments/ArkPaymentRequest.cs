@@ -1,3 +1,5 @@
+using NArk.Abstractions.VTXOs;
+
 namespace NArk.Abstractions.Payments;
 
 /// <summary>
@@ -46,6 +48,16 @@ public record ArkPaymentRequest(
     public ulong Overpayment { get; init; }
 
     /// <summary>
+    /// Expected asset for this payment request. Null for BTC-only requests.
+    /// </summary>
+    public VtxoAsset? ExpectedAsset { get; init; }
+
+    /// <summary>
+    /// Assets received so far. Null when no assets received yet.
+    /// </summary>
+    public IReadOnlyList<VtxoAsset>? ReceivedAssets { get; init; }
+
+    /// <summary>
     /// Application-level metadata.
     /// </summary>
     public Dictionary<string, string>? Metadata { get; init; }
@@ -59,5 +71,7 @@ public enum ArkPaymentRequestStatus
     Pending,
     PartiallyPaid,
     Paid,
-    Expired
+    Expired,
+    /// <summary>Request was explicitly cancelled by the user or application.</summary>
+    Cancelled
 }

@@ -40,7 +40,7 @@ public interface IPaymentRequestStorage
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Update the status, received amount, and overpayment of a payment request.
+    /// Update the status, received amount, overpayment, and received assets of a payment request.
     /// </summary>
     Task<bool> UpdatePaymentRequestStatus(
         string walletId,
@@ -48,5 +48,6 @@ public interface IPaymentRequestStorage
         ArkPaymentRequestStatus status,
         ulong receivedAmount,
         ulong overpayment = 0,
+        IReadOnlyList<VTXOs.VtxoAsset>? receivedAssets = null,
         CancellationToken cancellationToken = default);
 }

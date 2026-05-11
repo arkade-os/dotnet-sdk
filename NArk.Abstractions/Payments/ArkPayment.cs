@@ -1,3 +1,5 @@
+using NArk.Abstractions.VTXOs;
+
 namespace NArk.Abstractions.Payments;
 
 /// <summary>
@@ -31,6 +33,11 @@ public record ArkPayment(
     public string? OnchainTxId { get; init; }
 
     /// <summary>
+    /// Assets transferred with this payment. Null for BTC-only payments.
+    /// </summary>
+    public IReadOnlyList<VtxoAsset>? Assets { get; init; }
+
+    /// <summary>
     /// Application-level metadata.
     /// </summary>
     public Dictionary<string, string>? Metadata { get; init; }
@@ -58,5 +65,7 @@ public enum ArkPaymentStatus
 {
     Pending,
     Completed,
-    Failed
+    Failed,
+    /// <summary>Payment was explicitly cancelled by the user or application.</summary>
+    Cancelled
 }
