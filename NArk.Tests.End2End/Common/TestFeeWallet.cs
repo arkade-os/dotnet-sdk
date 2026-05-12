@@ -25,7 +25,7 @@ internal sealed class TestFeeWallet : IFeeWallet
     private readonly Script _scriptPubKey;
     private readonly string _address;
     private readonly Key _signingKey;
-    private readonly Dictionary<OutPoint, FeeUtxo> _availableUtxos = new();
+    private readonly Dictionary<OutPoint, Coin> _availableUtxos = new();
 
     private TestFeeWallet(Script scriptPubKey, string address, Key signingKey)
     {
@@ -82,11 +82,11 @@ internal sealed class TestFeeWallet : IFeeWallet
                 $"TestFeeWallet: couldn't find vout paying {wallet.Address} in tx {fundTxid}");
 
         var outpoint = new OutPoint(uint256.Parse(fundTxid), (uint)matchedVout);
-        wallet._availableUtxos[outpoint] = new FeeUtxo(outpoint, new TxOut(amount, wallet._scriptPubKey));
+        wallet._availableUtxos[outpoint] = new Coin(outpoint, new TxOut(amount, wallet._scriptPubKey));
         return wallet;
     }
 
-    public Task<FeeUtxo?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default)
+    public Task<ICoin?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default)
     {
         // Trivial selection: first UTXO >= minAmount. Reserved UTXOs stay in
         // the dictionary so SignFeeUtxoAsync can validate the outpoint belongs
@@ -94,9 +94,9 @@ internal sealed class TestFeeWallet : IFeeWallet
         foreach (var kvp in _availableUtxos)
         {
             if (kvp.Value.TxOut.Value >= minAmount)
-                return Task.FromResult<FeeUtxo?>(kvp.Value);
+                return Task.FromResult<ICoin?>(kvp.Value);
         }
-        return Task.FromResult<FeeUtxo?>(null);
+        return Task.FromResult<ICoin?>(null);
     }
 
     public Task<SecpSchnorrSignature> SignFeeUtxoAsync(

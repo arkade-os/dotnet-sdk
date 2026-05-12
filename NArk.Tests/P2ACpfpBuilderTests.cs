@@ -53,7 +53,7 @@ public class P2ACpfpBuilderTests
         parent.Outputs.Add(new TxOut(Money.Satoshis(1000), new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
 
         var feeKey = new Key();
-        var feeUtxo = new FeeUtxo(
+        var feeCoin = new Coin(
             new OutPoint(uint256.One, 0),
             new TxOut(Money.Satoshis(10000), feeKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
 
@@ -61,9 +61,9 @@ public class P2ACpfpBuilderTests
             await P2ACpfpBuilder.BuildCpfpChildAsync(
                 parent,
                 new FeeRate(Money.Satoshis(5)),
-                feeUtxo,
+                feeCoin,
                 new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86),
-                new InMemoryKeyFeeWallet(feeKey, feeUtxo)));
+                new InMemoryKeyFeeWallet(feeKey, feeCoin)));
     }
 
     [Test]
@@ -76,7 +76,7 @@ public class P2ACpfpBuilderTests
         parent.Outputs.Add(new TxOut(Money.Zero, Script.FromHex("51024e73")));
 
         var feeKey = new Key();
-        var feeUtxo = new FeeUtxo(
+        var feeCoin = new Coin(
             new OutPoint(uint256.Parse("abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"), 0),
             new TxOut(Money.Satoshis(50000), feeKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
         var changeScript = new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
@@ -84,9 +84,9 @@ public class P2ACpfpBuilderTests
         var child = await P2ACpfpBuilder.BuildCpfpChildAsync(
             parent,
             new FeeRate(Money.Satoshis(2)),
-            feeUtxo,
+            feeCoin,
             changeScript,
-            new InMemoryKeyFeeWallet(feeKey, feeUtxo));
+            new InMemoryKeyFeeWallet(feeKey, feeCoin));
 
         // Verify v3
         Assert.That(child.Version, Is.EqualTo(3u));
@@ -94,7 +94,7 @@ public class P2ACpfpBuilderTests
         // Verify 2 inputs: P2A anchor + fee UTXO
         Assert.That(child.Inputs.Count, Is.EqualTo(2));
         Assert.That(child.Inputs[0].PrevOut, Is.EqualTo(new OutPoint(parent, 1))); // P2A anchor
-        Assert.That(child.Inputs[1].PrevOut, Is.EqualTo(feeUtxo.Outpoint)); // Fee UTXO
+        Assert.That(child.Inputs[1].PrevOut, Is.EqualTo(feeCoin.Outpoint)); // Fee UTXO
 
         // Verify has change output
         Assert.That(child.Outputs.Count, Is.GreaterThanOrEqualTo(1));
@@ -115,20 +115,20 @@ public class P2ACpfpBuilderTests
         parent.Outputs.Add(new TxOut(Money.Zero, Script.FromHex("51024e73")));
 
         var feeKey = new Key();
-        var ownedUtxo = new FeeUtxo(
+        var ownedCoin = new Coin(
             new OutPoint(uint256.Parse("11" + new string('1', 62)), 0),
             new TxOut(Money.Satoshis(50000), feeKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
-        var foreignUtxo = new FeeUtxo(
+        var foreignCoin = new Coin(
             new OutPoint(uint256.Parse("22" + new string('2', 62)), 0),
             new TxOut(Money.Satoshis(50000), feeKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
 
-        var wallet = new InMemoryKeyFeeWallet(feeKey, ownedUtxo);
+        var wallet = new InMemoryKeyFeeWallet(feeKey, ownedCoin);
 
         Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await P2ACpfpBuilder.BuildCpfpChildAsync(
                 parent,
                 new FeeRate(Money.Satoshis(2)),
-                foreignUtxo,
+                foreignCoin,
                 new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86),
                 wallet));
     }
@@ -139,10 +139,10 @@ public class P2ACpfpBuilderTests
     /// Mirrors the contract production wallets must honour while keeping the
     /// test wiring trivial.
     /// </summary>
-    private sealed class InMemoryKeyFeeWallet(Key key, FeeUtxo utxo) : IFeeWallet
+    private sealed class InMemoryKeyFeeWallet(Key key, ICoin coin) : IFeeWallet
     {
-        public Task<FeeUtxo?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default)
-            => Task.FromResult<FeeUtxo?>(utxo.TxOut.Value >= minAmount ? utxo : null);
+        public Task<ICoin?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default)
+            => Task.FromResult<ICoin?>(coin.TxOut.Value >= minAmount ? coin : null);
 
         public Task<SecpSchnorrSignature> SignFeeUtxoAsync(
             OutPoint feeOutpoint,
@@ -150,7 +150,7 @@ public class P2ACpfpBuilderTests
             TaprootSigHash sighashType,
             CancellationToken cancellationToken = default)
         {
-            if (feeOutpoint != utxo.Outpoint)
+            if (feeOutpoint != coin.Outpoint)
                 throw new InvalidOperationException(
                     $"InMemoryKeyFeeWallet: asked to sign for outpoint {feeOutpoint} which isn't owned by this wallet");
 

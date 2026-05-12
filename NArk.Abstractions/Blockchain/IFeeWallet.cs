@@ -24,13 +24,17 @@ public interface IFeeWallet
 {
     /// <summary>
     /// Selects a confirmed on-chain UTXO with at least <paramref name="minAmount"/> value
-    /// to fund CPFP child transaction fees. Returns the UTXO without any signing material;
-    /// signing is requested separately via <see cref="SignFeeUtxoAsync"/>.
+    /// to fund CPFP child transaction fees. Returns NBitcoin's standard <see cref="ICoin"/>
+    /// shape (outpoint + previous output) — no signing material is exposed; signing is
+    /// requested separately via <see cref="SignFeeUtxoAsync"/>.
     /// </summary>
     /// <returns>
-    /// A fee UTXO descriptor, or null if no suitable UTXO is available.
+    /// A coin suitable for funding fees, or null if no UTXO meets the threshold.
+    /// Implementations may return any <see cref="ICoin"/> subtype (a plain
+    /// <see cref="Coin"/>, a <see cref="ScriptCoin"/> for future script-path
+    /// fee inputs, etc.).
     /// </returns>
-    Task<FeeUtxo?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default);
+    Task<ICoin?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Signs a P2TR keypath spend of a previously-selected fee UTXO.
@@ -56,12 +60,3 @@ public interface IFeeWallet
     Task<Script> GetChangeScriptAsync(CancellationToken cancellationToken = default);
 }
 
-/// <summary>
-/// A confirmed on-chain UTXO selected for fee funding. Carries only the
-/// outpoint and the previous output — no signing material. The wallet that
-/// returned it is the only party that can produce a valid signature for it,
-/// via <see cref="IFeeWallet.SignFeeUtxoAsync"/>.
-/// </summary>
-/// <param name="Outpoint">The UTXO outpoint.</param>
-/// <param name="TxOut">The previous output being spent (script + amount).</param>
-public record FeeUtxo(OutPoint Outpoint, TxOut TxOut);

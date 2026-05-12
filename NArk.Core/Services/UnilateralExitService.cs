@@ -534,8 +534,8 @@ public class UnilateralExitService(
         const int estimatedChildVsize = 155;
         var estimatedTotalFee = feeRate.GetFee(parentVsize + estimatedChildVsize);
 
-        var feeUtxo = await feeWallet.SelectFeeUtxoAsync(estimatedTotalFee, ct);
-        if (feeUtxo is null)
+        var feeCoin = await feeWallet.SelectFeeUtxoAsync(estimatedTotalFee, ct);
+        if (feeCoin is null)
         {
             logger?.LogWarning("No fee UTXO available for CPFP, falling back to direct broadcast");
             return await broadcaster.BroadcastAsync(tx, ct);
@@ -546,7 +546,7 @@ public class UnilateralExitService(
         // Build the actual child tx to get its real vsize. Signing the fee
         // input is delegated to feeWallet — the SDK never holds a Key.
         var cpfpChild = await P2ACpfpBuilder.BuildCpfpChildAsync(
-            tx, feeRate, feeUtxo, changeScript, feeWallet, ct);
+            tx, feeRate, feeCoin, changeScript, feeWallet, ct);
         var actualChildVsize = cpfpChild.GetVirtualSize();
 
         // If actual vsize differs significantly, rebuild with corrected fee
@@ -556,7 +556,7 @@ public class UnilateralExitService(
                 feeRate.GetFee(parentVsize + actualChildVsize),
                 parentVsize + actualChildVsize);
             cpfpChild = await P2ACpfpBuilder.BuildCpfpChildAsync(
-                tx, correctedFeeRate, feeUtxo, changeScript, feeWallet, ct);
+                tx, correctedFeeRate, feeCoin, changeScript, feeWallet, ct);
         }
 
         return await broadcaster.BroadcastPackageAsync(tx, cpfpChild, ct);
