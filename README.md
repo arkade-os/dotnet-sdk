@@ -429,7 +429,7 @@ When the Ark server goes offline or becomes uncooperative, users can **unilatera
 services.AddUnilateralExit(
     configureVirtualTx: opts =>
     {
-        opts.DefaultMode = VirtualTxMode.Full;  // Store tx hex immediately (Lite = fetch on demand)
+        opts.DefaultMode = VirtualTxMode.Lite;  // Default: txids + expiry only; hex fetched on exit
         opts.MinExitWorthAmount = 1000;         // Skip tiny VTXOs not worth exiting
     },
     configureWatchtower: opts =>
@@ -440,6 +440,16 @@ services.AddUnilateralExit(
 // Register a broadcaster (NBXplorer or Esplora)
 services.AddSingleton<IOnchainBroadcaster>(sp =>
     new NBXplorerOnchainBroadcaster(explorerClient));
+
+// Opt in to durable EF Core storage for sessions + chains (mirrors the
+// payment-tracking entity opt-in). Skip if you'd rather use in-memory
+// storage or the stateless one-shot API below.
+modelBuilder.ConfigureArkExitEntities();
+
+// Opt in to background pre-fetching of chain data on every VTXO arrival
+// (subscribes to IVtxoStorage.VtxosChanged). Without this, chains are
+// fetched lazily when StartExitAsync is invoked.
+services.AddVirtualTxAutoFetch();
 
 // Optional: run watchtower as background service
 services.AddExitWatchtowerBackgroundService();
@@ -475,8 +485,39 @@ The exit watchtower background service does this automatically if registered.
 
 ### Virtual Tx Storage Modes
 
-- **Full mode**: Fetches and stores raw tx hex on VTXO receive. Ready for instant exit.
-- **Lite mode**: Stores only txids. Fetches hex on demand when exit is needed (saves storage, slower exit start).
+- **Lite mode (default)**: Stores only txids + expiry. Fetches hex on demand when exit is actually started (saves storage, slower exit start). Right default for most wallets — the common case never exits unilaterally.
+- **Full mode**: Fetches and stores raw tx hex on VTXO receive. Ready for instant exit without any indexer round-trip. Opt in via `opts.DefaultMode = VirtualTxMode.Full` when offline-exit capability is a hard requirement.
+
+### No-Storage Modes
+
+Two ways to use unilateral exit without paying the EF Core schema cost:
+
+**1. In-memory storage** — same code paths as the durable flow (idempotent re-invocation, watchtower visibility) but state is held in `ConcurrentDictionary`s and lost on process restart. Right for recovery tooling, plugins, or ephemeral wallets that don't need cross-restart resume.
+
+```csharp
+services.AddUnilateralExit();
+services.AddInMemoryExitStorage();  // registers InMemoryExitSessionStorage + InMemoryVirtualTxStorage
+// Don't call ConfigureArkExitEntities() — no SQL tables needed
+```
+
+**2. Stateless one-shot API** — `UnilateralExitService.BroadcastExitChainAsync` + `ClaimMaturedExitAsync` skip both `IExitSessionStorage` and `IVirtualTxStorage` entirely. The SDK persists nothing exit-specific; the caller saves the returned `ExitPlan` record however they want and feeds it back to claim once the CSV timelock matures.
+
+```csharp
+// Broadcast the chain now — no SDK persistence
+var plan = await exitService.BroadcastExitChainAsync(
+    walletId, vtxoOutpoint, claimAddress, ct);
+
+// ... persist `plan` somewhere (a JSON blob, a settings entry, etc.) ...
+
+// Later — once leaf-tx confirms + CSV matures:
+var claimTxid = await exitService.ClaimMaturedExitAsync(plan, ct);
+if (claimTxid is null)
+{
+    // CSV not yet matured; try again later
+}
+```
+
+Trade-off vs. the stateful path: no idempotency (a second `BroadcastExitChainAsync` will re-broadcast), no automatic watchtower progression. The caller owns persistence and time-keeping in their own format.
 
 Virtual tx data is automatically pruned when VTXOs are spent. Sibling VTXOs sharing internal tree nodes naturally deduplicate — shared nodes are only cleaned up when no VTXO references them.
 

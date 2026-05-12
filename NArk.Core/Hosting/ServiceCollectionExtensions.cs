@@ -19,6 +19,8 @@ using NArk.Transport.RestClient;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.Exit;
+using NArk.Core.Exit;
+using NArk.Core.VirtualTxs;
 
 namespace NArk.Hosting;
 
@@ -325,6 +327,28 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddExitWatchtowerBackgroundService(this IServiceCollection services)
     {
         services.AddHostedService<ExitWatchtowerBackgroundService>();
+        return services;
+    }
+
+    /// <summary>
+    /// Registers in-process implementations of <see cref="IExitSessionStorage"/>
+    /// and <see cref="IVirtualTxStorage"/>. State is kept in <see cref="System.Collections.Concurrent.ConcurrentDictionary{TKey,TValue}"/>s
+    /// and lives only for the lifetime of the host — no schema, no migrations,
+    /// no SQL. Lost on process restart.
+    /// <para>
+    /// Pair with <see cref="AddUnilateralExit"/> when the consumer wants the
+    /// stateful flow (idempotent re-invocation, watchtower visibility) but
+    /// doesn't want the EF Core schema cost — e.g. recovery-tooling CLIs,
+    /// plugins, ephemeral wallets. For stateless one-shot exits without
+    /// any storage at all (durable or in-memory), use
+    /// <c>UnilateralExitService.BroadcastExitChainAsync</c> /
+    /// <c>ClaimMaturedExitAsync</c> instead.
+    /// </para>
+    /// </summary>
+    public static IServiceCollection AddInMemoryExitStorage(this IServiceCollection services)
+    {
+        services.AddSingleton<IExitSessionStorage, InMemoryExitSessionStorage>();
+        services.AddSingleton<IVirtualTxStorage, InMemoryVirtualTxStorage>();
         return services;
     }
 }

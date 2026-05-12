@@ -169,6 +169,233 @@ public class UnilateralExitService(
         CancellationToken cancellationToken = default)
         => exitSessionStorage.GetActiveSessionsAsync(walletId, cancellationToken);
 
+    // ── Stateless exit API ─────────────────────────────────────────────
+    //
+    // The two methods below are an alternative to StartExitAsync +
+    // ProgressExitsAsync that don't touch IExitSessionStorage or
+    // IVirtualTxStorage. They fetch the chain from arkd on each call,
+    // hold it in memory long enough to broadcast / claim, and return
+    // a small ExitPlan record the caller persists however they want.
+    //
+    // Trade-off: no idempotency (a second BroadcastExitChainAsync call
+    // will re-broadcast), no automatic watchtower progression, no resume
+    // across restarts. Gain: zero exit-specific persistence cost.
+
+    /// <summary>
+    /// One-shot, stateless equivalent of <see cref="StartExitAsync"/> +
+    /// the Broadcasting phase of <see cref="ProgressExitsAsync"/>: fetches the
+    /// virtual-tx chain from arkd, broadcasts every off-chain row that isn't
+    /// already on-chain, and returns an <see cref="ExitPlan"/> the caller
+    /// persists in whatever form they prefer.
+    /// </summary>
+    /// <remarks>
+    /// The SDK doesn't write anything exit-specific in this call —
+    /// <see cref="IExitSessionStorage"/> and <see cref="IVirtualTxStorage"/>
+    /// are not touched. Once the leaf-tx confirms on-chain and the CSV
+    /// timelock has matured, feed the returned <see cref="ExitPlan"/> back
+    /// to <see cref="ClaimMaturedExitAsync"/> to finalise the exit.
+    /// </remarks>
+    public async Task<ExitPlan> BroadcastExitChainAsync(
+        string walletId,
+        OutPoint vtxoOutpoint,
+        BitcoinAddress claimAddress,
+        CancellationToken cancellationToken = default)
+    {
+        var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+
+        // 1. Fetch the chain fresh from arkd — no virtualTxStorage hit.
+        var chainEntries = await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+        if (chainEntries.Count == 0)
+            throw new InvalidOperationException(
+                $"arkd returned an empty virtual-tx chain for VTXO {vtxoOutpoint}; " +
+                "the VTXO may not exist or may already be unrolled.");
+
+        // 2. Fetch hex for off-chain rows only (Commitment is on-chain;
+        //    arkd's GetVirtualTxs doesn't serve it).
+        var offChainTxids = chainEntries
+            .Where(e => e.Type is ChainedTxType.Tree or ChainedTxType.Ark or ChainedTxType.Checkpoint)
+            .Select(e => e.Txid)
+            .ToList();
+        var hexList = offChainTxids.Count > 0
+            ? await transport.GetVirtualTxsAsync(offChainTxids, cancellationToken)
+            : [];
+        if (hexList.Count != offChainTxids.Count)
+            throw new InvalidOperationException(
+                $"Virtual-tx hex count mismatch for VTXO {vtxoOutpoint}: " +
+                $"expected {offChainTxids.Count}, got {hexList.Count}");
+
+        var hexByTxid = offChainTxids
+            .Zip(hexList, (id, hex) => (id, hex))
+            .ToDictionary(t => t.id, t => t.hex);
+
+        // 3. Walk the chain root→leaf, broadcast each off-chain row that
+        //    isn't already in mempool / confirmed. Commitment rows are
+        //    skipped (already on-chain by the operator at batch finalize).
+        string? leafTxid = null;
+        foreach (var entry in chainEntries)
+        {
+            if (entry.Type == ChainedTxType.Commitment)
+                continue;
+
+            leafTxid = entry.Txid;
+            if (!hexByTxid.TryGetValue(entry.Txid, out var hex))
+                throw new InvalidOperationException(
+                    $"Missing hex for virtual tx {entry.Txid} in chain of VTXO {vtxoOutpoint}");
+
+            var txid = uint256.Parse(entry.Txid);
+            var status = await broadcaster.GetTxStatusAsync(txid, cancellationToken);
+            if (status.Confirmed || status.InMempool)
+            {
+                logger?.LogDebug(
+                    "Stateless exit: virtual tx {Txid} already {Status}, skipping broadcast",
+                    entry.Txid, status.Confirmed ? "confirmed" : "in mempool");
+                continue;
+            }
+
+            var tx = ParseVirtualTx(hex, serverInfo.Network, entry.Type);
+            var success = await BroadcastWithCpfpAsync(tx, cancellationToken);
+            if (!success)
+                throw new InvalidOperationException(
+                    $"Failed to broadcast virtual tx {entry.Txid} for VTXO {vtxoOutpoint}");
+
+            logger?.LogInformation(
+                "Stateless exit: broadcast virtual tx {Txid} for VTXO {Outpoint}",
+                entry.Txid, vtxoOutpoint);
+        }
+
+        if (leafTxid is null)
+            throw new InvalidOperationException(
+                $"Virtual-tx chain for VTXO {vtxoOutpoint} contained no off-chain rows " +
+                "— nothing to broadcast.");
+
+        return new ExitPlan(
+            WalletId: walletId,
+            VtxoTxid: vtxoOutpoint.Hash.ToString(),
+            VtxoVout: vtxoOutpoint.N,
+            ClaimAddress: claimAddress.ToString(),
+            LeafTxid: leafTxid,
+            CsvDelay: (int)serverInfo.UnilateralExit.Value);
+    }
+
+    /// <summary>
+    /// Stateless counterpart to the Claimable phase of
+    /// <see cref="ProgressExitsAsync"/>. Verifies the leaf tx referenced by
+    /// <paramref name="plan"/> is confirmed and that the CSV timelock has
+    /// matured, then builds, signs, and broadcasts the claim transaction.
+    /// </summary>
+    /// <returns>
+    /// Txid of the broadcast claim transaction, or <c>null</c> when CSV
+    /// hasn't matured yet (caller should poll again later).
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// VTXO / contract / signer state required to build the claim is
+    /// unavailable or the leaf tx is not yet confirmed at all (callers should
+    /// distinguish "not yet" from a hard failure via the message).
+    /// </exception>
+    public async Task<string?> ClaimMaturedExitAsync(
+        ExitPlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+
+        // 1. Verify leaf is confirmed.
+        var leafStatus = await broadcaster.GetTxStatusAsync(
+            uint256.Parse(plan.LeafTxid), cancellationToken);
+        if (!leafStatus.Confirmed || leafStatus.BlockHeight is null)
+            throw new InvalidOperationException(
+                $"Leaf tx {plan.LeafTxid} is not yet confirmed; cannot claim. " +
+                "Wait for confirmation and retry.");
+
+        // 2. Verify CSV matured.
+        var chainTime = await chainTimeProvider.GetChainTime(cancellationToken);
+        var matureAt = leafStatus.BlockHeight.Value + plan.CsvDelay;
+        if (chainTime.Height < matureAt)
+        {
+            logger?.LogDebug(
+                "Stateless claim: CSV not yet matured for VTXO {Txid}:{Vout} " +
+                "({Current}/{Matures})",
+                plan.VtxoTxid, plan.VtxoVout, chainTime.Height, matureAt);
+            return null;
+        }
+
+        // 3. Re-derive everything else from live wallet state.
+        var vtxoOutpoint = new OutPoint(uint256.Parse(plan.VtxoTxid), plan.VtxoVout);
+        var vtxos = await vtxoStorage.GetVtxos(outpoints: [vtxoOutpoint], cancellationToken: cancellationToken);
+        var vtxo = vtxos.FirstOrDefault()
+            ?? throw new InvalidOperationException(
+                $"VTXO {vtxoOutpoint} not found in storage; cannot build claim.");
+
+        var contracts = await contractStorage.GetContracts(scripts: [vtxo.Script], cancellationToken: cancellationToken);
+        var contractEntity = contracts.FirstOrDefault()
+            ?? throw new InvalidOperationException(
+                $"Contract not found for VTXO {vtxoOutpoint} (script {vtxo.Script}).");
+
+        var contract = ArkContractParser.Parse(contractEntity.Type, contractEntity.AdditionalData, serverInfo.Network)
+            ?? throw new InvalidOperationException(
+                $"Failed to parse contract for VTXO {vtxoOutpoint}.");
+
+        var unilateralTapScript = GetUnilateralPathTapScript(contract)
+            ?? throw new InvalidOperationException(
+                $"Contract for VTXO {vtxoOutpoint} does not support unilateral exit.");
+
+        var tapScript = unilateralTapScript.Build();
+        var spendInfo = contract.GetTaprootSpendInfo();
+        var controlBlock = spendInfo.GetControlBlock(tapScript);
+
+        var signer = await walletProvider.GetSignerAsync(plan.WalletId, cancellationToken)
+            ?? throw new InvalidOperationException(
+                $"No signer registered for wallet {plan.WalletId}.");
+
+        // 4. Find the VTXO output in the leaf tx. Refetch hex for the leaf
+        //    from arkd since we didn't persist it — same primitive the
+        //    autofetch / EnsureHexPopulated path uses.
+        var leafHexList = await transport.GetVirtualTxsAsync([plan.LeafTxid], cancellationToken);
+        if (leafHexList.Count != 1)
+            throw new InvalidOperationException(
+                $"arkd didn't return hex for leaf tx {plan.LeafTxid}; cannot build claim.");
+
+        var leafChainType = (await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken))
+            .LastOrDefault(e => e.Type is ChainedTxType.Tree or ChainedTxType.Ark or ChainedTxType.Checkpoint)?.Type
+            ?? ChainedTxType.Unspecified;
+        var parsedLeafTx = ParseVirtualTx(leafHexList[0], serverInfo.Network, leafChainType);
+        var vtxoTxOut = parsedLeafTx.Outputs.AsIndexedOutputs()
+            .FirstOrDefault(o => o.TxOut.ScriptPubKey.ToHex() == vtxo.Script)
+            ?? throw new InvalidOperationException(
+                $"VTXO output {vtxoOutpoint} not present in leaf tx {plan.LeafTxid}.");
+
+        // 5. Build, sign, broadcast claim.
+        var claimAddress = BitcoinAddress.Create(plan.ClaimAddress, serverInfo.Network);
+        var feeRate = await broadcaster.EstimateFeeRateAsync(6, cancellationToken);
+        var claimTx = BuildClaimTransaction(
+            vtxoOutpoint, vtxoTxOut.TxOut, claimAddress, serverInfo.UnilateralExit,
+            tapScript, controlBlock, feeRate, serverInfo.Network);
+
+        var precomputed = claimTx.PrecomputeTransactionData([vtxoTxOut.TxOut]);
+        var sighash = claimTx.GetSignatureHashTaproot(
+            precomputed,
+            new TaprootExecutionData(0, tapScript.LeafHash) { SigHash = TaprootSigHash.Default });
+
+        if (!contractEntity.AdditionalData.TryGetValue("user", out var userDesc))
+            throw new InvalidOperationException(
+                "User descriptor missing from contract data; cannot sign claim.");
+        var descriptor = Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(userDesc, serverInfo.Network);
+
+        var (_, sig) = await signer.Sign(descriptor, sighash, cancellationToken);
+        claimTx.Inputs[0].WitScript = new WitScript(
+            [sig.ToBytes(), tapScript.Script.ToBytes(), controlBlock.ToBytes()], true);
+
+        var success = await broadcaster.BroadcastAsync(claimTx, cancellationToken);
+        if (!success)
+            throw new InvalidOperationException(
+                $"Failed to broadcast claim tx for VTXO {vtxoOutpoint}.");
+
+        var claimTxid = claimTx.GetHash().ToString();
+        logger?.LogInformation(
+            "Stateless exit: broadcast claim tx {ClaimTxid} for VTXO {Outpoint}",
+            claimTxid, vtxoOutpoint);
+        return claimTxid;
+    }
+
     private async Task ProgressBroadcastingAsync(ExitSession session, CancellationToken ct)
     {
         try
