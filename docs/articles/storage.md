@@ -145,6 +145,8 @@ UPDATE Vtxos SET SeenAt = CAST((julianday(SeenAt) - 1721425.5) * 864000000000 AS
 -- repeat for other DateTimeOffset columns (CreatedAt, etc.)
 ```
 
+> **Requires SQLite ≥ 3.38.0.** Older versions of `julianday()` silently ignore the timezone offset on TEXT inputs (treating local times as UTC and producing wrong ticks). If your runtime ships an older SQLite, prefer the wipe-and-rebuild path below or normalize values to `…Z` before running the UPDATE.
+
 Or — for local caches where data isn't load-bearing — delete the SQLite file and let `EnsureCreated` rebuild the schema with INTEGER columns.
 
 For tests and other contexts where you're starting from scratch, just set the flag in `OnModelCreating` and run `EnsureCreated` — no migration needed.

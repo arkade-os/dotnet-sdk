@@ -78,12 +78,35 @@ public static class ModelBuilderExtensions
         return modelBuilder;
     }
 
+    // Restricted to Ark-owned entities so the converter never silently leaks onto a
+    // consumer's own entities sharing the same DbContext. Idempotent: calling
+    // ConfigureArkEntities AND ConfigureArkPaymentEntities with the flag won't apply
+    // the converter twice (SetValueConverter on an already-converted property is a no-op,
+    // but the type-filter short-circuits the second pass cleanly anyway).
+    private static readonly IReadOnlySet<Type> ArkOwnedEntityTypes = new HashSet<Type>
+    {
+        typeof(ArkWalletEntity),
+        typeof(ArkWalletContractEntity),
+        typeof(VtxoEntity),
+        typeof(ArkIntentEntity),
+        typeof(ArkIntentVtxoEntity),
+        typeof(ArkSwapEntity),
+        typeof(ArkPaymentEntity),
+        typeof(ArkPaymentRequestEntity),
+    };
+
     private static void ApplyDateTimeOffsetTicksConversion(ModelBuilder modelBuilder)
     {
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
+            if (!ArkOwnedEntityTypes.Contains(entityType.ClrType))
+                continue;
+
             foreach (var property in entityType.GetProperties())
             {
+                if (property.GetValueConverter() is not null)
+                    continue;
+
                 if (property.ClrType == typeof(DateTimeOffset))
                     property.SetValueConverter(DateTimeOffsetToTicks);
                 else if (property.ClrType == typeof(DateTimeOffset?))

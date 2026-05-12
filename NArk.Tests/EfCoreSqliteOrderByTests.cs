@@ -104,6 +104,33 @@ public class EfCoreSqliteOrderByTests
         Assert.That(loaded.CreatedAt.UtcDateTime, Is.EqualTo(written.UtcDateTime).Within(TimeSpan.FromMilliseconds(1)));
     }
 
+    [Test]
+    public void TicksMapping_DoesNotBleedIntoConsumerEntities()
+    {
+        // Scoping: the opt-in MUST only apply to Ark-owned entity types. If a consumer's
+        // own DbSet shares the same DbContext, its DateTimeOffset columns must keep their
+        // native EF Core mapping — the consumer didn't opt in for their own entities.
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+
+        var options = new DbContextOptionsBuilder<MixedEntitiesContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        using var ctx = new MixedEntitiesContext(options);
+        ctx.Database.EnsureCreated();
+
+        var arkProp = ctx.Model.FindEntityType(typeof(ArkWalletContractEntity))!
+            .FindProperty(nameof(ArkWalletContractEntity.CreatedAt))!;
+        var consumerProp = ctx.Model.FindEntityType(typeof(ConsumerEntity))!
+            .FindProperty(nameof(ConsumerEntity.CreatedAt))!;
+
+        Assert.That(arkProp.GetValueConverter(), Is.Not.Null,
+            "Ark entity DateTimeOffset must be converted to ticks.");
+        Assert.That(consumerProp.GetValueConverter(), Is.Null,
+            "Consumer entity DateTimeOffset must NOT be touched by the opt-in.");
+    }
+
     private class DefaultMappingContext(DbContextOptions<DefaultMappingContext> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -114,5 +141,23 @@ public class EfCoreSqliteOrderByTests
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
             => modelBuilder.ConfigureArkEntities(o => o.StoreDateTimeOffsetAsTicks = true);
+    }
+
+    private class ConsumerEntity
+    {
+        public int Id { get; set; }
+        public DateTimeOffset CreatedAt { get; set; }
+    }
+
+    private class MixedEntitiesContext(DbContextOptions<MixedEntitiesContext> options) : DbContext(options)
+    {
+        public DbSet<ConsumerEntity> Consumer => Set<ConsumerEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+            modelBuilder.Entity<ConsumerEntity>().HasKey(c => c.Id);
+            modelBuilder.ConfigureArkEntities(o => o.StoreDateTimeOffsetAsTicks = true);
+        }
     }
 }
