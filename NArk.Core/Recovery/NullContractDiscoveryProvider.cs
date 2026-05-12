@@ -6,7 +6,7 @@ namespace NArk.Core.Recovery;
 
 /// <summary>
 /// No-op discovery provider used as a placeholder when an optional dependency
-/// (e.g. <c>IBoardingUtxoProvider</c>) isn't registered. Always returns
+/// (e.g. an <c>IBitcoinBlockchain</c> impl backing boarding-UTXO discovery) isn't registered. Always returns
 /// <see cref="DiscoveryResult.NotFound"/> so it's invisible to the gap-limit
 /// orchestrator while still satisfying DI.
 /// </summary>

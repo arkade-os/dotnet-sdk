@@ -22,9 +22,8 @@ public class UnilateralExitService(
     IExitSessionStorage exitSessionStorage,
     IVtxoStorage vtxoStorage,
     IContractStorage contractStorage,
-    IOnchainBroadcaster broadcaster,
+    IBitcoinBlockchain blockchain,
     IWalletProvider walletProvider,
-    IChainTimeProvider chainTimeProvider,
     VirtualTxService virtualTxService,
     IFeeWallet? feeWallet = null,
     ILogger<UnilateralExitService>? logger = null)
@@ -243,7 +242,7 @@ public class UnilateralExitService(
                     $"Missing hex for virtual tx {entry.Txid} in chain of VTXO {vtxoOutpoint}");
 
             var txid = uint256.Parse(entry.Txid);
-            var status = await broadcaster.GetTxStatusAsync(txid, cancellationToken);
+            var status = await blockchain.GetTxStatusAsync(txid, cancellationToken);
             if (status.Confirmed || status.InMempool)
             {
                 logger?.LogDebug(
@@ -299,7 +298,7 @@ public class UnilateralExitService(
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
 
         // 1. Verify leaf is confirmed.
-        var leafStatus = await broadcaster.GetTxStatusAsync(
+        var leafStatus = await blockchain.GetTxStatusAsync(
             uint256.Parse(plan.LeafTxid), cancellationToken);
         if (!leafStatus.Confirmed || leafStatus.BlockHeight is null)
             throw new InvalidOperationException(
@@ -307,7 +306,7 @@ public class UnilateralExitService(
                 "Wait for confirmation and retry.");
 
         // 2. Verify CSV matured.
-        var chainTime = await chainTimeProvider.GetChainTime(cancellationToken);
+        var chainTime = await blockchain.GetChainTime(cancellationToken);
         var matureAt = leafStatus.BlockHeight.Value + plan.CsvDelay;
         if (chainTime.Height < matureAt)
         {
@@ -365,7 +364,7 @@ public class UnilateralExitService(
 
         // 5. Build, sign, broadcast claim.
         var claimAddress = BitcoinAddress.Create(plan.ClaimAddress, serverInfo.Network);
-        var feeRate = await broadcaster.EstimateFeeRateAsync(6, cancellationToken);
+        var feeRate = await blockchain.EstimateFeeRateAsync(6, cancellationToken);
         var claimTx = BuildClaimTransaction(
             vtxoOutpoint, vtxoTxOut.TxOut, claimAddress, serverInfo.UnilateralExit,
             tapScript, controlBlock, feeRate, serverInfo.Network);
@@ -384,7 +383,7 @@ public class UnilateralExitService(
         claimTx.Inputs[0].WitScript = new WitScript(
             [sig.ToBytes(), tapScript.Script.ToBytes(), controlBlock.ToBytes()], true);
 
-        var success = await broadcaster.BroadcastAsync(claimTx, cancellationToken);
+        var success = await blockchain.BroadcastAsync(claimTx, cancellationToken);
         if (!success)
             throw new InvalidOperationException(
                 $"Failed to broadcast claim tx for VTXO {vtxoOutpoint}.");
@@ -435,7 +434,7 @@ public class UnilateralExitService(
                 var txid = uint256.Parse(vtx.Txid);
 
                 // Check if already confirmed
-                var status = await broadcaster.GetTxStatusAsync(txid, ct);
+                var status = await blockchain.GetTxStatusAsync(txid, ct);
                 if (status.Confirmed)
                 {
                     logger?.LogDebug("Virtual tx {Txid} already confirmed at height {Height}",
@@ -522,12 +521,12 @@ public class UnilateralExitService(
         if (anchor is null || feeWallet is null)
         {
             // No P2A anchor or no fee wallet — broadcast directly
-            return await broadcaster.BroadcastAsync(tx, ct);
+            return await blockchain.BroadcastAsync(tx, ct);
         }
 
         // Estimate fee: first build CPFP child with zero fee to measure its vsize,
         // then rebuild with the correct fee covering both parent and child.
-        var feeRate = await broadcaster.EstimateFeeRateAsync(6, ct);
+        var feeRate = await blockchain.EstimateFeeRateAsync(6, ct);
         var parentVsize = tx.GetVirtualSize();
 
         // Initial estimate to select a UTXO large enough
@@ -538,7 +537,7 @@ public class UnilateralExitService(
         if (feeCoin is null)
         {
             logger?.LogWarning("No fee UTXO available for CPFP, falling back to direct broadcast");
-            return await broadcaster.BroadcastAsync(tx, ct);
+            return await blockchain.BroadcastAsync(tx, ct);
         }
 
         var changeScript = await feeWallet.GetChangeScriptAsync(ct);
@@ -559,7 +558,7 @@ public class UnilateralExitService(
                 tx, correctedFeeRate, feeCoin, changeScript, feeWallet, ct);
         }
 
-        return await broadcaster.BroadcastPackageAsync(tx, cpfpChild, ct);
+        return await blockchain.BroadcastPackageAsync(tx, cpfpChild, ct);
     }
 
     private async Task ProgressAwaitingCsvAsync(ExitSession session, CancellationToken ct)
@@ -578,7 +577,7 @@ public class UnilateralExitService(
             // Check that the leaf tx (last in branch) is confirmed
             var leafTx = branch[^1];
             var leafTxid = uint256.Parse(leafTx.Txid);
-            var leafStatus = await broadcaster.GetTxStatusAsync(leafTxid, ct);
+            var leafStatus = await blockchain.GetTxStatusAsync(leafTxid, ct);
 
             if (!leafStatus.Confirmed || leafStatus.BlockHeight is null)
             {
@@ -592,7 +591,7 @@ public class UnilateralExitService(
             var csvDelay = serverInfo.UnilateralExit.Value;
 
             // Check if CSV delay has passed
-            var chainTime = await chainTimeProvider.GetChainTime(ct);
+            var chainTime = await blockchain.GetChainTime(ct);
             var confirmHeight = leafStatus.BlockHeight.Value;
 
             if (chainTime.Height >= confirmHeight + csvDelay)
@@ -700,7 +699,7 @@ public class UnilateralExitService(
 
             // Build claim transaction
             var claimAddress = BitcoinAddress.Create(session.ClaimAddress, serverInfo.Network);
-            var feeRate = await broadcaster.EstimateFeeRateAsync(6, ct);
+            var feeRate = await blockchain.EstimateFeeRateAsync(6, ct);
 
             var claimTx = BuildClaimTransaction(
                 vtxoOutpoint,
@@ -738,7 +737,7 @@ public class UnilateralExitService(
                 true);
 
             // Broadcast claim tx
-            var success = await broadcaster.BroadcastAsync(claimTx, ct);
+            var success = await blockchain.BroadcastAsync(claimTx, ct);
             if (!success)
             {
                 logger?.LogWarning("Failed to broadcast claim tx for session {SessionId}", session.Id);
@@ -774,7 +773,7 @@ public class UnilateralExitService(
         try
         {
             var claimTxid = uint256.Parse(session.ClaimTxid);
-            var status = await broadcaster.GetTxStatusAsync(claimTxid, ct);
+            var status = await blockchain.GetTxStatusAsync(claimTxid, ct);
 
             if (status.Confirmed)
             {

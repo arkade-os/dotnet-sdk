@@ -39,7 +39,7 @@ var builder = Host.CreateDefaultBuilder(args)
     .WithIntentStorage<EfCoreIntentStorage>()
     .WithWalletProvider<DefaultWalletProvider>()
     .WithSafetyService<YourSafetyService>()
-    .WithTimeProvider<YourChainTimeProvider>()
+    .WithBlockchain<NBXplorerBlockchain>()
     .OnMainnet()
     .EnableSwaps();
 
@@ -75,7 +75,15 @@ services.AddArkEfCoreStorage<YourDbContext>();
 // Register remaining required services
 services.AddSingleton<IWalletProvider, DefaultWalletProvider>();
 services.AddSingleton<ISafetyService, YourSafetyService>();
-services.AddSingleton<IChainTimeProvider, YourChainTimeProvider>();
+
+// Pick the blockchain backend you have a client for. Each helper registers
+// a single IBitcoinBlockchain that handles chain time, UTXO lookup at a
+// boarding address, broadcast, package broadcast, tx status and fee
+// estimation. Last registration wins, so you can swap in a custom impl
+// after the helper if you want to override one method.
+services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838"));
+// or: services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
+// or: services.AddRpcBlockchain(rpcClient);  // UTXO lookup not supported
 ```
 
 ## Architecture
@@ -365,19 +373,20 @@ var onchainAddress = boardingContract.GetOnchainAddress(network);
 
 ### 2. Sync On-chain UTXOs
 
-`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It takes an `IBoardingUtxoProvider` — choose **Esplora** or **NBXplorer** depending on your setup:
+`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It depends on `IBitcoinBlockchain` — register one of the built-in backends:
 
 ```csharp
 // Option A: Esplora (mempool.space, Chopsticks, etc.)
-IBoardingUtxoProvider utxoProvider = new EsploraBoardingUtxoProvider(
-    new Uri("https://mempool.space/api/"));
+services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
 
 // Option B: NBXplorer (BTCPay Server, self-hosted)
-IBoardingUtxoProvider utxoProvider = new NBXplorerBoardingUtxoProvider(
-    network, new Uri("http://localhost:32838"));
+services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838"));
 
-// Register the sync service and provider
-services.AddSingleton<IBoardingUtxoProvider>(utxoProvider);
+// Option C: Bitcoin Core RPC (does NOT support UTXO lookup — chain time
+// + broadcast + fee estimation only; pair with one of the above if you
+// also need boarding sync)
+services.AddRpcBlockchain(rpcClient);
+
 services.AddSingleton<BoardingUtxoSyncService>();
 
 // Register the poll service — automatically polls every 30s
@@ -437,11 +446,12 @@ services.AddUnilateralExit(
         opts.PollInterval = TimeSpan.FromSeconds(60);
     });
 
-// Wire the blockchain provider trio (IBoardingUtxoProvider + IChainTimeProvider
-// + IOnchainBroadcaster) in one call. Pick the backend you have a client for —
-// AddNBXplorerBlockchain, AddEsploraBlockchain, or AddRpcBlockchain (chain
-// time only). Composite helpers don't lock you in: register an individual
-// impl afterwards to override one slot of the trio.
+// Wire the single IBitcoinBlockchain (chain time + UTXO lookup + broadcast +
+// package broadcast + tx status + fee estimation) in one call. Pick the
+// backend you have a client for: AddNBXplorerBlockchain, AddEsploraBlockchain,
+// or AddRpcBlockchain. RPC does not implement UTXO lookup (Bitcoin Core has
+// no native address index). Last registration wins — register a custom
+// impl afterwards to swap the whole backend.
 services.AddNBXplorerBlockchain(explorerClient);
 
 // Opt in to durable EF Core storage for sessions + chains (mirrors the
@@ -544,7 +554,7 @@ When importing an HD wallet from its mnemonic, the SDK has no record of contract
 The default providers ship with the SDK:
 
 - `IndexerVtxoDiscoveryProvider` (`AddArkCoreServices`) — asks arkd's indexer for VTXOs at the index's payment script.
-- `BoardingUtxoDiscoveryProvider` (`AddArkCoreServices`, opt-in via registering an `IBoardingUtxoProvider`) — asks NBXplorer/Esplora for historical UTXOs at the index's boarding address.
+- `BoardingUtxoDiscoveryProvider` (`AddArkCoreServices`, opt-in via registering an `IBitcoinBlockchain` whose `GetUtxosAsync` is implemented — NBXplorer or Esplora) — asks for historical UTXOs at the index's boarding address.
 - `BoltzSwapDiscoveryProvider` (`AddArkSwapServices`) — asks Boltz `/v2/swap/restore` whether the index's user pubkey ever participated in a swap.
 
 ```csharp
@@ -890,7 +900,7 @@ The SDK uses a pluggable architecture. Register your implementations for:
 | `IWalletStorage` | Wallet persistence | `EfCoreWalletStorage` |
 | `IWalletProvider` | Wallet signer/address resolution | `DefaultWalletProvider` |
 | `ISafetyService` | Distributed locking | *Must implement* |
-| `IChainTimeProvider` | Current blockchain height/time | *Must implement* |
+| `IBitcoinBlockchain` | Chain time, UTXO lookup, broadcast, fee estimation | `NBXplorerBlockchain` / `EsploraBlockchain` / `RpcBlockchain` |
 | `IFeeEstimator` | Transaction fee estimation | `DefaultFeeEstimator` |
 | `ICoinSelector` | UTXO selection strategy | `DefaultCoinSelector` |
 | `ISweepPolicy` | VTXO consolidation rules | Register zero or more |

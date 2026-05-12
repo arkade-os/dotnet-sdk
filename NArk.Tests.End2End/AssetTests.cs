@@ -6,7 +6,7 @@ using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.CoinSelector;
 using NArk.Core.Events;
 using NArk.Core.Extensions;
@@ -154,7 +154,7 @@ public class AssetTests
         Assert.That(preBatchBalance, Is.EqualTo(1000UL), "Pre-batch asset balance should be 1000");
 
         // Set up batch round services (same sequential pattern as BatchSessionTests)
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var intentStorage = TestStorage.CreateIntentStorage();
 
         var scheduler = new SimpleIntentScheduler(

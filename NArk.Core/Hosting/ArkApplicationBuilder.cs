@@ -91,9 +91,9 @@ public static class AppExtensions
             return this;
         }
 
-        public ArkApplicationBuilder WithTimeProvider<TTime>() where TTime : class, IChainTimeProvider
+        public ArkApplicationBuilder WithBlockchain<TBlockchain>() where TBlockchain : class, IBitcoinBlockchain
         {
-            _hostBuilder.ConfigureServices(services => { services.AddSingleton<IChainTimeProvider, TTime>(); });
+            _hostBuilder.ConfigureServices(services => { services.AddSingleton<IBitcoinBlockchain, TBlockchain>(); });
             return this;
         }
 

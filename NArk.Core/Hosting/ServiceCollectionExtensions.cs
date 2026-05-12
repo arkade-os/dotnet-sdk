@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Fees;
 using NArk.Abstractions.Wallets;
 using NArk.Abstractions.Recovery;
@@ -73,7 +74,7 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Registers all NArk core services including VTXO polling event handlers.
     /// Caller must still register: IVtxoStorage, IContractStorage, IIntentStorage, IWalletStorage,
-    /// ISwapStorage, IWallet, ISafetyService, IChainTimeProvider, and IClientTransport.
+    /// ISwapStorage, IWallet, ISafetyService, IBitcoinBlockchain, and IClientTransport.
     /// </summary>
     public static IServiceCollection AddArkCoreServices(this IServiceCollection services)
     {
@@ -106,11 +107,11 @@ public static class ServiceCollectionExtensions
         // HD-wallet recovery: gap-limit scan for prior contract usage on import.
         services.AddSingleton<HdWalletRecoveryService>();
         services.AddSingleton<IContractDiscoveryProvider, IndexerVtxoDiscoveryProvider>();
-        // BoardingUtxoDiscoveryProvider activates only when an IBoardingUtxoProvider has
+        // BoardingUtxoDiscoveryProvider activates only when an IBitcoinBlockchain has
         // been registered (typically by the plugin via NBXplorer/Esplora). When absent the
         // provider is a no-op so HD recovery still works without on-chain probing.
         services.AddSingleton<IContractDiscoveryProvider>(sp =>
-            sp.GetService<IBoardingUtxoProvider>() is { } utxoProvider
+            sp.GetService<IBitcoinBlockchain>() is { } utxoProvider
                 ? new BoardingUtxoDiscoveryProvider(
                     utxoProvider,
                     sp.GetRequiredService<IClientTransport>(),
@@ -265,7 +266,7 @@ public static class ServiceCollectionExtensions
 
     /// <summary>
     /// Registers unilateral exit services including virtual tx management, exit orchestration,
-    /// and watchtower monitoring. Caller must still register IOnchainBroadcaster, IVirtualTxStorage,
+    /// and watchtower monitoring. Caller must still register IBitcoinBlockchain, IVirtualTxStorage,
     /// and IExitSessionStorage.
     /// </summary>
     /// <remarks>

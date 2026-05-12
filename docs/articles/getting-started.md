@@ -22,7 +22,7 @@ var builder = Host.CreateDefaultBuilder(args)
     .WithIntentStorage<EfCoreIntentStorage>()
     .WithWalletProvider<DefaultWalletProvider>()
     .WithSafetyService<YourSafetyService>()
-    .WithTimeProvider<YourChainTimeProvider>()
+    .WithBlockchain<NBXplorerBlockchain>()
     .OnMainnet()
     .EnableSwaps();
 
@@ -58,7 +58,13 @@ services.AddArkEfCoreStorage<YourDbContext>();
 
 services.AddSingleton<IWalletProvider, DefaultWalletProvider>();
 services.AddSingleton<ISafetyService, YourSafetyService>();
-services.AddSingleton<IChainTimeProvider, YourChainTimeProvider>();
+
+// Pick one of the built-in blockchain backends. Each helper registers a
+// single IBitcoinBlockchain that handles chain time, boarding-address UTXO
+// lookup, broadcast, package broadcast, tx status, and fee estimation.
+services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838"));
+// or: services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
+// or: services.AddRpcBlockchain(rpcClient);  // no boarding UTXO lookup
 ```
 
 ## Networks

@@ -5,7 +5,7 @@ using Microsoft.Extensions.Hosting;
 using NArk.Abstractions;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Hosting;
 using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
@@ -30,18 +30,13 @@ public class OnchainTests
                 .WithSafetyService<AsyncSafetyService>()
                 .WithIntentScheduler<SimpleIntentScheduler>()
                 .WithWalletProvider<InMemoryWalletProvider>()
-                .WithTimeProvider<ChainTimeProvider>()
                 .ConfigureServices((_, s) =>
                 {
                     s.AddDbContextFactory<TestDbContext>(options =>
                         options.UseInMemoryDatabase($"Test_{Guid.NewGuid():N}"));
                     s.AddArkEfCoreStorage<TestDbContext>();
+                    s.AddNBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
                 })
-                .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
-                {
-                    o.Network = Network.RegTest;
-                    o.Uri = SharedArkInfrastructure.NbxplorerEndpoint;
-                }))
                 // Prevent usual intents from getting in the way
                 .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
                 {

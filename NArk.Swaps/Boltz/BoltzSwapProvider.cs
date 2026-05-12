@@ -52,7 +52,7 @@ public class BoltzSwapProvider : ISwapProvider
     private readonly IContractStorage _contractStorage;
     private readonly ISafetyService _safetyService;
     private readonly SpendingService _spendingService;
-    private readonly IChainTimeProvider _chainTimeProvider;
+    private readonly IBitcoinBlockchain _chainTimeProvider;
     private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
     private readonly ILogger<BoltzSwapProvider>? _logger;
 
@@ -142,7 +142,7 @@ public class BoltzSwapProvider : ISwapProvider
         ISafetyService safetyService,
         SpendingService spendingService,
         IIntentStorage intentStorage,
-        IChainTimeProvider chainTimeProvider,
+        IBitcoinBlockchain chainTimeProvider,
         ILogger<BoltzSwapProvider>? logger = null)
     {
         _boltzClient = boltzClient;

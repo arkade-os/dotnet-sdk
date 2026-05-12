@@ -26,7 +26,7 @@ public class SweeperServiceTests
     private IContractStorage _contractStorage = null!;
     private ISpendingService _spendingService = null!;
     private IIntentStorage _intentStorage = null!;
-    private IChainTimeProvider _chainTimeProvider = null!;
+    private IBitcoinBlockchain _chainTimeProvider = null!;
 
     private static readonly TimeHeight CurrentTime = new(DateTimeOffset.UtcNow, 800_000);
 
@@ -44,7 +44,7 @@ public class SweeperServiceTests
         _coinService = Substitute.For<ICoinService>();
         _spendingService = Substitute.For<ISpendingService>();
         _intentStorage = Substitute.For<IIntentStorage>();
-        _chainTimeProvider = Substitute.For<IChainTimeProvider>();
+        _chainTimeProvider = Substitute.For<IBitcoinBlockchain>();
 
         _chainTimeProvider.GetChainTime(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(CurrentTime));

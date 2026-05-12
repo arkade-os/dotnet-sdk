@@ -1,9 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Blockchain;
-using NArk.Abstractions.Services;
-using NArk.Blockchain.Esplora;
-using NArk.Blockchain.NBXplorer;
-using NArk.Core.Services;
+using NArk.Blockchain;
 using NArk.Hosting;
 using NBitcoin;
 using NBitcoin.RPC;
@@ -18,15 +15,13 @@ public class BlockchainServiceCollectionExtensionsTests
         new(new NBXplorerNetworkProvider(ChainName.Regtest).GetBTC(), new Uri("http://localhost:39372"));
 
     [Test]
-    public void AddNBXplorerBlockchain_RegistersAllThreeInterfaces()
+    public void AddNBXplorerBlockchain_RegistersNBXplorerImpl()
     {
         var services = new ServiceCollection();
         services.AddNBXplorerBlockchain(NewExplorerClient());
         using var sp = services.BuildServiceProvider();
 
-        Assert.That(sp.GetService<IBoardingUtxoProvider>(), Is.TypeOf<NBXplorerBoardingUtxoProvider>());
-        Assert.That(sp.GetService<IChainTimeProvider>(), Is.TypeOf<ChainTimeProvider>());
-        Assert.That(sp.GetService<IOnchainBroadcaster>(), Is.TypeOf<NBXplorerOnchainBroadcaster>());
+        Assert.That(sp.GetService<IBitcoinBlockchain>(), Is.TypeOf<NBXplorerBlockchain>());
     }
 
     [Test]
@@ -38,52 +33,55 @@ public class BlockchainServiceCollectionExtensionsTests
 
         Assert.That(sp.GetService<ExplorerClient>(), Is.Not.Null,
             "Network+Uri overload should construct + register an ExplorerClient");
-        Assert.That(sp.GetService<IBoardingUtxoProvider>(), Is.TypeOf<NBXplorerBoardingUtxoProvider>());
-        Assert.That(sp.GetService<IChainTimeProvider>(), Is.TypeOf<ChainTimeProvider>());
-        Assert.That(sp.GetService<IOnchainBroadcaster>(), Is.TypeOf<NBXplorerOnchainBroadcaster>());
+        Assert.That(sp.GetService<IBitcoinBlockchain>(), Is.TypeOf<NBXplorerBlockchain>());
     }
 
     [Test]
-    public void AddEsploraBlockchain_RegistersAllThreeInterfaces()
+    public void AddEsploraBlockchain_RegistersEsploraImpl()
     {
         var services = new ServiceCollection();
         services.AddEsploraBlockchain(new Uri("http://localhost:30000"));
         using var sp = services.BuildServiceProvider();
 
-        Assert.That(sp.GetService<IBoardingUtxoProvider>(), Is.TypeOf<EsploraBoardingUtxoProvider>());
-        Assert.That(sp.GetService<IChainTimeProvider>(), Is.TypeOf<EsploraChainTimeProvider>());
-        Assert.That(sp.GetService<IOnchainBroadcaster>(), Is.TypeOf<EsploraOnchainBroadcaster>());
+        Assert.That(sp.GetService<IBitcoinBlockchain>(), Is.TypeOf<EsploraBlockchain>());
     }
 
     [Test]
-    public void AddRpcBlockchain_RegistersChainTimeProviderOnly()
+    public void AddRpcBlockchain_RegistersRpcImpl()
     {
-        // RPC has no IBoardingUtxoProvider impl (no address indexer) and
-        // broadcast is intentionally routed through NBXplorer instead.
         var services = new ServiceCollection();
         services.AddRpcBlockchain(new RPCClient(RPCCredentialString.Parse("user:pass"), new Uri("http://localhost:8332"), Network.RegTest));
         using var sp = services.BuildServiceProvider();
 
-        Assert.That(sp.GetService<IChainTimeProvider>(), Is.TypeOf<RPCChainTimeProvider>());
-        Assert.That(sp.GetService<IBoardingUtxoProvider>(), Is.Null,
-            "RPC composite should not register a boarding-UTXO provider");
-        Assert.That(sp.GetService<IOnchainBroadcaster>(), Is.Null,
-            "RPC composite should not register a broadcaster (use NBXplorer for broadcast)");
+        Assert.That(sp.GetService<IBitcoinBlockchain>(), Is.TypeOf<RpcBlockchain>());
     }
 
     [Test]
-    public void Composites_CanBeMixed_LastRegistrationWins()
+    public void AddRpcBlockchain_GetUtxosAsync_ThrowsNotSupported()
     {
-        // À la carte mixing: NBXplorer for UTXOs + Esplora for chain time.
-        // ServiceCollection's standard semantics (last-wins on resolution)
-        // make this work naturally — the composites don't lock anything in.
+        // Bitcoin Core RPC has no address-indexed UTXO API; the RPC impl
+        // honestly throws rather than silently returning empty.
         var services = new ServiceCollection();
-        services.AddNBXplorerBlockchain(NewExplorerClient());
-        services.AddSingleton<IChainTimeProvider>(_ => new EsploraChainTimeProvider(new Uri("http://localhost:30000")));
+        services.AddRpcBlockchain(new RPCClient(RPCCredentialString.Parse("user:pass"), new Uri("http://localhost:8332"), Network.RegTest));
         using var sp = services.BuildServiceProvider();
 
-        Assert.That(sp.GetService<IBoardingUtxoProvider>(), Is.TypeOf<NBXplorerBoardingUtxoProvider>());
-        Assert.That(sp.GetService<IChainTimeProvider>(), Is.TypeOf<EsploraChainTimeProvider>(),
-            "Last AddSingleton registration should win on IChainTimeProvider resolution");
+        var blockchain = sp.GetRequiredService<IBitcoinBlockchain>();
+        Assert.ThrowsAsync<NotSupportedException>(async () =>
+            await blockchain.GetUtxosAsync("bcrt1q...", CancellationToken.None));
+    }
+
+    [Test]
+    public void Composites_LastRegistrationWins()
+    {
+        // ServiceCollection's standard semantics — the second AddSingleton
+        // overrides the first. Lets a consumer call AddNBXplorerBlockchain
+        // for the bulk wiring, then swap to Esplora for a specific scenario.
+        var services = new ServiceCollection();
+        services.AddNBXplorerBlockchain(NewExplorerClient());
+        services.AddSingleton<IBitcoinBlockchain>(_ => new EsploraBlockchain(new Uri("http://localhost:30000")));
+        using var sp = services.BuildServiceProvider();
+
+        Assert.That(sp.GetService<IBitcoinBlockchain>(), Is.TypeOf<EsploraBlockchain>(),
+            "Last AddSingleton registration should win");
     }
 }

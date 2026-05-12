@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Contracts;
 using NArk.Core.Transport;
@@ -9,7 +9,7 @@ using NBitcoin;
 namespace NArk.Core.Services;
 
 /// <summary>
-/// Synchronizes boarding UTXOs from the Bitcoin blockchain via an <see cref="IBoardingUtxoProvider"/>.
+/// Synchronizes boarding UTXOs from the Bitcoin blockchain via an <see cref="IBitcoinBlockchain"/>.
 /// Queries on-chain UTXOs for boarding contract addresses and upserts them into VTXO storage.
 /// </summary>
 public class BoardingUtxoSyncService
@@ -17,14 +17,14 @@ public class BoardingUtxoSyncService
     private readonly IContractStorage _contractStorage;
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IClientTransport _clientTransport;
-    private readonly IBoardingUtxoProvider _utxoProvider;
+    private readonly IBitcoinBlockchain _utxoProvider;
     private readonly ILogger<BoardingUtxoSyncService>? _logger;
 
     public BoardingUtxoSyncService(
         IContractStorage contractStorage,
         IVtxoStorage vtxoStorage,
         IClientTransport clientTransport,
-        IBoardingUtxoProvider utxoProvider,
+        IBitcoinBlockchain utxoProvider,
         ILogger<BoardingUtxoSyncService>? logger = null)
     {
         _contractStorage = contractStorage;

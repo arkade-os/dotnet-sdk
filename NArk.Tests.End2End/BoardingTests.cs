@@ -6,7 +6,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Core.Events;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
@@ -62,7 +62,7 @@ public class BoardingTests
         await DockerHelper.MineBlocks(6);
 
         // --- 5. Sync boarding UTXOs from Esplora (Chopsticks) ---
-        var utxoProvider = new EsploraBoardingUtxoProvider(SharedArkInfrastructure.ChopsticksEndpoint);
+        var utxoProvider = new EsploraBlockchain(SharedArkInfrastructure.ChopsticksEndpoint);
         var syncService = new BoardingUtxoSyncService(
             contracts, vtxoStorage, clientTransport, utxoProvider);
 
@@ -84,7 +84,7 @@ public class BoardingTests
         Console.WriteLine($"[Boarding] Synced VTXO: {syncedVtxo.TransactionId[..8]}..:{syncedVtxo.TransactionOutputIndex}");
 
         // --- 6. Setup services and generate intent ---
-        var chainTimeProvider = new ChainTimeProvider(info.Network, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(info.Network, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(clientTransport, contracts,
         [
             new PaymentContractTransformer(walletProvider),

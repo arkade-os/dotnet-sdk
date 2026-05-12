@@ -12,7 +12,7 @@ using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Contracts;
 using NArk.Core.Enums;
 using NArk.Core.Events;
@@ -376,7 +376,7 @@ public class UnilateralExitTests
 
         await DockerHelper.MineBlocks(6);
 
-        var utxoProvider = new EsploraBoardingUtxoProvider(SharedArkInfrastructure.ChopsticksEndpoint);
+        var utxoProvider = new EsploraBlockchain(SharedArkInfrastructure.ChopsticksEndpoint);
         var boardingSync = new BoardingUtxoSyncService(
             contractStorage, vtxoStorage, clientTransport, utxoProvider);
 
@@ -395,7 +395,7 @@ public class UnilateralExitTests
         var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
 
         // ---- settle: intent gen + submit + batch session ----
-        var chainTimeProvider = new ChainTimeProvider(info.Network, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(info.Network, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(clientTransport, contractStorage,
         [
             new PaymentContractTransformer(walletProvider),
@@ -502,8 +502,8 @@ public class UnilateralExitTests
         var explorerClient = new ExplorerClient(
             new NBXplorerNetworkProvider(info.Network.ChainName).GetBTC(),
             SharedArkInfrastructure.NbxplorerEndpoint);
-        var broadcaster = new NBXplorerOnchainBroadcaster(
-            explorerClient, loggerFactory.CreateLogger<NBXplorerOnchainBroadcaster>());
+        var broadcaster = new NBXplorerBlockchain(
+            explorerClient, loggerFactory.CreateLogger<NBXplorerBlockchain>());
         var virtualTxService = new VirtualTxService(
             clientTransport, virtualTxStorage,
             loggerFactory.CreateLogger<VirtualTxService>());
@@ -525,7 +525,6 @@ public class UnilateralExitTests
             contractStorage,
             broadcaster,
             walletProvider,
-            chainTimeProvider,
             virtualTxService,
             feeWallet: feeWallet,
             logger: loggerFactory.CreateLogger<UnilateralExitService>());

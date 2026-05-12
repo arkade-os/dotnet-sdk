@@ -20,7 +20,7 @@ public class ExitWatchtowerService(
     IClientTransport transport,
     IVtxoStorage vtxoStorage,
     IVirtualTxStorage virtualTxStorage,
-    IOnchainBroadcaster broadcaster,
+    IBitcoinBlockchain broadcaster,
     IContractStorage contractStorage,
     IWalletProvider walletProvider,
     IContractService contractService,

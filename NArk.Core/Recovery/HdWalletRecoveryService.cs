@@ -60,7 +60,8 @@ public class HdWalletRecoveryService(
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
         var network = serverInfo.Network;
         // Drop any no-op placeholders (e.g. NullContractDiscoveryProvider that the
-        // DI graph injects when an optional source like IBoardingUtxoProvider is missing).
+        // DI graph injects when an optional source — like an IBitcoinBlockchain backing
+        // boarding-UTXO discovery — is missing).
         var providersList = providers
             .Where(p => p is not NullContractDiscoveryProvider)
             .ToList();

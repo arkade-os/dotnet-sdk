@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
@@ -42,7 +42,7 @@ public class SwapManagementServiceTests
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = TestStorage.CreateIntentStorage();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
             [new PaymentContractTransformer(testingPrerequisite.walletProvider), new HashLockedContractTransformer(testingPrerequisite.walletProvider)]);
         var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
@@ -83,7 +83,7 @@ public class SwapManagementServiceTests
     public async Task CanReceiveArkFundsUsingReverseSwap()
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
@@ -169,7 +169,7 @@ public class SwapManagementServiceTests
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = TestStorage.CreateIntentStorage();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
             [
                 new PaymentContractTransformer(testingPrerequisite.walletProvider),
@@ -264,7 +264,7 @@ public class SwapManagementServiceTests
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = TestStorage.CreateIntentStorage();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
         [
             new PaymentContractTransformer(prereq.walletProvider),
@@ -417,7 +417,7 @@ public class SwapManagementServiceTests
         {
             var swapStorage = TestStorage.CreateSwapStorage();
             var intentStorage = TestStorage.CreateIntentStorage();
-            var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+            var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
             var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
             [
                 new PaymentContractTransformer(prereq.walletProvider),
@@ -486,7 +486,7 @@ public class SwapManagementServiceTests
             { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
         var intentStorage = TestStorage.CreateIntentStorage();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
         [
             new PaymentContractTransformer(testingPrerequisite.walletProvider),
@@ -565,7 +565,7 @@ public class SwapManagementServiceTests
         {
             var swapStorage = TestStorage.CreateSwapStorage();
             var intentStorage = TestStorage.CreateIntentStorage();
-            var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+            var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
             var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
             [
                 new PaymentContractTransformer(prereq.walletProvider),
@@ -614,7 +614,7 @@ public class SwapManagementServiceTests
         {
             var swapStorage = TestStorage.CreateSwapStorage();
             var intentStorage = TestStorage.CreateIntentStorage();
-            var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+            var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
             var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
             [
                 new PaymentContractTransformer(prereq.walletProvider),
@@ -679,7 +679,7 @@ public class SwapManagementServiceTests
     public async Task CanRestoreSwapsFromBoltz()
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var restoreStorage = new TestStorage(testingPrerequisite.safetyService);
         var swapStorage = restoreStorage.SwapStorage;
         var boltzClient = new BoltzClient(new HttpClient(),

@@ -17,7 +17,7 @@ public class OnchainSweepServiceTests
 {
     private IVtxoStorage _vtxoStorage = null!;
     private IContractStorage _contractStorage = null!;
-    private IChainTimeProvider _chainTimeProvider = null!;
+    private IBitcoinBlockchain _chainTimeProvider = null!;
     private IContractService _contractService = null!;
     private IWalletProvider _walletProvider = null!;
     private IOnchainSweepHandler _sweepHandler = null!;
@@ -44,7 +44,7 @@ public class OnchainSweepServiceTests
     {
         _vtxoStorage = Substitute.For<IVtxoStorage>();
         _contractStorage = Substitute.For<IContractStorage>();
-        _chainTimeProvider = Substitute.For<IChainTimeProvider>();
+        _chainTimeProvider = Substitute.For<IBitcoinBlockchain>();
         _contractService = Substitute.For<IContractService>();
         _walletProvider = Substitute.For<IWalletProvider>();
         _sweepHandler = Substitute.For<IOnchainSweepHandler>();

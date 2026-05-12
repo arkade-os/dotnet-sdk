@@ -22,7 +22,7 @@ public class SweeperService(
     ISpendingService spendingService,
     IIntentStorage intentStorage,
     IOptions<SweeperServiceOptions> options,
-    IChainTimeProvider chainTimeProvider,
+    IBitcoinBlockchain chainTimeProvider,
     IEnumerable<IEventHandler<PostSweepActionEvent>> postSweepHandlers,
     ILogger<SweeperService>? logger = null) : IAsyncDisposable
 {

@@ -4,7 +4,7 @@ using CliWrap.Buffered;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Contracts;
 using NArk.Abstractions.Safety;
 using NArk.Safety.AsyncKeyedLock;
@@ -208,7 +208,7 @@ public class VtxoSynchronizationTests
         var contract2 = await contractService.DeriveContract(fp2, NextContractPurpose.Receive);
         var wallet2Address = contract2.GetArkAddress();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
 
         var coinService = new CoinService(clientTransport, contracts,
             [new PaymentContractTransformer(inMemoryWalletProvider), new HashLockedContractTransformer(inMemoryWalletProvider)]);
