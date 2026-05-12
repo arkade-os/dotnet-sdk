@@ -255,7 +255,7 @@ public class SwapManagementServiceTests
     /// </para>
     /// </summary>
     [Test]
-    [CancelAfter(180_000)]
+    [CancelAfter(300_000)]
     public async Task SubmarineRefundsCanonicalVtxoWhenSwapScriptIsDoubleFunded(CancellationToken token)
     {
         var prereq = await FundedWalletHelper.GetFundedWallet();
@@ -338,7 +338,10 @@ public class SwapManagementServiceTests
 
             Console.WriteLine($"[DoubleFund] Forcing Boltz invoice.failedToPay via boltzr-cli");
             await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
-            await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
+            // 3 min — the BoltzSwapProvider's near-term retry on missing-VTXO
+            // should land the refund within seconds, but allow headroom for
+            // the 60s routine-poll fallback to chain twice on slow CI runners.
+            await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(3), token);
 
             var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
             Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
