@@ -52,7 +52,7 @@ public class BoltzSwapProvider : ISwapProvider
     private readonly IContractStorage _contractStorage;
     private readonly ISafetyService _safetyService;
     private readonly SpendingService _spendingService;
-    private readonly IChainTimeProvider _chainTimeProvider;
+    private readonly IBitcoinBlockchain _chainTimeProvider;
     private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
     private readonly ILogger<BoltzSwapProvider>? _logger;
 
@@ -142,7 +142,7 @@ public class BoltzSwapProvider : ISwapProvider
         ISafetyService safetyService,
         SpendingService spendingService,
         IIntentStorage intentStorage,
-        IChainTimeProvider chainTimeProvider,
+        IBitcoinBlockchain chainTimeProvider,
         ILogger<BoltzSwapProvider>? logger = null)
     {
         _boltzClient = boltzClient;
@@ -414,6 +414,33 @@ public class BoltzSwapProvider : ISwapProvider
             _triggerChannel.Writer.TryWrite("");
             await Task.Delay(interval, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Fire-and-forget delayed retry: re-enqueue a swap id on the trigger
+    /// channel after a short delay. Used by <see cref="RequestRefundCooperatively"/>
+    /// when an early-return is caused by a transient race (canonical VTXO not
+    /// yet visible at the swap script). Without this the next opportunity to
+    /// re-attempt is the 1-minute routine poll, which can stack to multiple
+    /// cycles on slow CI runners and blow through the test budget. Uses the
+    /// provider's shutdown token so the retry survives the current
+    /// <c>PollSwapState</c> call's cancellation but stops on provider shutdown.
+    /// </summary>
+    private void ScheduleNearTermRetry(string swapId, TimeSpan delay)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delay, _shutdownCts.Token);
+                _triggerChannel.Writer.TryWrite($"id:{swapId}");
+            }
+            catch (OperationCanceledException) { /* shutdown */ }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Near-term retry scheduling for swap {SwapId} aborted", swapId);
+            }
+        });
     }
 
     private async Task DoUpdateStorage(CancellationToken cancellationToken)
@@ -1177,7 +1204,8 @@ public class BoltzSwapProvider : ISwapProvider
             cancellationToken: cancellationToken);
         if (vtxos.Count == 0)
         {
-            _logger?.LogWarning("Swap {SwapId}: no VTXOs found for cooperative refund", swap.SwapId);
+            _logger?.LogWarning("Swap {SwapId}: no VTXOs found for cooperative refund — scheduling near-term retry", swap.SwapId);
+            ScheduleNearTermRetry(swap.SwapId, TimeSpan.FromSeconds(2));
             return;
         }
 
@@ -1193,8 +1221,9 @@ public class BoltzSwapProvider : ISwapProvider
         if (vtxo is null)
         {
             _logger?.LogWarning(
-                "Swap {SwapId}: no unspent VTXO of expected amount {ExpectedAmount} found among {Total} VTXO(s) at swap script — extras will be handled by SweeperService via timelock",
+                "Swap {SwapId}: no unspent VTXO of expected amount {ExpectedAmount} found among {Total} VTXO(s) at swap script — scheduling near-term retry; if canonical lockup never arrives, SweeperService handles extras via timelock",
                 swap.SwapId, swap.ExpectedAmount, vtxos.Count);
+            ScheduleNearTermRetry(swap.SwapId, TimeSpan.FromSeconds(2));
             return;
         }
         if (vtxos.Count > 1)

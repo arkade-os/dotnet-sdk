@@ -5,7 +5,7 @@ using NArk.Abstractions.Assets;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Abstractions.Intents;
 using NArk.Core.Services;
 using NArk.Core.Wallet;
@@ -49,12 +49,12 @@ builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.BoltzClient>(sp =>
 // ── SDK infrastructure ──
 builder.Services.AddSingleton<IIntentScheduler, SimpleIntentScheduler>();
 builder.Services.AddSingleton<ISafetyService, WasmSafetyService>();
-builder.Services.AddSingleton<IChainTimeProvider>(sp =>
+builder.Services.AddSingleton<IBitcoinBlockchain>(sp =>
 {
     if (!string.IsNullOrWhiteSpace(networkConfig.ExplorerUri))
     {
         var baseUri = networkConfig.ExplorerUri.TrimEnd('/') + "/api/";
-        return new EsploraChainTimeProvider(new Uri(baseUri));
+        return new EsploraBlockchain(new Uri(baseUri));
     }
     return new FallbackChainTimeProvider();
 });

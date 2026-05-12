@@ -7,7 +7,7 @@ using NArk.Core.Transport;
 
 namespace NArk.Core.Fees;
 
-public class DefaultFeeEstimator(IClientTransport clientTransport, IChainTimeProvider chainTimeProvider) : IFeeEstimator
+public class DefaultFeeEstimator(IClientTransport clientTransport, IBitcoinBlockchain blockchain) : IFeeEstimator
 {
     private readonly ICelEnvironment _celEnvironment = new CelEnvironment(null, null);
 
@@ -19,7 +19,7 @@ public class DefaultFeeEstimator(IClientTransport clientTransport, IChainTimePro
     public async Task<long> EstimateFeeAsync(ArkIntentSpec spec, CancellationToken cancellationToken = default)
     {
         var info = await clientTransport.GetServerInfoAsync(cancellationToken);
-        var currentTime = await chainTimeProvider.GetChainTime(cancellationToken);
+        var currentTime = await blockchain.GetChainTime(cancellationToken);
         var offchainInputFeeFunc = _celEnvironment.Compile(info.FeeTerms.IntentOffchainInput);
         var inputFees =
             spec

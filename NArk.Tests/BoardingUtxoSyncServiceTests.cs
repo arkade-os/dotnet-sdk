@@ -1,6 +1,6 @@
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
-using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Core;
 using NArk.Core.Contracts;
@@ -19,7 +19,7 @@ public class BoardingUtxoSyncServiceTests
     private IContractStorage _contractStorage = null!;
     private IVtxoStorage _vtxoStorage = null!;
     private IClientTransport _clientTransport = null!;
-    private IBoardingUtxoProvider _utxoProvider = null!;
+    private IBitcoinBlockchain _utxoProvider = null!;
 
     private static readonly OutputDescriptor TestServerKey =
         KeyExtensions.ParseOutputDescriptor(
@@ -39,7 +39,7 @@ public class BoardingUtxoSyncServiceTests
         _contractStorage = Substitute.For<IContractStorage>();
         _vtxoStorage = Substitute.For<IVtxoStorage>();
         _clientTransport = Substitute.For<IClientTransport>();
-        _utxoProvider = Substitute.For<IBoardingUtxoProvider>();
+        _utxoProvider = Substitute.For<IBitcoinBlockchain>();
 
         _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(CreateServerInfo()));

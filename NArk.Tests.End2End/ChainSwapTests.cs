@@ -1,7 +1,7 @@
 using CliWrap;
 using CliWrap.Buffered;
 using Microsoft.Extensions.Options;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
@@ -28,7 +28,7 @@ public class ChainSwapTests
     public async Task CanDoBtcToArkChainSwap()
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
@@ -152,7 +152,7 @@ public class ChainSwapTests
     public async Task CanDoArkToBtcChainSwap()
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
@@ -262,7 +262,7 @@ public class ChainSwapTests
     public async Task BtcToArkChainSwapRenegotiatesWhenLockupDiffers(CancellationToken token)
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
@@ -375,7 +375,7 @@ public class ChainSwapTests
     public async Task BtcToArkChainSwapInspectionReportsNoFundsWhenUnfunded(CancellationToken token)
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
@@ -469,7 +469,7 @@ public class ChainSwapTests
     public async Task ArkToBtcChainSwapRefundsCooperatively(CancellationToken token)
     {
         var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var swapStorage = TestStorage.CreateSwapStorage();
         var boltzClient = new BoltzClient(new HttpClient(),
             new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()

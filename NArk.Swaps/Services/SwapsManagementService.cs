@@ -35,7 +35,7 @@ public class SwapsManagementService : IAsyncDisposable
     private readonly IContractService _contractService;
     private readonly IContractStorage _contractStorage;
     private readonly ISafetyService _safetyService;
-    private readonly IChainTimeProvider _chainTimeProvider;
+    private readonly IBitcoinBlockchain _chainTimeProvider;
     private readonly ILogger<SwapsManagementService>? _logger;
     private readonly IReadOnlyList<ISwapProvider> _providers;
 
@@ -53,7 +53,7 @@ public class SwapsManagementService : IAsyncDisposable
         IContractStorage contractStorage,
         ISafetyService safetyService,
         IIntentStorage intentStorage,
-        IChainTimeProvider chainTimeProvider,
+        IBitcoinBlockchain chainTimeProvider,
         ILogger<SwapsManagementService>? logger = null)
     {
         _providers = providers.ToList();

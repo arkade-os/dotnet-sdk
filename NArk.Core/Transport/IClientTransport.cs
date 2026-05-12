@@ -59,4 +59,19 @@ public interface IClientTransport
     /// </summary>
     Task<Models.PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the chain of virtual txs from commitment tx to the given VTXO leaf.
+    /// </summary>
+    Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns raw tx hex for the given virtual transaction IDs.
+    /// </summary>
+    Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the full VTXO tree structure for a batch outpoint.
+    /// </summary>
+    Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default);
 }

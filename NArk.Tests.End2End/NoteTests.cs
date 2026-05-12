@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Intents;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Contracts;
 using NArk.Hosting;
 using NArk.Core.Models.Options;
@@ -26,18 +26,13 @@ public class NoteTests
             .WithSafetyService<AsyncSafetyService>()
             .WithIntentScheduler<SimpleIntentScheduler>()
             .WithWalletProvider<InMemoryWalletProvider>()
-            .WithTimeProvider<ChainTimeProvider>()
             .ConfigureServices((_, s) =>
             {
                 s.AddDbContextFactory<TestDbContext>(options =>
                     options.UseInMemoryDatabase($"Test_{Guid.NewGuid():N}"));
                 s.AddArkEfCoreStorage<TestDbContext>();
+                s.AddNBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
             })
-            .ConfigureServices(s => s.Configure<ChainTimeProviderOptions>(o =>
-            {
-                o.Network = Network.RegTest;
-                o.Uri = SharedArkInfrastructure.NbxplorerEndpoint;
-            }))
             .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
             {
                 o.Threshold = TimeSpan.FromHours(2);

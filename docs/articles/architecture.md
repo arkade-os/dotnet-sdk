@@ -44,7 +44,7 @@ The SDK is built around pluggable interfaces. Provide your own implementations o
 | `ICoinSelector` | UTXO selection strategy | `DefaultCoinSelector` |
 | `IFeeEstimator` | Fee estimation | `DefaultFeeEstimator` |
 | `ISafetyService` | Transaction safety checks | User-provided |
-| `IChainTimeProvider` | Blockchain time | User-provided |
+| `IBitcoinBlockchain` | Chain time, UTXO lookup, broadcast, fee estimation | `NBXplorerBlockchain` / `EsploraBlockchain` / `RpcBlockchain` |
 
 ## Transport Layer
 

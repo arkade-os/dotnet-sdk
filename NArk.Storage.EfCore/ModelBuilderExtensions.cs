@@ -32,6 +32,7 @@ public static class ModelBuilderExtensions
     /// Configures core Ark SDK entity types on the given ModelBuilder.
     /// Call this from your DbContext's OnModelCreating.
     /// For payment tracking tables, also call <see cref="ConfigureArkPaymentEntities"/>.
+    /// For unilateral-exit tables, also call <see cref="ConfigureArkExitEntities"/>.
     /// </summary>
     public static ModelBuilder ConfigureArkEntities(
         this ModelBuilder modelBuilder,
@@ -78,11 +79,40 @@ public static class ModelBuilderExtensions
         return modelBuilder;
     }
 
+    /// <summary>
+    /// Configures unilateral-exit entity types (VirtualTxs, VtxoBranches, ExitSessions tables).
+    /// Call this from your DbContext's OnModelCreating alongside <see cref="ConfigureArkEntities"/>
+    /// only if you also call <c>AddUnilateralExit</c> on the service collection.
+    /// Consumers that never plan to drive a unilateral exit shouldn't pay the schema cost
+    /// for these tables — keep this call out of OnModelCreating and the corresponding
+    /// migration steps drop out automatically.
+    /// </summary>
+    public static ModelBuilder ConfigureArkExitEntities(
+        this ModelBuilder modelBuilder,
+        Action<ArkStorageOptions>? configure = null)
+    {
+        var options = new ArkStorageOptions();
+        configure?.Invoke(options);
+
+        VirtualTxEntity.Configure(modelBuilder.Entity<VirtualTxEntity>(), options);
+        VtxoBranchEntity.Configure(modelBuilder.Entity<VtxoBranchEntity>(), options);
+        ExitSessionEntity.Configure(modelBuilder.Entity<ExitSessionEntity>(), options);
+
+        // Same SQLite-ORDER BY rationale as the core + payment entities: the exit
+        // tables carry CreatedAt / UpdatedAt columns that SQLite refuses to sort
+        // without the ticks converter. Honour the same option flag for consistency.
+        if (options.StoreDateTimeOffsetAsTicks)
+            ApplyDateTimeOffsetTicksConversion(modelBuilder);
+
+        return modelBuilder;
+    }
+
     // Restricted to Ark-owned entities so the converter never silently leaks onto a
     // consumer's own entities sharing the same DbContext. Idempotent: calling
-    // ConfigureArkEntities AND ConfigureArkPaymentEntities with the flag won't apply
-    // the converter twice (SetValueConverter on an already-converted property is a no-op,
-    // but the type-filter short-circuits the second pass cleanly anyway).
+    // ConfigureArkEntities AND ConfigureArkPaymentEntities AND ConfigureArkExitEntities
+    // with the flag won't apply the converter twice (SetValueConverter on an
+    // already-converted property is a no-op, and the GetValueConverter check below
+    // short-circuits cleanly anyway).
     private static readonly IReadOnlySet<Type> ArkOwnedEntityTypes = new HashSet<Type>
     {
         typeof(ArkWalletEntity),
@@ -93,6 +123,9 @@ public static class ModelBuilderExtensions
         typeof(ArkSwapEntity),
         typeof(ArkPaymentEntity),
         typeof(ArkPaymentRequestEntity),
+        typeof(VirtualTxEntity),
+        typeof(VtxoBranchEntity),
+        typeof(ExitSessionEntity),
     };
 
     private static void ApplyDateTimeOffsetTicksConversion(ModelBuilder modelBuilder)

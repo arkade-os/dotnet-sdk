@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Fees;
 using NArk.Abstractions.Wallets;
 using NArk.Abstractions.Recovery;
@@ -17,6 +18,10 @@ using NArk.Core.Wallet;
 using NArk.Transport.GrpcClient;
 using NArk.Transport.RestClient;
 using Microsoft.Extensions.Logging;
+using NArk.Abstractions.VirtualTxs;
+using NArk.Abstractions.Exit;
+using NArk.Core.Exit;
+using NArk.Core.VirtualTxs;
 
 namespace NArk.Hosting;
 
@@ -69,7 +74,7 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Registers all NArk core services including VTXO polling event handlers.
     /// Caller must still register: IVtxoStorage, IContractStorage, IIntentStorage, IWalletStorage,
-    /// ISwapStorage, IWallet, ISafetyService, IChainTimeProvider, and IClientTransport.
+    /// ISwapStorage, IWallet, ISafetyService, IBitcoinBlockchain, and IClientTransport.
     /// </summary>
     public static IServiceCollection AddArkCoreServices(this IServiceCollection services)
     {
@@ -102,11 +107,11 @@ public static class ServiceCollectionExtensions
         // HD-wallet recovery: gap-limit scan for prior contract usage on import.
         services.AddSingleton<HdWalletRecoveryService>();
         services.AddSingleton<IContractDiscoveryProvider, IndexerVtxoDiscoveryProvider>();
-        // BoardingUtxoDiscoveryProvider activates only when an IBoardingUtxoProvider has
+        // BoardingUtxoDiscoveryProvider activates only when an IBitcoinBlockchain has
         // been registered (typically by the plugin via NBXplorer/Esplora). When absent the
         // provider is a no-op so HD recovery still works without on-chain probing.
         services.AddSingleton<IContractDiscoveryProvider>(sp =>
-            sp.GetService<IBoardingUtxoProvider>() is { } utxoProvider
+            sp.GetService<IBitcoinBlockchain>() is { } utxoProvider
                 ? new BoardingUtxoDiscoveryProvider(
                     utxoProvider,
                     sp.GetRequiredService<IClientTransport>(),
@@ -256,6 +261,95 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<PostSpendVtxoPollingHandler>();
         services.AddSingleton<IEventHandler<PostCoinsSpendActionEvent>>(sp => sp.GetRequiredService<PostSpendVtxoPollingHandler>());
 
+        return services;
+    }
+
+    /// <summary>
+    /// Registers unilateral exit services including virtual tx management, exit orchestration,
+    /// and watchtower monitoring. Caller must still register IBitcoinBlockchain, IVirtualTxStorage,
+    /// and IExitSessionStorage.
+    /// </summary>
+    /// <remarks>
+    /// Auto-fetching the virtual-tx chain on every VTXO arrival is OPT-IN —
+    /// call <see cref="AddVirtualTxAutoFetch"/> separately if the host wants
+    /// chains pre-stored ahead of any potential exit. Without it,
+    /// <see cref="UnilateralExitService.StartExitAsync"/> still fetches the
+    /// chain on demand via <see cref="VirtualTxService.EnsureHexPopulatedAsync"/>.
+    /// </remarks>
+    public static IServiceCollection AddUnilateralExit(
+        this IServiceCollection services,
+        Action<VirtualTxOptions>? configureVirtualTx = null,
+        Action<ExitWatchtowerOptions>? configureWatchtower = null)
+    {
+        // Configure options
+        services.Configure(configureVirtualTx ?? (_ => { }));
+        services.Configure(configureWatchtower ?? (_ => { }));
+
+        // Core services
+        services.AddSingleton<VirtualTxService>();
+        services.AddSingleton<UnilateralExitService>();
+        services.AddSingleton<ExitWatchtowerService>();
+
+        // Prune-on-spend handler is registered automatically — it's a
+        // pure cleanup pass that's safe regardless of whether auto-fetch
+        // is enabled (no-op if there's nothing stored to prune).
+        services.AddSingleton<PostSpendVirtualTxPruneHandler>();
+        services.AddSingleton<IEventHandler<PostCoinsSpendActionEvent>>(
+            sp => sp.GetRequiredService<PostSpendVirtualTxPruneHandler>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Opt-in: subscribes to <see cref="IVtxoStorage.VtxosChanged"/> and
+    /// fetches the virtual-tx chain for every new VTXO the wallet receives,
+    /// regardless of source (batch settlement, change from a spend, incoming
+    /// payment, swap claim, sweep, …). With this the wallet always has exit
+    /// data ready locally; without it, the chain is fetched lazily on the
+    /// first <see cref="UnilateralExitService.StartExitAsync"/> call for
+    /// each VTXO.
+    /// </summary>
+    /// <remarks>
+    /// Storage cost scales with the wallet's VTXO count — for a wallet that
+    /// rarely exits unilaterally, deferring the fetch can be the right call.
+    /// Call after <see cref="AddUnilateralExit"/>.
+    /// </remarks>
+    public static IServiceCollection AddVirtualTxAutoFetch(this IServiceCollection services)
+    {
+        services.AddSingleton<VtxoChainAutoFetchService>();
+        services.AddHostedService(sp => sp.GetRequiredService<VtxoChainAutoFetchService>());
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the exit watchtower as a background service for autonomous monitoring.
+    /// Call after <see cref="AddUnilateralExit"/>.
+    /// </summary>
+    public static IServiceCollection AddExitWatchtowerBackgroundService(this IServiceCollection services)
+    {
+        services.AddHostedService<ExitWatchtowerBackgroundService>();
+        return services;
+    }
+
+    /// <summary>
+    /// Registers in-process implementations of <see cref="IExitSessionStorage"/>
+    /// and <see cref="IVirtualTxStorage"/>. State is kept in <see cref="System.Collections.Concurrent.ConcurrentDictionary{TKey,TValue}"/>s
+    /// and lives only for the lifetime of the host — no schema, no migrations,
+    /// no SQL. Lost on process restart.
+    /// <para>
+    /// Pair with <see cref="AddUnilateralExit"/> when the consumer wants the
+    /// stateful flow (idempotent re-invocation, watchtower visibility) but
+    /// doesn't want the EF Core schema cost — e.g. recovery-tooling CLIs,
+    /// plugins, ephemeral wallets. For stateless one-shot exits without
+    /// any storage at all (durable or in-memory), use
+    /// <c>UnilateralExitService.BroadcastExitChainAsync</c> /
+    /// <c>ClaimMaturedExitAsync</c> instead.
+    /// </para>
+    /// </summary>
+    public static IServiceCollection AddInMemoryExitStorage(this IServiceCollection services)
+    {
+        services.AddSingleton<IExitSessionStorage, InMemoryExitSessionStorage>();
+        services.AddSingleton<IVirtualTxStorage, InMemoryVirtualTxStorage>();
         return services;
     }
 }

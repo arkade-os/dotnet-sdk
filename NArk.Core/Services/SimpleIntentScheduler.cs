@@ -13,7 +13,7 @@ using NBitcoin;
 
 namespace NArk.Core.Services;
 
-public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport clientTransport, IContractService contractService, IChainTimeProvider chainTimeProvider, IOptions<SimpleIntentSchedulerOptions> options, ILogger<SimpleIntentScheduler>? logger = null) : IIntentScheduler
+public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport clientTransport, IContractService contractService, IBitcoinBlockchain chainTimeProvider, IOptions<SimpleIntentSchedulerOptions> options, ILogger<SimpleIntentScheduler>? logger = null) : IIntentScheduler
 {
     public async Task<IReadOnlyCollection<ArkIntentSpec>> GetIntentsToSubmit(
         IReadOnlyCollection<ArkCoin> unspentVtxos, CancellationToken cancellationToken = default)

@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Intents;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
@@ -18,7 +18,7 @@ public class IntentSchedulerTests
     public async Task CanScheduleIntent()
     {
         var walletDetails = await FundedWalletHelper.GetFundedWallet();
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         // The threshold is so high, it will force an intent generation
         var scheduler = new SimpleIntentScheduler(new DefaultFeeEstimator(walletDetails.clientTransport, chainTimeProvider),
             walletDetails.clientTransport, walletDetails.contractService, chainTimeProvider,

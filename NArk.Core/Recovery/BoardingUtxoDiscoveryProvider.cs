@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Recovery;
-using NArk.Abstractions.Services;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Core.Transport;
@@ -10,20 +10,20 @@ namespace NArk.Core.Recovery;
 
 /// <summary>
 /// Discovery provider that asks the on-chain side (NBXplorer / Esplora,
-/// abstracted by <see cref="IBoardingUtxoProvider"/>) whether the
+/// abstracted by <see cref="IBitcoinBlockchain"/>) whether the
 /// <see cref="ArkBoardingContract"/> derived from a given HD index ever
 /// received a UTXO. Boarding contracts are one-shot funding entry points
 /// onto the Ark — a historical hit at any index is unambiguous evidence
 /// of usage.
 /// </summary>
 /// <remarks>
-/// <see cref="IBoardingUtxoProvider"/> is optional in the SDK (the plugin
+/// <see cref="IBitcoinBlockchain"/> is optional in the SDK (the plugin
 /// provides one via NBXplorer). When no implementation is registered this
 /// provider is also not registered, so HD recovery still works without
 /// on-chain probing — just without boarding-address detection.
 /// </remarks>
 public class BoardingUtxoDiscoveryProvider(
-    IBoardingUtxoProvider utxoProvider,
+    IBitcoinBlockchain utxoProvider,
     IClientTransport clientTransport,
     ILogger<BoardingUtxoDiscoveryProvider>? logger = null) : IContractDiscoveryProvider
 {

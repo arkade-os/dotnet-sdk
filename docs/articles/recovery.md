@@ -11,7 +11,7 @@ When a user re-imports an HD wallet from its mnemonic, the SDK has no local reco
    | Provider | Source | Detects |
    |---|---|---|
    | `IndexerVtxoDiscoveryProvider` | arkd indexer | Any VTXO ever recorded against the index's `ArkPaymentContract` |
-   | `BoardingUtxoDiscoveryProvider` | NBXplorer / Esplora (whichever `IBoardingUtxoProvider` is registered) | Any historical UTXO at the index's `ArkBoardingContract` on-chain address |
+   | `BoardingUtxoDiscoveryProvider` | NBXplorer / Esplora (whichever `IBitcoinBlockchain` is registered, provided its `GetUtxosAsync` is implemented) | Any historical UTXO at the index's `ArkBoardingContract` on-chain address |
    | `BoltzSwapDiscoveryProvider` | Boltz `/v2/swap/restore` | Any swap (submarine or reverse) involving the index's user pubkey |
 
 4. If **any** provider reports usage, the index counts as used: the gap counter resets, the scanner records every contract the providers reconstructed, and continues to the next index.
@@ -20,12 +20,12 @@ When a user re-imports an HD wallet from its mnemonic, the SDK has no local reco
 
 ## Setup
 
-`AddArkCoreServices` registers `HdWalletRecoveryService`, the indexer provider, and a conditional boarding provider (active only when an `IBoardingUtxoProvider` is also registered). `AddArkSwapServices` adds the Boltz provider. So the recovery surface is ready as long as the application opted into core + swaps:
+`AddArkCoreServices` registers `HdWalletRecoveryService`, the indexer provider, and a conditional boarding provider (active only when an `IBitcoinBlockchain` whose `GetUtxosAsync` is implemented — i.e., NBXplorer or Esplora — is also registered). `AddArkSwapServices` adds the Boltz provider. So the recovery surface is ready as long as the application opted into core + swaps:
 
 ```csharp
 services.AddArkCoreServices();
 services.AddArkSwapServices();
-services.AddSingleton<IBoardingUtxoProvider, NBXplorerBoardingUtxoProvider>(); // or Esplora
+services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838")); // or AddEsploraBlockchain
 ```
 
 ## Usage

@@ -17,7 +17,7 @@ namespace NArk.Core.Services;
 public class OnchainSweepService(
     IVtxoStorage vtxoStorage,
     IContractStorage contractStorage,
-    IChainTimeProvider chainTimeProvider,
+    IBitcoinBlockchain chainTimeProvider,
     IContractService contractService,
     IWalletProvider walletProvider,
     IOnchainSweepHandler? sweepHandler = null,

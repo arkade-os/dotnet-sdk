@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Intents;
-using NArk.Blockchain.NBXplorer;
+using NArk.Blockchain;
 using NArk.Core.Events;
 using NArk.Core.Extensions;
 using NArk.Core.Fees;
@@ -25,7 +25,7 @@ public class BatchSessionTests
     {
         var walletDetails = await FundedWalletHelper.GetFundedWallet();
 
-        var chainTimeProvider = new ChainTimeProvider(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(walletDetails.clientTransport, walletDetails.contracts,
             [new PaymentContractTransformer(walletDetails.walletProvider), new HashLockedContractTransformer(walletDetails.walletProvider)]);
 

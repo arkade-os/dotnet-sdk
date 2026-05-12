@@ -39,7 +39,7 @@ var builder = Host.CreateDefaultBuilder(args)
     .WithIntentStorage<EfCoreIntentStorage>()
     .WithWalletProvider<DefaultWalletProvider>()
     .WithSafetyService<YourSafetyService>()
-    .WithTimeProvider<YourChainTimeProvider>()
+    .WithBlockchain<NBXplorerBlockchain>()
     .OnMainnet()
     .EnableSwaps();
 
@@ -75,7 +75,15 @@ services.AddArkEfCoreStorage<YourDbContext>();
 // Register remaining required services
 services.AddSingleton<IWalletProvider, DefaultWalletProvider>();
 services.AddSingleton<ISafetyService, YourSafetyService>();
-services.AddSingleton<IChainTimeProvider, YourChainTimeProvider>();
+
+// Pick the blockchain backend you have a client for. Each helper registers
+// a single IBitcoinBlockchain that handles chain time, UTXO lookup at a
+// boarding address, broadcast, package broadcast, tx status and fee
+// estimation. Last registration wins, so you can swap in a custom impl
+// after the helper if you want to override one method.
+services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838"));
+// or: services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
+// or: services.AddRpcBlockchain(rpcClient);  // UTXO lookup not supported
 ```
 
 ## Architecture
@@ -365,19 +373,20 @@ var onchainAddress = boardingContract.GetOnchainAddress(network);
 
 ### 2. Sync On-chain UTXOs
 
-`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It takes an `IBoardingUtxoProvider` — choose **Esplora** or **NBXplorer** depending on your setup:
+`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It depends on `IBitcoinBlockchain` — register one of the built-in backends:
 
 ```csharp
 // Option A: Esplora (mempool.space, Chopsticks, etc.)
-IBoardingUtxoProvider utxoProvider = new EsploraBoardingUtxoProvider(
-    new Uri("https://mempool.space/api/"));
+services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
 
 // Option B: NBXplorer (BTCPay Server, self-hosted)
-IBoardingUtxoProvider utxoProvider = new NBXplorerBoardingUtxoProvider(
-    network, new Uri("http://localhost:32838"));
+services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838"));
 
-// Register the sync service and provider
-services.AddSingleton<IBoardingUtxoProvider>(utxoProvider);
+// Option C: Bitcoin Core RPC (does NOT support UTXO lookup — chain time
+// + broadcast + fee estimation only; pair with one of the above if you
+// also need boarding sync)
+services.AddRpcBlockchain(rpcClient);
+
 services.AddSingleton<BoardingUtxoSyncService>();
 
 // Register the poll service — automatically polls every 30s
@@ -419,6 +428,112 @@ var sweepService = new OnchainSweepService(
 await sweepService.SweepExpiredUtxosAsync(ct);
 ```
 
+## Unilateral Exit
+
+When the Ark server goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their VTXO leaf, waiting a CSV timelock, then claiming funds on-chain.
+
+### Setup
+
+```csharp
+services.AddUnilateralExit(
+    configureVirtualTx: opts =>
+    {
+        opts.DefaultMode = VirtualTxMode.Lite;  // Default: txids + expiry only; hex fetched on exit
+        opts.MinExitWorthAmount = 1000;         // Skip tiny VTXOs not worth exiting
+    },
+    configureWatchtower: opts =>
+    {
+        opts.PollInterval = TimeSpan.FromSeconds(60);
+    });
+
+// Wire the single IBitcoinBlockchain (chain time + UTXO lookup + broadcast +
+// package broadcast + tx status + fee estimation) in one call. Pick the
+// backend you have a client for: AddNBXplorerBlockchain, AddEsploraBlockchain,
+// or AddRpcBlockchain. RPC does not implement UTXO lookup (Bitcoin Core has
+// no native address index). Last registration wins — register a custom
+// impl afterwards to swap the whole backend.
+services.AddNBXplorerBlockchain(explorerClient);
+
+// Opt in to durable EF Core storage for sessions + chains (mirrors the
+// payment-tracking entity opt-in). Skip if you'd rather use in-memory
+// storage or the stateless one-shot API below.
+modelBuilder.ConfigureArkExitEntities();
+
+// Opt in to background pre-fetching of chain data on every VTXO arrival
+// (subscribes to IVtxoStorage.VtxosChanged). Without this, chains are
+// fetched lazily when StartExitAsync is invoked.
+services.AddVirtualTxAutoFetch();
+
+// Optional: run watchtower as background service
+services.AddExitWatchtowerBackgroundService();
+```
+
+### Starting an Exit
+
+```csharp
+var exitService = serviceProvider.GetRequiredService<UnilateralExitService>();
+
+// Exit specific VTXOs
+var sessions = await exitService.StartExitAsync(
+    walletId,
+    vtxoOutpoints,
+    claimAddress,     // Bitcoin address to receive claimed funds
+    cancellationToken);
+
+// Or exit all VTXOs in a wallet
+var sessions = await exitService.StartExitForWalletAsync(
+    walletId, claimAddress, cancellationToken);
+```
+
+### Progressing Exits
+
+Call `ProgressExitsAsync` periodically to advance exit sessions through their state machine:
+
+```csharp
+// Broadcasting → AwaitingCsvDelay → Claimable → Claiming → Completed
+await exitService.ProgressExitsAsync(cancellationToken);
+```
+
+The exit watchtower background service does this automatically if registered.
+
+### Virtual Tx Storage Modes
+
+- **Lite mode (default)**: Stores only txids + expiry. Fetches hex on demand when exit is actually started (saves storage, slower exit start). Right default for most wallets — the common case never exits unilaterally.
+- **Full mode**: Fetches and stores raw tx hex on VTXO receive. Ready for instant exit without any indexer round-trip. Opt in via `opts.DefaultMode = VirtualTxMode.Full` when offline-exit capability is a hard requirement.
+
+### No-Storage Modes
+
+Two ways to use unilateral exit without paying the EF Core schema cost:
+
+**1. In-memory storage** — same code paths as the durable flow (idempotent re-invocation, watchtower visibility) but state is held in `ConcurrentDictionary`s and lost on process restart. Right for recovery tooling, plugins, or ephemeral wallets that don't need cross-restart resume.
+
+```csharp
+services.AddUnilateralExit();
+services.AddInMemoryExitStorage();  // registers InMemoryExitSessionStorage + InMemoryVirtualTxStorage
+// Don't call ConfigureArkExitEntities() — no SQL tables needed
+```
+
+**2. Stateless one-shot API** — `UnilateralExitService.BroadcastExitChainAsync` + `ClaimMaturedExitAsync` skip both `IExitSessionStorage` and `IVirtualTxStorage` entirely. The SDK persists nothing exit-specific; the caller saves the returned `ExitPlan` record however they want and feeds it back to claim once the CSV timelock matures.
+
+```csharp
+// Broadcast the chain now — no SDK persistence
+var plan = await exitService.BroadcastExitChainAsync(
+    walletId, vtxoOutpoint, claimAddress, ct);
+
+// ... persist `plan` somewhere (a JSON blob, a settings entry, etc.) ...
+
+// Later — once leaf-tx confirms + CSV matures:
+var claimTxid = await exitService.ClaimMaturedExitAsync(plan, ct);
+if (claimTxid is null)
+{
+    // CSV not yet matured; try again later
+}
+```
+
+Trade-off vs. the stateful path: no idempotency (a second `BroadcastExitChainAsync` will re-broadcast), no automatic watchtower progression. The caller owns persistence and time-keeping in their own format.
+
+Virtual tx data is automatically pruned when VTXOs are spent. Sibling VTXOs sharing internal tree nodes naturally deduplicate — shared nodes are only cleaned up when no VTXO references them.
+
 ## Contracts
 
 Derive receiving addresses and manage contracts:
@@ -439,7 +554,7 @@ When importing an HD wallet from its mnemonic, the SDK has no record of contract
 The default providers ship with the SDK:
 
 - `IndexerVtxoDiscoveryProvider` (`AddArkCoreServices`) — asks arkd's indexer for VTXOs at the index's payment script.
-- `BoardingUtxoDiscoveryProvider` (`AddArkCoreServices`, opt-in via registering an `IBoardingUtxoProvider`) — asks NBXplorer/Esplora for historical UTXOs at the index's boarding address.
+- `BoardingUtxoDiscoveryProvider` (`AddArkCoreServices`, opt-in via registering an `IBitcoinBlockchain` whose `GetUtxosAsync` is implemented — NBXplorer or Esplora) — asks for historical UTXOs at the index's boarding address.
 - `BoltzSwapDiscoveryProvider` (`AddArkSwapServices`) — asks Boltz `/v2/swap/restore` whether the index's user pubkey ever participated in a swap.
 
 ```csharp
@@ -785,7 +900,7 @@ The SDK uses a pluggable architecture. Register your implementations for:
 | `IWalletStorage` | Wallet persistence | `EfCoreWalletStorage` |
 | `IWalletProvider` | Wallet signer/address resolution | `DefaultWalletProvider` |
 | `ISafetyService` | Distributed locking | *Must implement* |
-| `IChainTimeProvider` | Current blockchain height/time | *Must implement* |
+| `IBitcoinBlockchain` | Chain time, UTXO lookup, broadcast, fee estimation | `NBXplorerBlockchain` / `EsploraBlockchain` / `RpcBlockchain` |
 | `IFeeEstimator` | Transaction fee estimation | `DefaultFeeEstimator` |
 | `ICoinSelector` | UTXO selection strategy | `DefaultCoinSelector` |
 | `ISweepPolicy` | VTXO consolidation rules | Register zero or more |
