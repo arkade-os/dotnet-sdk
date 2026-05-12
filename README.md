@@ -437,9 +437,12 @@ services.AddUnilateralExit(
         opts.PollInterval = TimeSpan.FromSeconds(60);
     });
 
-// Register a broadcaster (NBXplorer or Esplora)
-services.AddSingleton<IOnchainBroadcaster>(sp =>
-    new NBXplorerOnchainBroadcaster(explorerClient));
+// Wire the blockchain provider trio (IBoardingUtxoProvider + IChainTimeProvider
+// + IOnchainBroadcaster) in one call. Pick the backend you have a client for —
+// AddNBXplorerBlockchain, AddEsploraBlockchain, or AddRpcBlockchain (chain
+// time only). Composite helpers don't lock you in: register an individual
+// impl afterwards to override one slot of the trio.
+services.AddNBXplorerBlockchain(explorerClient);
 
 // Opt in to durable EF Core storage for sessions + chains (mirrors the
 // payment-tracking entity opt-in). Skip if you'd rather use in-memory
