@@ -2,27 +2,36 @@ using System.Globalization;
 using System.Text.Json;
 using NArk.Abstractions.Blockchain;
 using NBitcoin;
+using NBitcoin.Secp256k1;
 
 namespace NArk.Tests.End2End.Common;
 
 /// <summary>
 /// Test-side <see cref="IFeeWallet"/> backed by a freshly-generated P2TR
 /// key funded via <c>bitcoin-cli sendtoaddress</c>. Provides the on-chain
-/// UTXO + signing key the unilateral-exit broadcaster needs to wrap each
-/// virtual tx in a 1p1c CPFP package via <c>submitpackage</c> — without
+/// UTXO + signing capability the unilateral-exit broadcaster needs to wrap
+/// each virtual tx in a 1p1c CPFP package via <c>submitpackage</c> — without
 /// it, tree-tx broadcasts hit TRUC-violation because their parent has a
 /// 0-sat P2A anchor and no fee.
+/// <para>
+/// Signing happens via the <see cref="IFeeWallet.SignFeeUtxoAsync"/> callback —
+/// the wallet keeps the <see cref="Key"/> internal and only emits
+/// <see cref="SecpSchnorrSignature"/>s. Production implementations can hide
+/// the key behind a hardware wallet, HSM, BTCPay-managed signer, etc.
+/// </para>
 /// </summary>
 internal sealed class TestFeeWallet : IFeeWallet
 {
     private readonly Script _scriptPubKey;
     private readonly string _address;
-    private readonly List<FeeCoin> _availableCoins = [];
+    private readonly Key _signingKey;
+    private readonly Dictionary<OutPoint, FeeUtxo> _availableUtxos = new();
 
-    private TestFeeWallet(Script scriptPubKey, string address)
+    private TestFeeWallet(Script scriptPubKey, string address, Key signingKey)
     {
         _scriptPubKey = scriptPubKey;
         _address = address;
+        _signingKey = signingKey;
     }
 
     public string Address => _address;
@@ -33,11 +42,6 @@ internal sealed class TestFeeWallet : IFeeWallet
     /// <c>bitcoin-cli sendtoaddress</c>, mines a block, then resolves the
     /// resulting UTXO via <c>getrawtransaction</c> so we have an OutPoint +
     /// value to hand back via <see cref="SelectFeeUtxoAsync"/>.
-    ///
-    /// BIP-86 (no script tree) is what <c>P2ACpfpBuilder.BuildCpfpChild</c>
-    /// signs against — it calls <c>SignTaprootKeySpend</c> with the default
-    /// (null) merkle root, producing the BIP-86 output-key tweak. Deriving
-    /// the address via <c>ScriptPubKeyType.TaprootBIP86</c> matches.
     /// </summary>
     public static async Task<TestFeeWallet> CreateFundedAsync(
         decimal fundAmountBtc = 0.01m,
@@ -47,7 +51,7 @@ internal sealed class TestFeeWallet : IFeeWallet
         var scriptPubKey = key.PubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
         var address = scriptPubKey.GetDestinationAddress(Network.RegTest)
             ?? throw new InvalidOperationException("TestFeeWallet: failed to derive P2TR address from BIP86 scriptPubKey");
-        var wallet = new TestFeeWallet(scriptPubKey, address.ToString());
+        var wallet = new TestFeeWallet(scriptPubKey, address.ToString(), key);
 
         var btcAmount = fundAmountBtc.ToString("0.########", CultureInfo.InvariantCulture);
         var fundTxid = (await DockerHelper.Exec(
@@ -55,11 +59,8 @@ internal sealed class TestFeeWallet : IFeeWallet
         if (string.IsNullOrEmpty(fundTxid))
             throw new InvalidOperationException("TestFeeWallet: bitcoin-cli sendtoaddress returned empty txid");
 
-        // Mine 1 block so the UTXO is confirmed (CPFP child needs a
-        // confirmed-or-mempool parent input; confirmed is simpler).
         await DockerHelper.MineBlocks(1, ct);
 
-        // Resolve the vout in the funding tx that pays our address.
         var rawTx = (await DockerHelper.Exec(
             "bitcoin", ["bitcoin-cli", "-rpcwallet=", "getrawtransaction", fundTxid, "1"], ct)).Trim();
         var doc = JsonDocument.Parse(rawTx);
@@ -80,28 +81,41 @@ internal sealed class TestFeeWallet : IFeeWallet
             throw new InvalidOperationException(
                 $"TestFeeWallet: couldn't find vout paying {wallet.Address} in tx {fundTxid}");
 
-        wallet._availableCoins.Add(new FeeCoin(
-            new OutPoint(uint256.Parse(fundTxid), (uint)matchedVout),
-            new TxOut(amount, wallet._scriptPubKey),
-            key));
+        var outpoint = new OutPoint(uint256.Parse(fundTxid), (uint)matchedVout);
+        wallet._availableUtxos[outpoint] = new FeeUtxo(outpoint, new TxOut(amount, wallet._scriptPubKey));
         return wallet;
     }
 
-    public Task<FeeCoin?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default)
+    public Task<FeeUtxo?> SelectFeeUtxoAsync(Money minAmount, CancellationToken cancellationToken = default)
     {
-        // Trivial selection: first coin >= minAmount. Tests use a single
-        // funding round, so there's at most a couple of coins to choose from.
-        FeeCoin? pick = null;
-        for (var i = 0; i < _availableCoins.Count; i++)
+        // Trivial selection: first UTXO >= minAmount. Reserved UTXOs stay in
+        // the dictionary so SignFeeUtxoAsync can validate the outpoint belongs
+        // to this wallet, but are flagged as no longer selectable.
+        foreach (var kvp in _availableUtxos)
         {
-            if (_availableCoins[i].TxOut.Value >= minAmount)
-            {
-                pick = _availableCoins[i];
-                _availableCoins.RemoveAt(i);
-                break;
-            }
+            if (kvp.Value.TxOut.Value >= minAmount)
+                return Task.FromResult<FeeUtxo?>(kvp.Value);
         }
-        return Task.FromResult(pick);
+        return Task.FromResult<FeeUtxo?>(null);
+    }
+
+    public Task<SecpSchnorrSignature> SignFeeUtxoAsync(
+        OutPoint feeOutpoint,
+        uint256 sighash,
+        TaprootSigHash sighashType,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_availableUtxos.ContainsKey(feeOutpoint))
+            throw new InvalidOperationException(
+                $"TestFeeWallet: asked to sign for outpoint {feeOutpoint} which wasn't issued by this wallet");
+
+        // NBitcoin returns its own TaprootSignature wrapper; pull the raw
+        // 64-byte Schnorr signature out of it for the IFeeWallet contract.
+        var taprootSig = _signingKey.SignTaprootKeySpend(sighash, sighashType);
+        var sig = SecpSchnorrSignature.TryCreate(taprootSig.SchnorrSignature.ToBytes(), out var parsed)
+            ? parsed!
+            : throw new InvalidOperationException("TestFeeWallet: failed to re-parse signature bytes");
+        return Task.FromResult(sig);
     }
 
     public Task<Script> GetChangeScriptAsync(CancellationToken cancellationToken = default)

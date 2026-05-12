@@ -1,3 +1,4 @@
+using NArk.Abstractions.Blockchain;
 using NBitcoin;
 
 namespace NArk.Core.Exit;
@@ -39,20 +40,26 @@ public static class P2ACpfpBuilder
     /// Build a v3 CPFP child transaction that spends the P2A anchor output
     /// and provides fees for the entire 1p1c package.
     /// </summary>
+    /// <remarks>
+    /// Signing the fee input is delegated to <paramref name="feeWallet"/> via
+    /// <see cref="IFeeWallet.SignFeeUtxoAsync"/> — the builder never sees the
+    /// underlying signing material. Hardware wallets, HSMs, remote signers,
+    /// and BTCPay-style internal signing all work without modification.
+    /// </remarks>
     /// <param name="parent">The parent transaction containing a P2A anchor output.</param>
     /// <param name="targetFeeRate">Target fee rate for the package (parent + child combined).</param>
-    /// <param name="feeUtxo">A confirmed wallet UTXO to fund the fees.</param>
-    /// <param name="feeUtxoPrevOut">The TxOut being spent by feeUtxo (for signing).</param>
+    /// <param name="feeUtxo">A confirmed wallet UTXO to fund the fees (outpoint + prev out).</param>
     /// <param name="changeScript">Script for change output.</param>
-    /// <param name="signingKey">Key to sign the fee UTXO input (P2TR keypath spend).</param>
+    /// <param name="feeWallet">Fee wallet that produced <paramref name="feeUtxo"/> and signs for it.</param>
+    /// <param name="cancellationToken">Cancellation token forwarded to the wallet's signing call.</param>
     /// <returns>The signed CPFP child transaction.</returns>
-    public static Transaction BuildCpfpChild(
+    public static async Task<Transaction> BuildCpfpChildAsync(
         Transaction parent,
         FeeRate targetFeeRate,
-        OutPoint feeUtxo,
-        TxOut feeUtxoPrevOut,
+        FeeUtxo feeUtxo,
         Script changeScript,
-        Key signingKey)
+        IFeeWallet feeWallet,
+        CancellationToken cancellationToken = default)
     {
         var anchor = FindP2AAnchor(parent)
             ?? throw new InvalidOperationException("Parent transaction has no P2A anchor output");
@@ -66,7 +73,7 @@ public static class P2ACpfpBuilder
         child.Inputs.Add(anchor.Outpoint);
 
         // Input 1: Fee funding UTXO
-        child.Inputs.Add(feeUtxo);
+        child.Inputs.Add(feeUtxo.Outpoint);
 
         // Calculate fees: total package fee = targetFeeRate × (parent_vsize + child_vsize)
         var parentVsize = parent.GetVirtualSize();
@@ -75,7 +82,7 @@ public static class P2ACpfpBuilder
         var totalFee = targetFeeRate.GetFee(parentVsize + estimatedChildVsize);
 
         // Change = fee UTXO value + anchor value - total fee
-        var totalInput = feeUtxoPrevOut.Value + anchor.TxOut.Value;
+        var totalInput = feeUtxo.TxOut.Value + anchor.TxOut.Value;
         var change = totalInput - totalFee;
 
         if (change > Money.Zero)
@@ -83,14 +90,16 @@ public static class P2ACpfpBuilder
             child.Outputs.Add(new TxOut(change, changeScript));
         }
 
-        // Sign input 1 (fee UTXO) with P2TR keypath spend
-        var prevOuts = new[] { anchor.TxOut, feeUtxoPrevOut };
+        // Sign input 1 (fee UTXO) with P2TR keypath spend — delegate to the
+        // wallet via the sighash callback. The builder doesn't touch a Key.
+        var prevOuts = new[] { anchor.TxOut, feeUtxo.TxOut };
         var precomputedData = child.PrecomputeTransactionData(prevOuts);
         var sighash = child.GetSignatureHashTaproot(
             precomputedData,
             new TaprootExecutionData(1) { SigHash = TaprootSigHash.Default });
 
-        var sig = signingKey.SignTaprootKeySpend(sighash, TaprootSigHash.Default);
+        var sig = await feeWallet.SignFeeUtxoAsync(
+            feeUtxo.Outpoint, sighash, TaprootSigHash.Default, cancellationToken);
         child.Inputs[1].WitScript = new WitScript(new[] { sig.ToBytes() }, true);
 
         return child;
