@@ -93,3 +93,58 @@ opts.UseInMemoryDatabase("test");
 ```
 
 `ArkStorageOptions.ContractSearchProvider` lets you inject provider-specific text-search for contract metadata (e.g. PostgreSQL `ILIKE`). See `ArkStorageOptions` for all configuration knobs.
+
+## SQLite: `StoreDateTimeOffsetAsTicks` (opt-in)
+
+Every paged storage query in this SDK (`GetVtxos`, `GetContracts`, `GetIntents`, `GetPayments`, `GetPaymentRequests`, `GetSwaps`) ends with an `ORDER BY` on a `DateTimeOffset` column (`SeenAt`, `CreatedAt`). EF Core's SQLite provider rejects that with:
+
+> SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses.
+
+The reason is that SQLite stores `DateTimeOffset` as TEXT, and the default representation isn't chronologically sortable when offsets differ. Postgres/MSSQL aren't affected — they sort `DateTimeOffset` natively.
+
+To fix SQLite without touching Postgres/MSSQL behaviour, opt in to a `DateTimeOffset → long` (UTC ticks) value conversion:
+
+```csharp
+modelBuilder.ConfigureArkEntities(opts =>
+{
+    opts.Schema = "ark";
+    opts.StoreDateTimeOffsetAsTicks = true;   // SQLite consumers: turn this on
+});
+
+// If you use payment tracking, set the same flag there too:
+modelBuilder.ConfigureArkPaymentEntities(opts =>
+{
+    opts.Schema = "ark";
+    opts.StoreDateTimeOffsetAsTicks = true;
+});
+```
+
+When on, every `DateTimeOffset` column in the Ark model is stored as INTEGER (SQLite) / BIGINT (Postgres/MSSQL). `ORDER BY` works natively; indexes still work; on-disk size is unchanged.
+
+### Trade-offs
+
+1. **Schema change.** Stored values switch from TEXT/timestamp to INTEGER/BIGINT. Existing data won't deserialize after flipping the flag.
+2. **Offset stripped on read-back.** The conversion stores UTC ticks only — the original `DateTimeOffset.Offset` is dropped (always reads back as `TimeSpan.Zero`). Consumers who need the original zoned moment should leave the flag off and accept the SQLite ORDER BY limitation.
+
+### When to enable
+
+| Provider | Recommendation |
+|---|---|
+| SQLite — paged queries failing with the ORDER BY error | **Enable.** This is the fix. |
+| SQLite — no paged queries (or you tolerate the failure) | Leave off. Default preserves native TEXT storage. |
+| PostgreSQL / MSSQL | Leave off. You don't have the bug. Default keeps `timestamptz` / `datetimeoffset` and their native date functions. |
+
+### Migrating existing SQLite data
+
+If you have an existing SQLite DB with TEXT-encoded `DateTimeOffset` columns and you want to flip the flag:
+
+```sql
+-- One-off migration: convert each DateTimeOffset column from TEXT to INTEGER ticks.
+-- Run BEFORE enabling StoreDateTimeOffsetAsTicks.
+UPDATE Vtxos SET SeenAt = CAST((julianday(SeenAt) - 1721425.5) * 864000000000 AS INTEGER);
+-- repeat for other DateTimeOffset columns (CreatedAt, etc.)
+```
+
+Or — for local caches where data isn't load-bearing — delete the SQLite file and let `EnsureCreated` rebuild the schema with INTEGER columns.
+
+For tests and other contexts where you're starting from scratch, just set the flag in `OnModelCreating` and run `EnsureCreated` — no migration needed.

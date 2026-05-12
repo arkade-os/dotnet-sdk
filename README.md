@@ -518,6 +518,16 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 });
 ```
 
+### SQLite consumers: enable `StoreDateTimeOffsetAsTicks`
+
+EF Core's SQLite provider rejects `ORDER BY` on `DateTimeOffset` columns, which breaks every paged query in this SDK (`GetVtxos`, `GetContracts`, `GetIntents`, …). Set `StoreDateTimeOffsetAsTicks = true` in `ConfigureArkEntities` (and `ConfigureArkPaymentEntities` if you use payment tracking) to store these columns as INTEGER ticks instead — `ORDER BY` then works natively.
+
+```csharp
+modelBuilder.ConfigureArkEntities(opts => opts.StoreDateTimeOffsetAsTicks = true);
+```
+
+Off by default to preserve native column types for Postgres/MSSQL consumers. Trade-off: the round-trip strips the original timezone offset (reads back as UTC). See [docs/articles/storage.md](docs/articles/storage.md#sqlite-storedatetimeoffsetastick-opt-in) for migration paths and details.
+
 ### Entities
 
 | Entity | Table | Primary Key |
