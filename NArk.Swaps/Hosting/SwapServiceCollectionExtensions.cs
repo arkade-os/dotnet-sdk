@@ -37,13 +37,21 @@ public static class SwapServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers the Boltz swap provider and its dependencies.
-    /// Can be called separately if using manual provider registration.
+    /// Registers the Boltz swap provider and its dependencies, including the typed
+    /// <see cref="BoltzClient"/> HttpClient. Self-contained — no other DI calls are
+    /// required to make <see cref="BoltzSwapProvider"/> resolvable.
     /// </summary>
     public static IServiceCollection AddBoltzProvider(this IServiceCollection services, Action<BoltzClientOptions>? configure = null)
     {
         if (configure != null)
             services.Configure(configure);
+
+        // BoltzSwapProvider depends on BoltzClient, which is a typed HttpClient. Registering it
+        // here makes the call site self-contained so consumers that wire DI directly (no
+        // ArkApplicationBuilder) don't get an opaque "Unable to resolve BoltzClient" error.
+        // AddHttpClient<T> is idempotent, so existing callers that already registered it
+        // separately (e.g. via EnableSwaps) keep working.
+        services.AddHttpClient<BoltzClient>();
 
         services.AddSingleton<IContractDiscoveryProvider, BoltzSwapDiscoveryProvider>();
 

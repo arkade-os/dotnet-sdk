@@ -40,6 +40,9 @@ public static class SwapApplicationBuilderExtensions
                 services.Configure(boltzOptionsConfigure);
             }
 
+            // BoltzClient registration moved into AddBoltzProvider (called by AddArkSwapServices)
+            // so direct-DI consumers get a self-contained call. The line kept here as a no-op
+            // safety net for any external caller relying on the prior call ordering.
             services.AddHttpClient<BoltzClient>();
             services.AddArkSwapServices();
         });
