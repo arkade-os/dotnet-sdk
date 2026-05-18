@@ -167,6 +167,8 @@ var txId = await spendingService.Spend(
 
 The SDK supports issuing, transferring, and burning assets on Arkade. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Arkade transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
 
+Asset packets are **deterministic**: `AssetPacketBuilder` emits groups in a stable order (by asset id, then group index) regardless of input order, so the same logical transaction always serializes to identical bytes. This matches the ordering used by the other Arkade SDKs (ts-sdk / rust-sdk) and makes packets reproducible and cross-SDK fixture-comparable.
+
 ### Issuance
 
 Use `IAssetManager` to create new assets:
