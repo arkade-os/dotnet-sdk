@@ -45,8 +45,15 @@ public static class AssetPacketBuilder
         var allAssetIds = new HashSet<string>(inputsByAsset.Keys);
         allAssetIds.UnionWith(outputsByAsset.Keys);
 
+        // Emit groups in a deterministic order. The AssetId string is the
+        // lowercase hex of its 34-byte serialization (txid ‖ groupIndex LE),
+        // so an ordinal sort yields the same (txid, groupIndex) ordering the
+        // rust-sdk applies. Without this the order followed HashSet
+        // enumeration and the same transfer could serialize to different
+        // OP_RETURN bytes across runs/SDKs, breaking reproducibility and
+        // cross-implementation fixture stability.
         var groups = new List<AssetGroup>();
-        foreach (var assetIdStr in allAssetIds)
+        foreach (var assetIdStr in allAssetIds.OrderBy(id => id, StringComparer.Ordinal))
         {
             var assetId = AssetId.FromString(assetIdStr);
             var groupInputs = inputsByAsset.GetValueOrDefault(assetIdStr)?

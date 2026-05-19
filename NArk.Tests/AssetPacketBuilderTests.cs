@@ -94,6 +94,39 @@ public class AssetPacketBuilderTests
     }
 
     [Test]
+    public void Build_GroupOrder_IsDeterministic_RegardlessOfInputOrder()
+    {
+        // FakeAssetId ("a1b2…") sorts before FakeAssetId2 ("b2c3…") ordinally.
+        var forward = new (string, ushort, ulong)[]
+        {
+            (FakeAssetId, 0, 500),
+            (FakeAssetId2, 1, 300)
+        };
+        var reversed = new (string, ushort, ulong)[]
+        {
+            (FakeAssetId2, 1, 300),
+            (FakeAssetId, 0, 500)
+        };
+
+        var r1 = AssetPacketBuilder.Build(forward, null, changeVout: 0);
+        var r2 = AssetPacketBuilder.Build(reversed, null, changeVout: 0);
+
+        Assert.That(r1, Is.Not.Null);
+        Assert.That(r2, Is.Not.Null);
+
+        // Same logical transfer must serialize to identical OP_RETURN bytes
+        // irrespective of the order inputs were supplied in.
+        Assert.That(r2!.ScriptPubKey.ToHex(), Is.EqualTo(r1!.ScriptPubKey.ToHex()),
+            "Asset packet must be order-independent (deterministic group ordering)");
+
+        // And groups must be in ascending ordinal AssetId order.
+        var packet = Packet.FromScript(r1.ScriptPubKey);
+        Assert.That(packet.Groups, Has.Count.EqualTo(2));
+        Assert.That(packet.Groups[0].AssetId!.ToString(), Is.EqualTo(FakeAssetId));
+        Assert.That(packet.Groups[1].AssetId!.ToString(), Is.EqualTo(FakeAssetId2));
+    }
+
+    [Test]
     public void Build_NoUnderflow_WhenOutputsExceedInputs()
     {
         // Asset only in outputs (no inputs) — should not underflow
