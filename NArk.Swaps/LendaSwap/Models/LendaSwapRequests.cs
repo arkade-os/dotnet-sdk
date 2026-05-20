@@ -27,9 +27,13 @@ public class CreateBtcToArkadeRequest
     [JsonPropertyName("user_id")]
     public required string UserId { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── Arkade to BTC ─────────────────────────────────────────────
@@ -62,9 +66,13 @@ public class CreateArkadeToBtcRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AmountOut { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── Lightning to Arkade ───────────────────────────────────────
@@ -90,9 +98,13 @@ public class CreateLightningToArkadeRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AmountIn { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── Arkade to Lightning ───────────────────────────────────────
@@ -117,9 +129,13 @@ public class CreateArkadeToLightningRequest
     [JsonPropertyName("user_id")]
     public required string UserId { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── Arkade to EVM ─────────────────────────────────────────────
@@ -162,9 +178,13 @@ public class CreateArkadeToEvmRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Gasless { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── EVM to Arkade ─────────────────────────────────────────────
@@ -203,9 +223,13 @@ public class CreateEvmToArkadeRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AmountOut { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── Lightning to EVM ──────────────────────────────────────────
@@ -238,9 +262,13 @@ public class CreateLightningToEvmRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Gasless { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── EVM to Lightning ──────────────────────────────────────────
@@ -272,9 +300,13 @@ public class CreateEvmToLightningRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AmountIn { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── BTC to EVM ────────────────────────────────────────────────
@@ -313,9 +345,13 @@ public class CreateBtcToEvmRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Gasless { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }
 
 // ─── EVM to BTC ────────────────────────────────────────────────
@@ -351,7 +387,11 @@ public class CreateEvmToBtcRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AmountOut { get; set; }
 
-    [JsonPropertyName("reflink_code")]
+    [JsonPropertyName("extra_fees")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ReflinkCode { get; set; }
+    public int? ExtraFees { get; set; }
+
+    [JsonPropertyName("referral_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReferralCode { get; set; }
 }

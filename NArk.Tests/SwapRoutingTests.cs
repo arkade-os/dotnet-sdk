@@ -243,6 +243,6 @@ public class SwapRoutingTests
             contractStorage: Substitute.For<IContractStorage>(),
             safetyService: Substitute.For<ISafetyService>(),
             intentStorage: Substitute.For<IIntentStorage>(),
-            chainTimeProvider: Substitute.For<IChainTimeProvider>());
+            chainTimeProvider: Substitute.For<IBitcoinBlockchain>());
     }
 }

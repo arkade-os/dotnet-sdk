@@ -118,7 +118,7 @@ public class LendaSwapProvider : ISwapProvider
 
     // ─── Lifecycle ─────────────────────────────────────────────
 
-    public Task StartAsync(string walletId, CancellationToken ct)
+    public Task StartAsync(CancellationToken ct)
     {
         _logger?.LogInformation("Starting LendaSwap provider");
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdownCts.Token);
@@ -132,25 +132,6 @@ public class LendaSwapProvider : ISwapProvider
         return Task.CompletedTask;
     }
 
-    // ─── Swap Creation ─────────────────────────────────────────
-
-    public Task<SwapResult> CreateSwapAsync(CreateSwapRequest request, CancellationToken ct)
-    {
-        // LendaSwap swap creation requires protocol-specific parameters (hash locks,
-        // public keys, etc.) that go beyond the generic CreateSwapRequest interface.
-        // Integration with the full wallet flow will be implemented in a follow-up.
-        throw new NotSupportedException(
-            "LendaSwap swap creation requires protocol-specific parameters. " +
-            "Use the LendaSwapClient directly for now.");
-    }
-
-    public Task RefundSwapAsync(string walletId, string swapId, CancellationToken ct)
-    {
-        // LendaSwap refunds are handled by monitoring swap status transitions.
-        throw new NotSupportedException(
-            "LendaSwap refunds are handled automatically via status monitoring.");
-    }
-
     // ─── Limits & Quotes ───────────────────────────────────────
 
     public async Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct)
@@ -159,7 +140,7 @@ public class LendaSwapProvider : ISwapProvider
 
         var quote = await _client.GetQuoteAsync(
             sourceChain, sourceToken, targetChain, targetToken,
-            sourceAmount: null, targetAmount: null, ct);
+            sourceAmount: null, targetAmount: null, ct: ct);
 
         if (quote == null)
             throw new InvalidOperationException($"Unable to fetch LendaSwap limits for route {route}");
