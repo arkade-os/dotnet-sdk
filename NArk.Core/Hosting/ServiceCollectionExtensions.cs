@@ -40,28 +40,54 @@ public record ArkNetworkConfig(
     string? BoltzUri = null,
 
     [property: JsonPropertyName("explorer")]
-    string? ExplorerUri = null)
+    string? ExplorerUri = null,
+
+    /// <summary>
+    /// Default Esplora REST API endpoint for this network. Used by
+    /// <see cref="NArk.Core.Blockchain.EsploraBlockchain"/> when an app
+    /// needs an <see cref="NArk.Abstractions.Blockchain.IBitcoinBlockchain"/>
+    /// without running its own NBXplorer / bitcoind. Values mirror the
+    /// per-network defaults shipped by the canonical Arkade ts-sdk.
+    /// </summary>
+    [property: JsonPropertyName("esplora")]
+    string? EsploraUri = null,
+
+    /// <summary>
+    /// Default Electrum websocket endpoint for this network (mirrors the
+    /// ts-sdk's <c>WS_DEFAULT_URLS</c>). Optional — only consumed by clients
+    /// that want a websocket-driven Electrum chain source.
+    /// </summary>
+    [property: JsonPropertyName("electrum-ws")]
+    string? ElectrumWsUri = null)
 {
     /// <summary>Mainnet configuration.</summary>
     public static readonly ArkNetworkConfig Mainnet = new(
         ArkUri: "https://arkade.computer",
         ArkadeWalletUri: "https://arkade.money",
         BoltzUri: "https://api.boltz.exchange/",
-        ExplorerUri: "https://arkade.space");
+        ExplorerUri: "https://arkade.space",
+        EsploraUri: "https://mempool.arkade.sh/api",
+        ElectrumWsUri: "wss://electrum.arkade.sh");
 
     /// <summary>Mutinynet (signet) configuration.</summary>
     public static readonly ArkNetworkConfig Mutinynet = new(
         ArkUri: "https://mutinynet.arkade.sh",
         ArkadeWalletUri: "https://mutinynet.arkade.money",
         BoltzUri: "https://api.boltz.mutinynet.arkade.sh/",
-        ExplorerUri: "https://explorer.mutinynet.arkade.sh");
+        ExplorerUri: "https://explorer.mutinynet.arkade.sh",
+        EsploraUri: "https://mempool.mutinynet.arkade.sh/api",
+        ElectrumWsUri: "wss://electrum.mutinynet.arkade.sh");
 
     /// <summary>Local regtest configuration.</summary>
     public static readonly ArkNetworkConfig Regtest = new(
         ArkUri: "http://localhost:7070",
         ArkadeWalletUri: "http://localhost:3002",
         BoltzUri: "http://localhost:9069/",
-        ExplorerUri: "http://localhost:7080");
+        ExplorerUri: "http://localhost:7080",
+        // ts-sdk regtest Esplora default: a local mempool/Chopsticks deployment.
+        // No Electrum WS default for regtest — ts-sdk assumes a locally-run
+        // electrum-ws websocat bridge whose URL is environment-specific.
+        EsploraUri: "http://localhost:3000");
 
 }
 

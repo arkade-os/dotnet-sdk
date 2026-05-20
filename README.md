@@ -379,7 +379,13 @@ var onchainAddress = boardingContract.GetOnchainAddress(network);
 
 ```csharp
 // Option A: Esplora (mempool.space, Chopsticks, etc.)
-services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
+// ArkNetworkConfig.{Mainnet,Mutinynet,Regtest}.EsploraUri carries
+// per-network defaults that mirror the canonical Arkade ts-sdk:
+//   Mainnet   → https://mempool.arkade.sh/api
+//   Mutinynet → https://mempool.mutinynet.arkade.sh/api
+//   Regtest   → http://localhost:3000
+services.AddEsploraBlockchain(new Uri(ArkNetworkConfig.Mainnet.EsploraUri!));
+// or pass your own URL: services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
 
 // Option B: NBXplorer (BTCPay Server, self-hosted)
 services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838"));
