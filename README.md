@@ -382,19 +382,20 @@ var onchainAddress = boardingContract.GetOnchainAddress(network);
 // ArkNetworkConfig.{Mainnet,Mutinynet,Regtest} carry per-network
 // endpoint defaults that mirror the canonical Arkade ts-sdk:
 //
-//   Network    EsploraUri                                 ElectrumWsUri                              ElectrumTcpHost                ElectrumTcpPort
-//   Mainnet    https://mempool.arkade.sh/api              wss://electrum.arkade.sh                   electrum.arkade.sh             50001
-//   Mutinynet  https://mempool.mutinynet.arkade.sh/api    wss://electrum.mutinynet.arkade.sh         electrum.mutinynet.arkade.sh   50001
-//   Regtest    http://localhost:3000                      ws://localhost:50003                       localhost                      50000 (nigiri electrs)
+//   Network    EsploraUri                                 ElectrumWsUri                              ElectrumTcpUri
+//   Mainnet    https://mempool.arkade.sh/api              wss://electrum.arkade.sh                   tcp://electrum.arkade.sh:50001
+//   Mutinynet  https://mempool.mutinynet.arkade.sh/api    wss://electrum.mutinynet.arkade.sh         tcp://electrum.mutinynet.arkade.sh:50001
+//   Regtest    http://localhost:3000                      ws://localhost:50003                       tcp://localhost:50000
 //
-// ElectrumWsUri is the websocket URL (scheme://host[:port]); wss://electrum.arkade.sh
-// terminates at the host's port 443. The public Ark Labs Fulcrum
-// instances only expose 50001 (plain Electrum binary protocol over TCP)
-// — for TLS use the WSS endpoint via ElectrumWsUri. (50002 TCP+TLS is
-// NOT exposed on the public hosts; ts-sdk's source comment listing
-// 50001/50002/50003 is stale.) Regtest uses nigiri's electrs which
-// exposes only 50000 for the Electrum binary protocol (30000 on the
-// same host is electrs's HTTP REST, a different protocol).
+// ElectrumWsUri is the websocket URL — wss://electrum.arkade.sh
+// terminates at the host's port 443. ElectrumTcpUri is verified at the
+// protocol layer against `server.version`: public Ark Labs Fulcrum
+// instances only expose :50001 (plain Electrum binary protocol). 50002
+// TCP+TLS is NOT exposed — for TLS use the WSS endpoint via
+// ElectrumWsUri. (ts-sdk's source comment listing 50001/50002/50003 is
+// stale.) Regtest uses nigiri's electrs on :50000 for the binary
+// protocol — 30000 on the same host is electrs's HTTP REST, a
+// different protocol.
 services.AddEsploraBlockchain(new Uri(ArkNetworkConfig.Mainnet.EsploraUri!));
 // or pass your own URL: services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
 

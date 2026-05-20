@@ -61,27 +61,21 @@ public record ArkNetworkConfig(
     string? ElectrumWsUri = null,
 
     /// <summary>
-    /// Default Electrum endpoint hostname for raw-TCP consumers (mirrors
-    /// the ts-sdk's <c>ELECTRUM_TCP_HOST</c>). Pair with
-    /// <see cref="ElectrumTcpPort"/>. Optional and informational — no
-    /// built-in NArk service consumes it; .NET clients that speak
-    /// Electrum-over-TCP directly can pull it off the preset.
+    /// Default Electrum TCP endpoint for this network as a
+    /// <c>tcp://host:port</c> URI — pair to <see cref="ElectrumWsUri"/>
+    /// for callers that prefer raw TCP over WebSocket. Verified at the
+    /// protocol level against <c>server.version</c>: the public Ark
+    /// Labs Fulcrum instances (Mainnet, Mutinynet) only expose
+    /// <b>:50001</b> (plain Electrum binary protocol); the conventional
+    /// 50002 TLS port is not exposed — for TLS use the WSS endpoint via
+    /// <see cref="ElectrumWsUri"/>. Regtest uses <b>:50000</b>, the only
+    /// port nigiri's <c>electrs</c> listens on for the binary protocol
+    /// (30000 on the same host is electrs's HTTP REST, a different
+    /// protocol). Optional and informational — no built-in NArk service
+    /// consumes it.
     /// </summary>
     [property: JsonPropertyName("electrum-tcp")]
-    string? ElectrumTcpHost = null,
-
-    /// <summary>
-    /// Default Electrum TCP port for this network. The public Ark Labs
-    /// Fulcrum instances (Mainnet, Mutinynet) only expose <b>50001</b>
-    /// (plain Electrum binary protocol over TCP). For TLS, use
-    /// <see cref="ElectrumWsUri"/> (Electrum-over-WSS terminates at the
-    /// host's port 443) — the conventional 50002 TLS port is not exposed.
-    /// Regtest uses <b>50000</b>, the only port nigiri's <c>electrs</c>
-    /// listens on for the Electrum binary protocol (30000 on the same
-    /// host is electrs's HTTP REST, a different protocol).
-    /// </summary>
-    [property: JsonPropertyName("electrum-tcp-port")]
-    int? ElectrumTcpPort = null)
+    string? ElectrumTcpUri = null)
 {
     /// <summary>Mainnet configuration.</summary>
     public static readonly ArkNetworkConfig Mainnet = new(
@@ -91,8 +85,7 @@ public record ArkNetworkConfig(
         ExplorerUri: "https://arkade.space",
         EsploraUri: "https://mempool.arkade.sh/api",
         ElectrumWsUri: "wss://electrum.arkade.sh",
-        ElectrumTcpHost: "electrum.arkade.sh",
-        ElectrumTcpPort: 50001);
+        ElectrumTcpUri: "tcp://electrum.arkade.sh:50001");
 
     /// <summary>Mutinynet (signet) configuration.</summary>
     public static readonly ArkNetworkConfig Mutinynet = new(
@@ -102,8 +95,7 @@ public record ArkNetworkConfig(
         ExplorerUri: "https://explorer.mutinynet.arkade.sh",
         EsploraUri: "https://mempool.mutinynet.arkade.sh/api",
         ElectrumWsUri: "wss://electrum.mutinynet.arkade.sh",
-        ElectrumTcpHost: "electrum.mutinynet.arkade.sh",
-        ElectrumTcpPort: 50001);
+        ElectrumTcpUri: "tcp://electrum.mutinynet.arkade.sh:50001");
 
     /// <summary>Local regtest configuration.</summary>
     public static readonly ArkNetworkConfig Regtest = new(
@@ -118,8 +110,7 @@ public record ArkNetworkConfig(
         // nigiri's electrs binary-protocol port — verified against
         // nigiri/cmd/nigiri/resources/docker-compose.yml. 30000 on the
         // same container is electrs's HTTP REST, a different protocol.
-        ElectrumTcpHost: "localhost",
-        ElectrumTcpPort: 50000);
+        ElectrumTcpUri: "tcp://localhost:50000");
 
 }
 
