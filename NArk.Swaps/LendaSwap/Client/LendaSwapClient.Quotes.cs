@@ -23,6 +23,11 @@ public partial class LendaSwapClient
     /// <param name="sourceAmount">Amount in source token (specify either source or target, not both).</param>
     /// <param name="targetAmount">Amount in target token (specify either source or target, not both).</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="extraFees">
+    /// Optional per-swap fee surcharge in basis points (0..max_extra_fee_bps
+    /// configured on the matching developer key on the LendaSwap side).
+    /// Requests exceeding the per-key cap are rejected with 400.
+    /// </param>
     public virtual async Task<QuoteResponse?> GetQuoteAsync(
         string sourceChain,
         string sourceToken,
@@ -30,6 +35,7 @@ public partial class LendaSwapClient
         string targetToken,
         long? sourceAmount = null,
         long? targetAmount = null,
+        int? extraFees = null,
         CancellationToken ct = default)
     {
         var queryParams = new List<string>
@@ -45,6 +51,9 @@ public partial class LendaSwapClient
 
         if (targetAmount.HasValue)
             queryParams.Add($"target_amount={targetAmount.Value}");
+
+        if (extraFees.HasValue)
+            queryParams.Add($"extra_fees={extraFees.Value}");
 
         var url = $"quote?{string.Join("&", queryParams)}";
         return await _httpClient.GetFromJsonAsync<QuoteResponse>(url, JsonOptions, ct);
