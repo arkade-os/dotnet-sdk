@@ -446,7 +446,11 @@ public class VtxoSynchronizationService : IAsyncDisposable
             var started = DateTimeOffset.UtcNow;
             try
             {
-                _logger?.LogInformation(
+                // Pre-poll line is just "we're about to call arkd" — same
+                // info is in the result line below, so keep it at Debug to
+                // avoid doubling the per-tick spam on the 5-second safety
+                // net.
+                _logger?.LogDebug(
                     "StartQueryLogic: polling {Count} script(s) (after={After}): [{Scripts}]",
                     request.Scripts.Count,
                     request.After?.ToString("O") ?? "<none>",
@@ -458,9 +462,23 @@ public class VtxoSynchronizationService : IAsyncDisposable
                     found++;
                     await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
                 }
-                _logger?.LogInformation(
-                    "StartQueryLogic: poll returned {Found} VTXO(s) across {Count} script(s) in {Elapsed}ms",
-                    found, request.Scripts.Count, (int)(DateTimeOffset.UtcNow - started).TotalMilliseconds);
+                // The productive case (found > 0 = a VTXO landed) is what
+                // operators want to see at Info. The cold-start catch-up
+                // also stays at Info even on 0 — it's a one-off first-tick
+                // signal worth seeing. Routine 5-second ticks that find
+                // nothing drop to Debug so they don't drown the log.
+                if (found > 0 || request.IsColdStartCatchup)
+                {
+                    _logger?.LogInformation(
+                        "StartQueryLogic: poll returned {Found} VTXO(s) across {Count} script(s) in {Elapsed}ms",
+                        found, request.Scripts.Count, (int)(DateTimeOffset.UtcNow - started).TotalMilliseconds);
+                }
+                else
+                {
+                    _logger?.LogDebug(
+                        "StartQueryLogic: poll returned 0 VTXO(s) across {Count} script(s) in {Elapsed}ms",
+                        request.Scripts.Count, (int)(DateTimeOffset.UtcNow - started).TotalMilliseconds);
+                }
 
                 // Mark the cold-start catch-up as complete on its first
                 // successful poll. Until this flips, routine polls below
