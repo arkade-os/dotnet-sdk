@@ -379,11 +379,18 @@ var onchainAddress = boardingContract.GetOnchainAddress(network);
 
 ```csharp
 // Option A: Esplora (mempool.space, Chopsticks, etc.)
-// ArkNetworkConfig.{Mainnet,Mutinynet,Regtest}.EsploraUri carries
-// per-network defaults that mirror the canonical Arkade ts-sdk:
-//   Mainnet   → https://mempool.arkade.sh/api
-//   Mutinynet → https://mempool.mutinynet.arkade.sh/api
-//   Regtest   → http://localhost:3000
+// ArkNetworkConfig.{Mainnet,Mutinynet,Regtest} carry per-network
+// endpoint defaults that mirror the canonical Arkade ts-sdk:
+//
+//   Network    EsploraUri                                 ElectrumWsUri                              ElectrumTcpHost
+//   Mainnet    https://mempool.arkade.sh/api              wss://electrum.arkade.sh                   electrum.arkade.sh
+//   Mutinynet  https://mempool.mutinynet.arkade.sh/api    wss://electrum.mutinynet.arkade.sh         electrum.mutinynet.arkade.sh
+//   Regtest    http://localhost:3000                      ws://localhost:50003                       localhost
+//
+// ElectrumWsUri is the websocket URL (full scheme://host[:port]); the
+// public Ark Labs Fulcrum instances also expose plain TCP (port 50001),
+// TCP+TLS (50002), and WSS (50004). ElectrumTcpHost is hostname-only —
+// the caller picks the port.
 services.AddEsploraBlockchain(new Uri(ArkNetworkConfig.Mainnet.EsploraUri!));
 // or pass your own URL: services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
 

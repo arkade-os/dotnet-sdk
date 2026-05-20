@@ -54,11 +54,22 @@ public record ArkNetworkConfig(
 
     /// <summary>
     /// Default Electrum websocket endpoint for this network (mirrors the
-    /// ts-sdk's <c>WS_DEFAULT_URLS</c>). Optional — only consumed by clients
+    /// ts-sdk's <c>ELECTRUM_WS_URL</c>). Optional — only consumed by clients
     /// that want a websocket-driven Electrum chain source.
     /// </summary>
     [property: JsonPropertyName("electrum-ws")]
-    string? ElectrumWsUri = null)
+    string? ElectrumWsUri = null,
+
+    /// <summary>
+    /// Default Electrum endpoint hostname for raw-TCP consumers (mirrors
+    /// the ts-sdk's <c>ELECTRUM_TCP_HOST</c>; hostname only, no port — the
+    /// consumer picks the port: 50001 plain TCP, 50002 TCP+TLS, 50004 WSS
+    /// on the public Ark Labs Fulcrum instances). Optional and informational
+    /// — no built-in NArk service consumes it; .NET clients that speak
+    /// Electrum-over-TCP directly can pull it off the preset.
+    /// </summary>
+    [property: JsonPropertyName("electrum-tcp")]
+    string? ElectrumTcpHost = null)
 {
     /// <summary>Mainnet configuration.</summary>
     public static readonly ArkNetworkConfig Mainnet = new(
@@ -67,7 +78,8 @@ public record ArkNetworkConfig(
         BoltzUri: "https://api.boltz.exchange/",
         ExplorerUri: "https://arkade.space",
         EsploraUri: "https://mempool.arkade.sh/api",
-        ElectrumWsUri: "wss://electrum.arkade.sh");
+        ElectrumWsUri: "wss://electrum.arkade.sh",
+        ElectrumTcpHost: "electrum.arkade.sh");
 
     /// <summary>Mutinynet (signet) configuration.</summary>
     public static readonly ArkNetworkConfig Mutinynet = new(
@@ -76,7 +88,8 @@ public record ArkNetworkConfig(
         BoltzUri: "https://api.boltz.mutinynet.arkade.sh/",
         ExplorerUri: "https://explorer.mutinynet.arkade.sh",
         EsploraUri: "https://mempool.mutinynet.arkade.sh/api",
-        ElectrumWsUri: "wss://electrum.mutinynet.arkade.sh");
+        ElectrumWsUri: "wss://electrum.mutinynet.arkade.sh",
+        ElectrumTcpHost: "electrum.mutinynet.arkade.sh");
 
     /// <summary>Local regtest configuration.</summary>
     public static readonly ArkNetworkConfig Regtest = new(
@@ -85,9 +98,10 @@ public record ArkNetworkConfig(
         BoltzUri: "http://localhost:9069/",
         ExplorerUri: "http://localhost:7080",
         // ts-sdk regtest Esplora default: a local mempool/Chopsticks deployment.
-        // No Electrum WS default for regtest — ts-sdk assumes a locally-run
-        // electrum-ws websocat bridge whose URL is environment-specific.
-        EsploraUri: "http://localhost:3000");
+        EsploraUri: "http://localhost:3000",
+        // Regtest WS bridge convention: electrum-ws on port 50003 (ts-sdk).
+        ElectrumWsUri: "ws://localhost:50003",
+        ElectrumTcpHost: "localhost");
 
 }
 
