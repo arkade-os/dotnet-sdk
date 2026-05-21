@@ -58,9 +58,15 @@ try
             if (args.Length < 2) { Console.WriteLine("Usage: status <swapId>"); return; }
             await ShowSwapStatus(args[1]);
             break;
+        case "parse-bench":
+            NArk.Scratchpad.ParseBench.Run();
+            break;
+        case "mnemonic-bench":
+            NArk.Scratchpad.ParseBench.RunMnemonicBench();
+            break;
         default:
             Console.WriteLine($"Unknown command: {command}");
-            Console.WriteLine("Commands: info, boltz-pairs, boltz-raw, vhtlc-test, chain-e2e, fulmine-info, status <id>");
+            Console.WriteLine("Commands: info, boltz-pairs, boltz-raw, vhtlc-test, chain-e2e, fulmine-info, status <id>, parse-bench");
             break;
     }
 }
