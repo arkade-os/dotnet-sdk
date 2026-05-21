@@ -9,11 +9,22 @@ namespace NArk.Core.Wallet;
 
 public class HierarchicalDeterministicWalletSigner(ArkWalletInfo wallet) : IArkadeWalletSigner
 {
+    // BIP-39 → BIP-32 master extKey requires PBKDF2-HMAC-SHA512 × 2048 iterations,
+    // ~100 ms per call on commodity CPUs. The plugin recreates this signer for
+    // every GetPubKey / Sign / SignMusig / GenerateNonces — so on a busy
+    // batch-session path the wallet does *hundreds* of PBKDF2 rounds per minute,
+    // pegging a CPU core and starving every other async task in the process
+    // (we observed Stopwatch-wall-time on unrelated work blowing up to 1-3 s
+    // during these windows). Mnemonic → ExtKey is a pure function of the
+    // mnemonic string; cache it globally so PBKDF2 runs at most once per
+    // mnemonic per process. The mnemonic is already held in memory by the
+    // wallet object, so this introduces no new exposure surface.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ExtKey> _extKeyCache = new();
+
     private Task<ECPrivKey> DerivePrivateKey(OutputDescriptor descriptor)
     {
         var fullPath = descriptor.Extract().FullPath ?? throw new InvalidOperationException();
-        var mnemonic = new Mnemonic(wallet.Secret);
-        var extKey = mnemonic.DeriveExtKey();
+        var extKey = _extKeyCache.GetOrAdd(wallet.Secret, secret => new Mnemonic(secret).DeriveExtKey());
         return Task.FromResult(ECPrivKey.Create(extKey.Derive(fullPath).PrivateKey.ToBytes()));
     }
 

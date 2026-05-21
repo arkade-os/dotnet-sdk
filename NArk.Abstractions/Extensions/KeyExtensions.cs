@@ -34,7 +34,7 @@ public static class KeyExtensions
     public static OutputDescriptor ParseOutputDescriptor(string str, Network network)
     {
         if (!HexEncoder.IsWellFormed(str))
-            return OutputDescriptor.Parse(str, network);
+            return ParseCached(str, network);
 
         var bytes = Convert.FromHexString(str);
         if (bytes.Length != 32 && bytes.Length != 33)
@@ -42,6 +42,22 @@ public static class KeyExtensions
             throw new ArgumentException("the string must be 32/33 bytes long", nameof(str));
         }
 
-        return OutputDescriptor.Parse($"tr({str})", network);
+        return ParseCached($"tr({str})", network);
+    }
+
+    // NBitcoin's OutputDescriptor.Parse is observed at ~500ms-1s per call on
+    // wildcard taproot descriptors (BIP-380 lexer + key-origin + checksum
+    // validation in a hot codepath). The same descriptor strings (server,
+    // wallet account, per-contract sender/receiver) are re-parsed dozens of
+    // times in a single payment-settlement path, accumulating into ~6s
+    // GetCoin latencies. Parsed OutputDescriptors are immutable, so caching
+    // by (string, network) is safe. Bounded by the number of unique
+    // descriptors the wallet ever sees (small).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), OutputDescriptor> _descriptorCache = new();
+
+    private static OutputDescriptor ParseCached(string str, Network network)
+    {
+        var key = (str, network.NetworkSet.CryptoCode + ":" + network.ChainName);
+        return _descriptorCache.GetOrAdd(key, _ => OutputDescriptor.Parse(str, network));
     }
 }

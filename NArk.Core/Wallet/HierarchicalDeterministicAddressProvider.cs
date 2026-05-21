@@ -24,7 +24,15 @@ public class HierarchicalDeterministicAddressProvider(
 
     public async Task<bool> IsOurs(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
     {
-        OutputDescriptor.Parse(wallet.AccountDescriptor ?? throw new Exception("Malformed HD Wallet"), network);
+        // Guard: the wallet must have an account descriptor. The pre-existing
+        // `OutputDescriptor.Parse(wallet.AccountDescriptor, network)` line on
+        // entry was discarding its result — a ~500-1000ms no-op that fired on
+        // every IsOurs call (and IsOurs is called multiple times per VTXO
+        // settlement via VHTLCContractTransformer / PaymentContractTransformer).
+        // Replaced with a null-check that keeps the validation but skips the
+        // wasted parse.
+        if (string.IsNullOrEmpty(wallet.AccountDescriptor))
+            throw new Exception("Malformed HD Wallet");
         var index = descriptor.Extract().DerivationPath?.Indexes.Last().ToString();
         if (index is null)
         {
@@ -64,7 +72,9 @@ public class HierarchicalDeterministicAddressProvider(
     /// </summary>
     internal static OutputDescriptor GetDescriptorFromIndex(Network network, string descriptor, int index)
     {
-        return OutputDescriptor.Parse(descriptor.Replace("/*", $"/{index}"), network);
+        // Route through the cached parser — `OutputDescriptor.Parse` is observed
+        // at ~500-1000ms per call and this path runs on every IsOurs check.
+        return NArk.Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(descriptor.Replace("/*", $"/{index}"), network);
     }
 
     public async Task<(ArkContract contract, ArkContractEntity entity)> GetNextContract(
