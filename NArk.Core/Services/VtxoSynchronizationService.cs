@@ -38,18 +38,6 @@ public class VtxoSynchronizationService : IAsyncDisposable
     // UpdateScriptsView full-syncs newly-added scripts with After=null.
     private static readonly TimeSpan StreamPollLookback = TimeSpan.FromMinutes(5);
 
-    // Delays between arkd's subscription push and our follow-up indexer poll(s).
-    // arkd can emit the event before the indexer query path has the VTXO visible,
-    // and we've observed the commit lag range from <1s to ~30s. Rather than pick a
-    // single tuned delay, enqueue a short retry schedule; each poll uses an `after`
-    // window so repeated fetches of unchanged data are no-ops in the upsert path.
-    private static readonly TimeSpan[] StreamPushPollSchedule =
-    [
-        TimeSpan.FromMilliseconds(750),
-        TimeSpan.FromSeconds(3),
-        TimeSpan.FromSeconds(8),
-    ];
-
     /// <summary>
     /// Internal poll work item.
     /// </summary>
@@ -379,12 +367,24 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 _logger?.LogInformation(
                     "VTXO subscription stream: arkd pushed update for {Count} script(s): [{Scripts}]",
                     vtxosToPoll.Count, string.Join(", ", vtxosToPoll));
-                // arkd's subscription event can fire well before its indexer query path
-                // has committed the new VTXO — we've observed anywhere from <1s to
-                // ~30s. Fire a short schedule of retry polls rather than relying on a
-                // single tuned delay. All polls use an `after` window so repeated
-                // fetches of unchanged state are no-ops on the upsert side.
-                _ = FirePollSchedule(vtxosToPoll, restartableToken.Token);
+                // Enqueue a single immediate poll for the pushed scripts. The earlier
+                // 750ms/3s/8s retry schedule was added when arkd v0.9.0-rc.1's indexer
+                // could lag the subscription event by up to ~30s; on current arkd builds
+                // (v0.9.5+) plus the routine 5s safety-net poll, that schedule is dead
+                // weight — it only delayed detection on the happy path. If the immediate
+                // poll loses the race against arkd's indexer, RoutinePoll catches it
+                // within ~5s using the same after-window semantics.
+                try
+                {
+                    var after = DateTimeOffset.UtcNow - StreamPollLookback;
+                    await _readyToPoll.Writer.WriteAsync(
+                        new PollRequest(vtxosToPoll, after), restartableToken.Token);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Stream push: failed to enqueue immediate poll");
+                }
             }
             endedGracefully = true;
         }
@@ -407,30 +407,6 @@ public class VtxoSynchronizationService : IAsyncDisposable
             _logger?.LogWarning(
                 "VTXO subscription stream ended without error — arkd closed the stream. Restarting scripts view.");
             await UpdateScriptsView(_shutdownCts.Token);
-        }
-    }
-
-    private async Task FirePollSchedule(HashSet<string> scripts, CancellationToken token)
-    {
-        for (var i = 0; i < StreamPushPollSchedule.Length; i++)
-        {
-            try
-            {
-                await Task.Delay(StreamPushPollSchedule[i], token);
-            }
-            catch (OperationCanceledException) { return; }
-
-            try
-            {
-                var after = DateTimeOffset.UtcNow - StreamPollLookback;
-                await _readyToPoll.Writer.WriteAsync(new PollRequest(scripts, after), token);
-            }
-            catch (OperationCanceledException) { return; }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "FirePollSchedule: failed to enqueue retry poll ({Attempt}/{Total})",
-                    i + 1, StreamPushPollSchedule.Length);
-            }
         }
     }
 
