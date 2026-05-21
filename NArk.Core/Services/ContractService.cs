@@ -70,7 +70,8 @@ public class ContractService(
         await contractStorage.SaveContract(entity, cancellationToken);
 
         await eventHandlers.SafeHandleEventAsync(new NewContractActionEvent(contract, walletId), cancellationToken);
-        logger?.LogInformation("Derived {Purpose} contract for wallet {WalletId}", purpose, walletId);
+        logger?.LogInformation("Derived {Purpose} contract for wallet {WalletId} (type={ContractType}, script={Script})",
+            purpose, walletId, entity.Type, entity.Script);
         return contract;
     }
 
@@ -94,6 +95,7 @@ public class ContractService(
             entity = entity with { Metadata = metadata };
         await contractStorage.SaveContract(entity, cancellationToken);
         await eventHandlers.SafeHandleEventAsync(new NewContractActionEvent(contract, walletId), cancellationToken);
-        logger?.LogInformation("Imported contract for wallet {WalletId}", walletId);
+        logger?.LogInformation("Imported contract for wallet {WalletId} (type={ContractType}, script={Script})",
+            walletId, entity.Type, entity.Script);
     }
 }
