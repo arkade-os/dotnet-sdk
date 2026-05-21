@@ -22,7 +22,10 @@ public class DefaultWalletProvider(
     {
         try
         {
+            // TEMP latency probe.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var wallet = await walletStorage.LoadWallet(identifier, cancellationToken);
+            logger?.LogTrace("[wallet-probe] GetSigner LoadWallet: {Ms}ms", sw.ElapsedMilliseconds);
             logger?.LogDebug("GetSignerAsync: identifier={Identifier}, walletId={WalletId}, walletType={WalletType}, accountDescriptor={AccountDescriptor}",
                 identifier, wallet.Id, wallet.WalletType, wallet.AccountDescriptor);
             return wallet.WalletType switch
@@ -43,8 +46,14 @@ public class DefaultWalletProvider(
     {
         try
         {
+            // TEMP latency probe.
+            var swInfo = System.Diagnostics.Stopwatch.StartNew();
             var network = (await clientTransport.GetServerInfoAsync(cancellationToken)).Network;
+            var infoMs = swInfo.ElapsedMilliseconds;
+            var swLoad = System.Diagnostics.Stopwatch.StartNew();
             var wallet = await walletStorage.LoadWallet(identifier, cancellationToken);
+            logger?.LogTrace("[wallet-probe] GetAddressProvider: GetServerInfo={InfoMs}ms LoadWallet={LoadMs}ms",
+                infoMs, swLoad.ElapsedMilliseconds);
             ArkAddress? sweepDestination = null;
             if (!string.IsNullOrEmpty(wallet.Destination))
             {

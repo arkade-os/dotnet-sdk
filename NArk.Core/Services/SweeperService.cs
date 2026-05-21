@@ -55,6 +55,9 @@ public class SweeperService(
     {
         await foreach (var reason in _sweepJobTrigger.Reader.ReadAllAsync(loopShutdownToken))
         {
+            // TEMP latency probe — make queue backlog observable.
+            var swTrigger = System.Diagnostics.Stopwatch.StartNew();
+            logger?.LogTrace("[sweep-probe] sweep trigger dequeued: {Type}", reason.GetType().Name);
             try
             {
 
@@ -65,12 +68,14 @@ public class SweeperService(
                 SweepTimerTrigger _ => TrySweepContracts(null, loopShutdownToken),
                 _ => throw new ArgumentOutOfRangeException()
             });
-            
+
             }
             catch (Exception e)
             {
                 logger?.LogInformation(0, e, "Error during sweeping loop execution for trigger {TriggerType}", reason.GetType().Name);
             }
+            logger?.LogTrace("[sweep-probe] sweep trigger {Type} done in {Ms}ms",
+                reason.GetType().Name, swTrigger.ElapsedMilliseconds);
         }
     }
 
@@ -125,13 +130,21 @@ public class SweeperService(
         foreach (var contractCoins in coins)
             foreach (var vtxo in contractCoins.Value)
             {
+                // TEMP latency probe per VTXO.
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 try
                 {
                     result.Add(await coinService.GetCoin(contractCoins.Key, vtxo));
+                    logger?.LogTrace(
+                        "[sweep-probe]     GetCoin {Type} {Outpoint}: {Ms}ms",
+                        contractCoins.Key.Type, $"{vtxo.TransactionId[..8]}:{vtxo.TransactionOutputIndex}", sw.ElapsedMilliseconds);
                 }
                 catch (AdditionalInformationRequiredException)
                 {
                     // Skip unsignable contracts (e.g. UnknownArkContract for sweep destinations)
+                    logger?.LogTrace(
+                        "[sweep-probe]     GetCoin {Type} {Outpoint}: skipped (AdditionalInformationRequired) after {Ms}ms",
+                        contractCoins.Key.Type, $"{vtxo.TransactionId[..8]}:{vtxo.TransactionOutputIndex}", sw.ElapsedMilliseconds);
                 }
             }
         return result;
@@ -139,15 +152,32 @@ public class SweeperService(
 
     private async Task TrySweepVtxos(IReadOnlyCollection<ArkVtxo> vtxos, CancellationToken cancellationToken)
     {
+        // TEMP latency probe — pinpointing the 11.5s gap between HTLC arrival
+        // and "VHTLC claim:" log in reverse-submarine-swap settlement. Remove
+        // (or demote to Debug) once the bottleneck is identified.
+        var swTotal = System.Diagnostics.Stopwatch.StartNew();
+        logger?.LogTrace("[sweep-probe] TrySweepVtxos enter: {VtxoCount} VTXO(s) [{Outpoints}]",
+            vtxos.Count,
+            string.Join(", ", vtxos.Select(v => $"{v.TransactionId[..8]}:{v.TransactionOutputIndex}")));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var timeHeight = await chainTimeProvider.GetChainTime(cancellationToken);
+        logger?.LogTrace("[sweep-probe]   GetChainTime: {Ms}ms", sw.ElapsedMilliseconds);
+
         var unspentVtxos = vtxos.Where(v => v.CanSpendOffchain(timeHeight)).ToArray();
         if (unspentVtxos.Length == 0)
+        {
+            logger?.LogTrace("[sweep-probe] TrySweepVtxos exit (no spendable): total={Ms}ms", swTotal.ElapsedMilliseconds);
             return;
+        }
         var scriptToVtxos = unspentVtxos.GroupBy(vtxo => vtxo.Script)
             .ToDictionary(grouping => grouping.Key, grouping => grouping.ToArray());
 
+        sw.Restart();
         var contracts =
             await contractStorage.GetContracts(scripts: scriptToVtxos.Keys.ToArray(), cancellationToken: cancellationToken);
+        logger?.LogTrace("[sweep-probe]   GetContracts ({ScriptCount} scripts): {Ms}ms, {ContractCount} matched",
+            scriptToVtxos.Count, sw.ElapsedMilliseconds, contracts.Count);
 
         Dictionary<ArkContractEntity, ArkVtxo[]> contractVtxos = new Dictionary<ArkContractEntity, ArkVtxo[]>();
         foreach (var contract in contracts)
@@ -158,8 +188,16 @@ public class SweeperService(
             contractVtxos.Add(contract, x.ToArray());
         }
 
+        sw.Restart();
         var transformedCoins = await GetCoinsAsync(contractVtxos);
+        logger?.LogTrace("[sweep-probe]   GetCoinsAsync ({InputContracts} contracts → {CoinCount} coins): {Ms}ms",
+            contractVtxos.Count, transformedCoins.Count, sw.ElapsedMilliseconds);
+
+        sw.Restart();
         await ExecutePoliciesAsync(transformedCoins);
+        logger?.LogTrace("[sweep-probe]   ExecutePoliciesAsync: {Ms}ms", sw.ElapsedMilliseconds);
+
+        logger?.LogTrace("[sweep-probe] TrySweepVtxos exit: total={Ms}ms", swTotal.ElapsedMilliseconds);
     }
 
     private async Task ExecutePoliciesAsync(IReadOnlyCollection<ArkCoin> coins)
@@ -169,15 +207,24 @@ public class SweeperService(
 
         HashSet<ArkCoin> coinsToSweep = [];
 
+        // TEMP latency probe.
         foreach (var policy in policies)
         {
+            var swPolicy = System.Diagnostics.Stopwatch.StartNew();
+            var beforeCount = coinsToSweep.Count;
             await foreach (var coin in policy.SweepAsync(coins))
             {
                 coinsToSweep.Add(coin);
             }
+            logger?.LogTrace(
+                "[sweep-probe]     policy {Policy}: {Ms}ms (+{Added} coins to sweep)",
+                policy.GetType().Name, swPolicy.ElapsedMilliseconds, coinsToSweep.Count - beforeCount);
         }
 
+        var swSweep = System.Diagnostics.Stopwatch.StartNew();
         await Sweep(coinsToSweep);
+        logger?.LogTrace(
+            "[sweep-probe]     Sweep ({Count} coins): {Ms}ms", coinsToSweep.Count, swSweep.ElapsedMilliseconds);
     }
 
     private async Task Sweep(HashSet<ArkCoin> coinsToSweep)

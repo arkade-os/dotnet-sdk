@@ -97,8 +97,10 @@ public class SpendingService(
                 // Pass input contracts for potential descriptor recycling (avoids HD index bloat)
                 // set inactive so that the postspend event polls and not have a contract constantly listening
                 var inputContracts = inputs.Select(i => i.Contract).ToArray();
+                var swDerive = System.Diagnostics.Stopwatch.StartNew();
                 changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf,
                     inputContracts, cancellationToken: cancellationToken, activityState:ContractActivityState.Inactive)).GetArkAddress();
+                logger?.LogTrace("[spend-probe] DeriveContract (change): {Ms}ms", swDerive.ElapsedMilliseconds);
             }
 
             // Add change output if it's at or above the dust threshold
@@ -121,8 +123,10 @@ public class SpendingService(
             var transactionBuilder =
                 new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage);
 
+            var swSubmit = System.Diagnostics.Stopwatch.StartNew();
             var tx = await transactionBuilder.ConstructAndSubmitArkTransaction(inputs, outputs, cancellationToken,
                 assetPacketOutput);
+            logger?.LogTrace("[spend-probe] ConstructAndSubmitArkTransaction: {Ms}ms", swSubmit.ElapsedMilliseconds);
             var txId = tx.GetGlobalTransaction().GetHash();
             logger?.LogInformation("Spend transaction {TxId} completed successfully for wallet {WalletId}", txId,
                 walletId);

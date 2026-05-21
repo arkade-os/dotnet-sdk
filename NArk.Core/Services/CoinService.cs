@@ -12,8 +12,18 @@ public class CoinService(IClientTransport clientTransport, IContractStorage cont
 {
     public async Task<ArkCoin> GetCoin(ArkContractEntity contract, ArkVtxo vtxo, CancellationToken cancellationToken = default)
     {
+        // TEMP latency probe — kept light. Heavier inline benchmark was used
+        // during root-cause analysis (proved the parser itself is sub-ms; the
+        // wall-time slowdowns came from cache misses + competing CPU load),
+        // removed once the cache fixes landed.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
+        var infoMs = sw.ElapsedMilliseconds;
+
+        var parseSw = System.Diagnostics.Stopwatch.StartNew();
         var parsedContract = ArkContractParser.Parse(contract.Type, contract.AdditionalData, serverInfo.Network);
+        var parseMs = parseSw.ElapsedMilliseconds;
+
         if (parsedContract is null)
         {
             if (vtxo is not null)
@@ -24,7 +34,12 @@ public class CoinService(IClientTransport clientTransport, IContractStorage cont
             throw new UnableToSignUnknownContracts("Could not parse contract");
         }
 
-        return await RunTransformer(contract.WalletIdentifier, vtxo, parsedContract);
+        var xfSw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await RunTransformer(contract.WalletIdentifier, vtxo, parsedContract);
+        logger?.LogTrace(
+            "[coin-probe] GetCoin {Type}: GetServerInfo={InfoMs}ms parse={ParseMs}ms transformer={XfMs}ms",
+            contract.Type, infoMs, parseMs, xfSw.ElapsedMilliseconds);
+        return result;
     }
 
     private async Task<ArkCoin> RunTransformer(string walletIdentifier, ArkVtxo vtxo, ArkContract contract)
