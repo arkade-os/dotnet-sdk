@@ -155,6 +155,18 @@ public class SpendingService(
         var vtxos = await vtxoStorage.GetVtxos(walletIds: [walletId], includeSpent: false,
             cancellationToken: cancellationToken);
 
+        // Exclude on-chain VTXOs whose funding tx hasn't confirmed yet
+        // (today: boarding UTXOs still in the mempool). arkd's
+        // validateBoardingInput rejects unconfirmed boarding inputs at settle
+        // time, so offering them as spendable coins is misleading and any
+        // spend built from them is doomed.
+        var spendableVtxos = vtxos.Where(v => !v.IsUnconfirmedOnchain()).ToList();
+        var skipped = vtxos.Count - spendableVtxos.Count;
+        if (skipped > 0)
+            logger?.LogDebug("Excluding {Count} unconfirmed on-chain VTXO(s) from available coins for wallet {WalletId}",
+                skipped, walletId);
+        vtxos = spendableVtxos;
+
         var scripts = vtxos.Select(v => v.Script).Distinct().ToArray();
         var contractByScript =
             (await contractStorage.GetContracts(walletIds: [walletId], scripts: scripts,

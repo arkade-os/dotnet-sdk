@@ -21,6 +21,14 @@ public record ArkVtxo(
     IReadOnlyList<VtxoAsset>? Assets = null,
     Dictionary<string, string>? Metadata = null)
 {
+    /// <summary>
+    /// Metadata key carrying the on-chain confirmation state of an unrolled
+    /// (on-chain) VTXO, as <c>bool.ToString()</c> ("True"/"False"). Populated
+    /// by the boarding-UTXO sync from the explorer's confirmation status. The
+    /// writer (BoardingUtxoSyncService) and all readers share this constant.
+    /// </summary>
+    public const string ConfirmedMetadataKey = "Confirmed";
+
     public OutPoint OutPoint => new(new uint256(TransactionId), TransactionOutputIndex);
     public TxOut TxOut => new(Money.Satoshis(Amount), NBitcoin.Script.FromHex(Script));
 
@@ -56,6 +64,27 @@ public record ArkVtxo(
     public bool IsRecoverable(TimeHeight current)
     {
         return Swept || IsExpired(current) ;
+    }
+
+    /// <summary>
+    /// True when this VTXO is an on-chain output whose funding transaction is
+    /// not yet confirmed, and therefore cannot be spent or settled. Reads the
+    /// <see cref="ConfirmedMetadataKey"/> flag: a value other than "True"
+    /// (case-insensitive) means unconfirmed.
+    /// <para>
+    /// Today only boarding UTXOs carry this flag (set by the boarding-UTXO
+    /// sync from the explorer). VTXOs without the key — off-chain tree VTXOs
+    /// and arkd-reported unrolled VTXOs, which the indexer does not surface
+    /// confirmation data for — return <c>false</c>. If confirmation data is
+    /// later wired for arkd-reported unrolled VTXOs, setting the same flag
+    /// makes this (and every consumer) generalise without further changes.
+    /// </para>
+    /// </summary>
+    public bool IsUnconfirmedOnchain()
+    {
+        return Metadata is not null
+               && Metadata.TryGetValue(ConfirmedMetadataKey, out var confirmed)
+               && !string.Equals(confirmed, bool.TrueString, StringComparison.OrdinalIgnoreCase);
     }
     //
     // public bool RequiresForfeit()
