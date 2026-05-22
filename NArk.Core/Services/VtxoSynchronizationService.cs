@@ -24,13 +24,23 @@ public class VtxoSynchronizationService : IAsyncDisposable
     private CancellationTokenSource? _restartCts;
     private Task? _streamTask;
 
-    private HashSet<string> _lastViewOfScripts = [];
+    /// <summary>
+    /// The script set the subscription stream is currently subscribed to.
+    /// This is bookkeeping for the long-lived gRPC subscription only — it tells
+    /// us when to restart the stream (the subscribed set differs from the
+    /// freshly-derived active set). It is NOT the source of truth for what to
+    /// poll: <see cref="RoutinePoll"/> re-derives the active set fresh from the
+    /// providers every tick, so a drift here can never hide a script from
+    /// detection — the next poll catches it and re-syncs the stream.
+    /// </summary>
+    private HashSet<string> _subscribedScripts = [];
 
     /// <summary>
-    /// Gets the set of scripts currently being listened to for VTXO updates.
-    /// This is useful for debugging to see which contracts are actively tracked.
+    /// The scripts the subscription stream is currently subscribed to (for
+    /// debugging/observability). The 5-second safety-net poll always operates
+    /// on a freshly-derived active set, independent of this value.
     /// </summary>
-    public IReadOnlySet<string> ListenedScripts => _lastViewOfScripts;
+    public IReadOnlySet<string> ListenedScripts => _subscribedScripts;
 
     private readonly SemaphoreSlim _viewSyncLock = new(1);
 
@@ -198,7 +208,8 @@ public class VtxoSynchronizationService : IAsyncDisposable
     // has been seen to take 10-30s to make the VTXO queryable. The 5-second tick
     // with a 2-minute `after` window bounds detection latency while staying
     // cheap (each tick is one gRPC call with a small result set).
-    private static readonly TimeSpan RoutinePollInterval = TimeSpan.FromSeconds(5);
+    // Tunable for tests via the internal init property.
+    internal TimeSpan RoutinePollInterval { get; init; } = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RoutinePollLookback = TimeSpan.FromMinutes(2);
     private Task? _routinePollTask;
 
@@ -226,9 +237,31 @@ public class VtxoSynchronizationService : IAsyncDisposable
 
             try
             {
-                var scripts = _lastViewOfScripts;
+                // Derive the active-script set FRESH from the providers every
+                // tick (provider-agnostic — we don't care whether a script comes
+                // from a contract or an existing VTXO). This is the drift-proof
+                // source of truth for what to poll: a stale or missed stream
+                // subscription can never hide a script from detection, because
+                // the next tick re-derives and polls it regardless. A single
+                // periodic derivation is cheap — the historical 11k×11k blow-up
+                // came from firing the change event per VTXO upsert, not from
+                // one periodic query.
+                var scripts = await GatherActiveScriptsAsync(cancellationToken);
                 if (scripts.Count == 0)
                     continue;
+
+                // Keep the subscription stream in sync with reality. If the
+                // freshly derived set differs from what the stream is subscribed
+                // to, refresh — UpdateScriptsView restarts the stream and runs a
+                // full-history catch-up for newly-added scripts, recovering any
+                // VTXO that landed while a script was unsubscribed.
+                if (!scripts.SetEquals(_subscribedScripts))
+                {
+                    _logger?.LogInformation(
+                        "RoutinePoll: active set ({Count}) differs from the stream subscription ({Subscribed}) — refreshing subscription",
+                        scripts.Count, _subscribedScripts.Count);
+                    await UpdateScriptsView(cancellationToken);
+                }
 
                 var startedAt = DateTimeOffset.UtcNow;
                 var after = startedAt - RoutinePollLookback;
@@ -253,26 +286,57 @@ public class VtxoSynchronizationService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Derives the current active-script set by unioning every
+    /// <see cref="IActiveScriptsProvider"/>. Provider-agnostic: it does not care
+    /// whether a script is backed by a contract or an existing VTXO. A failing
+    /// provider is logged and skipped rather than aborting the whole refresh —
+    /// one storage hiccup must not blank the set and tear down the subscription
+    /// for every other provider's scripts; the next derivation re-includes it.
+    /// </summary>
+    private async Task<HashSet<string>> GatherActiveScriptsAsync(CancellationToken token)
+    {
+        var result = new HashSet<string>();
+        foreach (var provider in _activeScriptsProviders)
+        {
+            try
+            {
+                result.UnionWith(await provider.GetActiveScripts(token));
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex,
+                    "GetActiveScripts failed for provider {Provider}; skipping it for this refresh",
+                    provider.GetType().Name);
+            }
+        }
+        return result;
+    }
+
     private async Task UpdateScriptsView(CancellationToken token)
     {
         await _viewSyncLock.WaitAsync(token);
         try
         {
-            var newViewOfScripts = (await Task.WhenAll(_activeScriptsProviders.Select(p => p.GetActiveScripts(token)))).SelectMany(c => c).ToHashSet();
+            var newViewOfScripts = await GatherActiveScriptsAsync(token);
 
             if (newViewOfScripts.Count == 0)
                 return;
 
             // We already have a stream with this exact script list
-            if (newViewOfScripts.SetEquals(_lastViewOfScripts) && _streamTask is not null && !_streamTask.IsCompleted)
+            if (newViewOfScripts.SetEquals(_subscribedScripts) && _streamTask is not null && !_streamTask.IsCompleted)
             {
                 _logger?.LogDebug("UpdateScriptsView: unchanged ({Count} scripts), skipping stream restart", newViewOfScripts.Count);
                 return;
             }
 
-            var newlyAdded = newViewOfScripts.Except(_lastViewOfScripts).ToHashSet();
+            var newlyAdded = newViewOfScripts.Except(_subscribedScripts).ToHashSet();
             _logger?.LogInformation("UpdateScriptsView: script set changed from {OldCount} to {NewCount} scripts, restarting stream. New scripts: [{NewScripts}]",
-                _lastViewOfScripts.Count, newViewOfScripts.Count,
+                _subscribedScripts.Count, newViewOfScripts.Count,
                 string.Join(", ", newlyAdded));
 
             try
@@ -287,7 +351,7 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 _logger?.LogDebug(0, ex, "Error cancelling previous stream during scripts view update");
             }
 
-            _lastViewOfScripts = newViewOfScripts;
+            _subscribedScripts = newViewOfScripts;
             _restartCts = CancellationTokenSource.CreateLinkedTokenSource(token, _shutdownCts.Token);
             // Start a new subscription stream for the whole view.
             _streamTask = StartStreamLogic(newViewOfScripts, _restartCts.Token);
@@ -296,7 +360,7 @@ public class VtxoSynchronizationService : IAsyncDisposable
             // events for future changes). Skip when the set only shrank.
             if (newlyAdded.Count > 0)
             {
-                // First-startup nuance: at this point _lastViewOfScripts WAS
+                // First-startup nuance: at this point _subscribedScripts WAS
                 // empty (we're populating it from cold), so "newly added" =
                 // entire set. Without a persisted cursor we'd re-fetch every
                 // script's full VTXO history every cold start. Use
@@ -328,7 +392,7 @@ public class VtxoSynchronizationService : IAsyncDisposable
 
                 // The cold-start catch-up IS a full-set snapshot: at this moment
                 // newlyAdded equals the entire active script view (cold start →
-                // _lastViewOfScripts was empty before line 291), and `catchupAfter`
+                // _subscribedScripts was empty before it was assigned above), and `catchupAfter`
                 // is the stored cursor (or null for first-ever startup). On its
                 // successful completion we both flip the gate flag and advance
                 // the cursor to its StartedAt — eliminating the 5-second window

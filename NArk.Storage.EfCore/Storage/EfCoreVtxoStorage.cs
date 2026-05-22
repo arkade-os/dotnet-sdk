@@ -159,6 +159,25 @@ public class EfCoreVtxoStorage : IVtxoStorage
         return entities.Select(MapToArkVtxo).ToList();
     }
 
+    /// <summary>
+    /// Overrides the default <see cref="IVtxoStorage.GetActiveScripts"/> (which
+    /// materialises every unspent VTXO row) with a scripts-only projection. The
+    /// safety-net poll re-derives the active set every few seconds, so this runs
+    /// frequently — projecting <c>DISTINCT script</c> instead of full entities
+    /// keeps it cheap even for wallets with thousands of unspent VTXOs.
+    /// </summary>
+    public async Task<HashSet<string>> GetActiveScripts(CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var scripts = await db.Set<VtxoEntity>()
+            .Where(v => (v.SpentByTransactionId ?? "").Length == 0 &&
+                        (v.SettledByTransactionId ?? "").Length == 0)
+            .Select(v => v.Script)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        return scripts.ToHashSet();
+    }
+
     private static ArkVtxo MapToArkVtxo(VtxoEntity entity)
     {
         return new ArkVtxo(
