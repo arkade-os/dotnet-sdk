@@ -21,8 +21,19 @@ public class VtxoSynchronizationService : IAsyncDisposable
     private readonly CancellationTokenSource _shutdownCts = new();
     private Task? _queryTask;
 
-    private CancellationTokenSource? _restartCts;
+    // The long-lived stream supervisor task. It keeps exactly one GetSubscription
+    // stream open and updates the watched set IN PLACE (Subscribe/Unsubscribe) rather
+    // than tearing the stream down on every script change.
     private Task? _streamTask;
+    // Cancelled to interrupt the supervisor's current stream so it re-reads the
+    // subscription state (on recreate or teardown). A fresh instance per generation.
+    private CancellationTokenSource? _streamGenerationCts;
+    // Released when a subscription is (re)created from the idle/no-subscription state,
+    // to wake the supervisor out of its idle wait.
+    private readonly SemaphoreSlim _streamWakeup = new(0);
+    // arkd subscription id for the current in-place subscription; null when there is
+    // none (empty active set, or torn down).
+    private string? _subscriptionId;
 
     /// <summary>
     /// The script set the subscription stream is currently subscribed to.
@@ -211,6 +222,8 @@ public class VtxoSynchronizationService : IAsyncDisposable
     // Tunable for tests via the internal init property.
     internal TimeSpan RoutinePollInterval { get; init; } = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RoutinePollLookback = TimeSpan.FromMinutes(2);
+    // Backoff before reconnecting the subscription stream after a transient fault.
+    private static readonly TimeSpan StreamReconnectDelay = TimeSpan.FromSeconds(1);
     private Task? _routinePollTask;
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -219,6 +232,9 @@ public class VtxoSynchronizationService : IAsyncDisposable
         var multiToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCts.Token);
         _queryTask = StartQueryLogic(multiToken.Token);
         _routinePollTask = RoutinePoll(multiToken.Token);
+        // The supervisor starts idle and wakes once UpdateScriptsView creates the
+        // initial subscription below.
+        _streamTask = RunStreamSupervisorAsync(multiToken.Token);
         await UpdateScriptsView(multiToken.Token);
     }
 
@@ -322,94 +338,78 @@ public class VtxoSynchronizationService : IAsyncDisposable
         await _viewSyncLock.WaitAsync(token);
         try
         {
-            var newViewOfScripts = await GatherActiveScriptsAsync(token);
+            var newView = await GatherActiveScriptsAsync(token);
 
-            if (newViewOfScripts.Count == 0)
-                return;
-
-            // We already have a stream with this exact script list
-            if (newViewOfScripts.SetEquals(_subscribedScripts) && _streamTask is not null && !_streamTask.IsCompleted)
+            // Empty active set → tear the subscription down (no point holding an empty
+            // subscription open). The supervisor goes idle until scripts return.
+            if (newView.Count == 0)
             {
-                _logger?.LogDebug("UpdateScriptsView: unchanged ({Count} scripts), skipping stream restart", newViewOfScripts.Count);
-                return;
-            }
-
-            var newlyAdded = newViewOfScripts.Except(_subscribedScripts).ToHashSet();
-            _logger?.LogInformation("UpdateScriptsView: script set changed from {OldCount} to {NewCount} scripts, restarting stream. New scripts: [{NewScripts}]",
-                _subscribedScripts.Count, newViewOfScripts.Count,
-                string.Join(", ", newlyAdded));
-
-            try
-            {
-                if (_restartCts is not null)
-                    await _restartCts.CancelAsync();
-                if (_streamTask is not null)
-                    await _streamTask;
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogDebug(0, ex, "Error cancelling previous stream during scripts view update");
-            }
-
-            _subscribedScripts = newViewOfScripts;
-            _restartCts = CancellationTokenSource.CreateLinkedTokenSource(token, _shutdownCts.Token);
-            // Start a new subscription stream for the whole view.
-            _streamTask = StartStreamLogic(newViewOfScripts, _restartCts.Token);
-            // Catch-up poll: only newly-added scripts need a full-history fetch
-            // (already-known scripts have been synced and will receive stream
-            // events for future changes). Skip when the set only shrank.
-            if (newlyAdded.Count > 0)
-            {
-                // First-startup nuance: at this point _subscribedScripts WAS
-                // empty (we're populating it from cold), so "newly added" =
-                // entire set. Without a persisted cursor we'd re-fetch every
-                // script's full VTXO history every cold start. Use
-                // MIN(per-wallet vtxo.lastFullPollAt) as the `after` filter
-                // on this one call so the cold-start catch-up window equals
-                // "since last shutdown" rather than "all of history".
-                DateTimeOffset? catchupAfter = null;
-                var isInitialCatchup = _isFirstStartupCatchup;
-                if (isInitialCatchup && _walletStorage is not null)
+                if (_subscriptionId is not null)
                 {
+                    var torndown = _subscriptionId;
+                    _logger?.LogInformation("UpdateScriptsView: active set empty — tearing down subscription {Id}", torndown);
+                    _subscriptionId = null;
+                    SignalStreamGenerationChange();
                     try
                     {
-                        catchupAfter = await ReadCursorMinAcrossWalletsAsync(token);
-                        if (catchupAfter is not null)
-                        {
-                            _logger?.LogInformation(
-                                "First-startup catch-up: using MIN(per-wallet {Key})={After} as `after` filter for {Count} script(s)",
-                                LastFullPollAtMetadataKey, catchupAfter.Value.ToString("O"), newlyAdded.Count);
-                        }
+                        await _arkClientTransport.UnsubscribeForScriptsAsync(torndown, scripts: null, token);
                     }
                     catch (Exception ex)
                     {
-                        _logger?.LogWarning(ex,
-                            "First-startup catch-up: failed to read per-wallet {Key}; falling back to full-history fetch",
-                            LastFullPollAtMetadataKey);
+                        _logger?.LogDebug(0, ex, "UpdateScriptsView: unsubscribe-all during teardown failed (subscription may already be gone)");
                     }
                 }
-                _isFirstStartupCatchup = false;
-
-                // The cold-start catch-up IS a full-set snapshot: at this moment
-                // newlyAdded equals the entire active script view (cold start →
-                // _subscribedScripts was empty before it was assigned above), and `catchupAfter`
-                // is the stored cursor (or null for first-ever startup). On its
-                // successful completion we both flip the gate flag and advance
-                // the cursor to its StartedAt — eliminating the 5-second window
-                // between catch-up success and the first routine poll's cursor
-                // write. Subsequent UpdateScriptsView calls (script set grows
-                // mid-flight) only carry newly-added scripts and stay
-                // IsFullSetSnapshot=false.
-                var startedAt = isInitialCatchup ? DateTimeOffset.UtcNow : default;
-                await _readyToPoll.Writer.WriteAsync(
-                    new PollRequest(
-                        newlyAdded,
-                        catchupAfter,
-                        IsFullSetSnapshot: isInitialCatchup,
-                        StartedAt: startedAt,
-                        IsColdStartCatchup: isInitialCatchup),
-                    token);
+                _subscribedScripts = [];
+                return;
             }
+
+            // No live subscription (cold start, or returning from empty) → create one,
+            // wake the supervisor to stream it, and full-history catch-up the whole set.
+            if (_subscriptionId is null)
+            {
+                _subscriptionId = await _arkClientTransport.SubscribeForScriptsAsync(newView, subscriptionId: null, token);
+                _subscribedScripts = newView;
+                _logger?.LogInformation("UpdateScriptsView: created subscription {Id} for {Count} script(s)", _subscriptionId, newView.Count);
+                await EnqueueCatchupPollAsync(newView, token);
+                SignalStreamWakeup();
+                return;
+            }
+
+            // Live subscription → update the watched set IN PLACE. No stream restart:
+            // arkd routes the added/removed scripts onto the already-open stream.
+            var added = newView.Except(_subscribedScripts).ToHashSet();
+            var removed = _subscribedScripts.Except(newView).ToHashSet();
+            if (added.Count == 0 && removed.Count == 0)
+            {
+                _logger?.LogDebug("UpdateScriptsView: unchanged ({Count} scripts)", newView.Count);
+                return;
+            }
+
+            _logger?.LogInformation(
+                "UpdateScriptsView: in-place update +{Added}/-{Removed} (now {Count}) on subscription {Id}",
+                added.Count, removed.Count, newView.Count, _subscriptionId);
+            try
+            {
+                if (added.Count > 0)
+                    await _arkClientTransport.SubscribeForScriptsAsync(added, _subscriptionId, token);
+                if (removed.Count > 0)
+                    await _arkClientTransport.UnsubscribeForScriptsAsync(_subscriptionId, removed, token);
+            }
+            catch (Exception ex) when (IsSubscriptionNotFound(ex))
+            {
+                // arkd GC'd the subscription (TTL after a disconnect). Recreate it and make
+                // the supervisor re-read the new id; full-history catch-up the whole set.
+                _logger?.LogInformation("UpdateScriptsView: subscription {Id} not found — recreating", _subscriptionId);
+                _subscriptionId = await _arkClientTransport.SubscribeForScriptsAsync(newView, subscriptionId: null, token);
+                _subscribedScripts = newView;
+                await EnqueueCatchupPollAsync(newView, token);
+                SignalStreamGenerationChange();
+                return;
+            }
+
+            if (added.Count > 0)
+                await EnqueueCatchupPollAsync(added, token);
+            _subscribedScripts = newView;
         }
         finally
         {
@@ -417,62 +417,202 @@ public class VtxoSynchronizationService : IAsyncDisposable
         }
     }
 
-    private async Task StartStreamLogic(HashSet<string> scripts, CancellationToken token)
+    /// <summary>
+    /// Enqueues a catch-up poll for <paramref name="scripts"/>, recovering any VTXO that
+    /// landed before these scripts were being watched. The first call after startup is the
+    /// cold-start catch-up: it reads MIN(per-wallet vtxo.lastFullPollAt) as its <c>after</c>
+    /// filter (so wallets with long history don't refetch everything) and advances the
+    /// persisted cursor on success. Every later call is a full-history fetch
+    /// (<c>after = null</c>). Caller holds <see cref="_viewSyncLock"/>.
+    /// </summary>
+    private async Task EnqueueCatchupPollAsync(HashSet<string> scripts, CancellationToken token)
     {
-        _logger?.LogInformation(
-            "VTXO subscription stream starting for {ScriptCount} script(s)", scripts.Count);
-        var endedGracefully = false;
-        try
+        if (scripts.Count == 0)
+            return;
+
+        DateTimeOffset? catchupAfter = null;
+        var isInitialCatchup = _isFirstStartupCatchup;
+        if (isInitialCatchup && _walletStorage is not null)
         {
-            var restartableToken =
-                CancellationTokenSource.CreateLinkedTokenSource(token, _shutdownCts.Token);
-            await foreach (var vtxosToPoll in _arkClientTransport.GetVtxoToPollAsStream(scripts, restartableToken.Token))
+            try
             {
-                _logger?.LogInformation(
-                    "VTXO subscription stream: arkd pushed update for {Count} script(s): [{Scripts}]",
-                    vtxosToPoll.Count, string.Join(", ", vtxosToPoll));
-                // Enqueue a single immediate poll for the pushed scripts. The earlier
-                // 750ms/3s/8s retry schedule was added when arkd v0.9.0-rc.1's indexer
-                // could lag the subscription event by up to ~30s; on current arkd builds
-                // (v0.9.5+) plus the routine 5s safety-net poll, that schedule is dead
-                // weight — it only delayed detection on the happy path. If the immediate
-                // poll loses the race against arkd's indexer, RoutinePoll catches it
-                // within ~5s using the same after-window semantics.
-                try
+                catchupAfter = await ReadCursorMinAcrossWalletsAsync(token);
+                if (catchupAfter is not null)
+                    _logger?.LogInformation(
+                        "First-startup catch-up: using MIN(per-wallet {Key})={After} as `after` filter for {Count} script(s)",
+                        LastFullPollAtMetadataKey, catchupAfter.Value.ToString("O"), scripts.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex,
+                    "First-startup catch-up: failed to read per-wallet {Key}; falling back to full-history fetch",
+                    LastFullPollAtMetadataKey);
+            }
+        }
+        _isFirstStartupCatchup = false;
+
+        // The cold-start catch-up is a full-set snapshot: on success the gate flips and the
+        // per-wallet cursor advances to StartedAt. Later catch-ups (script set grew) stay
+        // IsFullSetSnapshot=false and full-history (catchupAfter=null).
+        var startedAt = isInitialCatchup ? DateTimeOffset.UtcNow : default;
+        await _readyToPoll.Writer.WriteAsync(
+            new PollRequest(scripts, catchupAfter, IsFullSetSnapshot: isInitialCatchup,
+                StartedAt: startedAt, IsColdStartCatchup: isInitialCatchup),
+            token);
+    }
+
+    /// <summary>
+    /// The long-lived stream supervisor. Keeps one GetSubscription stream open for the
+    /// current subscription, enqueuing a poll for every pushed script. The watched set is
+    /// mutated in place by <see cref="UpdateScriptsView"/> (Subscribe/Unsubscribe) without
+    /// touching this loop. The loop only re-reads state when signalled: a generation change
+    /// (recreate/teardown) cancels the current stream token, and a wakeup ends the idle wait
+    /// after a subscription is created. On a stream drop it re-asserts the subscription
+    /// (recreating if arkd GC'd it) and reconnects.
+    /// </summary>
+    private async Task RunStreamSupervisorAsync(CancellationToken shutdownToken)
+    {
+        while (!shutdownToken.IsCancellationRequested)
+        {
+            string? subscriptionId;
+            var streamToken = CancellationToken.None;
+            await _viewSyncLock.WaitAsync(shutdownToken);
+            try
+            {
+                subscriptionId = _subscriptionId;
+                if (subscriptionId is not null)
                 {
-                    var after = DateTimeOffset.UtcNow - StreamPollLookback;
-                    await _readyToPoll.Writer.WriteAsync(
-                        new PollRequest(vtxosToPoll, after), restartableToken.Token);
-                }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger?.LogWarning(ex, "Stream push: failed to enqueue immediate poll");
+                    _streamGenerationCts?.Dispose();
+                    _streamGenerationCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken);
+                    streamToken = _streamGenerationCts.Token;
                 }
             }
-            endedGracefully = true;
+            finally
+            {
+                _viewSyncLock.Release();
+            }
+
+            if (subscriptionId is null)
+            {
+                // Idle: nothing to watch. Wait until a subscription is created.
+                try { await _streamWakeup.WaitAsync(shutdownToken); }
+                catch (OperationCanceledException) { return; }
+                continue;
+            }
+
+            var endedGracefully = false;
+            try
+            {
+                _logger?.LogInformation("VTXO subscription stream starting (subscription {Id})", subscriptionId);
+                await foreach (var changed in _arkClientTransport.GetVtxoSubscriptionStreamAsync(subscriptionId, streamToken))
+                {
+                    _logger?.LogInformation(
+                        "VTXO subscription stream: arkd pushed update for {Count} script(s): [{Scripts}]",
+                        changed.Count, string.Join(", ", changed));
+                    // Single immediate poll for the pushed scripts; the 5s safety-net poll
+                    // is the backstop if this loses the race against arkd's indexer.
+                    try
+                    {
+                        var after = DateTimeOffset.UtcNow - StreamPollLookback;
+                        await _readyToPoll.Writer.WriteAsync(new PollRequest(changed, after), streamToken);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex, "Stream push: failed to enqueue immediate poll");
+                    }
+                }
+                endedGracefully = true;
+            }
+            catch (OperationCanceledException) when (shutdownToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                // Generation change (recreate/teardown) — re-read state on the next loop.
+                continue;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "VTXO subscription stream faulted — reconnecting");
+                try { await Task.Delay(StreamReconnectDelay, shutdownToken); }
+                catch (OperationCanceledException) { return; }
+            }
+
+            if (endedGracefully)
+                _logger?.LogWarning("VTXO subscription stream ended (arkd closed it) — reconnecting");
+
+            // Re-assert the subscription so a TTL-GC'd listener is recreated, then loop to reconnect.
+            await ReassertSubscriptionAsync(subscriptionId, shutdownToken);
         }
-        catch (Exception ex) when (!token.IsCancellationRequested)
+    }
+
+    /// <summary>
+    /// After the supervisor's stream dropped, re-asserts the subscription's topics on the
+    /// same id (a no-op while the listener is alive within its TTL). If arkd GC'd the
+    /// listener, recreates it and full-history catch-up the set. The fresh-derive safety-net
+    /// poll covers detection regardless, so a transient failure here is non-fatal.
+    /// </summary>
+    private async Task ReassertSubscriptionAsync(string staleSubscriptionId, CancellationToken shutdownToken)
+    {
+        await _viewSyncLock.WaitAsync(shutdownToken);
+        try
         {
-            _logger?.LogWarning(0, ex, "VTXO subscription stream failed — restarting scripts view");
-            await UpdateScriptsView(_shutdownCts.Token);
-            return;
+            // A concurrent UpdateScriptsView already recreated/tore down — let the supervisor
+            // re-read on the next loop instead of fighting it.
+            if (_subscriptionId != staleSubscriptionId)
+                return;
+            if (_subscribedScripts.Count == 0)
+            {
+                _subscriptionId = null;
+                return;
+            }
+
+            try
+            {
+                await _arkClientTransport.SubscribeForScriptsAsync(_subscribedScripts, staleSubscriptionId, shutdownToken);
+            }
+            catch (Exception ex) when (IsSubscriptionNotFound(ex))
+            {
+                _logger?.LogInformation("Reconnect: subscription {Id} was GC'd — recreating", staleSubscriptionId);
+                _subscriptionId = await _arkClientTransport.SubscribeForScriptsAsync(_subscribedScripts, subscriptionId: null, shutdownToken);
+                await EnqueueCatchupPollAsync(_subscribedScripts, shutdownToken);
+            }
+        }
+        catch (OperationCanceledException) when (shutdownToken.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(0, ex, "VTXO subscription stream cancelled");
-            return;
+            _logger?.LogWarning(ex, "Failed to re-assert VTXO subscription on reconnect; safety-net poll still covers detection");
         }
-
-        // Graceful end: arkd closed the stream without an error. We must restart
-        // or we silently lose every subsequent VTXO notification for these scripts.
-        if (endedGracefully && !token.IsCancellationRequested)
+        finally
         {
-            _logger?.LogWarning(
-                "VTXO subscription stream ended without error — arkd closed the stream. Restarting scripts view.");
-            await UpdateScriptsView(_shutdownCts.Token);
+            _viewSyncLock.Release();
         }
     }
+
+    // Wake the supervisor out of its idle wait after a subscription is created from empty.
+    private void SignalStreamWakeup()
+    {
+        if (_streamWakeup.CurrentCount == 0)
+            _streamWakeup.Release();
+    }
+
+    // Interrupt the supervisor's current stream so it re-reads the subscription state
+    // (used on recreate and teardown — the supervisor is streaming, not idle).
+    private void SignalStreamGenerationChange()
+    {
+        try { _streamGenerationCts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+    }
+
+    // arkd reports a missing subscription as "subscription <id> not found" (gRPC Internal,
+    // surfaced verbatim over REST too). Matched by message since there's no dedicated code.
+    private static bool IsSubscriptionNotFound(Exception ex)
+        => ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+           || (ex.InnerException is { } inner && inner.Message.Contains("not found", StringComparison.OrdinalIgnoreCase));
 
     private async Task? StartQueryLogic(CancellationToken cancellationToken)
     {
@@ -710,6 +850,9 @@ public class VtxoSynchronizationService : IAsyncDisposable
         {
             _logger?.LogDebug("Routine poll task cancelled during disposal");
         }
+
+        _streamGenerationCts?.Dispose();
+        _streamWakeup.Dispose();
 
         _logger?.LogInformation("VTXO synchronization service disposed");
     }

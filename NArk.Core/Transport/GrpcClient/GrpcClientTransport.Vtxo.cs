@@ -93,17 +93,31 @@ public partial class GrpcClientTransport
         }
     }
 
-    public async IAsyncEnumerable<HashSet<string>> GetVtxoToPollAsStream(IReadOnlySet<string> scripts,
-        [EnumeratorCancellation] CancellationToken token = default)
+    public async Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts,
+        string? subscriptionId, CancellationToken cancellationToken = default)
     {
-        var req = new SubscribeForScriptsRequest { SubscriptionId = string.Empty };
+        var req = new SubscribeForScriptsRequest { SubscriptionId = subscriptionId ?? string.Empty };
         req.Scripts.AddRange(scripts);
+        var res = await _indexerServiceClient.SubscribeForScriptsAsync(req, cancellationToken: cancellationToken);
+        return res.SubscriptionId;
+    }
 
-        var subscribeRes = await _indexerServiceClient.SubscribeForScriptsAsync(req, cancellationToken: token);
+    public async Task UnsubscribeForScriptsAsync(string subscriptionId,
+        IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
+    {
+        var req = new UnsubscribeForScriptsRequest { SubscriptionId = subscriptionId };
+        if (scripts is not null)
+            req.Scripts.AddRange(scripts);
+        await _indexerServiceClient.UnsubscribeForScriptsAsync(req, cancellationToken: cancellationToken);
+    }
 
-        var stream = _indexerServiceClient.GetSubscription(new GetSubscriptionRequest { SubscriptionId = subscribeRes.SubscriptionId }, cancellationToken: token);
+    public async IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var stream = _indexerServiceClient.GetSubscription(
+            new GetSubscriptionRequest { SubscriptionId = subscriptionId }, cancellationToken: cancellationToken);
 
-        await foreach (var response in stream.ResponseStream.ReadAllAsync(token))
+        await foreach (var response in stream.ResponseStream.ReadAllAsync(cancellationToken))
         {
             if (response == null) continue;
             switch (response.DataCase)

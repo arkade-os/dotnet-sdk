@@ -79,25 +79,46 @@ public partial class RestClientTransport
         }
     }
 
-    public async IAsyncEnumerable<HashSet<string>> GetVtxoToPollAsStream(
-        IReadOnlySet<string> scripts,
-        [EnumeratorCancellation] CancellationToken token = default)
+    public async Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts,
+        string? subscriptionId, CancellationToken cancellationToken = default)
     {
-        // Step 1: Subscribe for scripts
-        var subReq = new { scripts = scripts.ToArray(), subscription_id = "" };
-        var subResponse = await _http.PostAsJsonAsync("/v1/indexer/script/subscribe", subReq, JsonOpts, token);
-        subResponse.EnsureSuccessStatusCode();
-        var subJson = await subResponse.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, token);
-        var subscriptionId = subJson.GetProperty("subscription_id").GetString()!;
+        var subReq = new { scripts = scripts.ToArray(), subscription_id = subscriptionId ?? "" };
+        var subResponse = await _http.PostAsJsonAsync("/v1/indexer/script/subscribe", subReq, JsonOpts, cancellationToken);
+        await EnsureSuccessWithBodyAsync(subResponse, "SubscribeForScripts", cancellationToken);
+        var subJson = await subResponse.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, cancellationToken);
+        return subJson.GetProperty("subscription_id").GetString()!;
+    }
 
-        // Step 2: Stream subscription events via SSE (gRPC-gateway server streaming → newline-delimited JSON)
+    public async Task UnsubscribeForScriptsAsync(string subscriptionId,
+        IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
+    {
+        // Empty scripts ⇒ arkd removes all topics and tears the subscription down.
+        var req = new { subscription_id = subscriptionId, scripts = scripts?.ToArray() ?? [] };
+        var response = await _http.PostAsJsonAsync("/v1/indexer/script/unsubscribe", req, JsonOpts, cancellationToken);
+        await EnsureSuccessWithBodyAsync(response, "UnsubscribeForScripts", cancellationToken);
+    }
+
+    // Surfaces the server error body in the exception message so callers can detect arkd's
+    // "subscription <id> not found" (the trigger for recreating a GC'd subscription).
+    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, string op, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        throw new HttpRequestException($"{op} failed ({(int)response.StatusCode}): {body}");
+    }
+
+    public async IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        // Stream subscription events via SSE (gRPC-gateway server streaming → newline-delimited JSON)
         using var stream = await _http.GetStreamAsync(
-            $"/v1/indexer/script/subscription/{subscriptionId}", token);
+            $"/v1/indexer/script/subscription/{subscriptionId}", cancellationToken);
         using var reader = new StreamReader(stream);
 
-        while (!token.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(token);
+            var line = await reader.ReadLineAsync(cancellationToken);
             if (line is null) break; // Stream closed
             if (string.IsNullOrWhiteSpace(line)) continue;
 
