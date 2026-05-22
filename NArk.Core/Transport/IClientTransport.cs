@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Intents;
@@ -10,7 +11,50 @@ namespace NArk.Core.Transport;
 public interface IClientTransport
 {
     Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default);
-    IAsyncEnumerable<HashSet<string>> GetVtxoToPollAsStream(IReadOnlySet<string> scripts, CancellationToken token = default);
+
+    /// <summary>
+    /// Creates a new VTXO-script subscription (when <paramref name="subscriptionId"/> is null
+    /// or empty) or adds scripts to an existing one. Returns the subscription id to open the
+    /// stream with via <see cref="GetVtxoSubscriptionStreamAsync"/>.
+    /// <para>
+    /// arkd's subscription is mutable while its stream is open: scripts added here are routed
+    /// onto the already-open stream, so the watched set can be updated in place without tearing
+    /// the stream down and resubscribing.
+    /// </para>
+    /// </summary>
+    Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts, string? subscriptionId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes scripts from an existing subscription. When <paramref name="scripts"/> is null or
+    /// empty, all scripts are removed and the subscription is torn down server-side.
+    /// </summary>
+    Task UnsubscribeForScriptsAsync(string subscriptionId, IReadOnlySet<string>? scripts,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Opens the long-lived server stream for a subscription, yielding the set of scripts whose
+    /// VTXOs changed on each push. The subscription's script set may be mutated in place via
+    /// <see cref="SubscribeForScriptsAsync"/> / <see cref="UnsubscribeForScriptsAsync"/> while
+    /// this stream stays open.
+    /// </summary>
+    IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Convenience: create a one-shot subscription for <paramref name="scripts"/> and stream it.
+    /// Built on the composable primitives above; it does not surface the subscription id, so it
+    /// cannot update the watched set in place — prefer the primitives when the set changes over
+    /// time (see <see cref="SubscribeForScriptsAsync"/>).
+    /// </summary>
+    async IAsyncEnumerable<HashSet<string>> GetVtxoToPollAsStream(IReadOnlySet<string> scripts,
+        [EnumeratorCancellation] CancellationToken token = default)
+    {
+        var subscriptionId = await SubscribeForScriptsAsync(scripts, subscriptionId: null, token);
+        await foreach (var changed in GetVtxoSubscriptionStreamAsync(subscriptionId, token))
+            yield return changed;
+    }
+
     IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
         CancellationToken cancellationToken = default);
 

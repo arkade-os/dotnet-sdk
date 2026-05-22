@@ -143,8 +143,14 @@ public class PendingArkTransactionRecoveryTests
         public Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
             => _inner.GetServerInfoAsync(cancellationToken);
 
-        public IAsyncEnumerable<HashSet<string>> GetVtxoToPollAsStream(IReadOnlySet<string> scripts, CancellationToken token = default)
-            => _inner.GetVtxoToPollAsStream(scripts, token);
+        public Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts, string? subscriptionId, CancellationToken cancellationToken = default)
+            => _inner.SubscribeForScriptsAsync(scripts, subscriptionId, cancellationToken);
+
+        public Task UnsubscribeForScriptsAsync(string subscriptionId, IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
+            => _inner.UnsubscribeForScriptsAsync(subscriptionId, scripts, cancellationToken);
+
+        public IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId, CancellationToken cancellationToken = default)
+            => _inner.GetVtxoSubscriptionStreamAsync(subscriptionId, cancellationToken);
 
         public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
             => _inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);

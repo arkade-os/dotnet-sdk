@@ -54,6 +54,16 @@ Communication with the Arkade server (arkd) uses gRPC:
 - **`RestClientTransport`** — REST/JSON fallback (e.g., for browser environments)
 - **`CachingClientTransport`** — caches server info to reduce round-trips
 
+### VTXO script subscription (in-place updates)
+
+arkd's indexer subscription is a long-lived stream whose watched script set can be mutated while it stays open. The transport exposes this as three composable primitives:
+
+- `SubscribeForScriptsAsync(scripts, subscriptionId)` — create a subscription (`subscriptionId == null`) or **add** scripts to an existing one.
+- `UnsubscribeForScriptsAsync(subscriptionId, scripts)` — **remove** scripts (or all, tearing the subscription down, when `scripts == null`).
+- `GetVtxoSubscriptionStreamAsync(subscriptionId)` — open the server stream; scripts added/removed via the calls above are routed onto this already-open stream.
+
+`VtxoSynchronizationService` uses these to keep one stream open and update the watched set **in place** when contracts come and go, rather than tearing the stream down and resubscribing on every change. It recreates the subscription if arkd reports it gone (TTL after a disconnect), and tears it down when the active set is empty. The 5-second fresh-derive safety-net poll remains the backstop, so detection never depends on the stream surviving. (`GetVtxoToPollAsStream` is kept as a one-shot convenience built on these primitives.)
+
 ## Opt-In Feature Wiring
 
 A few subsystems are intentionally not registered by `AddArkCoreServices` because they need consumer-supplied configuration:
