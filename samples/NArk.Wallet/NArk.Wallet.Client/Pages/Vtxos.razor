@@ -70,8 +70,8 @@
                                 @vtxo.TransactionId[..16]...:@vtxo.TransactionOutputIndex
                             </p>
                         </div>
-                        <span class="pill @(vtxo.IsSpent() ? "pill-danger" : "pill-success")" style="font-size:9px;">
-                            @(vtxo.IsSpent() ? "SPENT" : "LIVE")
+                        <span class="pill @StatusPillClass(vtxo)" style="font-size:9px;">
+                            @StatusPillLabel(vtxo)
                         </span>
                     </div>
 
@@ -141,6 +141,14 @@
         "spent" => _vtxos.Where(v => v.IsSpent()),
         _ => _vtxos
     };
+
+    // Unconfirmed on-chain VTXOs (e.g. boarding UTXOs still in the mempool)
+    // aren't spendable or settleable yet — surface that instead of "LIVE".
+    private static string StatusPillClass(ArkVtxo vtxo) =>
+        vtxo.IsSpent() ? "pill-danger" : vtxo.IsUnconfirmedOnchain() ? "pill-warning" : "pill-success";
+
+    private static string StatusPillLabel(ArkVtxo vtxo) =>
+        vtxo.IsSpent() ? "SPENT" : vtxo.IsUnconfirmedOnchain() ? "PENDING" : "LIVE";
 
     protected override async Task OnInitializedAsync()
     {

@@ -32,6 +32,8 @@ var txId = await spendingService.Spend(
     cancellationToken);
 ```
 
+`GetAvailableCoins` excludes on-chain VTXOs whose funding tx hasn't confirmed yet — today, boarding UTXOs still in the mempool (`ArkVtxo.IsUnconfirmedOnchain() == true`). They are not selectable because arkd rejects unconfirmed boarding inputs at settle time.
+
 ## Sub-Dust Outputs
 
 Outputs below the dust threshold are converted to OP_RETURN outputs. The server configures the maximum number of OP_RETURN outputs per transaction (default: 3).

@@ -419,6 +419,8 @@ The `BoardingUtxoPollService` automatically checks for unspent boarding VTXOs ev
 
 Once a boarding UTXO is synced and confirmed, the SDK's `IntentGenerationService` automatically creates an intent for it. The next batch moves it into the VTXO tree.
 
+While a boarding UTXO is still in the mempool it is stored with `Metadata["Confirmed"] = "False"`. Such VTXOs report `ArkVtxo.IsUnconfirmedOnchain() == true`, are excluded from `SpendingService.GetAvailableCoins`, and cannot be settled (arkd rejects unconfirmed boarding inputs). Display them as pending rather than spendable until the funding tx confirms.
+
 ### 3. Handle Expired Boarding UTXOs (Optional)
 
 If a boarding UTXO isn't batched before its CSV timelock expires, `OnchainSweepService` detects it. Register a custom `IOnchainSweepHandler` to control what happens:

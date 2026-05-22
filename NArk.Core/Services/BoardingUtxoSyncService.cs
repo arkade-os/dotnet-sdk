@@ -141,7 +141,7 @@ public class BoardingUtxoSyncService
 
             var metadata = new Dictionary<string, string>
             {
-                ["Confirmed"] = utxo.Confirmed.ToString()
+                [ArkVtxo.ConfirmedMetadataKey] = utxo.Confirmed.ToString()
             };
 
             var arkVtxo = new ArkVtxo(
