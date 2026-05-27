@@ -207,6 +207,31 @@ var txId = await spendingService.Spend(
     outputs: [new ArkTxOut(recipientAddress, Money.Satoshis(5_000))]);
 ```
 
+## Wallet Recovery
+
+Rebuild a wallet's local state — contracts, the HD derivation index, funds (VTXOs)
+and boltz swap data — from on-chain / indexer / boltz sources, after importing a
+wallet into empty storage. Use the unified, wallet-type-agnostic
+`IWalletRecoveryService` (registered by `AddArkSwapServices`):
+
+```csharp
+var recovery = sp.GetRequiredService<IWalletRecoveryService>();
+var report = await recovery.RecoverAsync(walletId);
+// report.HdScan, report.ContractsRecovered, report.RestoredSwaps,
+// report.SwapAudit, report.FinalizedPendingTxIds, report.FundsScriptsSynced
+```
+
+It dispatches by wallet type: **HD** wallets get a gap-limit index scan that
+discovers contracts across the **current and every deprecated server signer** — so
+funds locked under a rotated/legacy server key are still found — and restores boltz
+swaps in-line; **SingleKey** wallets re-derive their one deterministic contract and
+restore swaps directly. Both then finalize any in-flight Arkade transactions and
+resync funds.
+
+Discovery is pluggable via `IContractDiscoveryProvider` (indexer / boarding / boltz).
+To also probe delegate (auto-renewal) scripts during recovery, register a
+`RecoveryDelegateConfig` with the delegate key descriptors.
+
 ## Assets
 
 The SDK supports issuing, transferring, and burning assets on Arkade. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Arkade transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
