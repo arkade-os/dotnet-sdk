@@ -36,13 +36,31 @@ public class IndexerVtxoDiscoveryProvider(
 {
     // ArkServerInfo is invariant for the wallet-recovery use case (signer keys,
     // exit delays, network — all server-side config that doesn't change between
-    // probes). Cache the fetch on first use and reuse for every subsequent
-    // index — saves N round-trips per scan when a wallet has dozens of indices.
-    private readonly Lazy<Task<ArkServerInfo>> _serverInfo = new(
-        () => clientTransport.GetServerInfoAsync(),
-        LazyThreadSafetyMode.ExecutionAndPublication);
+    // probes). Cache the successful RESULT (not a Task) and reuse it for every
+    // subsequent index — saves N round-trips per scan. We deliberately do NOT
+    // cache a Lazy<Task>: a Lazy would permanently publish a *faulted* task if
+    // the first fetch fails (e.g. arkd restarts mid-scan), poisoning every later
+    // probe into a silent zero-result recovery. Caching the result lets a
+    // transient failure be retried on the next index.
+    private ArkServerInfo? _serverInfo;
+    private readonly SemaphoreSlim _serverInfoLock = new(1, 1);
 
     private readonly IReadOnlyList<OutputDescriptor> _delegates = delegateConfig?.Delegates ?? [];
+
+    private async Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken)
+    {
+        if (_serverInfo is { } cached)
+            return cached;
+        await _serverInfoLock.WaitAsync(cancellationToken);
+        try
+        {
+            return _serverInfo ??= await clientTransport.GetServerInfoAsync(cancellationToken);
+        }
+        finally
+        {
+            _serverInfoLock.Release();
+        }
+    }
 
     /// <inheritdoc />
     public string Name => "indexer";
@@ -54,7 +72,7 @@ public class IndexerVtxoDiscoveryProvider(
         int index,
         CancellationToken cancellationToken = default)
     {
-        var serverInfo = await _serverInfo.Value.WaitAsync(cancellationToken);
+        var serverInfo = await GetServerInfoAsync(cancellationToken);
 
         // Build the full candidate set: default (+ delegate) contracts against the
         // current signer and every deprecated signer. Keyed by scriptPubKey hex so

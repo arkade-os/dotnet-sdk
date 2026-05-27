@@ -42,6 +42,11 @@ public class WalletRecoveryService(
         using var _ = logger?.BeginScope(("RecoverWalletId", walletId));
         logger?.LogInformation("Recovering {WalletType} wallet {WalletId}", wallet.WalletType, walletId);
 
+        // Snapshot the contract count so the report reflects what THIS run recovered
+        // (a Rescan on a populated wallet may discover nothing new).
+        var contractsBefore = (await contractStorage.GetContracts(
+            walletIds: [walletId], cancellationToken: cancellationToken)).Count;
+
         RecoveryReport? hdScan = null;
         var restoredSwaps = new List<ArkSwap>();
 
@@ -57,13 +62,14 @@ public class WalletRecoveryService(
             // SingleKey: the contract set is fixed by the single key. Ensure that
             // contract exists, then restore swaps for its descriptor directly
             // (there is no index to scan).
+            if (string.IsNullOrEmpty(wallet.AccountDescriptor))
+                throw new InvalidOperationException(
+                    $"SingleKey wallet '{walletId}' has no AccountDescriptor; cannot recover.");
+
             await EnsureSingleKeyContractAsync(wallet, cancellationToken);
-            if (!string.IsNullOrEmpty(wallet.AccountDescriptor))
-            {
-                var network = (await clientTransport.GetServerInfoAsync(cancellationToken)).Network;
-                var descriptor = KeyExtensions.ParseOutputDescriptor(wallet.AccountDescriptor!, network);
-                restoredSwaps.AddRange(await swaps.RestoreSwaps(walletId, [descriptor], cancellationToken));
-            }
+            var network = (await clientTransport.GetServerInfoAsync(cancellationToken)).Network;
+            var descriptor = KeyExtensions.ParseOutputDescriptor(wallet.AccountDescriptor!, network);
+            restoredSwaps.AddRange(await swaps.RestoreSwaps(walletId, [descriptor], cancellationToken));
         }
 
         // Finalize any in-flight Ark transactions that were mid-submit.
@@ -85,14 +91,17 @@ public class WalletRecoveryService(
         // Audit the post-recovery state of every known swap for the report.
         var swapAudit = await swaps.ScanRecoverableSwapsAsync(walletId, cancellationToken);
 
+        // Contracts NEWLY recovered by this run (not the total in storage).
+        var contractsRecovered = Math.Max(0, contracts.Count - contractsBefore);
+
         logger?.LogInformation(
-            "Recovered wallet {WalletId}: {Contracts} contracts, {Swaps} swaps audited, {Pending} pending finalized, {Vtxos} VTXOs synced",
-            walletId, contracts.Count, swapAudit.Count, finalized.Count, vtxosSynced);
+            "Recovered wallet {WalletId}: {Contracts} new contracts, {Swaps} swaps audited, {Pending} pending finalized, {Vtxos} VTXOs synced",
+            walletId, contractsRecovered, swapAudit.Count, finalized.Count, vtxosSynced);
 
         return new WalletRecoveryReport(
             wallet.WalletType,
             hdScan,
-            contracts.Count,
+            contractsRecovered,
             restoredSwaps,
             swapAudit,
             finalized,

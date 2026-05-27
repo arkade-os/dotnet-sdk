@@ -12,7 +12,7 @@ namespace NArk.Swaps.Recovery;
 /// The HD index-scan report (contracts + highest used index), or <c>null</c> for
 /// a SingleKey wallet (whose contract set is fixed by its single key — no scan).
 /// </param>
-/// <param name="ContractsRecovered">Total contracts persisted for the wallet after recovery.</param>
+/// <param name="ContractsRecovered">Contracts newly discovered + persisted by this run (delta, not the total in storage).</param>
 /// <param name="RestoredSwaps">
 /// Swaps restored directly during this run. For HD wallets boltz swaps are
 /// restored inside the index scan (via the boltz discovery provider) and surface
