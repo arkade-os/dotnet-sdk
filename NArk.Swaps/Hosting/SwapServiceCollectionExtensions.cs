@@ -26,6 +26,9 @@ public static class SwapServiceCollectionExtensions
     {
         // Core services (provider-agnostic)
         services.AddSingleton<SwapsManagementService>();
+        // Unified, wallet-type-agnostic recovery facade. Lives here because it
+        // composes both the Core recovery services and the swap services.
+        services.AddSingleton<IWalletRecoveryService, WalletRecoveryService>();
         services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
         services.AddSingleton<IContractTransformer, VHTLCContractTransformer>();
         services.AddHostedService<NArk.Swaps.Hosting.SwapHostedLifecycle>();
