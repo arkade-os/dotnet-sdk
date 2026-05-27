@@ -67,7 +67,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new Exception(
                 $"Address mismatch! Expected {address.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet)} got {response.Address}");
 
-        return new SubmarineSwapResult(vhtlcContract, response, address);
+        return new SubmarineSwapResult(vhtlcContract, response, address, invoice.ToString());
     }
 
     /// <summary>
@@ -149,7 +149,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
                 $"Address mismatch — expected {address.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet)}, " +
                 $"Boltz returned {response.Address}");
 
-        return new SubmarineSwapResult(vhtlcContract, response, address);
+        return new SubmarineSwapResult(vhtlcContract, response, address, fetchResponse.Invoice);
     }
 
     // Reverse Swaps

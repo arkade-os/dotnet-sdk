@@ -169,4 +169,37 @@ public static class DockerHelper
                 $"bitcoin-cli getnewaddress failed (exit={result.ExitCode}): {result.StandardError.Trim()}");
         return result.StandardOutput.Trim();
     }
+
+    /// <summary>
+    /// Creates a BOLT 12 offer on the Core Lightning (<c>cln</c>) regtest container.
+    /// Returns the <c>lno1…</c> offer string.
+    /// </summary>
+    /// <remarks>
+    /// Requires a <c>cln</c> Docker container running Core Lightning with
+    /// <c>lightning-cli</c> available at <c>/usr/local/bin/lightning-cli</c>.
+    /// The regtest docker-compose stack must include CLN alongside LND for
+    /// BOLT 12 end-to-end tests to pass.
+    /// </remarks>
+    /// <param name="amountSats">Amount in satoshis embedded in the offer; use <c>0</c> for an any-amount offer.</param>
+    /// <param name="description">Short human-readable description included in the offer.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The BOLT 12 offer string (<c>lno1…</c>).</returns>
+    public static async Task<string> CreateClnBolt12Offer(
+        long amountSats = 10000,
+        string description = "test offer",
+        CancellationToken ct = default)
+    {
+        var amountArg = amountSats > 0
+            ? $"{amountSats * 1000}msat"  // CLN uses millisatoshis
+            : "any";
+
+        var output = await Exec("cln",
+            ["lightning-cli", "--network=regtest", "offer", amountArg, description], ct);
+
+        var offer = JsonSerializer.Deserialize<JsonObject>(output)?["bolt12"]
+                        ?.GetValue<string>()
+                    ?? throw new InvalidOperationException(
+                        $"BOLT 12 offer creation on CLN failed. Output: {output}");
+        return offer.Trim();
+    }
 }
