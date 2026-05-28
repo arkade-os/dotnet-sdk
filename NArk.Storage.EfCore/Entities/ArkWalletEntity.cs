@@ -12,10 +12,15 @@ public class ArkWalletEntity
     public string Id { get; set; } = "";
 
     /// <summary>
-    /// For legacy wallets: the nsec private key.
-    /// For HD wallets: the BIP-39 mnemonic.
+    /// Signing material for the wallet, interpreted according to <see cref="WalletType"/>:
+    /// <list type="bullet">
+    ///   <item><description><see cref="Abstractions.Wallets.WalletType.SingleKey"/>: nsec private key.</description></item>
+    ///   <item><description><see cref="Abstractions.Wallets.WalletType.HD"/>: BIP-39 mnemonic.</description></item>
+    ///   <item><description><see cref="Abstractions.Wallets.WalletType.WatchOnly"/>: null — no signing material.</description></item>
+    ///   <item><description><see cref="Abstractions.Wallets.WalletType.Remote"/>: null — signing proxied to an <see cref="Abstractions.Wallets.IRemoteSignerTransport"/>.</description></item>
+    /// </list>
     /// </summary>
-    public string Wallet { get; set; } = "";
+    public string? Wallet { get; set; }
 
     /// <summary>
     /// Destination address for swept funds.

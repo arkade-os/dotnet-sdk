@@ -24,7 +24,9 @@ public class HierarchicalDeterministicWalletSigner(ArkWalletInfo wallet) : IArka
     private Task<ECPrivKey> DerivePrivateKey(OutputDescriptor descriptor)
     {
         var fullPath = descriptor.Extract().FullPath ?? throw new InvalidOperationException();
-        var extKey = _extKeyCache.GetOrAdd(wallet.Secret, secret => new Mnemonic(secret).DeriveExtKey());
+        var mnemonic = wallet.Secret ?? throw new InvalidOperationException(
+            $"HD wallet '{wallet.Id}' has no Secret — a BIP-39 mnemonic is required for HD wallets.");
+        var extKey = _extKeyCache.GetOrAdd(mnemonic, secret => new Mnemonic(secret).DeriveExtKey());
         return Task.FromResult(ECPrivKey.Create(extKey.Derive(fullPath).PrivateKey.ToBytes()));
     }
 
