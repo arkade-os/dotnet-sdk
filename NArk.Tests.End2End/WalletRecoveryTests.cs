@@ -42,9 +42,11 @@ public class WalletRecoveryTests
             .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
             .WithSafetyService<AsyncSafetyService>()
             .WithIntentScheduler<SimpleIntentScheduler>()
-            // No WithWalletProvider override → the production DefaultWalletProvider
-            // backed by the EFCore IWalletStorage (so recovery sees a real
-            // ArkWalletInfo with an HD account descriptor + LastUsedIndex).
+            // Production DefaultWalletProvider backed by the EFCore IWalletStorage —
+            // so recovery sees a real ArkWalletInfo with an HD account descriptor
+            // + LastUsedIndex, and so the IContractTransformer set (which depends
+            // on IWalletProvider) resolves through DI without explicit registration.
+            .WithWalletProvider<DefaultWalletProvider>()
             .ConfigureServices((_, s) =>
             {
                 s.AddDbContextFactory<TestDbContext>(o => o.UseInMemoryDatabase(dbName));
