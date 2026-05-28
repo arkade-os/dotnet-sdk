@@ -9,6 +9,7 @@ using NArk.Blockchain;
 using NArk.Abstractions.Intents;
 using NArk.Core.Services;
 using NArk.Core.Wallet;
+using NArk.Core.Payments;
 using NArk.Hosting;
 using NArk.Storage.EfCore.Hosting;
 using NArk.Swaps.Hosting;
