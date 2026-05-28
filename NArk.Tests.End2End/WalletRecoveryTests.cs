@@ -20,7 +20,7 @@ using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 
-namespace NArk.Tests.End2End.Core;
+namespace NArk.Tests.End2End.Swaps;
 
 /// <summary>
 /// Full real-data recovery round-trip on the production wallet stack: fund an HD
@@ -51,17 +51,19 @@ public class WalletRecoveryTests
                 s.AddDbContextFactory<TestDbContext>(o => o.UseInMemoryDatabase(dbName));
                 s.AddArkEfCoreStorage<TestDbContext>();
                 s.AddNBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-                // AddArkSwapServices is required for WalletRecoveryService (it lives
-                // in NArk.Swaps.Recovery and pulls SwapsManagementService) — the
-                // boltz client gets registered too but is never invoked. The
-                // ctor still parses BoltzUrl as a Uri though, so we have to hand
-                // it a syntactically valid placeholder — the host wouldn't even
-                // start otherwise.
+                // AddArkSwapServices is required for WalletRecoveryService (it
+                // lives in NArk.Swaps.Recovery and pulls SwapsManagementService).
+                // Point the boltz client at the real fixture endpoint so the
+                // recovery service's read-only boltz queries (HD scan's boltz
+                // discovery provider + ScanRecoverableSwapsAsync) resolve in a
+                // bounded time. This test never creates a swap — that path's
+                // flake (nginx 504 from boltz under load) is covered by the
+                // BTCPay plugin E2E instead.
                 s.AddArkSwapServices();
                 s.Configure<BoltzClientOptions>(o =>
                 {
-                    o.BoltzUrl = "http://boltz.test:9001";
-                    o.WebsocketUrl = "ws://boltz.test:9004";
+                    o.BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString();
+                    o.WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString();
                 });
                 s.Configure<SimpleIntentSchedulerOptions>(o =>
                 {
