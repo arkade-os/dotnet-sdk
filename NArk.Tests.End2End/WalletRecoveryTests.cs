@@ -13,6 +13,7 @@ using NArk.Core.Wallet;
 using NArk.Hosting;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Storage.EfCore.Hosting;
+using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Recovery;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
@@ -52,8 +53,16 @@ public class WalletRecoveryTests
                 s.AddNBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
                 // AddArkSwapServices is required for WalletRecoveryService (it lives
                 // in NArk.Swaps.Recovery and pulls SwapsManagementService) — the
-                // boltz client gets registered too but is never invoked.
+                // boltz client gets registered too but is never invoked. The
+                // ctor still parses BoltzUrl as a Uri though, so we have to hand
+                // it a syntactically valid placeholder — the host wouldn't even
+                // start otherwise.
                 s.AddArkSwapServices();
+                s.Configure<BoltzClientOptions>(o =>
+                {
+                    o.BoltzUrl = "http://boltz.test:9001";
+                    o.WebsocketUrl = "ws://boltz.test:9004";
+                });
                 s.Configure<SimpleIntentSchedulerOptions>(o =>
                 {
                     o.Threshold = TimeSpan.FromHours(2);
