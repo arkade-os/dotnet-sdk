@@ -9,7 +9,8 @@ using NBitcoin.Secp256k1;
 namespace NArk.Core.Wallet;
 
 /// <summary>
-/// Factory for creating wallet info records from secrets (nsec or mnemonic).
+/// Factory for creating wallet info records from secrets (nsec or mnemonic),
+/// and watch-only wallets from an account descriptor.
 /// </summary>
 public static class WalletFactory
 {
@@ -30,6 +31,50 @@ public static class WalletFactory
         }
 
         return Task.FromResult(CreateHdWallet(walletSecret, destination, serverInfo));
+    }
+
+    /// <summary>
+    /// Creates a watch-only wallet from an account descriptor. The wallet
+    /// can derive addresses and observe VTXOs but holds no signing material —
+    /// <see cref="IWalletProvider.GetSignerAsync"/> will return <c>null</c>
+    /// for it, and signing-dependent operations (batch participation,
+    /// unilateral exits) will throw with a descriptive error.
+    /// </summary>
+    /// <param name="accountDescriptor">
+    /// The account descriptor to observe. May be a bare <c>tr(pubkey)</c> for
+    /// single-key style, or a <c>tr([fingerprint/path]xpub/0/*)</c> for
+    /// hierarchical-deterministic style; the wallet's address provider is
+    /// picked accordingly.
+    /// </param>
+    /// <param name="destination">
+    /// Optional sweep destination address (must be addressed to the same
+    /// Arkade server as <paramref name="serverInfo"/>).
+    /// </param>
+    /// <param name="serverInfo">The Arkade server the wallet is bound to.</param>
+    /// <param name="metadata">Optional initial metadata to attach to the wallet.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public static Task<ArkWalletInfo> CreateWatchOnlyWallet(
+        string accountDescriptor,
+        string? destination,
+        ArkServerInfo serverInfo,
+        IReadOnlyDictionary<string, string>? metadata = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(accountDescriptor);
+        if (destination is not null)
+        {
+            ValidateDestination(destination, serverInfo);
+        }
+
+        return Task.FromResult(new ArkWalletInfo(
+            Id: accountDescriptor,
+            Secret: null,
+            Destination: destination,
+            WalletType: WalletType.WatchOnly,
+            AccountDescriptor: accountDescriptor,
+            LastUsedIndex: 0,
+            Metadata: metadata
+        ));
     }
 
     public static void ValidateDestination(string destination, ArkServerInfo serverInfo)
