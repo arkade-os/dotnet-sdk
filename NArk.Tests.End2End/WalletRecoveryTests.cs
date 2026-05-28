@@ -5,12 +5,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.VTXOs;
+using NArk.Abstractions.Intents;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
+using NArk.Core.Contracts;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Wallet;
+using NArk.Tests.End2End.Common;
 using NArk.Hosting;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Transport;
@@ -67,20 +69,6 @@ public class WalletRecoveryTests
             })
             .Build();
 
-    private static async Task ArkSend(string toAddress, long amountSats)
-    {
-        var result = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", toAddress, "--amount",
-                amountSats.ToString(), "--password", "secret"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync();
-        if (!result.IsSuccess)
-            throw new InvalidOperationException(
-                $"ark send failed (exit={result.ExitCode}): {result.StandardOutput} {result.StandardError}");
-    }
-
     [Test]
     public async Task FullRecovery_RestoresContracts_Index_Funds_AndSwap()
     {
@@ -96,7 +84,6 @@ public class WalletRecoveryTests
             var serverInfo = await transport.GetServerInfoAsync();
             var walletStorage = host1.Services.GetRequiredService<IWalletStorage>();
             var contractService = host1.Services.GetRequiredService<IContractService>();
-            var vtxoStorage = host1.Services.GetRequiredService<IVtxoStorage>();
             var swapStorage = host1.Services.GetRequiredService<ISwapStorage>();
             var swapMgr = host1.Services.GetRequiredService<SwapsManagementService>();
 
@@ -104,12 +91,24 @@ public class WalletRecoveryTests
             await walletStorage.UpsertWallet(walletInfo);
             walletId = walletInfo.Id;
 
-            // Fund a receive contract → a plain VTXO (the "funds" to recover).
-            var fundedTcs = new TaskCompletionSource();
-            vtxoStorage.VtxosChanged += (_, _) => fundedTcs.TrySetResult();
-            var contract = await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
-            await ArkSend(contract.GetArkAddress().ToString(false), 100_000);
-            await fundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // Fund via an arkd-minted note imported through the SDK: the
+            // IntentGenerationService participates in a batch round, the note is
+            // consumed and the output lands at one of the wallet's
+            // ArkPaymentContract scripts (HD-derived, so LastUsedIndex advances)
+            // — exactly the kind of VTXO IndexerVtxoDiscoveryProvider rediscovers
+            // on recovery. Same pattern as NoteTests, avoiding the in-container
+            // `ark` CLI init that the regtest only runs against nigiri's
+            // built-in arkd (not the ARKD_IMAGE override the suite uses).
+            var intentStorage = host1.Services.GetRequiredService<IIntentStorage>();
+            var batchTcs = new TaskCompletionSource();
+            intentStorage.IntentChanged += (_, intent) =>
+            {
+                if (intent.State == ArkIntentState.BatchSucceeded)
+                    batchTcs.TrySetResult();
+            };
+            var note = await DockerHelper.CreateArkNote(100_000);
+            await contractService.ImportContract(walletId, ArkNoteContract.Parse(note));
+            await batchTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
             // Reverse swap (receive Ark via Lightning) → a VHTLC contract + swap record.
             var settledTcs = new TaskCompletionSource();
