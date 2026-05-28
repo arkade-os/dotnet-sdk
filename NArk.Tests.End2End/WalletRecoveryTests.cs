@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
+using NArk.Abstractions.Recovery;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
 using NArk.Core.Contracts;
@@ -109,7 +110,7 @@ public class WalletRecoveryTests
             };
             var note = await DockerHelper.CreateArkNote(100_000);
             await contractService.ImportContract(walletId, ArkNoteContract.Parse(note));
-            await batchTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
+            await batchTcs.Task.WaitAsync(TimeSpan.FromSeconds(90));
 
             // Sanity: the first host now holds contracts and an advanced index.
             var contracts1 = await host1.Services.GetRequiredService<IContractStorage>()
@@ -137,7 +138,14 @@ public class WalletRecoveryTests
             "fresh storage starts with no contracts");
 
         var recovery = host2.Services.GetRequiredService<IWalletRecoveryService>();
-        var report = await recovery.RecoverAsync(walletId);
+        // Bound the recovery: a tight gap-limit cuts the HD scan's per-index
+        // round-trips (indexer + boarding + boltz discovery providers run per
+        // index sequentially) and the CT gives the test a deterministic upper
+        // bound so a degraded shared fixture never makes us eat the workflow
+        // 15-min cap.
+        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var report = await recovery.RecoverAsync(
+            walletId, new RecoveryOptions(GapLimit: 5), recoveryCts.Token);
 
         // Contracts + derivation index recovered.
         var recoveredContracts = await contractStorage2.GetContracts(walletIds: [walletId]);
