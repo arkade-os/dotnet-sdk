@@ -91,12 +91,14 @@ public static class DockerHelper
     }
 
     /// <summary>
+    /// Not really a Docker helper, but a http fulmine endpoint one.
     /// Sends <paramref name="amountSats"/> sats as an Arkade VTXO to <paramref name="arkAddress"/>
-    /// via Fulmine's offchain send API. Fulmine is pre-funded by start-env.sh.
+    /// via Fulmine's offchain send API. Ensures Fulmine has sufficient balance before sending.
     /// </summary>
     public static async Task SendArkdNoteTo(string arkAddress, long amountSats,
         CancellationToken ct = default)
     {
+        await FulmineLiquidityHelper.EnsureArkLiquidity(minBalance: amountSats, maxAttempts: 5);
         using var http = new HttpClient { BaseAddress = new Uri("http://localhost:7003") };
         var response = await http.PostAsJsonAsync(
             "/api/v1/send/offchain",
