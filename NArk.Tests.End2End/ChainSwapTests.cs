@@ -516,15 +516,9 @@ public class ChainSwapTests
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
         // Wait for the SDK to lock the Arkade side. Without VTXOs at the
-        // VHTLC script the refund has nothing to spend, so we mine + poll
-        // until either the lockup lands or we give up.
-        var lockupDeadline = DateTimeOffset.UtcNow.AddMinutes(2);
-        while (DateTimeOffset.UtcNow < lockupDeadline && !lockedTcs.Task.IsCompleted)
-        {
-            await DockerHelper.MineBlocks(1, token);
-            await Task.WhenAny(lockedTcs.Task, Task.Delay(TimeSpan.FromSeconds(5), token));
-        }
-        await lockedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15), token);
+        // VHTLC script the refund has nothing to spend, so we mine until
+        // the lockup lands.
+        await TestWaiter.WaitForWithMining(lockedTcs.Task, TimeSpan.FromMinutes(2), ct: token);
 
         // Force Boltz into invoice.failedToPay — same admin path that drives
         // the submarine refund tests. The SDK's chain-swap refund branch
@@ -532,16 +526,10 @@ public class ChainSwapTests
         Console.WriteLine($"[ARK→BTC refund] Forcing Boltz status invoice.failedToPay via boltzr-cli");
         await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
 
-        // Wait for the SDK to observe the failure and settle the refund.
+        // Wait for the SDK to observe the failure and complete the refund.
         // Mine blocks alongside the poll because the Arkade tx the SDK
         // broadcasts to recover the lockup needs batch progression.
-        var refundDeadline = DateTimeOffset.UtcNow.AddMinutes(3);
-        while (DateTimeOffset.UtcNow < refundDeadline && !refundedTcs.Task.IsCompleted)
-        {
-            await DockerHelper.MineBlocks(1, token);
-            await Task.WhenAny(refundedTcs.Task, Task.Delay(TimeSpan.FromSeconds(5), token));
-        }
-        await refundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30), token);
+        await TestWaiter.WaitForWithMining(refundedTcs.Task, TimeSpan.FromMinutes(3), ct: token);
 
         var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single(s => s.SwapId == swapId);
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
