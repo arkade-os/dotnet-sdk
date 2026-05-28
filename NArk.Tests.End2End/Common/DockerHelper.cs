@@ -62,6 +62,19 @@ public static class DockerHelper
         => await Exec(Container.Bitcoin, [.. BitcoinCliArgs, "-generate", count.ToString()], ct);
 
     /// <summary>
+    /// Mines however many blocks are needed to reach <paramref name="targetHeight"/>.
+    /// No-ops if the chain is already at or beyond the target.
+    /// Used by CLTV / timelock tests that need a specific block height before an
+    /// absolute-locktime script path becomes spendable.
+    /// </summary>
+    public static async Task MineRegtestBlocksToHeight(int targetHeight, CancellationToken ct = default)
+    {
+        var current = await BitcoinGetBlockCount(ct);
+        if (current >= targetHeight) return;
+        await MineBlocks(targetHeight - current, ct);
+    }
+
+    /// <summary>
     /// Drives a Boltz submarine swap into a specific status via
     /// <c>boltzr-cli swap set-status</c>. Use <see cref="SubmarineSwapStatus"/> constants
     /// for the <paramref name="status"/> argument. For chain swaps use
