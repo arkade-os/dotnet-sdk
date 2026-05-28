@@ -48,7 +48,8 @@ public class TreeSignerSession
         // The cosigner keys in the PSBT were registered with the correct-parity key from
         // signer.GetPubKey() in IntentGenerationService, so we must match that here.
         var signer = await _walletProvider.GetSignerAsync(_walletId, cancellationToken)
-                     ?? throw new InvalidOperationException("Signer not found for wallet");
+                     ?? throw new InvalidOperationException(
+                         $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
         var myPubKey = await signer.GetPubKey(_descriptor, cancellationToken);
         var descriptorPubKey = _descriptor.ToPubKey();
 
@@ -158,13 +159,15 @@ public class TreeSignerSession
             throw new InvalidOperationException("nonces already generated");
 
         var walletIdentifier = _walletId;
-        var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken);
+        var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken)
+                     ?? throw new InvalidOperationException(
+                         $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
 
         var res = new Dictionary<uint256, (MusigPrivNonce secNonce, MusigPubNonce pubNonce)>();
         foreach (var (txid, musigContext) in _musigContexts!)
         {
             // Generate nonce tied to this specific context
-            var nonce = await signer!.GenerateNonces(_descriptor, musigContext, cancellationToken);
+            var nonce = await signer.GenerateNonces(_descriptor, musigContext, cancellationToken);
             res[txid] = (nonce, nonce.CreatePubNonce());
         }
 
@@ -189,11 +192,13 @@ public class TreeSignerSession
             throw new InvalidOperationException("missing aggregate nonce");
 
         var walletIdentifier = _walletId;
-        var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken);
+        var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken)
+                     ?? throw new InvalidOperationException(
+                         $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
 
         // Use the wallet signer to create a MUSIG2 partial signature
         // The context already has the correct sighash from nonce generation
-        var partialSig = await signer!.SignMusig(_descriptor, musigContext, myNonce.secNonce, cancellationToken);
+        var partialSig = await signer.SignMusig(_descriptor, musigContext, myNonce.secNonce, cancellationToken);
 
         return partialSig;
     }
