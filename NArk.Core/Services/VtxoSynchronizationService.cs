@@ -792,11 +792,16 @@ public class VtxoSynchronizationService : IAsyncDisposable
         _logger?.LogInformation("PollScriptsForVtxos: querying arkd indexer for {Count} scripts (after={After}): [{Scripts}]",
             scripts.Count, after?.ToString("O") ?? "<none>", string.Join(", ", scripts));
 
-        // Log equivalent REST API URL for manual testing (substitute your arkd host:port).
-        var queryParams = string.Join("&", scripts.Select(s => $"scripts={Uri.EscapeDataString(s)}"));
-        if (after.HasValue)
-            queryParams += $"&after={after.Value.ToUnixTimeMilliseconds()}";
-        _logger?.LogInformation("PollScriptsForVtxos: curl http://localhost:7070/v1/indexer/vtxos?{QueryParams}", queryParams);
+        // Debug aid: equivalent REST API URL for manual testing (substitute your arkd host:port).
+        // Kept at Debug — at Info this fires on every poll cycle (default 5s) and floods the log
+        // with the same query whether VTXOs landed or not.
+        if (_logger?.IsEnabled(LogLevel.Debug) == true)
+        {
+            var queryParams = string.Join("&", scripts.Select(s => $"scripts={Uri.EscapeDataString(s)}"));
+            if (after.HasValue)
+                queryParams += $"&after={after.Value.ToUnixTimeMilliseconds()}";
+            _logger.LogDebug("PollScriptsForVtxos: curl http://localhost:7070/v1/indexer/vtxos?{QueryParams}", queryParams);
+        }
 
         var count = 0;
 
