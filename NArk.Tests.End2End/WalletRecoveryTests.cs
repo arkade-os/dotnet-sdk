@@ -5,10 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.Intents;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
-using NArk.Core.Contracts;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Wallet;
@@ -91,26 +89,13 @@ public class WalletRecoveryTests
             await walletStorage.UpsertWallet(walletInfo);
             walletId = walletInfo.Id;
 
-            // Fund via an arkd-minted note imported through the SDK: the
-            // IntentGenerationService participates in a batch round, the note is
-            // consumed and the output lands at one of the wallet's
-            // ArkPaymentContract scripts (HD-derived, so LastUsedIndex advances)
-            // — exactly the kind of VTXO IndexerVtxoDiscoveryProvider rediscovers
-            // on recovery. Same pattern as NoteTests, avoiding the in-container
-            // `ark` CLI init that the regtest only runs against nigiri's
-            // built-in arkd (not the ARKD_IMAGE override the suite uses).
-            var intentStorage = host1.Services.GetRequiredService<IIntentStorage>();
-            var batchTcs = new TaskCompletionSource();
-            intentStorage.IntentChanged += (_, intent) =>
-            {
-                if (intent.State == ArkIntentState.BatchSucceeded)
-                    batchTcs.TrySetResult();
-            };
-            var note = await DockerHelper.CreateArkNote(100_000);
-            await contractService.ImportContract(walletId, ArkNoteContract.Parse(note));
-            await batchTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
-
-            // Reverse swap (receive Ark via Lightning) → a VHTLC contract + swap record.
+            // Fund via a reverse swap (receive Ark via Lightning): the settled
+            // swap produces a VTXO at the wallet's HD-derived receive script
+            // (so LastUsedIndex advances) AND a VHTLC contract + swap record
+            // — covers the contracts / index / funds / swap recovery legs in
+            // one step, and avoids the in-container `ark` CLI init that the
+            // regtest only runs against nigiri's built-in arkd (not the
+            // ARKD_IMAGE override the suite uses).
             var settledTcs = new TaskCompletionSource();
             swapStorage.SwapsChanged += (_, swap) =>
             {
