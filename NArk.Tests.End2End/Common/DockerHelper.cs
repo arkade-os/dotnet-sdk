@@ -60,6 +60,28 @@ public static class DockerHelper
         => await Exec("bitcoin", [.. BitcoinCliArgs, "-generate", count.ToString()], ct);
 
     /// <summary>
+    /// Returns the current regtest block height from Bitcoin Core.
+    /// </summary>
+    public static async Task<int> GetCurrentBlockHeight(CancellationToken ct = default)
+    {
+        var output = await Exec("bitcoin", ["bitcoin-cli", "-rpcwallet=", "getblockcount"], ct);
+        return int.Parse(output.Trim());
+    }
+
+    /// <summary>
+    /// Mines however many blocks are needed to reach <paramref name="targetHeight"/>.
+    /// No-ops if the chain is already at or beyond the target.
+    /// Used by CLTV / timelock tests that need a specific block height before an
+    /// absolute-locktime script path becomes spendable.
+    /// </summary>
+    public static async Task MineRegtestBlocksToHeight(int targetHeight, CancellationToken ct = default)
+    {
+        var current = await GetCurrentBlockHeight(ct);
+        if (current >= targetHeight) return;
+        await MineBlocks(targetHeight - current, ct);
+    }
+
+    /// <summary>
     /// Drives a Boltz swap into a specific status on demand via the
     /// boltzr-cli admin tool baked into the Boltz container. Only
     /// <c>invoice.failedToPay</c> and <c>invoice.pending</c> are accepted —
