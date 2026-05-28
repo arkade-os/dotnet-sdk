@@ -102,11 +102,32 @@ public class WalletRecoveryTests
                 if (swap.Status == ArkSwapStatus.Settled)
                     settledTcs.TrySetResult();
             };
-            var invoice = await FulmineLiquidityHelper.RetryWithSettle(() =>
-                swapMgr.InitiateReverseSwap(
-                    walletId,
-                    new CreateInvoiceParams(LightMoney.Satoshis(50_000), "recovery-test", TimeSpan.FromHours(1)),
-                    CancellationToken.None));
+            // RetryWithSettle only retries on "insufficient liquidity"; nginx
+            // returns 504 Gateway Time-out (HTML body) for boltz cold-starts in
+            // CI before that helper sees a single error, so wrap with an outer
+            // retry that absorbs transient HTTP failures too.
+            string invoice = null!;
+            Exception? lastEx = null;
+            for (var swapAttempt = 0; swapAttempt < 5; swapAttempt++)
+            {
+                try
+                {
+                    invoice = await FulmineLiquidityHelper.RetryWithSettle(() =>
+                        swapMgr.InitiateReverseSwap(
+                            walletId,
+                            new CreateInvoiceParams(LightMoney.Satoshis(50_000), "recovery-test", TimeSpan.FromHours(1)),
+                            CancellationToken.None));
+                    break;
+                }
+                catch (HttpRequestException ex)
+                {
+                    lastEx = ex;
+                    await Task.Delay(TimeSpan.FromSeconds(5));
+                }
+            }
+            if (invoice is null)
+                throw new InvalidOperationException(
+                    "InitiateReverseSwap failed after 5 HTTP-level retries", lastEx);
             await Cli.Wrap("docker")
                 .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", invoice])
                 .ExecuteBufferedAsync();
