@@ -114,7 +114,14 @@ NArk.Storage.EfCore (optional, provider-agnostic persistence)
 
 ## Wallet Management
 
-The SDK supports two wallet types:
+The SDK supports four wallet types:
+
+| `WalletType` | `Secret` | Signer | Use case |
+| --- | --- | --- | --- |
+| `HD` | BIP-39 mnemonic | `HierarchicalDeterministicWalletSigner` | Per-contract derivation, boarding support |
+| `SingleKey` | Nostr `nsec` | `NSecWalletSigner` | Static key, simple integrations |
+| `WatchOnly` | `null` / empty | `null` — observe only | Dashboards, accounting, paired devices |
+| `Remote` | `null` / empty | `RemoteArkadeWalletSigner` (proxy) | Hardware wallets, server-side signers, browser extensions |
 
 **HD Wallets** — BIP-39 mnemonic with BIP-86 taproot derivation (`m/86'/cointype'/0'`):
 
@@ -136,6 +143,40 @@ var wallet = await WalletFactory.CreateWallet(
     serverInfo);
 // wallet.WalletType == WalletType.SingleKey
 ```
+
+**Watch-Only Wallets** — observe-only from an account descriptor; no signing material is stored. Signing-dependent operations (batch participation, unilateral exits) throw a descriptive error.
+
+```csharp
+var wallet = await WalletFactory.CreateWatchOnlyWallet(
+    accountDescriptor: "tr([abcd1234/86'/1'/0']tpub.../0/*)",
+    destination: null,
+    serverInfo);
+// wallet.WalletType == WalletType.WatchOnly
+// wallet.Secret == null
+```
+
+**Remote-Signing Wallets** — signing is proxied to an `IRemoteSignerTransport` registered in DI. The SDK never sees private material.
+
+```csharp
+// 1. Implement IRemoteSignerTransport for your bridge (HWI, server, extension).
+public class MyRemoteSignerTransport : IRemoteSignerTransport { /* ... */ }
+
+// 2. Register it alongside DefaultWalletProvider (optional — only consumers
+// that use WalletType.Remote need to register one).
+services.AddSingleton<IRemoteSignerTransport, MyRemoteSignerTransport>();
+
+// 3. Construct the wallet record directly with WalletType.Remote.
+var wallet = new ArkWalletInfo(
+    Id: accountDescriptor,
+    Secret: null,
+    Destination: null,
+    WalletType: WalletType.Remote,
+    AccountDescriptor: accountDescriptor,
+    LastUsedIndex: 0);
+await walletStorage.SaveWallet(wallet);
+```
+
+If a `WalletType.Remote` wallet is loaded but no transport is registered, `GetSignerAsync` throws with a clear message identifying the missing registration.
 
 Save and load wallets through `IWalletStorage`:
 
