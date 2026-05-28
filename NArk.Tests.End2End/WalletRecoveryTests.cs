@@ -102,6 +102,14 @@ public class WalletRecoveryTests
                 if (swap.Status == ArkSwapStatus.Settled)
                     settledTcs.TrySetResult();
             };
+            // Proactively top up Fulmine's Ark liquidity before the swap.
+            // The shared SetUpFixture seeds it once at startup, but
+            // earlier swap tests in the same suite drain it; without this,
+            // boltz hangs waiting for Fulmine and nginx returns 504
+            // Gateway Time-out — under which RetryWithSettle's
+            // "insufficient liquidity" matcher never fires.
+            await FulmineLiquidityHelper.EnsureArkLiquidity(minBalance: 100_000);
+
             // RetryWithSettle only retries on "insufficient liquidity"; nginx
             // returns 504 Gateway Time-out (HTML body) for boltz cold-starts in
             // CI before that helper sees a single error, so wrap with an outer
