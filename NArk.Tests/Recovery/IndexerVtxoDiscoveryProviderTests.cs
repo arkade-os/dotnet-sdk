@@ -113,6 +113,45 @@ public class IndexerVtxoDiscoveryProviderTests
     }
 
     [Test]
+    public async Task Discovers_vtxo_under_mainnet_legacy_exit_delay()
+    {
+        // arkd advertises a SHORTER current delay (144 blocks); the wallet was
+        // minted while mainnet still ran the original 7-day delay. Without the
+        // legacy candidate the discovery would miss those VTXOs entirely.
+        var current = Desc();
+        var user = Desc();
+        var serverInfo = new ArkServerInfo(
+            Dust: Money.Satoshis(330),
+            SignerKey: current,
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
+            Network: Network.Main,
+            UnilateralExit: new Sequence(144),
+            BoardingExit: new Sequence(144),
+            ForfeitAddress: BitcoinAddress.Create("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", Network.Main),
+            ForfeitPubKey: current.Extract().XOnlyPubKey,
+            CheckpointTapScript: new UnilateralPathArkTapScript(
+                new Sequence(144), new NofNMultisigTapScript(Array.Empty<ECXOnlyPubKey>())),
+            FeeTerms: new ArkOperatorFeeTerms("0", "0", "0", "0", "0"));
+
+        // MAINNET_UNILATERAL_EXIT_DELAY from arkade-os/ts-sdk: 605184 s (~7 days).
+        var legacyDelay = new Sequence(TimeSpan.FromSeconds(605184));
+        var legacyScript = new ArkPaymentContract(current, legacyDelay, user)
+            .GetScriptPubKey().ToHex();
+        var currentScript = new ArkPaymentContract(current, serverInfo.UnilateralExit, user)
+            .GetScriptPubKey().ToHex();
+        Assert.That(legacyScript, Is.Not.EqualTo(currentScript),
+            "legacy 7-day script must differ from the current-delay script");
+
+        var (_, sut) = Build(serverInfo, legacyScript);
+
+        var result = await sut.DiscoverAsync(HdWallet(current), user, index: 0);
+
+        Assert.That(result.Used, Is.True);
+        Assert.That(result.Contracts, Has.Count.EqualTo(1));
+        Assert.That(result.Contracts[0].GetScriptPubKey().ToHex(), Is.EqualTo(legacyScript));
+    }
+
+    [Test]
     public async Task No_vtxo_returns_NotFound()
     {
         var current = Desc();

@@ -5,6 +5,7 @@ using NArk.Abstractions.Recovery;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Core.Transport;
+using NBitcoin;
 using NBitcoin.Scripting;
 
 namespace NArk.Core.Recovery;
@@ -25,8 +26,16 @@ namespace NArk.Core.Recovery;
 ///   <item><see cref="ArkDelegateContract"/> (the delegate VTXO script) for each
 ///   configured delegate descriptor (<see cref="RecoveryDelegateConfig"/>), if any.</item>
 /// </list>
-/// The exit delay is invariant across signers; only the server key changes. Every
-/// candidate whose script the indexer reports a VTXO for is returned so the
+/// <para>
+/// On mainnet the candidate set also pairs each signer with the historical 7-day
+/// unilateral-exit delay (605184s) alongside the arkd-advertised one — matching
+/// ts-sdk's <c>MAINNET_UNILATERAL_EXIT_DELAY</c> fallback. arkd only advertises
+/// the CURRENT delay; without this, wallets that minted VTXOs while mainnet still
+/// ran the original delay would silently fail discovery after the operator
+/// shortened it. We keep one hardcoded fallback rather than scanning an unbounded
+/// history because arkd does not record deprecated delays.
+/// </para>
+/// Every candidate whose script the indexer reports a VTXO for is returned so the
 /// orchestrator persists it.
 /// </summary>
 public class IndexerVtxoDiscoveryProvider(
@@ -46,6 +55,13 @@ public class IndexerVtxoDiscoveryProvider(
     private readonly SemaphoreSlim _serverInfoLock = new(1, 1);
 
     private readonly IReadOnlyList<OutputDescriptor> _delegates = delegateConfig?.Delegates ?? [];
+
+    // Mainnet's original unilateral-exit delay (~7 days in seconds). Kept as a
+    // single hardcoded fallback paired with the arkd-advertised delay so wallets
+    // that minted VTXOs before the operator shortened the delay still discover
+    // them. Matches MAINNET_UNILATERAL_EXIT_DELAY in arkade-os/ts-sdk's restore.
+    private static readonly Sequence MainnetLegacyUnilateralExit =
+        new(TimeSpan.FromSeconds(605184));
 
     private async Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken)
     {
@@ -74,9 +90,11 @@ public class IndexerVtxoDiscoveryProvider(
     {
         var serverInfo = await GetServerInfoAsync(cancellationToken);
 
-        // Build the full candidate set: default (+ delegate) contracts against the
-        // current signer and every deprecated signer. Keyed by scriptPubKey hex so
-        // a returned VTXO maps back to the exact contract that owns it.
+        // Build the full candidate set: default (+ delegate) contracts across the
+        // cross-product of { current signer ∪ deprecated signers } × { current
+        // exit delay ∪ mainnet legacy delay (mainnet only) }. Keyed by
+        // scriptPubKey hex so a returned VTXO maps back to the exact contract
+        // that owns it.
         var byScript = BuildCandidates(serverInfo, userDescriptor);
 
         var matched = new Dictionary<string, ArkContract>(StringComparer.OrdinalIgnoreCase);
@@ -103,19 +121,28 @@ public class IndexerVtxoDiscoveryProvider(
         ArkServerInfo serverInfo, OutputDescriptor userDescriptor)
     {
         // Current signer first, then every deprecated signer (server-key rotation).
-        // DeprecatedSigners maps key -> cutoff timestamp; only the key matters here,
-        // the exit delay is the server-wide UnilateralExit.
+        // DeprecatedSigners maps key -> cutoff timestamp; only the key matters here.
         var signers = new List<OutputDescriptor> { serverInfo.SignerKey };
         foreach (var deprecated in serverInfo.DeprecatedSigners.Keys)
             signers.Add(deprecated.ToOutputDescriptor(serverInfo.Network));
 
+        // Current exit delay + the hardcoded mainnet legacy delay (deduped). On
+        // testnets arkd has always advertised the network's intended delay, so
+        // the legacy probe would only widen the candidate set without ever
+        // hitting — keep it mainnet-only to match ts-sdk and avoid wasting
+        // indexer round-trips on every regtest scan.
+        var exitDelays = new HashSet<Sequence> { serverInfo.UnilateralExit };
+        if (serverInfo.Network.ChainName == ChainName.Mainnet)
+            exitDelays.Add(MainnetLegacyUnilateralExit);
+
         var byScript = new Dictionary<string, ArkContract>(StringComparer.OrdinalIgnoreCase);
         foreach (var signer in signers)
+        foreach (var exitDelay in exitDelays)
         {
-            AddCandidate(byScript, new ArkPaymentContract(signer, serverInfo.UnilateralExit, userDescriptor));
+            AddCandidate(byScript, new ArkPaymentContract(signer, exitDelay, userDescriptor));
             foreach (var delegateDescriptor in _delegates)
                 AddCandidate(byScript, new ArkDelegateContract(
-                    signer, serverInfo.UnilateralExit, userDescriptor, delegateDescriptor));
+                    signer, exitDelay, userDescriptor, delegateDescriptor));
         }
 
         return byScript;
