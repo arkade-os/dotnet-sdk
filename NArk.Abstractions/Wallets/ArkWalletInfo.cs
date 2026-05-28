@@ -5,17 +5,16 @@ namespace NArk.Abstractions.Wallets;
 /// </summary>
 /// <param name="Id">Wallet identifier.</param>
 /// <param name="Secret">
-/// Signing material for the wallet, interpreted according to
-/// <paramref name="WalletType"/>:
-/// <list type="bullet">
-///   <item><description><see cref="Wallets.WalletType.SingleKey"/>: the nsec private key — MUST be non-null and non-empty.</description></item>
-///   <item><description><see cref="Wallets.WalletType.HD"/>: the BIP-39 mnemonic — MUST be non-null and non-empty.</description></item>
-///   <item><description><see cref="Wallets.WalletType.WatchOnly"/>: MUST be null or empty — the wallet holds no signing material.</description></item>
-///   <item><description><see cref="Wallets.WalletType.Remote"/>: MUST be null or empty — signing is proxied via <see cref="IRemoteSignerTransport"/>.</description></item>
-/// </list>
+/// Local signing material, when present, interpreted according to <paramref name="WalletType"/>:
+/// the nsec private key for <see cref="Wallets.WalletType.SingleKey"/>, the BIP-39 mnemonic for
+/// <see cref="Wallets.WalletType.HD"/>.
+/// <para>Null/empty means the wallet has no local key — it is either watch-only or remote-signed,
+/// distinguished at runtime by whether <see cref="IWalletProvider.GetSignerAsync"/> can produce
+/// a signer (e.g. via a registered <see cref="IRemoteSignerTransport"/>). Capability lives on
+/// the signer-provider boundary; it is not encoded in the data type.</para>
 /// </param>
 /// <param name="Destination">Destination address for swept funds.</param>
-/// <param name="WalletType">Wallet flavour — see <see cref="Wallets.WalletType"/>.</param>
+/// <param name="WalletType">Key-derivation flavour — see <see cref="Wallets.WalletType"/>.</param>
 /// <param name="AccountDescriptor">For HD wallets: the account descriptor. For legacy: <c>tr(pubkey)</c>.</param>
 /// <param name="LastUsedIndex">For HD wallets: last used derivation index.</param>
 /// <param name="Metadata">

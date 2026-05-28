@@ -66,11 +66,16 @@ public static class WalletFactory
             ValidateDestination(destination, serverInfo);
         }
 
+        // Pick the derivation type from descriptor shape at creation time — the wildcard ('*')
+        // is the canonical signal for an HD-style descriptor (e.g. tr([fp/path]xpub/0/*)). A
+        // bare tr(pubkey) is single-key. Watch-only-ness is independent of this axis and is
+        // reflected by Secret=null; the wallet provider returns a null signer for it.
+        var walletType = accountDescriptor.Contains('*') ? WalletType.HD : WalletType.SingleKey;
         return Task.FromResult(new ArkWalletInfo(
             Id: accountDescriptor,
             Secret: null,
             Destination: destination,
-            WalletType: WalletType.WatchOnly,
+            WalletType: walletType,
             AccountDescriptor: accountDescriptor,
             LastUsedIndex: 0,
             Metadata: metadata

@@ -114,14 +114,24 @@ NArk.Storage.EfCore (optional, provider-agnostic persistence)
 
 ## Wallet Management
 
-The SDK supports four wallet types:
+Wallets are described along two orthogonal axes; capability is answered by the provider, not by a tag on the data.
 
-| `WalletType` | `Secret` | Signer | Use case |
+**Key derivation** (`WalletType`):
+
+| `WalletType` | Script shape | Use case |
+| --- | --- | --- |
+| `HD` | `tr([fp/path]xpub/0/*)` | Per-contract derivation, boarding support |
+| `SingleKey` | `tr(pubkey)` | Static key, simple integrations |
+
+**Signing capability** — decided at `IWalletProvider.GetSignerAsync` time:
+
+| `ArkWalletInfo.Secret` | `IRemoteSignerTransport.KnowsWalletAsync` | Returns | Meaning |
 | --- | --- | --- | --- |
-| `HD` | BIP-39 mnemonic | `HierarchicalDeterministicWalletSigner` | Per-contract derivation, boarding support |
-| `SingleKey` | Nostr `nsec` | `NSecWalletSigner` | Static key, simple integrations |
-| `WatchOnly` | `null` / empty | `null` — observe only | Dashboards, accounting, paired devices |
-| `Remote` | `null` / empty | `RemoteArkadeWalletSigner` (proxy) | Hardware wallets, server-side signers, browser extensions |
+| non-empty | — | local signer | sign locally |
+| null/empty | `true` | `RemoteArkadeWalletSigner` proxy | sign via transport |
+| null/empty | `false` (or no transport) | `null` | watch-only |
+
+Any combination of the two axes is valid — a watch-only `HD`, a remote-signed `SingleKey`, etc.
 
 **HD Wallets** — BIP-39 mnemonic with BIP-86 taproot derivation (`m/86'/cointype'/0'`):
 
@@ -144,39 +154,29 @@ var wallet = await WalletFactory.CreateWallet(
 // wallet.WalletType == WalletType.SingleKey
 ```
 
-**Watch-Only Wallets** — observe-only from an account descriptor; no signing material is stored. Signing-dependent operations (batch participation, unilateral exits) throw a descriptive error.
+**Watch-Only and Remote-Signed Wallets** — same data shape (`Secret = null` on a normal `ArkWalletInfo`); the runtime distinction is made by whether an `IRemoteSignerTransport` is registered and claims the wallet:
 
 ```csharp
+// Build the wallet record once. WalletType is inferred from the descriptor shape
+// (wildcard → HD, bare → SingleKey).
 var wallet = await WalletFactory.CreateWatchOnlyWallet(
     accountDescriptor: "tr([abcd1234/86'/1'/0']tpub.../0/*)",
     destination: null,
     serverInfo);
-// wallet.WalletType == WalletType.WatchOnly
-// wallet.Secret == null
-```
-
-**Remote-Signing Wallets** — signing is proxied to an `IRemoteSignerTransport` registered in DI. The SDK never sees private material.
-
-```csharp
-// 1. Implement IRemoteSignerTransport for your bridge (HWI, server, extension).
-public class MyRemoteSignerTransport : IRemoteSignerTransport { /* ... */ }
-
-// 2. Register it alongside DefaultWalletProvider (optional — only consumers
-// that use WalletType.Remote need to register one).
-services.AddSingleton<IRemoteSignerTransport, MyRemoteSignerTransport>();
-
-// 3. Construct the wallet record directly with WalletType.Remote.
-var wallet = new ArkWalletInfo(
-    Id: accountDescriptor,
-    Secret: null,
-    Destination: null,
-    WalletType: WalletType.Remote,
-    AccountDescriptor: accountDescriptor,
-    LastUsedIndex: 0);
+// wallet.WalletType == WalletType.HD, wallet.Secret == null
 await walletStorage.SaveWallet(wallet);
-```
 
-If a `WalletType.Remote` wallet is loaded but no transport is registered, `GetSignerAsync` throws with a clear message identifying the missing registration.
+// To make the same wallet remote-signed instead of watch-only, register an
+// IRemoteSignerTransport whose KnowsWalletAsync returns true for wallet.Id:
+public class MyRemoteSignerTransport : IRemoteSignerTransport
+{
+    public Task<bool> KnowsWalletAsync(string walletId, CancellationToken ct) => _bridge.IsPairedAsync(walletId, ct);
+    // … sign methods …
+}
+services.AddSingleton<IRemoteSignerTransport, MyRemoteSignerTransport>();
+// GetSignerAsync now returns a RemoteArkadeWalletSigner for that walletId,
+// instead of null. Same data; different signer-source.
+```
 
 Save and load wallets through `IWalletStorage`:
 

@@ -6,21 +6,30 @@ using NBitcoin.Secp256k1.Musig;
 namespace NArk.Abstractions.Wallets;
 
 /// <summary>
-/// Transport abstraction over a remote signer. Mirrors
-/// <see cref="IArkadeWalletSigner"/> but adds a <c>walletId</c> argument to
-/// every call so a single transport instance can serve multiple wallets
-/// (e.g. a multi-user server-side signing service, an HWI bridge, or a
+/// Transport abstraction over a remote signer. Mirrors <see cref="IArkadeWalletSigner"/> but
+/// adds a <c>walletId</c> argument to every call so a single transport instance can serve
+/// multiple wallets (e.g. a multi-user server-side signing service, an HWI bridge, or a
 /// browser-extension wallet shared across tabs).
 /// </summary>
 /// <remarks>
-/// Register an implementation in DI alongside a wallet of type
-/// <see cref="WalletType.Remote"/>. The default
-/// <see cref="IWalletProvider"/> implementation will wrap the transport in
-/// an <c>IArkadeWalletSigner</c> proxy when <see cref="IWalletProvider.GetSignerAsync"/>
-/// is called for a Remote wallet.
+/// Register an implementation in DI alongside any wallet whose <see cref="ArkWalletInfo.Secret"/>
+/// is null/empty (i.e. no local signing material). The default <see cref="IWalletProvider"/>
+/// implementation probes <see cref="KnowsWalletAsync"/> to decide whether such a wallet is
+/// remote-signed (signer is a <see cref="IArkadeWalletSigner"/> proxy over this transport) or
+/// watch-only (<see cref="IWalletProvider.GetSignerAsync"/> returns <c>null</c>). Capability is
+/// answered by this interface, not by a flag on the wallet record.
 /// </remarks>
 public interface IRemoteSignerTransport
 {
+    /// <summary>
+    /// Indicates whether this transport can sign for the given wallet. Used by the wallet
+    /// provider to distinguish remote-signed wallets from watch-only ones when the wallet has
+    /// no local <see cref="ArkWalletInfo.Secret"/>: <c>true</c> → produce a remote-signer proxy;
+    /// <c>false</c> → fall through to watch-only (signer = null).
+    /// </summary>
+    Task<bool> KnowsWalletAsync(string walletId, CancellationToken cancellationToken = default);
+
+
     /// <summary>
     /// Gets the compressed public key for the given descriptor, preserving parity.
     /// </summary>

@@ -63,15 +63,13 @@
     }
     else if (string.IsNullOrEmpty(_wallet.Secret))
     {
-        <!-- Watch-only / Remote wallets have no local secret to back up -->
+        <!-- No local secret → watch-only or remote-signed; either way nothing to reveal here. -->
         <div class="glass-card mb-16">
             <div style="text-align:center;padding:20px 0 12px;">
                 <p style="font-size:16px;font-weight:600;margin-bottom:8px;">No backup required</p>
                 <p class="text-secondary" style="font-size:13px;line-height:1.6;">
-                    This is a @(_wallet.WalletType.ToString().ToLowerInvariant()) wallet — it holds no
-                    signing material locally. Back up the @(_wallet.WalletType == WalletType.WatchOnly
-                    ? "account descriptor" : "remote-signer configuration") that bootstrapped it
-                    instead.
+                    This wallet holds no signing material locally. Back up the account descriptor
+                    (or remote-signer configuration) that bootstrapped it instead.
                 </p>
             </div>
         </div>

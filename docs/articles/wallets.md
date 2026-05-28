@@ -1,17 +1,25 @@
 # Wallets
 
-Wallets are stored in `IWalletStorage` and materialized as address/signing providers on demand by `IWalletProvider` (default: `DefaultWalletProvider`). Signing material (when present) lives in `ArkWalletInfo.Secret`.
+Wallets are stored in `IWalletStorage` and materialized as address/signing providers on demand by `IWalletProvider` (default: `DefaultWalletProvider`).
 
-`WalletType` selects the signing flavour:
+Two orthogonal axes describe any wallet — keep them separate at every layer:
 
-| `WalletType` | `Secret` | `GetSignerAsync` returns | Use case |
+**1. Key-derivation flavour** (`WalletType`):
+
+| `WalletType` | Script shape | Use case |
+| --- | --- | --- |
+| `SingleKey` | `tr(pubkey)` — one flat key | Static key, simple integrations |
+| `HD` | `tr([fp/path]xpub/0/*)` — xpub-derived child set | Per-contract derivation, boarding support |
+
+**2. Signing capability** — answered by `IWalletProvider.GetSignerAsync`, *not* by the data type:
+
+| `ArkWalletInfo.Secret` | `IRemoteSignerTransport` claims it | `GetSignerAsync` returns | Capability |
 | --- | --- | --- | --- |
-| `HD` | BIP-39 mnemonic | `HierarchicalDeterministicWalletSigner` | Per-contract derivation, boarding support |
-| `SingleKey` | Nostr `nsec` | `NSecWalletSigner` | Static key, simple integrations |
-| `WatchOnly` | `null` / empty | `null` | Observe-only — addresses + VTXOs, no signing |
-| `Remote` | `null` / empty | `RemoteArkadeWalletSigner` (proxy) | Signing proxied to `IRemoteSignerTransport` |
+| non-empty | — | local signer (HD or SingleKey) | sign locally |
+| null / empty | yes (`KnowsWalletAsync` → `true`) | `RemoteArkadeWalletSigner` proxy | sign via transport |
+| null / empty | no | `null` | watch-only |
 
-`ArkWalletInfo.Secret` MUST be non-null/non-empty for `HD` and `SingleKey`, and MUST be null/empty for `WatchOnly` and `Remote`.
+Capability lives at the *provider* boundary, not as a tag on the wallet record. Any combination of the two axes is valid: a remote-signed `SingleKey`, a watch-only `HD`, etc.
 
 ## HD Wallets (BIP-39)
 
@@ -29,20 +37,14 @@ Created from a Nostr `nsec` (raw 32-byte secret). All operations use a single st
 - No boarding address support
 - Suitable for testing or lightweight integrations
 
-## Watch-Only Wallets
+## Watch-Only and Remote-Signed Wallets
 
-Created from an account descriptor only — no signing material. The SDK can derive addresses, observe VTXOs, and report balances, but signing-dependent operations (batch participation, unilateral exits) throw a descriptive `InvalidOperationException`. Useful for accounting dashboards, paired devices where the signer lives elsewhere, or air-gapped setups.
+Both are described by the same data shape — `Secret = null` on an otherwise normal `ArkWalletInfo` — and distinguished at runtime by `IWalletProvider.GetSignerAsync`:
 
-The descriptor shape picks the address provider:
+- No `IRemoteSignerTransport` registered, or `KnowsWalletAsync(walletId)` returns `false` → `GetSignerAsync` returns `null`. Watch-only: addresses and VTXOs are observable, signing-dependent operations (batch participation, unilateral exits) throw a descriptive `InvalidOperationException`.
+- An `IRemoteSignerTransport` is registered and claims the wallet → `GetSignerAsync` returns a `RemoteArkadeWalletSigner` proxy. Every signing call is forwarded to the transport. The transport sees `walletId` on every call so one instance can serve many wallets (server-side signing service, HWI bridge, browser-extension wallet, …).
 
-- `tr(<pubkey-hex>)` — single-key style, one reusable address
-- `tr([<fingerprint>/<path>]<xpub>/0/*)` — HD style, new derivation per contract
-
-## Remote-Signing Wallets
-
-The wallet record holds no key material; signing is proxied to an `IRemoteSignerTransport` resolved from DI. The transport sees `walletId` on every call so a single transport instance can serve many wallets (e.g. a server-side signing service, an HWI bridge, a browser-extension wallet).
-
-Implement `IRemoteSignerTransport` for your bridge, register it in DI alongside `IWalletProvider`, and store wallets with `WalletType = WalletType.Remote`. If a remote wallet is loaded but no transport is registered, `GetSignerAsync` throws with a clear error.
+`WalletType` is independent: a watch-only HD wallet derives addresses from its xpub; a watch-only single-key wallet has one fixed address. Same for remote — derivation is whatever the descriptor encodes; the signer-source is whatever the transport claims.
 
 ## Creating a Wallet
 
@@ -67,36 +69,31 @@ var sk = await WalletFactory.CreateWallet(
     cancellationToken: ct);
 await walletStorage.SaveWallet(sk, ct);
 
-// Watch-only wallet (from an account descriptor — no signing material).
-var watchOnly = await WalletFactory.CreateWatchOnlyWallet(
+// Watch-only OR remote-signed: same data shape — null Secret + the descriptor. Whether the
+// wallet ends up watch-only or remote-signed is decided at GetSignerAsync time by whether an
+// IRemoteSignerTransport is registered and claims this walletId (KnowsWalletAsync).
+var nonLocal = await WalletFactory.CreateWatchOnlyWallet(
     accountDescriptor: "tr([abcd1234/86'/1'/0']tpub.../0/*)",
     destination: null,
     serverInfo: serverInfo,
     cancellationToken: ct);
-await walletStorage.SaveWallet(watchOnly, ct);
-
-// Remote-signing wallet (signing proxied to an IRemoteSignerTransport).
-// Construct ArkWalletInfo directly with WalletType.Remote — the transport
-// must be registered in DI before GetSignerAsync is called for this wallet.
-var remote = new ArkWalletInfo(
-    Id: "tr([abcd1234/86'/1'/0']tpub.../0/*)",
-    Secret: null,
-    Destination: null,
-    WalletType: WalletType.Remote,
-    AccountDescriptor: "tr([abcd1234/86'/1'/0']tpub.../0/*)",
-    LastUsedIndex: 0);
-await walletStorage.SaveWallet(remote, ct);
+await walletStorage.SaveWallet(nonLocal, ct);
 ```
 
 `ArkWalletInfo.Id` is the deterministic wallet identifier derived from the descriptor — two imports of the same seed produce the same `Id`.
 
 ## Implementing a Remote Signer
 
-For `WalletType.Remote` wallets the SDK never sees private material; every signing call is forwarded to an `IRemoteSignerTransport` you register in DI. Mirror `IArkadeWalletSigner` with an extra `walletId` parameter on each method:
+For wallets whose `Secret` is null, the SDK never sees private material; every signing call is forwarded to an `IRemoteSignerTransport` you register in DI. The transport itself decides which wallets it can sign for via `KnowsWalletAsync` — wallets it doesn't claim fall through to watch-only.
+
+Mirror `IArkadeWalletSigner` with an extra `walletId` parameter on each method, plus the `KnowsWalletAsync` probe:
 
 ```csharp
 public class HardwareSignerTransport : IRemoteSignerTransport
 {
+    public Task<bool> KnowsWalletAsync(string walletId, CancellationToken ct)
+        => _bridge.IsPairedAsync(walletId, ct);
+
     public Task<ECPubKey> GetPubKeyAsync(string walletId, OutputDescriptor descriptor, CancellationToken ct)
         => _bridge.GetPubKeyAsync(walletId, descriptor.ToString(), ct);
 
