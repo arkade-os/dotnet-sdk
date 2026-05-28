@@ -1,5 +1,3 @@
-using CliWrap;
-using CliWrap.Buffered;
 using Microsoft.Extensions.Options;
 using NArk.Blockchain;
 using NArk.Core.Fees;
@@ -112,11 +110,8 @@ public class ChainSwapTests
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
         // Fund the BTC lockup address with the exact expected amount
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, btcAmount])
-            .ExecuteBufferedAsync();
-        Console.WriteLine($"[BTC→ARK] sendtoaddress result: exit={sendResult.ExitCode}, stdout={sendResult.StandardOutput.Trim()}, stderr={sendResult.StandardError.Trim()}");
-        Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
+        var txid = await DockerHelper.BitcoinSendToAddress(btcAddress, btcAmount);
+        Console.WriteLine($"[BTC→ARK] sendtoaddress txid: {txid}");
 
         // Mine blocks periodically so Boltz confirms the BTC lockup, locks ARK, and we claim
         for (var i = 0; i < 15; i++)
@@ -195,10 +190,7 @@ public class ChainSwapTests
         await swapMgr.StartAsync(CancellationToken.None);
 
         // Generate a BTC destination address from the bitcoin node
-        var addrResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
-            .ExecuteBufferedAsync();
-        var btcDestination = BitcoinAddress.Create(addrResult.StandardOutput.Trim(), Network.RegTest);
+        var btcDestination = BitcoinAddress.Create(await DockerHelper.BitcoinGetNewAddress(), Network.RegTest);
 
         // Create ARK→BTC chain swap
         var swapId = await swapMgr.InitiateArkToBtcChainSwap(
@@ -321,11 +313,8 @@ public class ChainSwapTests
         // covered by the test wallet's UTXO budget.
         var fundAmount = originalExpectedSats + 1000;
         var btcAmount = (fundAmount / 100_000_000m).ToString("0.########");
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", btcAddress, btcAmount])
-            .ExecuteBufferedAsync(token);
-        Console.WriteLine($"[BTC→ARK reneg] Funded {fundAmount} sats (expected+1000), exit={sendResult.ExitCode}");
-        Assert.That(sendResult.ExitCode, Is.EqualTo(0), $"sendtoaddress failed: {sendResult.StandardError}");
+        var txid = await DockerHelper.BitcoinSendToAddress(btcAddress, btcAmount, token);
+        Console.WriteLine($"[BTC→ARK reneg] Funded {fundAmount} sats (expected+1000), txid={txid}");
 
         // Mine to confirm the lockup so Boltz emits transaction.lockupFailed
         // and the SDK's PollSwapState gets the chance to renegotiate.
@@ -519,10 +508,7 @@ public class ChainSwapTests
 
         // Generate a BTC destination from the bitcoin node — Boltz needs a
         // real BTC address even though we'll never reach the claim step.
-        var addrResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
-            .ExecuteBufferedAsync(token);
-        var btcDestination = BitcoinAddress.Create(addrResult.StandardOutput.Trim(), Network.RegTest);
+        var btcDestination = BitcoinAddress.Create(await DockerHelper.BitcoinGetNewAddress(token), Network.RegTest);
 
         var swapId = await swapMgr.InitiateArkToBtcChainSwap(
             testingPrerequisite.walletIdentifier, 50_000, btcDestination, token);

@@ -1,12 +1,10 @@
 using System.Security.Cryptography;
-using CliWrap;
-using CliWrap.Buffered;
+using NArk.Tests.End2End.Common;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
 using NArk.Core.Contracts;
-using NArk.Abstractions.Safety;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
 using NArk.Tests.End2End.TestPersistance;
@@ -67,12 +65,7 @@ public class VtxoSynchronizationTests
         );
         await contractService.ImportContract(fp, contract);
 
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
-                randomAmount.ToString(), "--password", "secret"
-            ])
-            .ExecuteBufferedAsync();
+        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), randomAmount);
 
         // Wait for the sync service to receive it
         await receiveTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -130,12 +123,7 @@ public class VtxoSynchronizationTests
 
         // Send funds to the contract
         var randomAmount = RandomNumberGenerator.GetInt32((int)info.Dust.Satoshi, 100000);
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", contractAddress.ToString(false),
-                "--amount", randomAmount.ToString(), "--password", "secret"
-            ])
-            .ExecuteBufferedAsync();
+        await DockerHelper.SendArkdNoteTo(contractAddress.ToString(false), randomAmount);
 
         // Wait for auto-deactivation
         await deactivationTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -194,12 +182,7 @@ public class VtxoSynchronizationTests
             }
         };
 
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", wallet1Address.ToString(false),
-                "--amount", randomAmount.ToString(), "--password", "secret"
-            ])
-            .ExecuteBufferedAsync();
+        await DockerHelper.SendArkdNoteTo(wallet1Address.ToString(false), randomAmount);
 
         // Wait for the sync service to receive it
         await receiveTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));

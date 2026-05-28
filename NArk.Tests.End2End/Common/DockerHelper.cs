@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CliWrap;
@@ -90,36 +91,27 @@ public static class DockerHelper
     }
 
     /// <summary>
-    /// Adds an extra unspent VTXO to an already-funded wallet's existing
-    /// receive contract by issuing another <c>ark send</c> from arkd. Used
-    /// by concurrency tests where two parallel swaps must each lock their
-    /// own VTXO without hitting <c>AlreadyLockedVtxoException</c>.
+    /// Not really a Docker helper, but a http fulmine endpoint one.
+    /// Sends <paramref name="amountSats"/> sats as an Arkade VTXO to <paramref name="arkAddress"/>
+    /// via Fulmine's offchain send API. Ensures Fulmine has sufficient balance before sending.
     /// </summary>
-    /// <remarks>
-    /// Must be invoked AFTER the wallet has at least one VTXO already (so a
-    /// receive script is registered with arkd) and BEFORE the swap that
-    /// needs the extra VTXO is initiated. Each call creates one additional
-    /// <paramref name="amountSats"/>-sat VTXO at the same script. The
-    /// supplied <paramref name="onVtxoArrived"/> callback is invoked when a
-    /// new unspent VTXO lands at the receive script — typical use is a
-    /// <see cref="TaskCompletionSource"/> the caller awaits.
-    /// </remarks>
     public static async Task SendArkdNoteTo(string arkAddress, long amountSats,
         CancellationToken ct = default)
     {
-        var result = await CliWrap.Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", arkAddress,
-                "--amount", amountSats.ToString(),
-                "--password", "secret"
-            ])
-            .WithValidation(CliWrap.CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
+        await FulmineLiquidityHelper.EnsureArkLiquidity(minBalance: amountSats, maxAttempts: 5);
+        using var http = new HttpClient { BaseAddress = new Uri("http://localhost:7003") };
+        var response = await http.PostAsJsonAsync(
+            "/api/v1/send/offchain",
+            new { address = arkAddress, amount = amountSats },
+            ct);
 
-        if (!result.IsSuccess)
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
             throw new InvalidOperationException(
-                $"ark send to {arkAddress} for {amountSats} sats failed (exit={result.ExitCode}): " +
-                $"stdout={result.StandardOutput.Trim()}, stderr={result.StandardError.Trim()}");
+                $"Fulmine send offchain to {arkAddress} for {amountSats} sats failed " +
+                $"({response.StatusCode}): {body}");
+        }
     }
 
     /// <summary>
@@ -131,5 +123,50 @@ public static class DockerHelper
         var output = await Exec("ark",
             ["arkd", "note", "--amount", amountSats.ToString()], ct);
         return output.Trim();
+    }
+
+    /// <summary>
+    /// Pays a BOLT11 invoice via the nigiri lnd node using lncli.
+    /// </summary>
+    public static async Task PayLndInvoice(string bolt11Invoice, CancellationToken ct = default)
+    {
+        var result = await Cli.Wrap("docker")
+            .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", bolt11Invoice])
+            .WithValidation(CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"lncli payinvoice failed (exit={result.ExitCode}): {result.StandardError.Trim()}");
+    }
+
+    /// <summary>
+    /// Sends BTC to an address via Bitcoin Core's bitcoin-cli.
+    /// Returns the transaction ID.
+    /// </summary>
+    public static async Task<string> BitcoinSendToAddress(string address, string btcAmount, CancellationToken ct = default)
+    {
+        var result = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", address, btcAmount])
+            .WithValidation(CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"bitcoin-cli sendtoaddress {address} {btcAmount} failed (exit={result.ExitCode}): {result.StandardError.Trim()}");
+        return result.StandardOutput.Trim();
+    }
+
+    /// <summary>
+    /// Gets a new address from the Bitcoin Core wallet.
+    /// </summary>
+    public static async Task<string> BitcoinGetNewAddress(CancellationToken ct = default)
+    {
+        var result = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
+            .WithValidation(CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"bitcoin-cli getnewaddress failed (exit={result.ExitCode}): {result.StandardError.Trim()}");
+        return result.StandardOutput.Trim();
     }
 }

@@ -1,11 +1,9 @@
-using CliWrap;
-using CliWrap.Buffered;
+using NArk.Tests.End2End.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain;
 using NArk.Hosting;
 using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
@@ -65,12 +63,7 @@ public class OnchainTests
                 fundedTcs.TrySetResult();
         };
 
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
-                "50000", "--password", "secret"
-            ])
-            .ExecuteBufferedAsync();
+        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), 50000);
 
         await fundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 

@@ -1,10 +1,8 @@
-using CliWrap;
-using CliWrap.Buffered;
+using NArk.Tests.End2End.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain;
 using NArk.Hosting;
 using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
@@ -51,12 +49,7 @@ public class BuilderStyleTests
         var fp = await wallet.CreateTestWallet();
         var contract = await contractService.DeriveContract(fp, NextContractPurpose.Receive, cancellationToken: CancellationToken.None);
 
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
-                "50000", "--password", "secret"
-            ])
-            .ExecuteBufferedAsync();
+        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), 50000);
 
         var gotBatchTcs = new TaskCompletionSource();
 

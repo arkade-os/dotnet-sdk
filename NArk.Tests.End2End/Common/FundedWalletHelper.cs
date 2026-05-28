@@ -1,5 +1,3 @@
-using CliWrap;
-using CliWrap.Buffered;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Safety;
@@ -13,7 +11,6 @@ using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transport;
 using NArk.Transport.GrpcClient;
-using NBitcoin;
 
 namespace NArk.Tests.End2End.Common;
 
@@ -69,19 +66,7 @@ internal static class FundedWalletHelper
         // so concurrent tests that need parallel coin selection don't race
         // on a shared input.
         for (var i = 0; i < vtxoCount; i++)
-        {
-            var sendResult = await Cli.Wrap("docker")
-                .WithArguments([
-                    "exec", "ark", "ark", "send", "--to", contract.GetArkAddress().ToString(false), "--amount",
-                    amountSatsPerVtxo.ToString(), "--password", "secret"
-                ])
-                .WithValidation(CommandResultValidation.None)
-                .ExecuteBufferedAsync();
-
-            if (!sendResult.IsSuccess)
-                throw new InvalidOperationException(
-                    $"ark send #{i + 1} failed (exit={sendResult.ExitCode}): stdout={sendResult.StandardOutput}, stderr={sendResult.StandardError}");
-        }
+            await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSatsPerVtxo);
 
         await receivedAllVtxosTcs.Task.WaitAsync(TimeSpan.FromSeconds(15 * vtxoCount));
 
@@ -139,19 +124,8 @@ internal static class FundedWalletHelper
         var contract = await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
         var delegateContract = (ArkDelegateContract)contract;
 
-        // Fund via ark send
         const int randomAmount = 500000;
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send", "--to", delegateContract.GetArkAddress().ToString(false), "--amount",
-                randomAmount.ToString(), "--password", "secret"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync();
-
-        if (!sendResult.IsSuccess)
-            throw new InvalidOperationException(
-                $"ark send failed (exit={sendResult.ExitCode}): stdout={sendResult.StandardOutput}, stderr={sendResult.StandardError}");
+        await DockerHelper.SendArkdNoteTo(delegateContract.GetArkAddress().ToString(false), randomAmount);
 
         await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 

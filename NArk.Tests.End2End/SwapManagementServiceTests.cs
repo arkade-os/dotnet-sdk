@@ -1,5 +1,3 @@
-using CliWrap;
-using CliWrap.Buffered;
 using BTCPayServer.Lightning;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -11,7 +9,6 @@ using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transport;
-using NArk.Core.Wallet;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
@@ -152,9 +149,7 @@ public class SwapManagementServiceTests
             ));
 
         // Until Aspire has a way to run commands with parameters :(
-        await Cli.Wrap("docker")
-            .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", invoice])
-            .ExecuteBufferedAsync();
+        await DockerHelper.PayLndInvoice(invoice);
 
         await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
     }
@@ -667,9 +662,7 @@ public class SwapManagementServiceTests
                 swapMgr.InitiateReverseSwap(prereq.walletIdentifier,
                     new CreateInvoiceParams(LightMoney.Satoshis(20000), "ParallelReverse", TimeSpan.FromHours(1)),
                     token));
-            await Cli.Wrap("docker")
-                .WithArguments(["exec", "lnd", "lncli", "--network=regtest", "payinvoice", "--force", revInvoice])
-                .ExecuteBufferedAsync(token);
+            await DockerHelper.PayLndInvoice(revInvoice, token);
             await revSettled.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
             await swapMgr.DisposeAsync();
             await sweepMgr.DisposeAsync();
