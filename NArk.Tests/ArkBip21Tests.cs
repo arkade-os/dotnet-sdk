@@ -217,8 +217,9 @@ public class ArkBip21Tests
     }
 
     [Test]
-    public void Build_NoAddress_Throws()
+    public void Build_NothingSet_Throws()
     {
+        // Empty builder — no ark, onchain, lightning, asset, or custom params — still rejected.
         Assert.Throws<InvalidOperationException>(() => ArkBip21.Create().Build());
     }
 
@@ -230,6 +231,59 @@ public class ArkBip21Tests
             .Build();
 
         Assert.That(uri, Is.EqualTo("bitcoin:bc1qtest"));
+    }
+
+    [Test]
+    public void Build_LightningOnly_EmitsEmptyAddressForm()
+    {
+        // A receive screen toggling off both ark and onchain (chip UI) should still get a
+        // bitcoin: URI carrying the lightning value, not a raw LNURL — the scheme stays
+        // consistent across toggle states.
+        var uri = ArkBip21.Create()
+            .WithLightning("lnurl1dp68gurn8ghj7")
+            .Build();
+
+        Assert.That(uri, Does.StartWith("bitcoin:?"));
+        Assert.That(uri, Does.Contain("lightning="));
+    }
+
+    [Test]
+    public void Build_LightningPlusAmountAndLabel_NoAddress_Works()
+    {
+        var uri = ArkBip21.Create()
+            .WithLightning("lnbc100n1p")
+            .WithAmount(0.0005m)
+            .WithCustomParameter("label", "Lunch")
+            .Build();
+
+        Assert.That(uri, Does.StartWith("bitcoin:?"));
+        Assert.That(uri, Does.Contain("amount=0.0005"));
+        Assert.That(uri, Does.Contain("lightning="));
+        Assert.That(uri, Does.Contain("label=Lunch"));
+    }
+
+    [Test]
+    public void Build_AssetOnly_Throws()
+    {
+        // asset= constrains *what* to send (forces Ark-only delivery in PreferredMethod) — it is
+        // not itself a destination. Without an accompanying ark/onchain/lightning the payer has
+        // nowhere to send, so Build() rejects it.
+        Assert.Throws<InvalidOperationException>(() => ArkBip21.Create().WithAssetId("abc123").Build());
+    }
+
+    [Test]
+    public void Build_AssetPlusArk_Works()
+    {
+        // Asset paired with an ark address is the canonical pattern: ark provides the
+        // destination, asset narrows the payment to a specific token.
+        var uri = ArkBip21.Create()
+            .WithArkAddress("tark1qtest")
+            .WithAssetId("abc123")
+            .Build();
+
+        Assert.That(uri, Does.StartWith("bitcoin:?"));
+        Assert.That(uri, Does.Contain("ark=tark1qtest"));
+        Assert.That(uri, Does.Contain("asset=abc123"));
     }
 
     // ── Roundtrip ──────────────────────────────────────────────────────

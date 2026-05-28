@@ -158,13 +158,32 @@ public class ArkBip21
     /// <summary>
     /// Builds the BIP21 URI string.
     /// Format: <c>bitcoin:[onchain_address]?amount=X&amp;ark=Y&amp;lightning=Z</c>
+    /// <para>At least one destination must be set: an ark address, an on-chain address, or a
+    /// lightning value (BOLT11 / LNURL — itself a destination). <c>assetId</c> alone is not a
+    /// destination — it constrains <i>what</i> to send, not <i>where</i> — so it does not satisfy
+    /// the precondition; pair it with an ark address.</para>
+    /// <para>The on-chain address slot may be empty when only ark or only lightning is set — e.g.
+    /// a Lightning-only URI <c>bitcoin:?lightning=lnurl1…</c>. The <c>bitcoin:</c> scheme stays
+    /// consistent across per-path toggle states; any LN-capable wallet (or BIP21 parser that
+    /// understands the <c>lightning=</c> param) routes off the query string. Strict parsers
+    /// that require a path-position address should set one via <see cref="WithOnchainAddress"/>
+    /// or <see cref="WithArkAddress"/>; the SDK no longer forces it.</para>
     /// </summary>
-    /// <exception cref="InvalidOperationException">No address was set (need at least ark or onchain).</exception>
+    /// <exception cref="InvalidOperationException">
+    /// No destination was set. Call <see cref="WithArkAddress"/>, <see cref="WithOnchainAddress"/>,
+    /// or <see cref="WithLightning"/>. An asset alone is not a destination.
+    /// </exception>
     public string Build()
     {
-        if (string.IsNullOrWhiteSpace(_arkAddress) && string.IsNullOrWhiteSpace(_onchainAddress))
+        if (string.IsNullOrWhiteSpace(_arkAddress)
+            && string.IsNullOrWhiteSpace(_onchainAddress)
+            && string.IsNullOrWhiteSpace(_lightning))
+        {
             throw new InvalidOperationException(
-                "At least one address is required. Call WithArkAddress() or WithOnchainAddress() before Build().");
+                "At least one destination is required. Call WithArkAddress, WithOnchainAddress, " +
+                "or WithLightning before Build(). (WithAssetId is a constraint on what to send, " +
+                "not a destination — it can't stand alone.)");
+        }
 
         var sb = new StringBuilder("bitcoin:");
         sb.Append(_onchainAddress ?? string.Empty);
