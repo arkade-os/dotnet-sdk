@@ -3,8 +3,10 @@ using BTCPayServer.Lightning;
 using NArk.Abstractions.Extensions;
 using NArk.Core.Contracts;
 using NArk.Core.Extensions;
+using NArk.Swaps.Bolt12;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
+using NArk.Swaps.Boltz.Models.Bolt12;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
@@ -25,7 +27,6 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     }
 
     // Submarine Swaps
-
     public async Task<SubmarineSwapResult> CreateSubmarineSwap(BOLT11PaymentRequest invoice, OutputDescriptor sender,
         CancellationToken cancellationToken = default)
     {
@@ -66,7 +67,92 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new Exception(
                 $"Address mismatch! Expected {address.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet)} got {response.Address}");
 
-        return new SubmarineSwapResult(vhtlcContract, response, address);
+        return new SubmarineSwapResult(vhtlcContract, response, address, invoice.ToString());
+    }
+
+    /// <summary>
+    /// Creates a submarine swap (Arkade → Lightning) where the destination is a
+    /// BOLT 12 offer rather than a BOLT 11 invoice.
+    /// </summary>
+    /// <remarks>
+    /// The method first calls Boltz's
+    /// <c>POST /v2/lightning/{currency}/bolt12/fetch</c> to exchange the offer
+    /// for a BOLT 12 invoice, then extracts the payment hash from that invoice
+    /// and continues with the same VHTLC construction as the BOLT 11 path.
+    /// The returned <see cref="SubmarineSwapResult"/> is identical in structure
+    /// to the one produced by <see cref="CreateSubmarineSwap"/> — all downstream
+    /// monitoring and refund logic applies without modification.
+    /// </remarks>
+    /// <param name="offer">A BOLT 12 offer string (<c>lno1…</c>).</param>
+    /// <param name="amountSats">Amount to pay in satoshis.</param>
+    /// <param name="sender">
+    /// Output descriptor of the sender's key, used as the VHTLC refund key.
+    /// </param>
+    /// <param name="currency">
+    /// Lightning currency symbol passed to Boltz, defaults to <c>"BTC"</c>.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="SubmarineSwapResult"/> with the VHTLC contract, Boltz swap
+    /// details, and the Arkade lockup address.
+    /// </returns>
+    public async Task<SubmarineSwapResult> CreateSubmarineSwapBolt12(
+        string offer,
+        long amountSats,
+        OutputDescriptor sender,
+        string currency = "BTC",
+        CancellationToken cancellationToken = default)
+    {
+        if (amountSats <= 0)
+            throw new ArgumentOutOfRangeException(nameof(amountSats), amountSats, "Amount must be positive.");
+        if (!Bolt12InvoiceParser.IsBolt12Offer(offer))
+            throw new ArgumentException(
+                $"Expected a BOLT 12 offer (lno1…), got: '{offer[..Math.Min(8, offer.Length)]}…'",
+                nameof(offer));
+
+        var fetchResponse = await boltzClient.FetchBolt12InvoiceAsync(
+            currency,
+            new Bolt12FetchRequest { Offer = offer, Amount = amountSats },
+            cancellationToken);
+
+        Bolt12InvoiceParser.VerifyInvoiceMatchesOffer(fetchResponse.Invoice, offer);
+
+        var paymentHashBytes = Bolt12InvoiceParser.ExtractPaymentHash(fetchResponse.Invoice);
+        var hash = new uint160(Hashes.RIPEMD160(paymentHashBytes), false);
+
+        var extractedSender = OutputDescriptorHelpers.Extract(sender);
+        var operatorTerms = await clientTransport.GetServerInfoAsync(cancellationToken);
+
+        var response = await boltzClient.CreateSubmarineSwapAsync(new SubmarineRequest
+        {
+            Invoice = fetchResponse.Invoice,
+            RefundPublicKey =
+                (extractedSender.PubKey?.ToBytes() ?? extractedSender.XOnlyPubKey.ToBytes()).ToHexStringLower(),
+            From = "ARK",
+            To = "BTC",
+            ReferralId = boltzClient.ReferralId,
+        }, cancellationToken);
+
+        var vhtlcContract = new VHTLCContract(
+            server: operatorTerms.SignerKey,
+            sender: sender,
+            receiver: KeyExtensions.ParseOutputDescriptor(response.ClaimPublicKey, operatorTerms.Network),
+            hash: hash,
+            refundLocktime: new LockTime(response.TimeoutBlockHeights.Refund),
+            unilateralClaimDelay: ParseSequence(response.TimeoutBlockHeights.UnilateralClaim),
+            unilateralRefundDelay: ParseSequence(response.TimeoutBlockHeights.UnilateralRefund),
+            unilateralRefundWithoutReceiverDelay: ParseSequence(
+                response.TimeoutBlockHeights.UnilateralRefundWithoutReceiver)
+        );
+
+        var address = vhtlcContract.GetArkAddress();
+        if (response.Address != address.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet))
+            throw new InvalidOperationException(
+                $"Address mismatch — expected {address.ToString(operatorTerms.Network.ChainName == ChainName.Mainnet)}, " +
+                $"Boltz returned {response.Address}");
+
+        var paymentHashHex = Convert.ToHexString(paymentHashBytes).ToLowerInvariant();
+        return new SubmarineSwapResult(vhtlcContract, response, address, fetchResponse.Invoice, paymentHashHex);
     }
 
     // Reverse Swaps
