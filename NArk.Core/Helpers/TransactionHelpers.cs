@@ -36,9 +36,12 @@ public static class TransactionHelpers
 
             receivedCheckpointTx.UpdateFrom(checkpointTx);
 
-            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken);
+            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Cannot sign checkpoint tx: wallet '{coin.WalletIdentifier}' has no signer " +
+                    "(watch-only wallet, or its remote signer transport is unavailable).");
 
-            await PsbtHelpers.SignAndFillPsbt(signer!, coin, receivedCheckpointTx, checkpointPrecomputedTransactionData,
+            await PsbtHelpers.SignAndFillPsbt(signer, coin, receivedCheckpointTx, checkpointPrecomputedTransactionData,
                 cancellationToken: cancellationToken);
 
             return receivedCheckpointTx;
@@ -230,8 +233,11 @@ public static class TransactionHelpers
 
             foreach (var (_, coin) in sortedCheckpointCoins)
             {
-                var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken);
-                await PsbtHelpers.SignAndFillPsbt(signer!, coin, tx, precomputedTransactionData, cancellationToken: cancellationToken);
+                var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        $"Cannot sign Arkade tx checkpoint input: wallet '{coin.WalletIdentifier}' has no signer " +
+                        "(watch-only wallet, or its remote signer transport is unavailable).");
+                await PsbtHelpers.SignAndFillPsbt(signer, coin, tx, precomputedTransactionData, cancellationToken: cancellationToken);
             }
 
             //reorder the checkpoints to match the order of the inputs of the Ark transaction
@@ -415,9 +421,13 @@ public static class TransactionHelpers
             var precomputedTransactionData =
                 gtx.PrecomputeTransactionData(sortedCheckpointCoins.OrderBy(x => x.Key).Select(x => x.Value).ToArray());
 
-            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken);
+            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Cannot sign forfeit tx: wallet '{coin.WalletIdentifier}' has no signer " +
+                    "(watch-only wallet, or its remote signer transport is unavailable). " +
+                    "Watch-only wallets cannot participate in batches that demand a forfeit.");
 
-            await PsbtHelpers.SignAndFillPsbt(signer!, coin, forfeitTx, precomputedTransactionData, sighash, cancellationToken);
+            await PsbtHelpers.SignAndFillPsbt(signer, coin, forfeitTx, precomputedTransactionData, sighash, cancellationToken);
 
             return forfeitTx;
         }

@@ -8,9 +8,13 @@ namespace NArk.Core.Wallet;
 
 /// <summary>
 /// Pure proxy implementation of <see cref="IArkadeWalletSigner"/> that
-/// forwards every call to an <see cref="IRemoteSignerTransport"/>. Used by
-/// <see cref="DefaultWalletProvider"/> for wallets of type
-/// <see cref="WalletType.Remote"/>.
+/// forwards every call to an <see cref="IRemoteSignerTransport"/>.
+/// <see cref="DefaultWalletProvider"/> instantiates this when the wallet
+/// has no local signing material (<see cref="ArkWalletInfo.Secret"/> is
+/// null/empty) <b>and</b> a registered transport's
+/// <see cref="IRemoteSignerTransport.KnowsWalletAsync"/> claims the wallet;
+/// when no transport claims it, the wallet is treated as watch-only and
+/// <see cref="IWalletProvider.GetSignerAsync"/> returns <c>null</c>.
 /// </summary>
 /// <remarks>
 /// Holds no signing material — the <c>walletId</c> is captured at construction

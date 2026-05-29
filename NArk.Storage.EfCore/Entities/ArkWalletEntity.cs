@@ -12,13 +12,16 @@ public class ArkWalletEntity
     public string Id { get; set; } = "";
 
     /// <summary>
-    /// Signing material for the wallet, interpreted according to <see cref="WalletType"/>:
+    /// Signing material for the wallet when held locally, interpreted according to <see cref="WalletType"/>:
     /// <list type="bullet">
     ///   <item><description><see cref="Abstractions.Wallets.WalletType.SingleKey"/>: nsec private key.</description></item>
     ///   <item><description><see cref="Abstractions.Wallets.WalletType.HD"/>: BIP-39 mnemonic.</description></item>
-    ///   <item><description><see cref="Abstractions.Wallets.WalletType.WatchOnly"/>: null — no signing material.</description></item>
-    ///   <item><description><see cref="Abstractions.Wallets.WalletType.Remote"/>: null — signing proxied to an <see cref="Abstractions.Wallets.IRemoteSignerTransport"/>.</description></item>
     /// </list>
+    /// <c>null</c> / empty when no local signing material is present — the wallet is
+    /// then either watch-only, or remote-signed via a registered
+    /// <see cref="Abstractions.Wallets.IRemoteSignerTransport"/> that claims it through
+    /// <see cref="Abstractions.Wallets.IRemoteSignerTransport.KnowsWalletAsync"/>.
+    /// The signer-capability decision lives on the provider, not on a flag in the wallet record.
     /// </summary>
     public string? Wallet { get; set; }
 
@@ -60,7 +63,12 @@ public class ArkWalletEntity
     {
         builder.ToTable(options.WalletsTable, options.Schema);
         builder.HasKey(w => w.Id);
-        builder.HasIndex(w => w.Wallet).IsUnique();
+        // Filter to NOT-NULL rows so SQL Server (which treats NULLs as duplicate
+        // in unique indexes) doesn't reject multiple watch-only / remote-signed
+        // wallets that legitimately share a null Wallet column. Postgres + SQLite
+        // already treat NULLs as distinct, but the filter is harmless there and
+        // makes the intent explicit at the schema level.
+        builder.HasIndex(w => w.Wallet).IsUnique().HasFilter("\"Wallet\" IS NOT NULL");
         builder.Property(w => w.WalletType).HasDefaultValue(WalletType.SingleKey);
         builder.Property(w => w.AccountDescriptor).HasDefaultValue("TODO_MIGRATION");
         builder.Property(w => w.LastUsedIndex).HasDefaultValue(0);
