@@ -1,12 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NArk.Abstractions.Batches;
-using NArk.Abstractions.Batches.ServerEvents;
+using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Exit;
 using NArk.Abstractions.Intents;
-using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VirtualTxs;
@@ -16,10 +14,13 @@ using NArk.Blockchain;
 using NArk.Core.Contracts;
 using NArk.Core.Enums;
 using NArk.Core.Events;
+using NArk.Core.Exit;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
+using NArk.Core.VirtualTxs;
+using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Storage.EfCore.Hosting;
 using NArk.Storage.EfCore.Storage;
@@ -132,23 +133,6 @@ public class UnilateralExitTests
     /// AwaitingCsvDelay (every virtual tx confirmed) within a reasonable
     /// budget.
     /// </summary>
-    /// <remarks>
-    /// Currently ignored. While developing this test the broadcaster
-    /// surfaced two issues that need separate investigation in this PR:
-    ///   1. Tree-tx PSBTs returned by arkd's GetVirtualTxs don't carry
-    ///      `FinalScriptWitness` on their inputs, so the lifted tx has
-    ///      empty witnesses — Bitcoin Core rejects with
-    ///      "mempool-script-verify-flag-failed (Witness program was
-    ///      passed an empty witness)". Either the witnesses live in a
-    ///      non-standard PSBT field (Arkade extension?) or arkd needs
-    ///      to emit them in `FinalScriptWitness`.
-    ///   2. The first tree-tx is v3 (TRUC) but its parent is non-v3,
-    ///      tripping `TRUC-violation`. Either the parent should also
-    ///      be v3 or the tree-tx version is wrong for this commitment
-    ///      shape.
-    /// Re-enable once the broadcasting path produces a tx Bitcoin Core
-    /// accepts.
-    /// </remarks>
     [Test]
     [CancelAfter(180_000)]
     public async Task ProgressExits_AdvancesFromBroadcastingToAwaitingCsvDelay(CancellationToken token)
@@ -211,12 +195,6 @@ public class UnilateralExitTests
     /// CSV must NOT promote the session to Claimable. Mining the full
     /// CSV-equivalent block range then promotes it.
     /// </summary>
-    /// <remarks>
-    /// Ignored for the same reason as
-    /// <see cref="ProgressExits_AdvancesFromBroadcastingToAwaitingCsvDelay"/>
-    /// — the broadcaster never produces an accepted tx, so we never reach
-    /// AwaitingCsvDelay to assert against.
-    /// </remarks>
     [Test]
     [CancelAfter(240_000)]
     public async Task AwaitingCsvDelay_DoesNotAdvanceUntilDelayMatures(CancellationToken token)
@@ -309,7 +287,433 @@ public class UnilateralExitTests
             $"observed state={current?.State}, fail={current?.FailReason ?? "-"}");
     }
 
+    /// <summary>
+    /// Full equivalent of go-sdk TestUnilateralExit/preconfirmed vtxo:
+    /// a VTXO received via offchain Arkade payment (no local boarding or batch)
+    /// is unrolled completely — Broadcasting → AwaitingCsvDelay → Completed —
+    /// and the claim transaction is verified to have delivered BTC to the
+    /// requested onchain address.
+    /// </summary>
+    /// <remarks>
+    /// When the regtest UnilateralExit CSV is time-based the test skips the
+    /// post-CSV phase (same caveat as
+    /// <see cref="AwaitingCsvDelay_DoesNotAdvanceUntilDelayMatures"/>).
+    /// </remarks>
+    [Test]
+    [CancelAfter(300_000)]
+    public async Task ProgressExits_WorksForOffchainFundedVtxo(CancellationToken token)
+    {
+        await using var setup = await FundWalletOffchainForExitAsync();
+
+        var vtxos = await setup.VtxoStorage.GetVtxos();
+        var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Unrolled);
+        Assert.That(vtxo, Is.Not.Null,
+            "Expected an unspent non-boarding VTXO after offchain fund; got: " +
+            string.Join(", ", vtxos.Select(v =>
+                $"{v.TransactionId[..8]}.. spent={v.IsSpent()} unrolled={v.Unrolled}")));
+
+        var claimAddress = await GetFreshOnchainAddress();
+        var sessions = await setup.ExitService.StartExitAsync(
+            setup.WalletId, [vtxo!.OutPoint], claimAddress, token);
+
+        Assert.That(sessions, Has.Count.EqualTo(1));
+        Assert.That(sessions[0].State, Is.EqualTo(ExitSessionState.Broadcasting));
+
+        var branch = await setup.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint);
+        Assert.That(branch, Has.Count.GreaterThan(0), "Virtual tx branch should be populated");
+
+        // ── Phase 1: Broadcasting → AwaitingCsvDelay ─────────────────────
+        ExitSession? current = null;
+        for (var step = 0; step < 30 && !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            if (current is null) continue;
+
+            TestContext.WriteLine(
+                $"[Exit/offchain] step={step} state={current.State} " +
+                $"nextTxIndex={current.NextTxIndex} fail={current.FailReason ?? "-"}");
+
+            if (current.State is ExitSessionState.AwaitingCsvDelay
+                or ExitSessionState.Claimable
+                or ExitSessionState.Claiming
+                or ExitSessionState.Completed)
+                break;
+
+            if (current.State == ExitSessionState.Failed)
+                Assert.Fail($"Exit session failed during broadcast: {current.FailReason}");
+        }
+
+        Assert.That(current?.State,
+            Is.EqualTo(ExitSessionState.AwaitingCsvDelay)
+                .Or.EqualTo(ExitSessionState.Claimable)
+                .Or.EqualTo(ExitSessionState.Claiming)
+                .Or.EqualTo(ExitSessionState.Completed),
+            $"Exit should advance past Broadcasting; state={current?.State}");
+
+        // Already past AwaitingCsvDelay — CSV was very short, skip mining phase.
+        if (current!.State is not ExitSessionState.AwaitingCsvDelay)
+        {
+            // Fall through to the Completed assertion below.
+        }
+        else
+        {
+            // ── Phase 2: mine CSV blocks ──────────────────────────────────
+            var serverInfo = await setup.ClientTransport.GetServerInfoAsync(token);
+            var unilateralExit = serverInfo.UnilateralExit;
+
+            if (unilateralExit.LockType != SequenceLockType.Height)
+            {
+                TestContext.WriteLine(
+                    $"[Exit/offchain] CSV delay is time-based " +
+                    $"(LockPeriod={unilateralExit.LockPeriod}); " +
+                    "skipping post-CSV claim assertion.");
+                return;
+            }
+
+            var csvBlocks = unilateralExit.LockHeight + 2;
+            TestContext.WriteLine($"[Exit/offchain] mining {csvBlocks} blocks to mature CSV");
+            await DockerHelper.MineBlocks(csvBlocks, token);
+        }
+
+        // ── Phase 3: AwaitingCsvDelay/Claimable → Completed ──────────────
+        for (var step = 0; step < 20 && !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+
+            TestContext.WriteLine(
+                $"[Exit/offchain claim] step={step} state={current?.State} " +
+                $"fail={current?.FailReason ?? "-"}");
+
+            if (current?.State is ExitSessionState.Completed) break;
+            if (current?.State is ExitSessionState.Failed)
+                Assert.Fail($"Exit session failed during claim: {current.FailReason}");
+
+            await Task.Delay(500, token);
+        }
+
+        Assert.That(current?.State, Is.EqualTo(ExitSessionState.Completed),
+            $"Exit should reach Completed; final state={current?.State}");
+
+        // VTXO should be marked Unrolled in storage (mirrors go-sdk's
+        // require.True(t, spent[0].Unrolled)).
+        var finalVtxos = await setup.VtxoStorage.GetVtxos();
+        var exitedVtxo = finalVtxos.FirstOrDefault(v => v.OutPoint == vtxo.OutPoint);
+        Assert.That(exitedVtxo?.Unrolled, Is.True,
+            "VTXO should be marked Unrolled after completed exit");
+
+        // Claim address should have received BTC (mirrors go-sdk's carolUtxoEvent check).
+        var receivedStr = await DockerHelper.Exec("bitcoin",
+            ["bitcoin-cli", "-rpcwallet=", "getreceivedbyaddress",
+             claimAddress.ToString(), "0"]);
+        Assert.That(decimal.Parse(receivedStr.Trim(),
+                System.Globalization.CultureInfo.InvariantCulture),
+            Is.GreaterThan(0m),
+            $"Claim address {claimAddress} should have received BTC after exit completed");
+    }
+
     // ----- helpers --------------------------------------------------------
+
+    /// <summary>
+    /// Equivalent of go-sdk TestUnilateralExit/preconfirmed vtxo:
+    /// Wallet A sends to Wallet B offchain; Wallet B exits the VTXO before the
+    /// batch commits it on-chain.
+    /// </summary>
+    /// <remarks>
+    /// Currently blocked: arkd does not populate <c>PSBT_IN_TAP_KEY_SIG</c> in the
+    /// tree-tx PSBTs for preconfirmed VTXOs because the MuSig2 co-signature is only
+    /// produced during the batch round. <c>ParseVirtualTx</c> therefore throws
+    /// "missing MuSig2 taproot key-path signature" and the exit fails.
+    ///
+    /// go-sdk handles this via an <c>ErrWaitingForConfirmation</c> retry loop that
+    /// waits for the batch to fire before broadcasting the tree. NArk would need an
+    /// equivalent: retry <c>ProgressExitsAsync</c> silently when signatures are
+    /// absent instead of failing the session immediately.
+    ///
+    /// Re-enable once <c>ProgressExitsAsync</c> handles unsigned tree PSBTs by
+    /// waiting for the next batch round rather than failing.
+    /// </remarks>
+    [Test]
+    [Ignore("Blocked: preconfirmed VTXOs lack PSBT_IN_TAP_KEY_SIG until batch fires — " +
+            "ProgressExitsAsync needs ErrWaitingForConfirmation-style retry")]
+    [CancelAfter(300_000)]
+    public async Task ProgressExits_WorksForPreconfirmedVtxo(CancellationToken token)
+    {
+        // ── Wallet A: funded, used only to send ──────────────────────
+        var (safetyService, walletProvider, walletAId, vtxoStorage, contractService,
+             contracts, clientTransport, _) = await FundedWalletHelper.GetFundedWallet();
+
+        var intentStorage = TestStorage.CreateIntentStorage();
+        var coinService = new CoinService(clientTransport, contracts,
+            [new PaymentContractTransformer(walletProvider)]);
+        var spendingService = new SpendingService(
+            vtxoStorage, contracts, walletProvider, coinService, contractService,
+            clientTransport, new DefaultCoinSelector(), safetyService, intentStorage);
+
+        // ── Wallet B: fresh wallet + exit infrastructure ─────────────
+        await using var walletB = await SetupReceiverForExitAsync();
+
+        // Subscribe before the send so we catch the event synchronously.
+        var vtxoReceivedTcs = new TaskCompletionSource<ArkVtxo>();
+        walletB.VtxoStorage.VtxosChanged += (_, vtxo) =>
+        {
+            if (!vtxo.IsSpent() && !vtxo.Unrolled)
+                vtxoReceivedTcs.TrySetResult(vtxo);
+        };
+
+        // ── Send A → B ───────────────────────────────────────────────
+        await spendingService.Spend(walletAId,
+            [new ArkTxOut(ArkTxOutType.Vtxo, 50_000, walletB.ReceiveAddress!)], token);
+
+        var vtxo = await vtxoReceivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30), token);
+
+        // ── Key assertion: VTXO must arrive before the batch commits ──
+        if (!vtxo.Preconfirmed)
+        {
+            // Batch fired within the ARKD_ROUND_INTERVAL=10s window before we
+            // could capture the preconfirmed state. This is an environmental
+            // timing issue, not a code defect.
+            Assert.Ignore(
+                "VTXO was already settled when received " +
+                "(batch committed before preconfirmed assertion; re-run or increase ARKD_ROUND_INTERVAL)");
+            return;
+        }
+        Assert.That(vtxo.Preconfirmed, Is.True,
+            "VTXO should be preconfirmed (batch not yet on-chain) at moment of receipt");
+
+        // ── Wait for VtxoChainAutoFetchService to populate the branch ─
+        // Failure here means arkd does not serve virtual-tx branches for
+        // preconfirmed VTXOs — a real SDK gap, not a test bug.
+        await TestWaiter.WaitFor(async () =>
+        {
+            var branch = await walletB.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint);
+            return branch.Count > 0;
+        }, timeout: TimeSpan.FromSeconds(15), ct: token);
+
+        // ── Full exit: Broadcasting → CSV → Completed ────────────────
+        var claimAddress = await GetFreshOnchainAddress();
+        var sessions = await walletB.ExitService.StartExitAsync(
+            walletB.WalletId, [vtxo.OutPoint], claimAddress, token);
+
+        Assert.That(sessions, Has.Count.EqualTo(1));
+        Assert.That(sessions[0].State, Is.EqualTo(ExitSessionState.Broadcasting));
+
+        ExitSession? current = null;
+        for (var step = 0; step < 30 && !token.IsCancellationRequested; step++)
+        {
+            await walletB.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            current = await walletB.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            if (current is null) continue;
+            TestContext.WriteLine(
+                $"[Exit/preconfirmed] step={step} state={current.State} " +
+                $"fail={current.FailReason ?? "-"}");
+            if (current.State is ExitSessionState.AwaitingCsvDelay or ExitSessionState.Claimable
+                or ExitSessionState.Claiming or ExitSessionState.Completed) break;
+            if (current.State == ExitSessionState.Failed)
+                Assert.Fail($"Exit failed during broadcast: {current.FailReason}");
+        }
+
+        if (current?.State == ExitSessionState.AwaitingCsvDelay)
+        {
+            var serverInfo = await walletB.ClientTransport.GetServerInfoAsync(token);
+            var unilateralExit = serverInfo.UnilateralExit;
+            if (unilateralExit.LockType != SequenceLockType.Height)
+            {
+                TestContext.WriteLine("[Exit/preconfirmed] Time-based CSV; skipping post-CSV assertion");
+                return;
+            }
+            await DockerHelper.MineBlocks(unilateralExit.LockHeight + 2, token);
+        }
+
+        for (var step = 0; step < 20 && !token.IsCancellationRequested; step++)
+        {
+            await walletB.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            current = await walletB.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            if (current?.State == ExitSessionState.Completed) break;
+            if (current?.State == ExitSessionState.Failed)
+                Assert.Fail($"Exit failed during claim: {current.FailReason}");
+            await Task.Delay(500, token);
+        }
+
+        Assert.That(current?.State, Is.EqualTo(ExitSessionState.Completed),
+            $"Exit should reach Completed; state={current?.State}");
+
+        var finalVtxos = await walletB.VtxoStorage.GetVtxos();
+        Assert.That(finalVtxos.FirstOrDefault(v => v.OutPoint == vtxo.OutPoint)?.Unrolled, Is.True,
+            "VTXO should be marked Unrolled after exit completes");
+
+        var received = await DockerHelper.Exec("bitcoin",
+            ["bitcoin-cli", "-rpcwallet=", "getreceivedbyaddress", claimAddress.ToString(), "0"]);
+        Assert.That(
+            decimal.Parse(received.Trim(), System.Globalization.CultureInfo.InvariantCulture),
+            Is.GreaterThan(0m),
+            $"Claim address should have received BTC after exit completed");
+    }
+
+    /// <summary>
+    /// Sets up a wallet with VtxoSync + exit infrastructure but no initial funding.
+    /// The returned <see cref="ExitTestSetup.ReceiveAddress"/> can be used by another
+    /// wallet to send a preconfirmed VTXO to this wallet.
+    /// </summary>
+    private static async Task<ExitTestSetup> SetupReceiverForExitAsync()
+    {
+        var safetyService = new AsyncSafetyService();
+        var storage = new TestStorage(safetyService);
+        var vtxoStorage = storage.VtxoStorage;
+        var contractStorage = storage.ContractStorage;
+        var virtualTxStorage = new InMemoryVirtualTxStorage();
+        var exitSessionStorage = new InMemoryExitSessionStorage();
+
+        var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        var info = await clientTransport.GetServerInfoAsync();
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+
+        var walletProvider = new InMemoryWalletProvider(clientTransport);
+        var walletId = await walletProvider.CreateTestWallet();
+        var contractService = new ContractService(walletProvider, contractStorage, clientTransport);
+
+        var vtxoSync = new VtxoSynchronizationService(
+            vtxoStorage, clientTransport,
+            [(IActiveScriptsProvider)vtxoStorage, (IActiveScriptsProvider)contractStorage]);
+        await vtxoSync.StartAsync(CancellationToken.None);
+
+        var receiveContract = await contractService.DeriveContract(
+            walletId, NextContractPurpose.Receive, ContractActivityState.Active);
+        var receiveAddress = receiveContract.GetArkAddress();
+
+        var virtualTxService = new VirtualTxService(
+            clientTransport, virtualTxStorage,
+            loggerFactory.CreateLogger<VirtualTxService>());
+
+        var autoFetchService = new VtxoChainAutoFetchService(
+            vtxoStorage,
+            virtualTxService,
+            Options.Create(new VirtualTxOptions
+            {
+                DefaultMode = VirtualTxMode.Full,
+                MinExitWorthAmount = 1000,
+            }),
+            loggerFactory.CreateLogger<VtxoChainAutoFetchService>());
+        await autoFetchService.StartAsync(CancellationToken.None);
+
+        var explorerClient = new ExplorerClient(
+            new NBXplorerNetworkProvider(info.Network.ChainName).GetBTC(),
+            SharedArkInfrastructure.NbxplorerEndpoint);
+        var broadcaster = new NBXplorerBlockchain(
+            explorerClient, loggerFactory.CreateLogger<NBXplorerBlockchain>());
+        var feeWallet = await TestFeeWallet.CreateFundedAsync();
+        var exitService = new UnilateralExitService(
+            clientTransport, virtualTxStorage, exitSessionStorage,
+            vtxoStorage, contractStorage, broadcaster, walletProvider,
+            virtualTxService, feeWallet: feeWallet,
+            logger: loggerFactory.CreateLogger<UnilateralExitService>());
+
+        return new ExitTestSetup(
+            walletId, vtxoStorage, virtualTxStorage, exitSessionStorage,
+            clientTransport, exitService,
+            [vtxoSync, new HostedServiceAdapter(autoFetchService)])
+        {
+            ReceiveAddress = receiveAddress
+        };
+    }
+
+    /// <summary>
+    /// Funds a wallet via Fulmine offchain send and wires the exit infrastructure
+    /// around it. Unlike <see cref="SettleAVtxoAsync"/>, no local boarding or
+    /// batch is required — the VTXO arrives directly from Fulmine's settled batch.
+    /// </summary>
+    private static async Task<ExitTestSetup> FundWalletOffchainForExitAsync()
+    {
+        var safetyService = new AsyncSafetyService();
+        var storage = new TestStorage(safetyService);
+        var vtxoStorage = storage.VtxoStorage;
+        var contractStorage = storage.ContractStorage;
+        var virtualTxStorage = new InMemoryVirtualTxStorage();
+        var exitSessionStorage = new InMemoryExitSessionStorage();
+
+        var receivedVtxoTcs = new TaskCompletionSource();
+        vtxoStorage.VtxosChanged += (_, vtxo) =>
+        {
+            if (!vtxo.IsSpent() && !vtxo.Unrolled) receivedVtxoTcs.TrySetResult();
+        };
+
+        var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        var info = await clientTransport.GetServerInfoAsync();
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+
+        var walletProvider = new InMemoryWalletProvider(clientTransport);
+        var walletId = await walletProvider.CreateTestWallet();
+        var contractService = new ContractService(walletProvider, contractStorage, clientTransport);
+
+        var vtxoSync = new VtxoSynchronizationService(
+            vtxoStorage, clientTransport,
+            [(IActiveScriptsProvider)vtxoStorage, (IActiveScriptsProvider)contractStorage]);
+        await vtxoSync.StartAsync(CancellationToken.None);
+
+        var receiveContract = await contractService.DeriveContract(
+            walletId, NextContractPurpose.Receive, ContractActivityState.Active);
+        var receiveAddress = receiveContract.GetArkAddress().ToString(isMainnet: false);
+
+        var virtualTxService = new VirtualTxService(
+            clientTransport, virtualTxStorage,
+            loggerFactory.CreateLogger<VirtualTxService>());
+
+        var autoFetchService = new VtxoChainAutoFetchService(
+            vtxoStorage,
+            virtualTxService,
+            Options.Create(new VirtualTxOptions
+            {
+                DefaultMode = VirtualTxMode.Full,
+                MinExitWorthAmount = 1000,
+            }),
+            loggerFactory.CreateLogger<VtxoChainAutoFetchService>());
+        await autoFetchService.StartAsync(CancellationToken.None);
+
+        await DockerHelper.SendArkdNoteTo(receiveAddress, BoardingAmountSats);
+        await receivedVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Wait until VtxoChainAutoFetchService has populated the virtual tx branch.
+        await TestWaiter.WaitFor(async () =>
+        {
+            var vtxos = await vtxoStorage.GetVtxos();
+            var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Unrolled);
+            if (vtxo is null) return false;
+            var branch = await virtualTxStorage.GetBranchAsync(vtxo.OutPoint);
+            return branch.Count > 0;
+        }, timeout: TimeSpan.FromSeconds(20));
+
+        var explorerClient = new ExplorerClient(
+            new NBXplorerNetworkProvider(info.Network.ChainName).GetBTC(),
+            SharedArkInfrastructure.NbxplorerEndpoint);
+        var broadcaster = new NBXplorerBlockchain(
+            explorerClient, loggerFactory.CreateLogger<NBXplorerBlockchain>());
+
+        var feeWallet = await TestFeeWallet.CreateFundedAsync();
+
+        var exitService = new UnilateralExitService(
+            clientTransport,
+            virtualTxStorage,
+            exitSessionStorage,
+            vtxoStorage,
+            contractStorage,
+            broadcaster,
+            walletProvider,
+            virtualTxService,
+            feeWallet: feeWallet,
+            logger: loggerFactory.CreateLogger<UnilateralExitService>());
+
+        return new ExitTestSetup(
+            walletId, vtxoStorage, virtualTxStorage, exitSessionStorage, clientTransport,
+            exitService,
+            [vtxoSync, new HostedServiceAdapter(autoFetchService)]);
+    }
 
     /// <summary>
     /// Boards onchain funds into the wallet, runs intent generation + batch
@@ -605,6 +1009,8 @@ public class UnilateralExitTests
         public IExitSessionStorage ExitSessionStorage { get; } = exitSessionStorage;
         public NArk.Core.Transport.IClientTransport ClientTransport { get; } = clientTransport;
         public UnilateralExitService ExitService { get; } = exitService;
+        /// <summary>Address to which another wallet can send funds for this wallet to exit.</summary>
+        public ArkAddress? ReceiveAddress { get; init; }
 
         public async ValueTask DisposeAsync()
         {
