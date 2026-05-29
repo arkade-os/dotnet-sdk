@@ -123,15 +123,18 @@ Wallets are described along two orthogonal axes; capability is answered by the p
 | `HD` | `tr([fp/path]xpub/0/*)` | Per-contract derivation, boarding support |
 | `SingleKey` | `tr(pubkey)` | Static key, simple integrations |
 
-**Signing capability** — decided at `IWalletProvider.GetSignerAsync` time:
+**Signing capability** — decided at `IWalletProvider.GetSignerAsync` time and built by composing one or more `IPrivateKeyProvider`s behind a `CompositeArkadeWalletSigner`:
 
 | `ArkWalletInfo.Secret` | `IRemoteSignerTransport.KnowsWalletAsync` | Returns | Meaning |
 | --- | --- | --- | --- |
-| non-empty | — | local signer | sign locally |
-| null/empty | `true` | `RemoteArkadeWalletSigner` proxy | sign via transport |
+| non-empty | — | composite with the matching local provider | sign locally |
+| non-empty | `true` | composite with local + remote providers (local first) | hybrid (local-preferred, remote fallback) |
+| null/empty | `true` | composite with `RemoteTransportKeyProvider` only | sign via transport |
 | null/empty | `false` (or no transport) | `null` | watch-only |
 
-Any combination of the two axes is valid — a watch-only `HD`, a remote-signed `SingleKey`, etc.
+Three providers ship in the box — `Bip39KeyProvider` (matches descriptors by master fingerprint), `NsecKeyProvider` (matches by x-only pubkey), `RemoteTransportKeyProvider` (delegates to an `IRemoteSignerTransport`). Implement `IPrivateKeyProvider` to plug in anything else (HWI, threshold key share, in-browser session signer, …).
+
+Any combination of the two axes is valid — a watch-only `HD`, a remote-signed `SingleKey`, an HD wallet with local view-key paths and a remote-signed spend path, etc.
 
 **HD Wallets** — BIP-39 mnemonic with BIP-86 taproot derivation (`m/86'/cointype'/0'`):
 
@@ -174,8 +177,9 @@ public class MyRemoteSignerTransport : IRemoteSignerTransport
     // … sign methods …
 }
 services.AddSingleton<IRemoteSignerTransport, MyRemoteSignerTransport>();
-// GetSignerAsync now returns a RemoteArkadeWalletSigner for that walletId,
-// instead of null. Same data; different signer-source.
+// GetSignerAsync now returns a CompositeArkadeWalletSigner wrapping a
+// RemoteTransportKeyProvider for that walletId, instead of null. Same data;
+// different signer-source.
 ```
 
 Save and load wallets through `IWalletStorage`:

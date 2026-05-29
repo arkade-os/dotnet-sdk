@@ -1,5 +1,5 @@
 using NArk.Abstractions.Extensions;
-using NArk.Core.Wallet;
+using NArk.Core.Wallet.PrivateKeyProviders;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
@@ -8,12 +8,12 @@ using NBitcoin.Secp256k1.Musig;
 namespace NArk.Tests;
 
 /// <summary>
-/// Tests for the MuSig2 parity fix in NSecWalletSigner.
+/// Tests for the MuSig2 parity fix in NsecKeyProvider.
 /// Verifies that odd-parity (03 prefix) nsec wallets can participate
 /// in batch signing after the tr() descriptor parity loss bug.
 /// </summary>
 [TestFixture]
-public class NSecWalletSignerParityTests
+public class NsecKeyProviderParityTests
 {
     // Synthetic test keys — two odd-parity (03 prefix) and one even-parity (02 prefix)
     private static readonly (string PrivKeyHex, string CompressedHex, string XOnlyHex)[] OddParityKeys =
@@ -37,10 +37,10 @@ public class NSecWalletSignerParityTests
         "cdcd6f44e6456d40b5102a89f5166badace021a0b6f10cc99d9d69cf9c63e1fd"
     );
 
-    private static NSecWalletSigner CreateSigner(string privKeyHex)
+    private static NsecKeyProvider CreateSigner(string privKeyHex)
     {
         var privKey = ECPrivKey.Create(Convert.FromHexString(privKeyHex));
-        return new NSecWalletSigner(privKey);
+        return new NsecKeyProvider(privKey);
     }
 
     /// <summary>
@@ -68,7 +68,7 @@ public class NSecWalletSignerParityTests
         {
             var signer = CreateSigner(key.PrivKeyHex);
             var descriptor = MakeSignerDescriptor(key.XOnlyHex);
-            var pubKey = signer.GetPubKey(descriptor).Result;
+            var pubKey = signer.GetPubKeyAsync(descriptor).Result;
             var compressed = Convert.ToHexString(pubKey.ToBytes()).ToLowerInvariant();
 
             Assert.That(compressed, Does.StartWith("03"),
@@ -81,7 +81,7 @@ public class NSecWalletSignerParityTests
     {
         var signer = CreateSigner(EvenParityKey.PrivKeyHex);
         var descriptor = MakeSignerDescriptor(EvenParityKey.XOnlyHex);
-        var pubKey = signer.GetPubKey(descriptor).Result;
+        var pubKey = signer.GetPubKeyAsync(descriptor).Result;
         var compressed = Convert.ToHexString(pubKey.ToBytes()).ToLowerInvariant();
 
         Assert.That(compressed, Does.StartWith("02"),
@@ -113,7 +113,7 @@ public class NSecWalletSignerParityTests
             var signer = CreateSigner(key.PrivKeyHex);
             var descriptor = MakeSignerDescriptor(key.XOnlyHex);
 
-            var signerPubKey = signer.GetPubKey(descriptor).Result;
+            var signerPubKey = signer.GetPubKeyAsync(descriptor).Result;
             var descriptorPubKey = descriptor.ToPubKey();
 
             // They should NOT be equal — signer returns 03, descriptor gives 02
@@ -133,14 +133,14 @@ public class NSecWalletSignerParityTests
         string privKeyHex, string xOnlyHex)
     {
         // Simulate the fixed production flow:
-        // 1. signer.GetPubKey() returns correct-parity key
+        // 1. signer.GetPubKeyAsync() returns correct-parity key
         // 2. MusigContext is built with that correct-parity key
         // 3. GenerateNonces uses the original private key (no negation)
         var signer = CreateSigner(privKeyHex);
         var descriptor = MakeSignerDescriptor(xOnlyHex);
 
         // The signer's actual pubkey (what IntentGenerationService sends to the server)
-        var signerPubKey = signer.GetPubKey(descriptor).Result;
+        var signerPubKey = signer.GetPubKeyAsync(descriptor).Result;
 
         // Create a fake server key for the MuSig context
         var serverKey = ECPubKey.Create(Convert.FromHexString(
@@ -157,7 +157,7 @@ public class NSecWalletSignerParityTests
         // "signing pubkey doesn't match" when parity was wrong
         Assert.DoesNotThrowAsync(async () =>
         {
-            await signer.GenerateNonces(descriptor, musigContext, sessionId: "test-parity");
+            await signer.GenerateNoncesAsync(descriptor, musigContext, sessionId: "test-parity");
         });
     }
 
@@ -168,7 +168,7 @@ public class NSecWalletSignerParityTests
         // Full MuSig2 signing flow with correct-parity pubkey in context
         var signer = CreateSigner(privKeyHex);
         var descriptor = MakeSignerDescriptor(xOnlyHex);
-        var signerPubKey = signer.GetPubKey(descriptor).Result;
+        var signerPubKey = signer.GetPubKeyAsync(descriptor).Result;
 
         // Server-side key
         var serverPrivKeyBytes = new byte[32];
@@ -186,7 +186,7 @@ public class NSecWalletSignerParityTests
 
         // Generate nonces — signer stores the secret half internally and returns the public nonce.
         const string sessionId = "test-full-musig2-flow";
-        var clientPubNonce = signer.GenerateNonces(descriptor, clientContext, sessionId).Result;
+        var clientPubNonce = signer.GenerateNoncesAsync(descriptor, clientContext, sessionId).Result;
         var serverNonce = serverContext.GenerateNonce(serverPrivKey);
         var serverPubNonce = serverNonce.CreatePubNonce();
 
@@ -199,7 +199,7 @@ public class NSecWalletSignerParityTests
         MusigPartialSignature clientSig = null!;
         Assert.DoesNotThrowAsync(async () =>
         {
-            clientSig = await signer.SignMusig(descriptor, clientContext, sessionId);
+            clientSig = await signer.SignMusigAsync(descriptor, clientContext, sessionId);
         });
 
         var serverSig = serverContext.Sign(serverPrivKey, serverNonce);
