@@ -1,3 +1,5 @@
+using CliWrap;
+using CliWrap.Buffered;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -75,25 +77,59 @@ public class WalletRecoveryTests
             })
             .Build();
 
+    [SetUp]
+    public async Task ResetArkdBatchSessionAsync()
+    {
+        // Prior tests in the Swaps suite can leak an intent into arkd's batch
+        // session: a test wallet's host registers an intent, the test exits
+        // before confirming the round, and arkd carries the unconfirmed intent
+        // into every subsequent batch, which then fail with
+        // "INTERNAL_ERROR (0): not enough intent confirmations received".
+        // arkd's DeleteIntent RPC is ownership-gated (BIP-322 proof of one of
+        // the intent's own inputs) so we can't drop the leak surgically, and
+        // no global "abort current round" admin endpoint is exposed — so we
+        // sledgehammer the in-memory batch session by restarting the `ark`
+        // container. arkd ≥ v0.9.4 has the shutdown-race fix from PR #1034
+        // (waitForConfirmation falls back to time.Now() instead of nil-derefing
+        // scheduleSweepBatchOutput), so SIGTERM no longer panics arkd.
+        //
+        // Lives on this class because WalletRecoveryTests is the alphabetically-
+        // last test in the Swaps fixture and the most sensitive to leakage.
+        // Promote to a Swaps test base class if other tests start tripping.
+        await RestartArkdAndWaitAsync();
+    }
+
+    private static async Task RestartArkdAndWaitAsync()
+    {
+        var restart = await Cli.Wrap("docker")
+            .WithArguments(["restart", "ark"])
+            .WithValidation(CommandResultValidation.None)
+            .ExecuteBufferedAsync();
+        if (!restart.IsSuccess)
+            throw new InvalidOperationException(
+                $"docker restart ark failed (exit={restart.ExitCode}): " +
+                $"stderr={restart.StandardError.Trim()}, stdout={restart.StandardOutput.Trim()}");
+
+        // Poll /v1/info until arkd answers again — the container is up but
+        // arkd's gRPC server takes a moment after restart to be reachable.
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var infoUrl = $"{SharedArkInfrastructure.ArkdEndpoint}/v1/info";
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            try
+            {
+                var resp = await http.GetAsync(infoUrl);
+                if (resp.IsSuccessStatusCode) return;
+            }
+            catch { /* still coming up */ }
+            await Task.Delay(500);
+        }
+        throw new TimeoutException(
+            $"arkd at {infoUrl} did not respond within 1 minute after `docker restart ark`");
+    }
+
     [Test]
-    [Explicit(
-        "Hangs CI past the 15-min workflow step cap. Root cause (from arkd's " +
-        "own log on the hung run): prior tests in the Swaps fixture leak an " +
-        "intent into arkd's batch session — the test wallet's host registers " +
-        "an intent, the test exits before confirming the round, and arkd " +
-        "carries the unconfirmed intent into every subsequent batch, which " +
-        "then fail with INTERNAL_ERROR (0): not enough intent confirmations " +
-        "received. The same id repeats every ~18s for >12 min, poisoning any " +
-        "later test whose intent joins one of those batches. " +
-        "DeleteIntent is ownership-gated (BIP-322 proof of one of the " +
-        "intent's own inputs) so we cannot drop someone else's leaked intent, " +
-        "and `docker restart ark` triggers a separate arkd shutdown-race panic. " +
-        "Recovery code is covered by IndexerVtxoDiscoveryProviderTests (unit, " +
-        "4 tests incl. mainnet legacy delay) and the BTCPay plugin E2E in " +
-        "ArkLabsHQ/btcpay-arkade#70 (CreateNewHotWallet exercises the full " +
-        "stack against a clean arkd). Re-enable here once either (a) the SDK " +
-        "cancels in-flight intents on host shutdown, or (b) arkd ships an " +
-        "admin endpoint to drop stale intents.")]
     public async Task FullRecovery_RestoresContracts_Index_AndFunds()
     {
         var mnemonic = new Mnemonic(Wordlist.English, WordCount.Twelve).ToString();
