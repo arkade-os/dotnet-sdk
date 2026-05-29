@@ -1,5 +1,5 @@
 using NArk.Abstractions.Extensions;
-using NArk.Core.Wallet.PrivateKeyProviders;
+using NArk.Core.Wallet.SigningSources;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
@@ -8,12 +8,12 @@ using NBitcoin.Secp256k1.Musig;
 namespace NArk.Tests;
 
 /// <summary>
-/// Tests for the MuSig2 parity fix in NsecKeyProvider.
+/// Tests for the MuSig2 parity fix in NsecSigningSource.
 /// Verifies that odd-parity (03 prefix) nsec wallets can participate
 /// in batch signing after the tr() descriptor parity loss bug.
 /// </summary>
 [TestFixture]
-public class NsecKeyProviderParityTests
+public class NsecSigningSourceParityTests
 {
     // Synthetic test keys — two odd-parity (03 prefix) and one even-parity (02 prefix)
     private static readonly (string PrivKeyHex, string CompressedHex, string XOnlyHex)[] OddParityKeys =
@@ -37,10 +37,10 @@ public class NsecKeyProviderParityTests
         "cdcd6f44e6456d40b5102a89f5166badace021a0b6f10cc99d9d69cf9c63e1fd"
     );
 
-    private static NsecKeyProvider CreateSigner(string privKeyHex)
+    private static NsecSigningSource CreateSigner(string privKeyHex)
     {
         var privKey = ECPrivKey.Create(Convert.FromHexString(privKeyHex));
-        return new NsecKeyProvider(privKey);
+        return new NsecSigningSource(privKey);
     }
 
     /// <summary>

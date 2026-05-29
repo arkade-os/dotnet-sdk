@@ -8,16 +8,16 @@ using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NBitcoin.Secp256k1.Musig;
 
-namespace NArk.Core.Wallet.PrivateKeyProviders;
+namespace NArk.Core.Wallet.SigningSources;
 
 /// <summary>
-/// Single-key provider backed by an <see cref="ECPrivKey"/> (typically loaded from a Nostr
-/// nsec). Claims any descriptor whose x-only pubkey matches the provider's key — note that
-/// <c>tr()</c> descriptors strip the parity prefix on serialization, so the provider returns
-/// its own correct-parity compressed pubkey from <see cref="GetPubKeyAsync"/> rather than
-/// trusting <c>descriptor.ToPubKey()</c>.
+/// Single-key signing source backed by an <see cref="ECPrivKey"/> (typically loaded from a
+/// Nostr nsec). Claims any descriptor whose x-only pubkey matches the source's key — note that
+/// <c>tr()</c> descriptors strip the parity prefix on serialization, so the source returns its
+/// own correct-parity compressed pubkey from <see cref="GetPubKeyAsync"/> rather than trusting
+/// <c>descriptor.ToPubKey()</c>.
 /// </summary>
-public class NsecKeyProvider : IPrivateKeyProvider
+public class NsecSigningSource : IDescriptorSigningSource
 {
     private readonly ECPrivKey _privateKey;
     private readonly ECPubKey _publicKey;
@@ -27,7 +27,7 @@ public class NsecKeyProvider : IPrivateKeyProvider
     // Per-session secret nonce store, keyed by caller-supplied sessionId (see IArkadeWalletSigner).
     private readonly ConcurrentDictionary<string, MusigPrivNonce> _secNonces = new();
 
-    public NsecKeyProvider(ECPrivKey privateKey, ILogger? logger = null)
+    public NsecSigningSource(ECPrivKey privateKey, ILogger? logger = null)
     {
         _privateKey = privateKey ?? throw new ArgumentNullException(nameof(privateKey));
         _publicKey = privateKey.CreatePubKey();
@@ -36,20 +36,20 @@ public class NsecKeyProvider : IPrivateKeyProvider
     }
 
     /// <summary>
-    /// Builds an <see cref="NsecKeyProvider"/> from a bech32-encoded Nostr nsec.
+    /// Builds an <see cref="NsecSigningSource"/> from a bech32-encoded Nostr nsec.
     /// </summary>
-    public static NsecKeyProvider FromNsec(string nsec, ILogger? logger = null)
+    public static NsecSigningSource FromNsec(string nsec, ILogger? logger = null)
     {
         var encoder = Bech32Encoder.ExtractEncoderFromString(nsec);
         encoder.StrictLength = false;
         encoder.SquashBytes = true;
         var keyData = encoder.DecodeDataRaw(nsec, out _);
         var privKey = ECPrivKey.Create(keyData);
-        var provider = new NsecKeyProvider(privKey, logger);
-        logger?.LogDebug("NsecKeyProvider created: xonly={XOnlyPubKey}, compressed={CompressedPubKey}",
-            Convert.ToHexString(provider._xOnlyPubKey.ToBytes()).ToLowerInvariant(),
-            Convert.ToHexString(provider._publicKey.ToBytes()).ToLowerInvariant());
-        return provider;
+        var source = new NsecSigningSource(privKey, logger);
+        logger?.LogDebug("NsecSigningSource created: xonly={XOnlyPubKey}, compressed={CompressedPubKey}",
+            Convert.ToHexString(source._xOnlyPubKey.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(source._publicKey.ToBytes()).ToLowerInvariant());
+        return source;
     }
 
     public Task<bool> CanProvideAsync(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
@@ -117,8 +117,8 @@ public class NsecKeyProvider : IPrivateKeyProvider
         var descriptorXOnly = descriptor.Extract().XOnlyPubKey;
         if (!descriptorXOnly.ToBytes().SequenceEqual(_xOnlyPubKey.ToBytes()))
             throw new InvalidOperationException(
-                $"Descriptor does not belong to this provider. " +
+                $"Descriptor does not belong to this signing source. " +
                 $"DescriptorXOnly={Convert.ToHexString(descriptorXOnly.ToBytes()).ToLowerInvariant()}, " +
-                $"ProviderXOnly={Convert.ToHexString(_xOnlyPubKey.ToBytes()).ToLowerInvariant()}");
+                $"SourceXOnly={Convert.ToHexString(_xOnlyPubKey.ToBytes()).ToLowerInvariant()}");
     }
 }

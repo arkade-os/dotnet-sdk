@@ -5,7 +5,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Transport;
-using NArk.Core.Wallet.PrivateKeyProviders;
+using NArk.Core.Wallet.SigningSources;
 using NBitcoin;
 
 namespace NArk.Core.Wallet;
@@ -31,9 +31,10 @@ public class DefaultWalletProvider(
     : IWalletProvider
 {
     // Signer instances must be reused across calls so the MuSig2 secret-nonce store on each
-    // provider (populated by GenerateNonces, consumed by SignMusig — see IArkadeWalletSigner)
-    // survives between the two calls. The cache key includes a hash of the wallet's secret so
-    // a wallet re-imported with different signing material gets a fresh signer.
+    // signing source (populated by GenerateNonces, consumed by SignMusig — see
+    // IArkadeWalletSigner) survives between the two calls. Keyed by wallet.Id only — if a
+    // wallet is re-imported with different signing material the caller must explicitly
+    // invalidate (restart the host, or call into a fresh provider instance).
     private readonly ConcurrentDictionary<string, IArkadeWalletSigner> _signerCache = new();
 
     public async Task<IArkadeWalletSigner?> GetSignerAsync(string identifier, CancellationToken cancellationToken = default)
@@ -47,34 +48,33 @@ public class DefaultWalletProvider(
             logger?.LogDebug("GetSignerAsync: identifier={Identifier}, walletId={WalletId}, walletType={WalletType}, hasSecret={HasSecret}",
                 identifier, wallet.Id, wallet.WalletType, !string.IsNullOrEmpty(wallet.Secret));
 
-            var providers = new List<IPrivateKeyProvider>();
+            var sources = new List<IDescriptorSigningSource>();
 
-            // Local signing material present → add the matching local provider.
+            // Local signing material present → add the matching local signing source.
             if (!string.IsNullOrEmpty(wallet.Secret))
             {
-                providers.Add(wallet.WalletType switch
+                sources.Add(wallet.WalletType switch
                 {
-                    WalletType.HD => new Bip39KeyProvider(wallet.Secret),
-                    WalletType.SingleKey => NsecKeyProvider.FromNsec(wallet.Secret, logger),
+                    WalletType.HD => new Bip39SigningSource(wallet.Secret),
+                    WalletType.SingleKey => NsecSigningSource.FromNsec(wallet.Secret, logger),
                     _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
                 });
             }
 
-            // Remote-signer transport claims this wallet → add a remote provider as a fallback
-            // for descriptors no local provider covers. Order is significant: local providers
-            // get first refusal.
+            // Remote-signer transport claims this wallet → add a remote source as a fallback
+            // for descriptors no local source covers. Order is significant: local sources get
+            // first refusal.
             if (remoteSignerTransport is not null
                 && await remoteSignerTransport.KnowsWalletAsync(wallet.Id, cancellationToken).ConfigureAwait(false))
             {
-                providers.Add(new RemoteTransportKeyProvider(remoteSignerTransport, wallet.Id));
+                sources.Add(new RemoteTransportSigningSource(remoteSignerTransport, wallet.Id));
             }
 
-            // No provider can sign for this wallet → watch-only.
-            if (providers.Count == 0)
+            // Nothing can sign for this wallet → watch-only.
+            if (sources.Count == 0)
                 return null;
 
-            var cacheKey = $"{wallet.Id}:{wallet.Secret?.GetHashCode():x}:{remoteSignerTransport?.GetHashCode():x}";
-            return _signerCache.GetOrAdd(cacheKey, _ => new CompositeArkadeWalletSigner(providers));
+            return _signerCache.GetOrAdd(wallet.Id, _ => new CompositeArkadeWalletSigner(sources));
         }
         catch (KeyNotFoundException)
         {

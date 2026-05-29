@@ -6,17 +6,17 @@ using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NBitcoin.Secp256k1.Musig;
 
-namespace NArk.Core.Wallet.PrivateKeyProviders;
+namespace NArk.Core.Wallet.SigningSources;
 
 /// <summary>
-/// A BIP-39 mnemonic provider. Claims any descriptor whose origin fingerprint matches the
-/// mnemonic's master fingerprint, and derives the per-descriptor private key on demand.
+/// A BIP-39 mnemonic signing source. Claims any descriptor whose origin fingerprint matches
+/// the mnemonic's master fingerprint, and derives the per-descriptor private key on demand.
 /// </summary>
 /// <remarks>
 /// BIP-39 → BIP-32 ExtKey derivation is PBKDF2-HMAC-SHA512 × 2048 iterations (~100 ms on
-/// commodity CPUs); we cache the ExtKey globally so the cost is amortised across providers.
+/// commodity CPUs); we cache the ExtKey globally so the cost is amortised across instances.
 /// </remarks>
-public class Bip39KeyProvider : IPrivateKeyProvider
+public class Bip39SigningSource : IDescriptorSigningSource
 {
     // Mnemonic → ExtKey is a pure function of the mnemonic string; cache it globally so PBKDF2
     // runs at most once per mnemonic per process. The mnemonic is already held in memory by
@@ -29,7 +29,7 @@ public class Bip39KeyProvider : IPrivateKeyProvider
     private readonly string _mnemonic;
     private readonly HDFingerprint _masterFingerprint;
 
-    public Bip39KeyProvider(string mnemonic)
+    public Bip39SigningSource(string mnemonic)
     {
         if (string.IsNullOrWhiteSpace(mnemonic))
             throw new ArgumentException("Mnemonic is required.", nameof(mnemonic));

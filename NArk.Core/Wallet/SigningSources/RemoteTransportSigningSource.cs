@@ -4,26 +4,24 @@ using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NBitcoin.Secp256k1.Musig;
 
-namespace NArk.Core.Wallet.PrivateKeyProviders;
+namespace NArk.Core.Wallet.SigningSources;
 
 /// <summary>
-/// Pure proxy provider over an <see cref="IRemoteSignerTransport"/>: holds the
+/// Pure proxy signing source over an <see cref="IRemoteSignerTransport"/>: holds the
 /// <c>walletId</c> the transport is keyed by, forwards every operation, and holds no signing
 /// state of its own (the transport retains MuSig2 secret nonces on its side).
 /// </summary>
 /// <remarks>
 /// <see cref="CanProvideAsync"/> delegates to <see cref="IRemoteSignerTransport.KnowsWalletAsync"/>,
 /// which answers at wallet granularity, not per descriptor. A transport that "knows" the wallet
-/// claims every descriptor under it; this is the right granularity when the transport replaces
-/// the local signer entirely. For hybrid setups (local for some descriptors, remote for others),
-/// the transport interface would need a finer-grained probe — out of scope here.
+/// claims every descriptor under it.
 /// </remarks>
-public class RemoteTransportKeyProvider : IPrivateKeyProvider
+public class RemoteTransportSigningSource : IDescriptorSigningSource
 {
     private readonly IRemoteSignerTransport _transport;
     private readonly string _walletId;
 
-    public RemoteTransportKeyProvider(IRemoteSignerTransport transport, string walletId)
+    public RemoteTransportSigningSource(IRemoteSignerTransport transport, string walletId)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _walletId = walletId ?? throw new ArgumentNullException(nameof(walletId));
