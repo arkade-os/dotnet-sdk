@@ -21,6 +21,10 @@ public class HierarchicalDeterministicWalletSigner(ArkWalletInfo wallet) : IArka
     // wallet object, so this introduces no new exposure surface.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ExtKey> _extKeyCache = new();
 
+    // Per-session secret nonce store; see NSecWalletSigner for the rationale.
+    // Keyed by the caller-supplied sessionId.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, MusigPrivNonce> _secNonces = new();
+
     private Task<ECPrivKey> DerivePrivateKey(OutputDescriptor descriptor)
     {
         var fullPath = descriptor.Extract().FullPath ?? throw new InvalidOperationException();
@@ -36,9 +40,13 @@ public class HierarchicalDeterministicWalletSigner(ArkWalletInfo wallet) : IArka
         return privKey.CreatePubKey();
     }
 
-    public async Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context, MusigPrivNonce nonce,
-        CancellationToken cancellationToken = default)
+    public async Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context,
+        string sessionId, CancellationToken cancellationToken = default)
     {
+        if (!_secNonces.TryRemove(sessionId, out var nonce))
+            throw new InvalidOperationException(
+                $"No secret nonce stored for sessionId '{sessionId}'. " +
+                "Call GenerateNonces with the same sessionId first; nonces are consumed on use and cannot be replayed.");
         var privKey = await DerivePrivateKey(descriptor);
         return context.Sign(privKey, nonce);
     }
@@ -49,9 +57,20 @@ public class HierarchicalDeterministicWalletSigner(ArkWalletInfo wallet) : IArka
         return (privKey.CreateXOnlyPubKey(), privKey.SignBIP340(hash.ToBytes()));
     }
 
-    public async Task<MusigPrivNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context, CancellationToken cancellationToken = default)
+    public async Task<MusigPubNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context,
+        string sessionId, CancellationToken cancellationToken = default)
     {
+        if (_secNonces.ContainsKey(sessionId))
+            throw new InvalidOperationException(
+                $"A secret nonce is already stored for sessionId '{sessionId}'. " +
+                "Call SignMusig to consume it before generating a fresh nonce for the same session; " +
+                "MuSig2 nonce reuse leaks the private key.");
         var privKey = await DerivePrivateKey(descriptor);
-        return context.GenerateNonce(privKey);
+        var nonce = context.GenerateNonce(privKey);
+        if (!_secNonces.TryAdd(sessionId, nonce))
+            throw new InvalidOperationException(
+                $"A secret nonce was concurrently stored for sessionId '{sessionId}'. " +
+                "sessionId must be unique per signing operation.");
+        return nonce.CreatePubNonce();
     }
 }

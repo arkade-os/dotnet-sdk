@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
@@ -28,6 +29,12 @@ public class DefaultWalletProvider(
     IRemoteSignerTransport? remoteSignerTransport = null)
     : IWalletProvider
 {
+    // Signer instances must be reused across calls so the MuSig2 secret-nonce store on each
+    // signer (populated by GenerateNonces, consumed by SignMusig — see IArkadeWalletSigner)
+    // survives between the two calls. The cache key includes the wallet's secret so a wallet
+    // re-imported with a different mnemonic gets a fresh signer.
+    private readonly ConcurrentDictionary<string, IArkadeWalletSigner> _signerCache = new();
+
     public async Task<IArkadeWalletSigner?> GetSignerAsync(string identifier, CancellationToken cancellationToken = default)
     {
         try
@@ -42,12 +49,13 @@ public class DefaultWalletProvider(
             // Local signing material present → produce a local signer of the right shape.
             if (!string.IsNullOrEmpty(wallet.Secret))
             {
-                return wallet.WalletType switch
+                var cacheKey = $"local:{wallet.Id}:{wallet.Secret.GetHashCode():x}";
+                return _signerCache.GetOrAdd(cacheKey, _ => wallet.WalletType switch
                 {
                     WalletType.HD => new HierarchicalDeterministicWalletSigner(wallet),
                     WalletType.SingleKey => NSecWalletSigner.FromNsec(wallet.Secret, logger),
                     _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
-                };
+                });
             }
 
             // No local secret → ask the remote-signer transport (if any) whether it can sign for
@@ -56,7 +64,8 @@ public class DefaultWalletProvider(
             if (remoteSignerTransport is not null
                 && await remoteSignerTransport.KnowsWalletAsync(wallet.Id, cancellationToken).ConfigureAwait(false))
             {
-                return new RemoteArkadeWalletSigner(wallet.Id, remoteSignerTransport);
+                return _signerCache.GetOrAdd($"remote:{wallet.Id}",
+                    _ => new RemoteArkadeWalletSigner(wallet.Id, remoteSignerTransport));
             }
 
             // No local key, no remote signer claims it → watch-only.

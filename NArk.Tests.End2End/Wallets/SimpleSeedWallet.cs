@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
@@ -18,6 +19,7 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
     private readonly string _mnemonic;
     private int _lastIndex;
     private readonly IClientTransport _clientTransport;
+    private readonly ConcurrentDictionary<string, MusigPrivNonce> _secNonces = new();
 
     private SimpleSeedWallet(string identifier, string descriptor, string mnemonic, int lastIndex, IClientTransport clientTransport)
     {
@@ -60,9 +62,13 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
     }
 
 
-    public async Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context, MusigPrivNonce nonce,
-        CancellationToken cancellationToken = default)
+    public async Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context,
+        string sessionId, CancellationToken cancellationToken = default)
     {
+        if (!_secNonces.TryRemove(sessionId, out var nonce))
+            throw new InvalidOperationException(
+                $"No secret nonce stored for sessionId '{sessionId}'. " +
+                "Call GenerateNonces with the same sessionId first.");
         var privKey = await DerivePrivateKey(descriptor, cancellationToken);
         return context.Sign(privKey, nonce);
     }
@@ -80,9 +86,18 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
         return (privKey.CreateXOnlyPubKey(), privKey.SignBIP340(hash.ToBytes()));
     }
 
-    public async Task<MusigPrivNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context, CancellationToken cancellationToken = default)
+    public async Task<MusigPubNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context,
+        string sessionId, CancellationToken cancellationToken = default)
     {
-        return context.GenerateNonce(await DerivePrivateKey(descriptor, cancellationToken));
+        if (_secNonces.ContainsKey(sessionId))
+            throw new InvalidOperationException(
+                $"A secret nonce is already stored for sessionId '{sessionId}'; " +
+                "call SignMusig to consume it before regenerating.");
+        var nonce = context.GenerateNonce(await DerivePrivateKey(descriptor, cancellationToken));
+        if (!_secNonces.TryAdd(sessionId, nonce))
+            throw new InvalidOperationException(
+                $"A secret nonce was concurrently stored for sessionId '{sessionId}'.");
+        return nonce.CreatePubNonce();
     }
 
     public async Task<bool> IsOurs(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
