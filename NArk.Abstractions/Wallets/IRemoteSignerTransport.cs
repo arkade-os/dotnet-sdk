@@ -21,10 +21,11 @@ namespace NArk.Abstractions.Wallets;
 /// <para>
 /// The MuSig2 nonce flow keeps the secret half on the transport side:
 /// <see cref="GenerateNoncesAsync"/> returns only the public nonce, the implementation retains
-/// the secret half indexed by the context, and <see cref="SignMusigAsync"/> consumes it on use.
-/// Implementations need an eviction policy for abandoned nonces (TTL or bounded count) so the
-/// store does not grow without bound — the SDK-side <see cref="IArkadeWalletSigner"/> contract
-/// requires SignMusig to throw if no matching nonce is found.
+/// the secret half indexed by <c>walletId</c> + <c>sessionId</c>, and <see cref="SignMusigAsync"/>
+/// consumes it on use. Implementations need an eviction policy for abandoned nonces (TTL or
+/// bounded count) so the store does not grow without bound — the SDK-side
+/// <see cref="IArkadeWalletSigner"/> contract requires SignMusig to throw if no matching nonce
+/// is found.
 /// </para>
 /// </remarks>
 public interface IRemoteSignerTransport
@@ -52,14 +53,16 @@ public interface IRemoteSignerTransport
     /// <summary>
     /// Produces a MuSig2 partial signature for the given context using the descriptor's
     /// private key and the secret nonce the transport retained when <see cref="GenerateNoncesAsync"/>
-    /// was called for the same context. The secret nonce is consumed on this call.
+    /// was called for the same <paramref name="sessionId"/>. The secret nonce is consumed on
+    /// this call.
     /// </summary>
     /// <param name="walletId">The wallet whose key signs.</param>
     /// <param name="descriptor">The descriptor identifying the signing key.</param>
     /// <param name="context">The MuSig2 context (cosigner set + sighash) the nonce was generated for.</param>
+    /// <param name="sessionId">The same session identifier that was passed to <see cref="GenerateNoncesAsync"/>.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="InvalidOperationException">
-    /// No secret nonce is stored for <paramref name="walletId"/> + <paramref name="context"/>
+    /// No secret nonce is stored for <paramref name="walletId"/> + <paramref name="sessionId"/>
     /// (it was never generated, was already consumed, or has been evicted by the transport's
     /// eviction policy).
     /// </exception>
@@ -67,6 +70,7 @@ public interface IRemoteSignerTransport
         string walletId,
         OutputDescriptor descriptor,
         MusigContext context,
+        string sessionId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -87,17 +91,23 @@ public interface IRemoteSignerTransport
     /// <summary>
     /// Generates a fresh MuSig2 nonce pair for the supplied context, retains the secret
     /// half on the transport side indexed by <paramref name="walletId"/> +
-    /// <paramref name="context"/>, and returns the public half so the caller can complete
+    /// <paramref name="sessionId"/>, and returns the public half so the caller can complete
     /// nonce aggregation with cosigners. The secret half never crosses the transport
     /// boundary — that is the cryptographic claim of remote signing.
     /// </summary>
     /// <param name="walletId">The wallet whose key contributes the nonce.</param>
     /// <param name="descriptor">The descriptor identifying the signing key.</param>
     /// <param name="context">The MuSig2 context the nonce is generated for.</param>
+    /// <param name="sessionId">
+    /// A caller-supplied identifier unique to this signing operation, used to correlate this
+    /// nonce with the matching <see cref="SignMusigAsync"/> call. Typically a transaction
+    /// identifier (txid).
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<MusigPubNonce> GenerateNoncesAsync(
         string walletId,
         OutputDescriptor descriptor,
         MusigContext context,
+        string sessionId,
         CancellationToken cancellationToken = default);
 }

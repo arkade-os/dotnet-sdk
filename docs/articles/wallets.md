@@ -98,16 +98,16 @@ public class HardwareSignerTransport : IRemoteSignerTransport
         => _bridge.GetPubKeyAsync(walletId, descriptor.ToString(), ct);
 
     public Task<MusigPartialSignature> SignMusigAsync(string walletId, OutputDescriptor descriptor,
-        MusigContext context, CancellationToken ct)
-        => _bridge.SignMusigAsync(walletId, descriptor.ToString(), context, ct);
+        MusigContext context, string sessionId, CancellationToken ct)
+        => _bridge.SignMusigAsync(walletId, descriptor.ToString(), context, sessionId, ct);
 
     public Task<(ECXOnlyPubKey, SecpSchnorrSignature)> SignAsync(string walletId, OutputDescriptor descriptor,
         uint256 hash, CancellationToken ct)
         => _bridge.SignAsync(walletId, descriptor.ToString(), hash, ct);
 
     public Task<MusigPubNonce> GenerateNoncesAsync(string walletId, OutputDescriptor descriptor,
-        MusigContext context, CancellationToken ct)
-        => _bridge.GenerateNoncesAsync(walletId, descriptor.ToString(), context, ct);
+        MusigContext context, string sessionId, CancellationToken ct)
+        => _bridge.GenerateNoncesAsync(walletId, descriptor.ToString(), context, sessionId, ct);
 }
 
 services.AddSingleton<IRemoteSignerTransport, HardwareSignerTransport>();
@@ -118,14 +118,26 @@ services.AddSingleton<IRemoteSignerTransport, HardwareSignerTransport>();
 ### MuSig2 Nonce Lifecycle
 
 The MuSig2 nonce flow keeps the secret half on the signer side: `GenerateNoncesAsync` retains the
-secret nonce, indexed by `walletId` + `MusigContext.AggregatePubKey`, and returns only the public
-half. `SignMusigAsync` looks the secret up by the same context and consumes it on use — calling
-`SignMusigAsync` without a prior matching `GenerateNoncesAsync` throws.
+secret nonce, indexed by `walletId` + a caller-supplied `sessionId`, and returns only the public
+half. `SignMusigAsync` looks the secret up by the same `sessionId` and consumes it on use —
+calling `SignMusigAsync` without a prior matching `GenerateNoncesAsync` throws.
+
+`sessionId` must be unique per signing operation within the signer's scope. In batch participation,
+`TreeSignerSession` passes each tree-node txid as the sessionId; for other flows the caller picks
+something equally disambiguating. `MusigContext.AggregatePubKey` is *not* enough on its own —
+multiple tree nodes can share cosigner set + tweak, so their contexts have identical aggregate
+pubkeys but different sighashes. The sighash is internal to `MusigContext` and can't be observed
+by the signer, so the disambiguator has to come from the caller.
 
 Implementations need an eviction policy for abandoned nonces (TTL or bounded count) so the secret
 nonce store does not grow unbounded if a caller generates a nonce but never signs. The in-process
-`NSecWalletSigner` / `HierarchicalDeterministicWalletSigner` rely on remove-on-consume; long-lived
-transport implementations need to add a sweep.
+`NSecWalletSigner` / `HierarchicalDeterministicWalletSigner` rely on remove-on-consume;
+long-lived transport implementations need to add a sweep.
+
+`DefaultWalletProvider` caches signer instances per wallet so that the secret-nonce store on a
+local signer survives between the `GenerateNonces` call and the matching `SignMusig` call. A
+fresh signer per call would silently break MuSig2 signing — the second call would always find an
+empty store.
 
 ## Using a Wallet
 

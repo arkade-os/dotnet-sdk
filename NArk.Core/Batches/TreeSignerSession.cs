@@ -168,9 +168,11 @@ public class TreeSignerSession
         var res = new Dictionary<uint256, MusigPubNonce>();
         foreach (var (txid, musigContext) in _musigContexts!)
         {
-            // Signer stores the secret half indexed by musigContext.AggregatePubKey;
-            // SignPartialAsync passes the same context back so the signer can look it up.
-            res[txid] = await signer.GenerateNonces(_descriptor, musigContext, cancellationToken);
+            // Signer stores the secret half indexed by sessionId (the tree-node txid here);
+            // SignPartialAsync passes the same txid back so the signer can look it up.
+            // AggregatePubKey alone wouldn't disambiguate: tree nodes can share cosigner set +
+            // tweak, so multiple contexts have identical aggregate pubkeys.
+            res[txid] = await signer.GenerateNonces(_descriptor, musigContext, txid.ToString(), cancellationToken);
         }
 
         return res;
@@ -198,9 +200,9 @@ public class TreeSignerSession
                      ?? throw new InvalidOperationException(
                          $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
 
-        // Signer looks up the secret nonce internally by musigContext.AggregatePubKey
-        // (set when GenerateNonces was called for the same context) and consumes it.
-        var partialSig = await signer.SignMusig(_descriptor, musigContext, cancellationToken);
+        // Signer looks up the secret nonce by sessionId (the tree-node txid, same as we passed
+        // to GenerateNonces) and consumes it.
+        var partialSig = await signer.SignMusig(_descriptor, musigContext, txid.ToString(), cancellationToken);
 
         return partialSig;
     }

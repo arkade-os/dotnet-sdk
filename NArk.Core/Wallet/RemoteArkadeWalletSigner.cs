@@ -32,8 +32,9 @@ public class RemoteArkadeWalletSigner(string walletId, IRemoteSignerTransport tr
     public Task<MusigPartialSignature> SignMusig(
         OutputDescriptor descriptor,
         MusigContext context,
+        string sessionId,
         CancellationToken cancellationToken = default)
-        => _transport.SignMusigAsync(_walletId, descriptor, context, cancellationToken);
+        => _transport.SignMusigAsync(_walletId, descriptor, context, sessionId, cancellationToken);
 
     public Task<(ECXOnlyPubKey, SecpSchnorrSignature)> Sign(
         OutputDescriptor descriptor,
@@ -44,6 +45,7 @@ public class RemoteArkadeWalletSigner(string walletId, IRemoteSignerTransport tr
     public Task<MusigPubNonce> GenerateNonces(
         OutputDescriptor descriptor,
         MusigContext context,
+        string sessionId,
         CancellationToken cancellationToken = default)
-        => _transport.GenerateNoncesAsync(_walletId, descriptor, context, cancellationToken);
+        => _transport.GenerateNoncesAsync(_walletId, descriptor, context, sessionId, cancellationToken);
 }

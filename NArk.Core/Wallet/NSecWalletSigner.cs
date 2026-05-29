@@ -15,10 +15,13 @@ public class NSecWalletSigner(ECPrivKey privateKey, ILogger? logger = null) : IA
     private readonly ECPubKey _publicKey = privateKey.CreatePubKey();
     private readonly ECXOnlyPubKey _xOnlyPubKey = privateKey.CreateXOnlyPubKey();
 
-    // Per-context secret nonce store. Keyed by the (tweaked) aggregate pubkey hex —
-    // a content fingerprint of the cosigner set + taproot tweaks. ConcurrentDictionary
-    // lets GenerateNonces / SignMusig race safely if a caller parallelises across
-    // contexts; each entry is removed on SignMusig consumption so the store doesn't grow.
+    // Per-session secret nonce store. Keyed by the caller-supplied sessionId — typically a
+    // txid in batch participation. AggregatePubKey alone is not unique per signing operation
+    // in a batch tree (multiple tree nodes can share cosigner set + tweak), and the sighash
+    // is internal to MusigContext and can't be observed by the signer; the caller is the only
+    // one with enough information to produce a disambiguating session identifier.
+    // ConcurrentDictionary lets GenerateNonces / SignMusig race safely if a caller parallelises
+    // across sessions; each entry is removed on SignMusig consumption so the store doesn't grow.
     private readonly ConcurrentDictionary<string, MusigPrivNonce> _secNonces = new();
 
     public static NSecWalletSigner FromNsec(string nsec, ILogger? logger = null)
@@ -64,18 +67,18 @@ public class NSecWalletSigner(ECPrivKey privateKey, ILogger? logger = null) : IA
     }
 
     public Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context,
-        CancellationToken cancellationToken = default)
+        string sessionId, CancellationToken cancellationToken = default)
     {
-        var key = ContextKey(context);
-        if (!_secNonces.TryRemove(key, out var nonce))
+        if (!_secNonces.TryRemove(sessionId, out var nonce))
             throw new InvalidOperationException(
-                $"No secret nonce stored for the given MuSig2 context (aggregate pubkey {key}). " +
-                "Call GenerateNonces for this context first; nonces are consumed on use and cannot be replayed.");
+                $"No secret nonce stored for sessionId '{sessionId}'. " +
+                "Call GenerateNonces with the same sessionId first; nonces are consumed on use and cannot be replayed.");
 
         logger?.LogInformation(
-            "SignMusig called. Descriptor={Descriptor}, SignerCompressed={SignerCompressed}",
+            "SignMusig called. Descriptor={Descriptor}, SignerCompressed={SignerCompressed}, SessionId={SessionId}",
             descriptor.ToString(),
-            Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant());
+            Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant(),
+            sessionId);
         var sig = context.Sign(privateKey, nonce);
         logger?.LogInformation("SignMusig produced partial signature successfully");
         return Task.FromResult(sig);
@@ -118,24 +121,27 @@ public class NSecWalletSigner(ECPrivKey privateKey, ILogger? logger = null) : IA
         return Task.FromResult((_xOnlyPubKey, sig));
     }
 
-    public Task<MusigPubNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context, CancellationToken cancellationToken = default)
+    public Task<MusigPubNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context,
+        string sessionId, CancellationToken cancellationToken = default)
     {
-        var key = ContextKey(context);
+        if (_secNonces.ContainsKey(sessionId))
+            throw new InvalidOperationException(
+                $"A secret nonce is already stored for sessionId '{sessionId}'. " +
+                "Call SignMusig to consume it before generating a fresh nonce for the same session; " +
+                "MuSig2 nonce reuse leaks the private key.");
         logger?.LogInformation(
-            "GenerateNonces called. Descriptor={Descriptor}, SignerCompressed={SignerCompressed}, ContextKey={ContextKey}",
+            "GenerateNonces called. Descriptor={Descriptor}, SignerCompressed={SignerCompressed}, SessionId={SessionId}",
             descriptor.ToString(),
             Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant(),
-            key);
+            sessionId);
         var nonce = context.GenerateNonce(privateKey);
-        if (!_secNonces.TryAdd(key, nonce))
+        if (!_secNonces.TryAdd(sessionId, nonce))
+            // Race: another thread populated this sessionId between the ContainsKey check and now.
+            // Caller bug — duplicate sessionId from two concurrent callers — but defend against it.
             throw new InvalidOperationException(
-                $"A secret nonce is already stored for this MuSig2 context (aggregate pubkey {key}). " +
-                "Call SignMusig to consume it before generating a fresh nonce for the same context; " +
-                "MuSig2 nonce reuse leaks the private key.");
+                $"A secret nonce was concurrently stored for sessionId '{sessionId}'. " +
+                "sessionId must be unique per signing operation.");
         logger?.LogInformation("GenerateNonces produced nonce successfully");
         return Task.FromResult(nonce.CreatePubNonce());
     }
-
-    private static string ContextKey(MusigContext context) =>
-        Convert.ToHexString(context.AggregatePubKey.ToBytes()).ToLowerInvariant();
 }
