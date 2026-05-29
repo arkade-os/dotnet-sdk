@@ -19,15 +19,12 @@ namespace NArk.Abstractions.Wallets;
 /// watch-only (<see cref="IWalletProvider.GetSignerAsync"/> returns <c>null</c>). Capability is
 /// answered by this interface, not by a flag on the wallet record.
 /// <para>
-/// <b>SECURITY LIMITATION (phase 1):</b> <see cref="GenerateNoncesAsync"/> currently returns
-/// the MuSig2 secret nonce to the SDK and <see cref="SignMusigAsync"/> accepts it back across
-/// the transport. The cryptographic argument for remote signing — that private material never
-/// leaves the signer — does <i>not</i> hold under this interface. The intended phase-2 shape
-/// has <see cref="GenerateNoncesAsync"/> returning only the public nonce and
-/// <see cref="SignMusigAsync"/> taking no nonce parameter (the signer remembers it indexed by
-/// context). Tracked in <see href="https://github.com/arkade-os/dotnet-sdk/issues/111">#111</see>;
-/// do not rely on nonce confidentiality of an <see cref="IRemoteSignerTransport"/>
-/// implementation until that is fixed.
+/// The MuSig2 nonce flow keeps the secret half on the transport side:
+/// <see cref="GenerateNoncesAsync"/> returns only the public nonce, the implementation retains
+/// the secret half indexed by the context, and <see cref="SignMusigAsync"/> consumes it on use.
+/// Implementations need an eviction policy for abandoned nonces (TTL or bounded count) so the
+/// store does not grow without bound — the SDK-side <see cref="IArkadeWalletSigner"/> contract
+/// requires SignMusig to throw if no matching nonce is found.
 /// </para>
 /// </remarks>
 public interface IRemoteSignerTransport
@@ -53,22 +50,23 @@ public interface IRemoteSignerTransport
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Produces a MuSig2 partial signature for the given context and nonce
-    /// using the descriptor's private key.
+    /// Produces a MuSig2 partial signature for the given context using the descriptor's
+    /// private key and the secret nonce the transport retained when <see cref="GenerateNoncesAsync"/>
+    /// was called for the same context. The secret nonce is consumed on this call.
     /// </summary>
     /// <param name="walletId">The wallet whose key signs.</param>
     /// <param name="descriptor">The descriptor identifying the signing key.</param>
-    /// <param name="context">The MuSig2 context (cosigner set + sighash).</param>
-    /// <param name="nonce">The secret nonce produced earlier by <see cref="GenerateNoncesAsync"/>.</param>
+    /// <param name="context">The MuSig2 context (cosigner set + sighash) the nonce was generated for.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    // TODO: SECURITY — drop the `nonce` parameter and have the signer dereference
-    // the private nonce it kept after GenerateNoncesAsync via a context key. Phase-2,
-    // tracked at https://github.com/arkade-os/dotnet-sdk/issues/111.
+    /// <exception cref="InvalidOperationException">
+    /// No secret nonce is stored for <paramref name="walletId"/> + <paramref name="context"/>
+    /// (it was never generated, was already consumed, or has been evicted by the transport's
+    /// eviction policy).
+    /// </exception>
     Task<MusigPartialSignature> SignMusigAsync(
         string walletId,
         OutputDescriptor descriptor,
         MusigContext context,
-        MusigPrivNonce nonce,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -87,19 +85,17 @@ public interface IRemoteSignerTransport
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Generates the secret nonce for the supplied MuSig2 context. The returned
-    /// nonce is bound to <paramref name="context"/> and must be passed back
-    /// into <see cref="SignMusigAsync"/> on the same context.
+    /// Generates a fresh MuSig2 nonce pair for the supplied context, retains the secret
+    /// half on the transport side indexed by <paramref name="walletId"/> +
+    /// <paramref name="context"/>, and returns the public half so the caller can complete
+    /// nonce aggregation with cosigners. The secret half never crosses the transport
+    /// boundary — that is the cryptographic claim of remote signing.
     /// </summary>
     /// <param name="walletId">The wallet whose key contributes the nonce.</param>
     /// <param name="descriptor">The descriptor identifying the signing key.</param>
     /// <param name="context">The MuSig2 context the nonce is generated for.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    // TODO: SECURITY — return MusigPubNonce instead and keep the private nonce on
-    // the signer indexed by context. Today the SDK receives the secret half, which
-    // breaks the cryptographic argument for remote signing. Phase-2, tracked at
-    // https://github.com/arkade-os/dotnet-sdk/issues/111.
-    Task<MusigPrivNonce> GenerateNoncesAsync(
+    Task<MusigPubNonce> GenerateNoncesAsync(
         string walletId,
         OutputDescriptor descriptor,
         MusigContext context,

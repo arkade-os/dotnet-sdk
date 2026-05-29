@@ -16,7 +16,9 @@ namespace NArk.Core.Batches;
 /// </summary>
 public class TreeSignerSession
 {
-    private Dictionary<uint256, (MusigPrivNonce secNonce, MusigPubNonce pubNonce)>? _myNonces;
+    // Public nonces only — the secret half stays inside the signer and is consumed
+    // when SignMusig is called for the same MusigContext.
+    private Dictionary<uint256, MusigPubNonce>? _myNonces;
     private Dictionary<uint256, MusigContext>? _musigContexts;
     private readonly string _walletId;
     private readonly IWalletProvider _walletProvider;
@@ -113,7 +115,7 @@ public class TreeSignerSession
     {
         _myNonces ??= await GenerateNoncesAsync(cancellationToken);
 
-        return _myNonces.ToDictionary(pair => pair.Key, pair => pair.Value.pubNonce);
+        return new Dictionary<uint256, MusigPubNonce>(_myNonces);
     }
 
     public void VerifyAggregatedNonces(Dictionary<uint256, MusigPubNonce> expectedAggregateNonces,
@@ -150,7 +152,7 @@ public class TreeSignerSession
         return sigs;
     }
 
-    private async Task<Dictionary<uint256, (MusigPrivNonce secNonce, MusigPubNonce pubNonce)>> GenerateNoncesAsync(CancellationToken cancellationToken = default)
+    private async Task<Dictionary<uint256, MusigPubNonce>> GenerateNoncesAsync(CancellationToken cancellationToken = default)
     {
         if (_musigContexts == null)
             await CreateMusigContexts(cancellationToken);
@@ -163,12 +165,12 @@ public class TreeSignerSession
                      ?? throw new InvalidOperationException(
                          $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
 
-        var res = new Dictionary<uint256, (MusigPrivNonce secNonce, MusigPubNonce pubNonce)>();
+        var res = new Dictionary<uint256, MusigPubNonce>();
         foreach (var (txid, musigContext) in _musigContexts!)
         {
-            // Generate nonce tied to this specific context
-            var nonce = await signer.GenerateNonces(_descriptor, musigContext, cancellationToken);
-            res[txid] = (nonce, nonce.CreatePubNonce());
+            // Signer stores the secret half indexed by musigContext.AggregatePubKey;
+            // SignPartialAsync passes the same context back so the signer can look it up.
+            res[txid] = await signer.GenerateNonces(_descriptor, musigContext, cancellationToken);
         }
 
         return res;
@@ -182,8 +184,8 @@ public class TreeSignerSession
 
         var txid = g.Root.GetGlobalTransaction().GetHash();
 
-        if (!_myNonces.TryGetValue(txid, out var myNonce))
-            throw new InvalidOperationException("missing private nonce");
+        if (!_myNonces.ContainsKey(txid))
+            throw new InvalidOperationException("missing nonce for this txid — GetNoncesAsync must run first");
 
         if (!_musigContexts.TryGetValue(txid, out var musigContext))
             throw new InvalidOperationException("missing musig context");
@@ -196,9 +198,9 @@ public class TreeSignerSession
                      ?? throw new InvalidOperationException(
                          $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
 
-        // Use the wallet signer to create a MUSIG2 partial signature
-        // The context already has the correct sighash from nonce generation
-        var partialSig = await signer.SignMusig(_descriptor, musigContext, myNonce.secNonce, cancellationToken);
+        // Signer looks up the secret nonce internally by musigContext.AggregatePubKey
+        // (set when GenerateNonces was called for the same context) and consumes it.
+        var partialSig = await signer.SignMusig(_descriptor, musigContext, cancellationToken);
 
         return partialSig;
     }
@@ -258,10 +260,10 @@ public class TreeSignerSession
         if (!_musigContexts.TryGetValue(txid, out var musigContext))
             return Task.CompletedTask;
 
-        if (_myNonces is null || !_myNonces.TryGetValue(txid, out var myNonce))
-            throw new InvalidOperationException("missing private nonce");
+        if (_myNonces is null || !_myNonces.TryGetValue(txid, out var myPubNonce))
+            throw new InvalidOperationException("missing my public nonce");
 
-        if (!nonces.Any(nonce => nonce.ToBytes().SequenceEqual(myNonce.pubNonce.ToBytes())))
+        if (!nonces.Any(nonce => nonce.ToBytes().SequenceEqual(myPubNonce.ToBytes())))
         {
             throw new InvalidOperationException("missing my nonce");
         }

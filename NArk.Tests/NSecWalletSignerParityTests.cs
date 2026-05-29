@@ -184,11 +184,9 @@ public class NSecWalletSignerParityTests
         var clientContext = new MusigContext(cosignerKeys, fakeSighash, signerPubKey);
         var serverContext = new MusigContext(cosignerKeys, fakeSighash, serverPub);
 
-        // Generate nonces
-        var clientNonce = signer.GenerateNonces(descriptor, clientContext).Result;
+        // Generate nonces — signer stores the secret half internally and returns the public nonce.
+        var clientPubNonce = signer.GenerateNonces(descriptor, clientContext).Result;
         var serverNonce = serverContext.GenerateNonce(serverPrivKey);
-
-        var clientPubNonce = clientNonce.CreatePubNonce();
         var serverPubNonce = serverNonce.CreatePubNonce();
 
         // Aggregate nonces
@@ -196,11 +194,11 @@ public class NSecWalletSignerParityTests
         clientContext.ProcessNonces(allNonces);
         serverContext.ProcessNonces(allNonces);
 
-        // Sign
+        // Sign — signer looks up the stored secret nonce by aggregate-pubkey of the same context.
         MusigPartialSignature clientSig = null!;
         Assert.DoesNotThrowAsync(async () =>
         {
-            clientSig = await signer.SignMusig(descriptor, clientContext, clientNonce);
+            clientSig = await signer.SignMusig(descriptor, clientContext);
         });
 
         var serverSig = serverContext.Sign(serverPrivKey, serverNonce);

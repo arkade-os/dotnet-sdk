@@ -98,14 +98,14 @@ public class HardwareSignerTransport : IRemoteSignerTransport
         => _bridge.GetPubKeyAsync(walletId, descriptor.ToString(), ct);
 
     public Task<MusigPartialSignature> SignMusigAsync(string walletId, OutputDescriptor descriptor,
-        MusigContext context, MusigPrivNonce nonce, CancellationToken ct)
-        => _bridge.SignMusigAsync(walletId, descriptor.ToString(), context, nonce, ct);
+        MusigContext context, CancellationToken ct)
+        => _bridge.SignMusigAsync(walletId, descriptor.ToString(), context, ct);
 
     public Task<(ECXOnlyPubKey, SecpSchnorrSignature)> SignAsync(string walletId, OutputDescriptor descriptor,
         uint256 hash, CancellationToken ct)
         => _bridge.SignAsync(walletId, descriptor.ToString(), hash, ct);
 
-    public Task<MusigPrivNonce> GenerateNoncesAsync(string walletId, OutputDescriptor descriptor,
+    public Task<MusigPubNonce> GenerateNoncesAsync(string walletId, OutputDescriptor descriptor,
         MusigContext context, CancellationToken ct)
         => _bridge.GenerateNoncesAsync(walletId, descriptor.ToString(), context, ct);
 }
@@ -114,6 +114,18 @@ services.AddSingleton<IRemoteSignerTransport, HardwareSignerTransport>();
 ```
 
 `DefaultWalletProvider` accepts the transport as an optional constructor dependency — existing setups that don't use remote signing don't need to register one.
+
+### MuSig2 Nonce Lifecycle
+
+The MuSig2 nonce flow keeps the secret half on the signer side: `GenerateNoncesAsync` retains the
+secret nonce, indexed by `walletId` + `MusigContext.AggregatePubKey`, and returns only the public
+half. `SignMusigAsync` looks the secret up by the same context and consumes it on use — calling
+`SignMusigAsync` without a prior matching `GenerateNoncesAsync` throws.
+
+Implementations need an eviction policy for abandoned nonces (TTL or bounded count) so the secret
+nonce store does not grow unbounded if a caller generates a nonce but never signs. The in-process
+`NSecWalletSigner` / `HierarchicalDeterministicWalletSigner` rely on remove-on-consume; long-lived
+transport implementations need to add a sweep.
 
 ## Using a Wallet
 
