@@ -48,6 +48,13 @@ public class DefaultWalletProvider(
             logger?.LogDebug("GetSignerAsync: identifier={Identifier}, walletId={WalletId}, walletType={WalletType}, hasSecret={HasSecret}",
                 identifier, wallet.Id, wallet.WalletType, !string.IsNullOrEmpty(wallet.Secret));
 
+            // Hot-path short-circuit: this method is called per-VTXO during batch participation,
+            // so avoid constructing a fresh Bip39SigningSource (master-fingerprint derivation)
+            // and round-tripping KnowsWalletAsync (potentially a network call for remote
+            // transports) every time. Cache miss runs the full composition below.
+            if (_signerCache.TryGetValue(wallet.Id, out var cached))
+                return cached;
+
             var sources = new List<IDescriptorSigningSource>();
 
             // Local signing material present → add the matching local signing source.
