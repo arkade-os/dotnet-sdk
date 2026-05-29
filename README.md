@@ -123,13 +123,15 @@ Wallets are described along two orthogonal axes; capability is answered by the p
 | `HD` | `tr([fp/path]xpub/0/*)` | Per-contract derivation, boarding support |
 | `SingleKey` | `tr(pubkey)` | Static key, simple integrations |
 
-**Signing capability** — decided at `IWalletProvider.GetSignerAsync` time:
+**Signing capability** — decided at `IWalletProvider.GetSignerAsync` time and built by composing one or more `IDescriptorSigningSource`s behind a `CompositeArkadeWalletSigner`:
 
 | `ArkWalletInfo.Secret` | `IRemoteSignerTransport.KnowsWalletAsync` | Returns | Meaning |
 | --- | --- | --- | --- |
-| non-empty | — | local signer | sign locally |
-| null/empty | `true` | `RemoteArkadeWalletSigner` proxy | sign via transport |
+| non-empty | — | composite with the matching local signing source | sign locally |
+| null/empty | `true` | composite with `RemoteTransportSigningSource` only | sign via transport |
 | null/empty | `false` (or no transport) | `null` | watch-only |
+
+Three signing sources ship in the box — `Bip39SigningSource` (matches descriptors by master fingerprint), `NsecSigningSource` (matches by x-only pubkey), `RemoteTransportSigningSource` (delegates to an `IRemoteSignerTransport`). Implement `IDescriptorSigningSource` to plug in anything else (HWI, threshold key share, in-browser session signer, …).
 
 Any combination of the two axes is valid — a watch-only `HD`, a remote-signed `SingleKey`, etc.
 
@@ -174,8 +176,9 @@ public class MyRemoteSignerTransport : IRemoteSignerTransport
     // … sign methods …
 }
 services.AddSingleton<IRemoteSignerTransport, MyRemoteSignerTransport>();
-// GetSignerAsync now returns a RemoteArkadeWalletSigner for that walletId,
-// instead of null. Same data; different signer-source.
+// GetSignerAsync now returns a CompositeArkadeWalletSigner wrapping a
+// RemoteTransportSigningSource for that walletId, instead of null. Same data;
+// different signer-source.
 ```
 
 Save and load wallets through `IWalletStorage`:

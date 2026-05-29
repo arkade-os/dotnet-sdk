@@ -15,11 +15,31 @@ Two orthogonal axes describe any wallet — keep them separate at every layer:
 
 | `ArkWalletInfo.Secret` | `IRemoteSignerTransport` claims it | `GetSignerAsync` returns | Capability |
 | --- | --- | --- | --- |
-| non-empty | — | local signer (HD or SingleKey) | sign locally |
-| null / empty | yes (`KnowsWalletAsync` → `true`) | `RemoteArkadeWalletSigner` proxy | sign via transport |
+| non-empty | — | `CompositeArkadeWalletSigner` with the matching local signing source | sign locally |
+| null / empty | yes (`KnowsWalletAsync` → `true`) | composite with one `RemoteTransportSigningSource` | sign via transport |
 | null / empty | no | `null` | watch-only |
 
-Capability lives at the *provider* boundary, not as a tag on the wallet record. Any combination of the two axes is valid: a remote-signed `SingleKey`, a watch-only `HD`, etc.
+Capability lives at the *signing-source* boundary, not as a tag on the wallet record. Any combination of the two axes is valid — a remote-signed `SingleKey`, a watch-only `HD`, etc.
+
+### Signer composition
+
+`IArkadeWalletSigner` is always a `CompositeArkadeWalletSigner` built from one or more
+`IDescriptorSigningSource`s. Each source answers `CanProvideAsync(descriptor)` and exposes
+the signer operations rooted in the key it owns; the composite dispatches each call to the
+first source that claims the descriptor (order is significant — register local sources first).
+
+Three sources ship by default:
+
+| Signing source | Origin | `CanProvideAsync` |
+| --- | --- | --- |
+| `Bip39SigningSource` | BIP-39 mnemonic | descriptor origin's master fingerprint matches |
+| `NsecSigningSource` | Nostr `nsec` (single key) | descriptor's x-only pubkey matches |
+| `RemoteTransportSigningSource` | `IRemoteSignerTransport` | `transport.KnowsWalletAsync(walletId)` |
+
+`DefaultWalletProvider` builds this composition automatically from the wallet record. To
+extend — e.g. plug a hardware wallet in alongside a local mnemonic — implement
+`IDescriptorSigningSource` and construct the composite manually (or replace
+`DefaultWalletProvider`).
 
 ## HD Wallets (BIP-39)
 
@@ -42,7 +62,7 @@ Created from a Nostr `nsec` (raw 32-byte secret). All operations use a single st
 Both are described by the same data shape — `Secret = null` on an otherwise normal `ArkWalletInfo` — and distinguished at runtime by `IWalletProvider.GetSignerAsync`:
 
 - No `IRemoteSignerTransport` registered, or `KnowsWalletAsync(walletId)` returns `false` → `GetSignerAsync` returns `null`. Watch-only: addresses and VTXOs are observable, signing-dependent operations (batch participation, unilateral exits) throw a descriptive `InvalidOperationException`.
-- An `IRemoteSignerTransport` is registered and claims the wallet → `GetSignerAsync` returns a `RemoteArkadeWalletSigner` proxy. Every signing call is forwarded to the transport. The transport sees `walletId` on every call so one instance can serve many wallets (server-side signing service, HWI bridge, browser-extension wallet, …).
+- An `IRemoteSignerTransport` is registered and claims the wallet → `GetSignerAsync` returns a `CompositeArkadeWalletSigner` wrapping a `RemoteTransportSigningSource`. Every signing call is forwarded to the transport. The transport sees `walletId` on every call so one instance can serve many wallets (server-side signing service, HWI bridge, browser-extension wallet, …).
 
 `WalletType` is independent: a watch-only HD wallet derives addresses from its xpub; a watch-only single-key wallet has one fixed address. Same for remote — derivation is whatever the descriptor encodes; the signer-source is whatever the transport claims.
 
@@ -131,13 +151,13 @@ by the signer, so the disambiguator has to come from the caller.
 
 Implementations need an eviction policy for abandoned nonces (TTL or bounded count) so the secret
 nonce store does not grow unbounded if a caller generates a nonce but never signs. The in-process
-`NSecWalletSigner` / `HierarchicalDeterministicWalletSigner` rely on remove-on-consume;
-long-lived transport implementations need to add a sweep.
+`NsecSigningSource` / `Bip39SigningSource` rely on remove-on-consume; long-lived transport
+implementations need to add a sweep.
 
 `DefaultWalletProvider` caches signer instances per wallet so that the secret-nonce store on a
-local signer survives between the `GenerateNonces` call and the matching `SignMusig` call. A
-fresh signer per call would silently break MuSig2 signing — the second call would always find an
-empty store.
+local signing source survives between the `GenerateNonces` call and the matching `SignMusig`
+call. A fresh signer per call would silently break MuSig2 signing — the second call would
+always find an empty store.
 
 ## Using a Wallet
 

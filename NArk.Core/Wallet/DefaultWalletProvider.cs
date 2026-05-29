@@ -5,6 +5,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Transport;
+using NArk.Core.Wallet.SigningSources;
 using NBitcoin;
 
 namespace NArk.Core.Wallet;
@@ -30,9 +31,10 @@ public class DefaultWalletProvider(
     : IWalletProvider
 {
     // Signer instances must be reused across calls so the MuSig2 secret-nonce store on each
-    // signer (populated by GenerateNonces, consumed by SignMusig — see IArkadeWalletSigner)
-    // survives between the two calls. The cache key includes the wallet's secret so a wallet
-    // re-imported with a different mnemonic gets a fresh signer.
+    // signing source (populated by GenerateNonces, consumed by SignMusig — see
+    // IArkadeWalletSigner) survives between the two calls. Keyed by wallet.Id only — if a
+    // wallet is re-imported with different signing material the caller must explicitly
+    // invalidate (restart the host, or call into a fresh provider instance).
     private readonly ConcurrentDictionary<string, IArkadeWalletSigner> _signerCache = new();
 
     public async Task<IArkadeWalletSigner?> GetSignerAsync(string identifier, CancellationToken cancellationToken = default)
@@ -46,30 +48,40 @@ public class DefaultWalletProvider(
             logger?.LogDebug("GetSignerAsync: identifier={Identifier}, walletId={WalletId}, walletType={WalletType}, hasSecret={HasSecret}",
                 identifier, wallet.Id, wallet.WalletType, !string.IsNullOrEmpty(wallet.Secret));
 
-            // Local signing material present → produce a local signer of the right shape.
+            // Hot-path short-circuit: this method is called per-VTXO during batch participation,
+            // so avoid constructing a fresh Bip39SigningSource (master-fingerprint derivation)
+            // and round-tripping KnowsWalletAsync (potentially a network call for remote
+            // transports) every time. Cache miss runs the full composition below.
+            if (_signerCache.TryGetValue(wallet.Id, out var cached))
+                return cached;
+
+            var sources = new List<IDescriptorSigningSource>();
+
+            // Local signing material present → add the matching local signing source.
             if (!string.IsNullOrEmpty(wallet.Secret))
             {
-                var cacheKey = $"local:{wallet.Id}:{wallet.Secret.GetHashCode():x}";
-                return _signerCache.GetOrAdd(cacheKey, _ => wallet.WalletType switch
+                sources.Add(wallet.WalletType switch
                 {
-                    WalletType.HD => new HierarchicalDeterministicWalletSigner(wallet),
-                    WalletType.SingleKey => NSecWalletSigner.FromNsec(wallet.Secret, logger),
+                    WalletType.HD => new Bip39SigningSource(wallet.Secret),
+                    WalletType.SingleKey => NsecSigningSource.FromNsec(wallet.Secret, logger),
                     _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
                 });
             }
 
-            // No local secret → ask the remote-signer transport (if any) whether it can sign for
-            // this wallet. The transport is the source of truth for "remote vs watch-only" —
-            // no flag on ArkWalletInfo encodes it.
+            // Remote-signer transport claims this wallet → add a remote source as a fallback
+            // for descriptors no local source covers. Order is significant: local sources get
+            // first refusal.
             if (remoteSignerTransport is not null
                 && await remoteSignerTransport.KnowsWalletAsync(wallet.Id, cancellationToken).ConfigureAwait(false))
             {
-                return _signerCache.GetOrAdd($"remote:{wallet.Id}",
-                    _ => new RemoteArkadeWalletSigner(wallet.Id, remoteSignerTransport));
+                sources.Add(new RemoteTransportSigningSource(remoteSignerTransport, wallet.Id));
             }
 
-            // No local key, no remote signer claims it → watch-only.
-            return null;
+            // Nothing can sign for this wallet → watch-only.
+            if (sources.Count == 0)
+                return null;
+
+            return _signerCache.GetOrAdd(wallet.Id, _ => new CompositeArkadeWalletSigner(sources));
         }
         catch (KeyNotFoundException)
         {
