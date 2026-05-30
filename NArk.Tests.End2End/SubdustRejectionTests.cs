@@ -73,11 +73,12 @@ public class SubdustRejectionTests
             bobContractService, alice.clientTransport, new DefaultCoinSelector(),
             alice.safetyService, TestStorage.CreateIntentStorage());
 
-        // Assert.CatchAsync accepts any exception subtype (unlike Assert.ThrowsAsync which requires exact match)
         var ex = Assert.CatchAsync(
             () => bobSpending.Spend(bobWalletId,
                 [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(100), carolContract.GetArkAddress())]));
         Assert.That(ex, Is.Not.Null, "Spending a sub-dust VTXO must be rejected");
+        Assert.That(ex!.Message, Does.Contain("dust").IgnoreCase,
+            "Exception must originate from the dust threshold check, not an unrelated error");
     }
 
     /// <summary>

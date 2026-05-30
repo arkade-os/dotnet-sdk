@@ -263,6 +263,9 @@ public class BatchSessionTests
             $"Offchain tx with {numInputs} input VTXOs must produce exactly {numInputs} checkpoint transactions");
     }
 
+    // Decorator that records the checkpoint count passed to SubmitTx.
+    // Must implement every IClientTransport method — if the interface gains a new member
+    // this breaks at compile time, which is intentional (fail loudly, don't silently skip).
     private sealed class CheckpointSpyTransport(IClientTransport inner) : IClientTransport
     {
         public int LastSubmitCheckpointCount { get; private set; }

@@ -172,7 +172,7 @@ public class BoltzSwapProvider404SafetyNetTests
 
         // Interleaved handler: first (Threshold-1) requests → 404, then one success, then 404s again
         var callCount = 0;
-        var handler = new DelegatingHandler(req =>
+        var handler = new FakeHandler(req =>
         {
             callCount++;
             if (callCount < Threshold || callCount == Threshold)
@@ -223,7 +223,7 @@ public class BoltzSwapProvider404SafetyNetTests
             => Task.FromResult(NotFoundResponse(swapId));
     }
 
-    private sealed class DelegatingHandler(
+    private sealed class FakeHandler(
         Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
