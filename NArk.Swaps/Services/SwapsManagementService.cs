@@ -117,7 +117,10 @@ public class SwapsManagementService : IAsyncDisposable
     // Local signing sources pass aux_rand=null to BIP-340, so signatures are deterministic.
     // Remote-signer transports MUST honour the same convention or the preimage will rotate
     // per call and recovery will silently fail — see IRemoteSignerTransport.SignAsync.
-    private const string PreimageTag = "NArk-Boltz-Preimage-v1";
+    // Tag is protocol+provider scoped (Arkade brand, Boltz provider), not SDK-scoped, so any
+    // Arkade SDK implementing the same scheme produces the same preimage and can recover
+    // swaps the .NET SDK created (and vice versa). Versioned ("-v1") for future scheme evolution.
+    private const string PreimageTag = "Arkade-Boltz-Preimage-v1";
     private static readonly byte[] PreimageTagBytes = Encoding.UTF8.GetBytes(PreimageTag);
 
     private async Task<byte[]> DerivePreimageAsync(

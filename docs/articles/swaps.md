@@ -110,14 +110,14 @@ Typical states recorded against each `ArkSwap`:
 The preimages we generate for reverse and chain swaps are derived deterministically from the wallet's signing material so that a restored wallet can re-derive them and claim outstanding VHTLCs. The scheme:
 
 ```
-message  = SHA-256( "NArk-Boltz-Preimage-v1" || descriptor.ToString() || u32_le(index) )
+message  = SHA-256( "Arkade-Boltz-Preimage-v1" || descriptor.ToString() || u32_le(index) )
 sig      = BIP-340-Schnorr( descriptor_key, message, aux_rand=null )
 preimage = SHA-256( sig )
 ```
 
 The signed input bundles three things:
 
-- **Tag** — domain-separates this signature from any other use of the descriptor's key. Versioned (`-v1`) so a future scheme bump can ship as `-v2` while recovery still tries v1 for older swaps.
+- **Tag** — domain-separates this signature from any other use of the descriptor's key. The string is intentionally protocol+provider scoped (`Arkade`+`Boltz`) rather than SDK-scoped, so an Arkade wallet implemented on top of any Arkade SDK (TypeScript, Go, Rust, .NET) can produce the same preimage from the same wallet material and recover swaps the .NET SDK created. Versioned (`-v1`) so a future scheme bump can ship as `-v2` while recovery still tries v1 for older swaps.
 - **Descriptor** — scopes the preimage to the specific swap descriptor.
 - **Index** — lets a caller derive multiple preimages from the same descriptor. Always `0` today; baked into v1 so recovery iteration is forward-compatible without a scheme bump.
 
