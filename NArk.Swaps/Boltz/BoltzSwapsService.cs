@@ -73,6 +73,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
 
     public async Task<ReverseSwapResult> CreateReverseSwap(CreateInvoiceParams createInvoiceRequest,
         OutputDescriptor receiver,
+        byte[]? preimage = null,
         CancellationToken cancellationToken = default)
     {
         var extractedReceiver = receiver.Extract();
@@ -80,9 +81,10 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         // Get operator terms
         var operatorTerms = await clientTransport.GetServerInfoAsync(cancellationToken);
 
-        //TODO: deterministic hash somehow instead?
-        // Generate preimage and compute preimage hash using SHA256 for Boltz
-        var preimage = RandomUtils.GetBytes(32);
+        // Caller-supplied preimage enables deterministic derivation (so restored wallets can
+        // re-derive and claim outstanding swaps); null falls back to random for watch-only or
+        // any other no-signer scenario.
+        preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
 
         // First make the Boltz request to get the swap details including timeout block heights
@@ -167,6 +169,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     public async Task<ChainSwapResult> CreateBtcToArkSwapAsync(
         long amountSats,
         OutputDescriptor claimDescriptor,
+        byte[]? preimage = null,
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
@@ -174,7 +177,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         var claimPubKeyHex = (extractedClaim.PubKey?.ToBytes() ?? extractedClaim.XOnlyPubKey.ToBytes())
             .ToHexStringLower();
 
-        var preimage = RandomUtils.GetBytes(32);
+        preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
         var ephemeralKey = new Key();
 
@@ -242,6 +245,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     public async Task<ChainSwapResult> CreateArkToBtcSwapAsync(
         long amountSats,
         OutputDescriptor refundDescriptor,
+        byte[]? preimage = null,
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
@@ -252,7 +256,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         ).ToLowerInvariant();
 
 
-        var preimage = RandomUtils.GetBytes(32);
+        preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
         var ephemeralKey = new Key();
 

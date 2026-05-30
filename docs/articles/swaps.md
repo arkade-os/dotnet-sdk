@@ -105,6 +105,18 @@ Typical states recorded against each `ArkSwap`:
 
 `SwapsManagementService.RestoreSwaps(walletId, ...)` rebuilds local swap state from Boltz's `/v2/swap/restore` endpoint, using wallet keys to identify owned swaps. Useful after re-importing a wallet from a mnemonic or nsec.
 
+### Deterministic preimages (for recoverable claims)
+
+The preimages we generate for reverse and chain swaps are derived deterministically from the wallet's signing material so that a restored wallet can re-derive them and claim outstanding VHTLCs. The scheme is:
+
+```
+preimage = SHA-256( BIP-340-Schnorr( descriptor_key, SHA-256("NArk-Boltz-Preimage-v1") ) )
+```
+
+— signing the constant tag-hash with the receiver descriptor's key. BIP-340 with `aux_rand=null` is deterministic, so the same descriptor + same wallet always produces the same preimage. Recovery: when `RestoreSwaps` rediscovers a reverse swap, it re-derives the candidate preimage, verifies `SHA-256(candidate) == restored.PreimageHash`, and attaches it to the swap's metadata for the sweeper to claim. Hash mismatch (legacy random preimage, or wrong descriptor) leaves the preimage out; `EnrichReverseSwapPreimage` remains the manual fallback.
+
+Watch-only wallets (no signer) fall back to a random preimage on create — they don't get the recovery story but they can still execute swaps until they pair a signer.
+
 ## Chain Swap Recovery (Renegotiation + Cooperative Refund)
 
 Chain swaps can fail to settle when the user funds the lockup with an amount that doesn't match Boltz's original quote, when an LN invoice times out, or when the swap window expires. The SDK handles these cases automatically inside the routine status-poll loop in `BoltzSwapProvider.PollSwapState`:
