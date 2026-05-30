@@ -13,6 +13,7 @@ using NArk.Swaps.Services;
 using NArk.Swaps.Transformers;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
+using NArk.Tests.End2End.Mocks;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
 using NBitcoin;
@@ -104,7 +105,7 @@ public class ChainSwapTests
                 CancellationToken.None
             ));
 
-        var btcAmount = (expectedLockupSats / 100_000_000m).ToString("0.########");
+        var btcAmount = (expectedLockupSats / 100_000_000m).ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
         Console.WriteLine($"[BTC→ARK] Swap created: {swapId}, BTC lockup: {btcAddress}, expected: {expectedLockupSats} sats ({btcAmount} BTC)");
         Assert.That(btcAddress, Is.Not.Null.And.Not.Empty);
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
@@ -141,6 +142,16 @@ public class ChainSwapTests
         Assert.That(swaps.Count, Is.GreaterThanOrEqualTo(1));
         var finalSwap = swaps.First(s => s.SwapId == swapId);
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Settled));
+
+        // Cross-sign BTC claim assertion: after we revealed the preimage by claiming the ARK VHTLC,
+        // Boltz must have swept the BTC lockup address. Verify the UTXO is gone.
+        await DockerHelper.MineBlocks(1);
+        var unspentJson = await DockerHelper.Exec("bitcoin",
+            ["bitcoin-cli", "-rpcwallet=", "listunspent", "0", "9999999",
+             $"[\"{btcAddress}\"]"]);
+        var unspent = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement[]>(unspentJson.Trim());
+        Assert.That(unspent, Is.Empty,
+            $"BTC lockup address {btcAddress} should be empty after Boltz claimed the BTC using our revealed preimage");
     }
 
     [Test]
@@ -312,7 +323,7 @@ public class ChainSwapTests
         // +1000 sats is a clean unambiguous mismatch that's still trivially
         // covered by the test wallet's UTXO budget.
         var fundAmount = originalExpectedSats + 1000;
-        var btcAmount = (fundAmount / 100_000_000m).ToString("0.########");
+        var btcAmount = (fundAmount / 100_000_000m).ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
         var txid = await DockerHelper.BitcoinSendToAddress(btcAddress, btcAmount, token);
         Console.WriteLine($"[BTC→ARK reneg] Funded {fundAmount} sats (expected+1000), txid={txid}");
 
@@ -534,5 +545,55 @@ public class ChainSwapTests
         var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single(s => s.SwapId == swapId);
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
             "ARK→BTC swap should reach Refunded status after cooperative refund completes");
+    }
+
+    /// <summary>
+    /// Security check: when Boltz returns a lockup address that doesn't match the VHTLC
+    /// address we computed locally from the swap parameters, the SDK must reject the swap
+    /// immediately rather than sending funds to an address controlled by the attacker.
+    /// </summary>
+    [Test]
+    public async Task BtcToArkChainSwap_RejectsWhenBoltzReturnsWrongLockupAddress()
+    {
+        var wallet = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+
+        // Start mock without ServerInfo — it returns a random syntactically-valid but wrong ARK address.
+        await using var mockBoltz = await MockBoltzServer.StartAsync();
+
+        var boltzOpts = new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions
+        {
+            BoltzUrl = mockBoltz.BaseUrl,
+            WebsocketUrl = mockBoltz.WsBaseUrl,
+        });
+        var boltzClient = new BoltzClient(new HttpClient(), boltzOpts);
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
+        var coinService = new CoinService(wallet.clientTransport, wallet.contracts,
+            [new PaymentContractTransformer(wallet.walletProvider),
+             new HashLockedContractTransformer(wallet.walletProvider),
+             new VHTLCContractTransformer(wallet.walletProvider, chainTimeProvider)]);
+
+        var spendingService = new SpendingService(wallet.vtxoStorage, wallet.contracts,
+            wallet.walletProvider, coinService, wallet.contractService, wallet.clientTransport,
+            new DefaultCoinSelector(), wallet.safetyService, intentStorage);
+
+        var boltzProvider = new BoltzSwapProvider(boltzClient,
+            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), boltzOpts)),
+            wallet.clientTransport, wallet.vtxoStorage, wallet.walletProvider, swapStorage,
+            wallet.contractService, wallet.contracts, wallet.safetyService, spendingService,
+            intentStorage, chainTimeProvider);
+
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider }, spendingService, wallet.clientTransport,
+            wallet.vtxoStorage, wallet.walletProvider, swapStorage, wallet.contractService,
+            wallet.contracts, wallet.safetyService, intentStorage, chainTimeProvider);
+        await swapMgr.StartAsync(CancellationToken.None);
+
+        var ex = Assert.ThrowsAsync<InvalidOperationException>(() =>
+            swapMgr.InitiateBtcToArkChainSwap(wallet.walletIdentifier, 50_000, CancellationToken.None));
+
+        Assert.That(ex!.Message, Does.Contain("address mismatch").IgnoreCase,
+            "SDK must reject the swap when Boltz returns a lockup address that doesn't match our locally-computed VHTLC address");
     }
 }
