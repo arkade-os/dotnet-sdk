@@ -107,15 +107,25 @@ Typical states recorded against each `ArkSwap`:
 
 ### Deterministic preimages (for recoverable claims)
 
-The preimages we generate for reverse and chain swaps are derived deterministically from the wallet's signing material so that a restored wallet can re-derive them and claim outstanding VHTLCs. The scheme is:
+The preimages we generate for reverse and chain swaps are derived deterministically from the wallet's signing material so that a restored wallet can re-derive them and claim outstanding VHTLCs. The scheme:
 
 ```
-preimage = SHA-256( BIP-340-Schnorr( descriptor_key, SHA-256("NArk-Boltz-Preimage-v1") ) )
+message  = SHA-256( "NArk-Boltz-Preimage-v1" || descriptor.ToString() || u32_le(index) )
+sig      = BIP-340-Schnorr( descriptor_key, message, aux_rand=null )
+preimage = SHA-256( sig )
 ```
 
-— signing the constant tag-hash with the receiver descriptor's key. BIP-340 with `aux_rand=null` is deterministic, so the same descriptor + same wallet always produces the same preimage. Recovery: when `RestoreSwaps` rediscovers a reverse swap, it re-derives the candidate preimage, verifies `SHA-256(candidate) == restored.PreimageHash`, and attaches it to the swap's metadata for the sweeper to claim. Hash mismatch (legacy random preimage, or wrong descriptor) leaves the preimage out; `EnrichReverseSwapPreimage` remains the manual fallback.
+The signed input bundles three things:
+
+- **Tag** — domain-separates this signature from any other use of the descriptor's key. Versioned (`-v1`) so a future scheme bump can ship as `-v2` while recovery still tries v1 for older swaps.
+- **Descriptor** — scopes the preimage to the specific swap descriptor.
+- **Index** — lets a caller derive multiple preimages from the same descriptor. Always `0` today; baked into v1 so recovery iteration is forward-compatible without a scheme bump.
+
+BIP-340 with `aux_rand=null` is deterministic per `(key, message)`, so same `(wallet, descriptor, index)` always yields the same preimage. Recovery: when `RestoreSwaps` rediscovers a reverse swap, it re-derives the candidate preimage with `index=0`, verifies `SHA-256(candidate) == restored.PreimageHash`, and attaches it to the swap's metadata for the sweeper to claim. Hash mismatch (legacy random preimage, or wrong descriptor) leaves the preimage out; `EnrichReverseSwapPreimage` remains the manual fallback.
 
 Watch-only wallets (no signer) fall back to a random preimage on create — they don't get the recovery story but they can still execute swaps until they pair a signer.
+
+> **Remote signers and determinism.** `IRemoteSignerTransport.SignAsync` MUST use `aux_rand=null` for the recovery scheme to work end-to-end on remote-signed wallets. Implementations that randomise `aux_rand` (e.g. hardware-wallet side-channel hardening) will produce a different signature each call → different preimage → recovery silently fails. See the XML doc on `SignAsync`. Local sources (`Bip39SigningSource`, `NsecSigningSource`) already satisfy this.
 
 ## Chain Swap Recovery (Renegotiation + Cooperative Refund)
 
