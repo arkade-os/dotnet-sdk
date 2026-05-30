@@ -185,13 +185,8 @@ public class BatchManagementService(
                 await HandleBatchStartedForAllIntentsAsync(batchStarted, CancellationToken.None);
                 break;
 
-            case BatchFinalizedEvent batchFinalized:
-                await RouteToBatchSessionsAsync(batchFinalized.Id, batchFinalized, cancellationToken);
-                await ResetUnselectedIntentsAsync(batchFinalized.Id, cancellationToken);
-                break;
-
             // Route batch-specific events to the appropriate session(s)
-            case BatchFailedEvent or BatchFinalizationEvent
+            case BatchFailedEvent or BatchFinalizedEvent or BatchFinalizationEvent
                 or TreeTxEvent or TreeSigningStartedEvent or TreeNoncesEvent
                 or TreeNoncesAggregatedEvent or TreeSignatureEvent:
             {
@@ -286,34 +281,6 @@ public class BatchManagementService(
                 if (intentIds.Count == 0)
                     _batchIdToIntentIds.TryRemove(batchId, out _);
             }
-        }
-    }
-
-    private async Task ResetUnselectedIntentsAsync(string batchId, CancellationToken cancellationToken)
-    {
-        var selectedForBatch = _batchIdToIntentIds.TryGetValue(batchId, out var ids)
-            ? ids.ToHashSet()
-            : new HashSet<string>();
-
-        foreach (var (intentId, intent) in _activeIntents)
-        {
-            if (selectedForBatch.Contains(intentId))
-                continue;
-
-            logger?.LogDebug(
-                "Intent {IntentId} was not selected in batch {BatchId} — resetting to WaitingToSubmit",
-                intentId, batchId);
-
-            _activeIntents.TryRemove(intentId, out _);
-            _ = UpdateTopicsAsync(removeTopics: GetTopicsForIntent(intent));
-
-            await intentStorage.SaveIntent(intent.WalletId, intent with
-            {
-                State = ArkIntentState.WaitingToSubmit,
-                IntentId = null,
-                BatchId = null,
-                UpdatedAt = DateTimeOffset.UtcNow
-            }, cancellationToken);
         }
     }
 
