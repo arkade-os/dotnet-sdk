@@ -68,11 +68,10 @@ public record ArkNetworkConfig(
     /// Labs Fulcrum instances (Mainnet, Mutinynet) only expose
     /// <b>:50001</b> (plain Electrum binary protocol); the conventional
     /// 50002 TLS port is not exposed — for TLS use the WSS endpoint via
-    /// <see cref="ElectrumWsUri"/>. Regtest uses <b>:50000</b>, the only
-    /// port nigiri's <c>electrs</c> listens on for the binary protocol
-    /// (30000 on the same host is electrs's HTTP REST, a different
-    /// protocol). Optional and informational — no built-in NArk service
-    /// consumes it.
+    /// <see cref="ElectrumWsUri"/>. Regtest uses <b>:50001</b>, the
+    /// Fulcrum Electrum binary-protocol TCP port shipped by
+    /// arkade-regtest (with the WebSocket endpoint on :50003). Optional
+    /// and informational — no built-in NArk service consumes it.
     /// </summary>
     [property: JsonPropertyName("electrum-tcp")]
     string? ElectrumTcpUri = null)
@@ -103,14 +102,12 @@ public record ArkNetworkConfig(
         ArkadeWalletUri: "http://localhost:3002",
         BoltzUri: "http://localhost:9069/",
         ExplorerUri: "http://localhost:7080",
-        // ts-sdk regtest Esplora default: a local mempool/Chopsticks deployment.
-        EsploraUri: "http://localhost:3000",
-        // Regtest WS bridge convention: electrum-ws on port 50003 (ts-sdk).
+        // arkade-regtest Esplora REST API: served by the mempool container under /api.
+        EsploraUri: "http://localhost:3000/api",
+        // Regtest WS bridge convention: Fulcrum electrum-ws on port 50003 (ts-sdk).
         ElectrumWsUri: "ws://localhost:50003",
-        // nigiri's electrs binary-protocol port — verified against
-        // nigiri/cmd/nigiri/resources/docker-compose.yml. 30000 on the
-        // same container is electrs's HTTP REST, a different protocol.
-        ElectrumTcpUri: "tcp://localhost:50000");
+        // Fulcrum's Electrum binary-protocol TCP port on regtest.
+        ElectrumTcpUri: "tcp://localhost:50001");
 
 }
 

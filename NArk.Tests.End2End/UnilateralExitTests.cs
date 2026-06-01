@@ -376,7 +376,7 @@ public class UnilateralExitTests
 
         await DockerHelper.MineBlocks(6);
 
-        var utxoProvider = new EsploraBlockchain(SharedArkInfrastructure.ChopsticksEndpoint);
+        var utxoProvider = new EsploraBlockchain(SharedArkInfrastructure.EsploraEndpoint);
         var boardingSync = new BoardingUtxoSyncService(
             contractStorage, vtxoStorage, clientTransport, utxoProvider);
 

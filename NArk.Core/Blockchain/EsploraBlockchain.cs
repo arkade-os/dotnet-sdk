@@ -9,7 +9,7 @@ namespace NArk.Blockchain;
 
 /// <summary>
 /// Unified Esplora-backed <see cref="IBitcoinBlockchain"/>. Talks to a stock
-/// Esplora REST API (mempool.space, Chopsticks, Blockstream Esplora) — chain
+/// Esplora REST API (mempool.space, mempool, Blockstream Esplora) — chain
 /// time via <c>blocks/tip/hash</c>, UTXOs via <c>address/{addr}/utxo</c>,
 /// broadcast via <c>POST /tx</c>, status via <c>tx/{id}/status</c>, fee
 /// estimates via <c>fee-estimates</c>.

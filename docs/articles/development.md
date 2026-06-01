@@ -5,7 +5,7 @@
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (for libraries)
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (for tests)
 - [Docker](https://docs.docker.com/get-docker/) (for the E2E regtest stack)
-- Bash/WSL on Windows (the regtest scripts are POSIX shell)
+- [Node.js >= 18](https://nodejs.org/) (drives the arkade-regtest CLI; stdlib only — no `npm install`)
 
 ## Building
 
@@ -25,26 +25,27 @@ dotnet test NArk.Tests
 
 ### End-to-End Tests
 
-E2E tests require a running regtest stack (bitcoin core + arkd + wallet + boltz + fulmine + nigiri). The stack is managed by scripts under `regtest/`:
+E2E tests require a running regtest stack (bitcoin core + arkd + wallet + boltz + fulmine + mempool/Fulcrum). The stack is managed by the arkade-regtest Node CLI under `regtest/` (Node >= 18, stdlib only — no `npm install`):
 
 ```bash
 # From the repo root:
-./regtest/start-env.sh --clean     # tear down + build + start everything fresh
+node regtest/regtest.mjs clean     # tear down + wipe volumes (run before a fresh start)
+node regtest/regtest.mjs start     # start everything
 dotnet test NArk.Tests.End2End
-./regtest/stop-env.sh              # shut down when done
+node regtest/regtest.mjs stop      # shut down when done
 ```
 
-Useful flags:
+Useful commands:
 
-- `./regtest/start-env.sh --clean` — wipe volumes and start clean (required on first run or after schema changes)
-- `./regtest/start-env.sh` — start/resume without wiping data
-- `./regtest/clean-env.sh` — full teardown including nigiri data directories (Docker handles permission-locked container volumes automatically)
+- `node regtest/regtest.mjs start` — start/resume the stack
+- `node regtest/regtest.mjs stop` — stop containers without wiping data
+- `node regtest/regtest.mjs clean` — full teardown including data directories
 
 > [!IMPORTANT]
 > E2E tests run sequentially (`[assembly: NonParallelizable]`) because they share a single arkd instance.
 
 > [!NOTE]
-> The regtest overlay adds boltz, boltz-lnd, boltz-fulmine, and nginx-boltz on top of nigiri. All test fixtures expect those services to be up. `SharedArkInfrastructure` and `SharedSwapInfrastructure` perform readiness probes against `/v1/info` (arkd) and boltz before running tests.
+> The arkade-regtest stack includes boltz, boltz-lnd, boltz-fulmine, and nginx-boltz alongside bitcoin core, arkd, and the mempool/Fulcrum indexer. All test fixtures expect those services to be up. `SharedArkInfrastructure` and `SharedSwapInfrastructure` perform readiness probes against `/v1/info` (arkd) and boltz before running tests.
 
 ## Project Structure
 
@@ -57,7 +58,7 @@ dotnet-sdk/
 ├── NArk/                  # Meta-package
 ├── NArk.Tests/            # Unit tests
 ├── NArk.Tests.End2End/    # E2E tests (require the regtest stack)
-├── regtest/               # Docker-compose overlay + start/stop scripts
+├── regtest/               # arkade-regtest submodule (Docker Compose stack + Node CLI)
 ├── samples/
 │   └── NArk.Wallet/       # Blazor WASM sample wallet
 └── docs/                  # Documentation (DocFX)

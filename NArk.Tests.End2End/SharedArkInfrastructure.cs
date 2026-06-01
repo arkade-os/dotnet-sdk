@@ -5,7 +5,8 @@ public class SharedArkInfrastructure
 {
     public static readonly Uri ArkdEndpoint = new("http://localhost:7070");
     public static readonly Uri NbxplorerEndpoint = new("http://localhost:32838");
-    public static readonly Uri ChopsticksEndpoint = new("http://localhost:3000");
+    // Esplora REST API served by the mempool container under /api.
+    public static readonly Uri EsploraEndpoint = new("http://localhost:3000/api");
 
     [OneTimeSetUp]
     public async Task GlobalSetup()
@@ -22,7 +23,7 @@ public class SharedArkInfrastructure
         {
             Assert.Fail(
                 "Ark infrastructure not running. Start it with:\n" +
-                "  ./regtest/start-env.sh\n\n" +
+                "  node regtest/regtest.mjs start\n\n" +
                 $"Health check failed: {ex.Message}");
         }
     }

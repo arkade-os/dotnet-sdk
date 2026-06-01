@@ -51,11 +51,11 @@ Before opening a PR or pushing to master:
 - `NArk.Swaps` — Swap providers (Boltz) and swap management
 - `NArk.Storage.EfCore` — Entity Framework Core persistence
 - `NArk.Tests` — Unit tests
-- `NArk.Tests.End2End` — E2E integration tests (require nigiri + arkd)
+- `NArk.Tests.End2End` — E2E integration tests (require the arkade-regtest stack + arkd)
 
 ## Testing
 - Unit tests: `dotnet test NArk.Tests`
-- E2E tests require external infrastructure (arkd, nigiri, boltz). Do not run locally without setup.
+- E2E tests require external infrastructure (arkd, the arkade-regtest stack, boltz). Do not run locally without setup.
 - NEVER skip or disable failing tests to make CI pass. Fix the root cause.
 
 ## Build

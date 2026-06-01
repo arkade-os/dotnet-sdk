@@ -422,14 +422,14 @@ var onchainAddress = boardingContract.GetOnchainAddress(network);
 `BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It depends on `IBitcoinBlockchain` — register one of the built-in backends:
 
 ```csharp
-// Option A: Esplora (mempool.space, Chopsticks, etc.)
+// Option A: Esplora (mempool.space, Blockstream Esplora, etc.)
 // ArkNetworkConfig.{Mainnet,Mutinynet,Regtest} carry per-network
 // endpoint defaults that mirror the canonical Arkade ts-sdk:
 //
 //   Network    EsploraUri                                 ElectrumWsUri                              ElectrumTcpUri
 //   Mainnet    https://mempool.arkade.sh/api              wss://electrum.arkade.sh                   tcp://electrum.arkade.sh:50001
 //   Mutinynet  https://mempool.mutinynet.arkade.sh/api    wss://electrum.mutinynet.arkade.sh         tcp://electrum.mutinynet.arkade.sh:50001
-//   Regtest    http://localhost:3000                      ws://localhost:50003                       tcp://localhost:50000
+//   Regtest    http://localhost:3000/api                  ws://localhost:50003                       tcp://localhost:50001
 //
 // ElectrumWsUri is the websocket URL — wss://electrum.arkade.sh
 // terminates at the host's port 443. ElectrumTcpUri is verified at the
@@ -437,9 +437,9 @@ var onchainAddress = boardingContract.GetOnchainAddress(network);
 // instances only expose :50001 (plain Electrum binary protocol). 50002
 // TCP+TLS is NOT exposed — for TLS use the WSS endpoint via
 // ElectrumWsUri. (ts-sdk's source comment listing 50001/50002/50003 is
-// stale.) Regtest uses nigiri's electrs on :50000 for the binary
-// protocol — 30000 on the same host is electrs's HTTP REST, a
-// different protocol.
+// stale.) Regtest's Esplora REST API is served by the mempool container
+// under /api; the Fulcrum Electrum endpoints are :50001 (TCP binary
+// protocol) and :50003 (WebSocket).
 services.AddEsploraBlockchain(new Uri(ArkNetworkConfig.Mainnet.EsploraUri!));
 // or pass your own URL: services.AddEsploraBlockchain(new Uri("https://mempool.space/api/"));
 

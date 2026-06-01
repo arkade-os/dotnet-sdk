@@ -444,7 +444,7 @@ public class ChainSwapTests
     /// <c>could not find swap with id: …</c>. The other natural failure
     /// trigger (waiting for chain-swap expiry) doesn't fire on regtest
     /// because Boltz times chain swaps against wall-clock minutes that
-    /// nigiri's mining doesn't advance — the same limitation that forces
+    /// regtest block mining doesn't advance — the same limitation that forces
     /// <see cref="BtcToArkChainSwapMarksFailedWhenUserDoesNotFund"/> to be
     /// ignored. The refund code itself is covered by unit tests; an
     /// end-to-end reproducer needs either mock Boltz or <c>setmocktime</c>

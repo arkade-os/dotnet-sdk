@@ -68,7 +68,7 @@ public static class DockerHelper
     }
 
     /// <summary>
-    /// Creates an LND invoice on the nigiri lnd container.
+    /// Creates an LND invoice on the lnd container.
     /// Returns the BOLT11 payment request string.
     /// </summary>
     public static async Task<string> CreateLndInvoice(long amtSats = 10000, int expirySecs = 30,
@@ -120,13 +120,13 @@ public static class DockerHelper
     /// </summary>
     public static async Task<string> CreateArkNote(long amountSats = 1000000, CancellationToken ct = default)
     {
-        var output = await Exec("ark",
+        var output = await Exec("arkd",
             ["arkd", "note", "--amount", amountSats.ToString()], ct);
         return output.Trim();
     }
 
     /// <summary>
-    /// Pays a BOLT11 invoice via the nigiri lnd node using lncli.
+    /// Pays a BOLT11 invoice via the lnd node using lncli.
     /// </summary>
     public static async Task PayLndInvoice(string bolt11Invoice, CancellationToken ct = default)
     {

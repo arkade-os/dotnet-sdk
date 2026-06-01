@@ -61,12 +61,12 @@ public class BoardingTests
         // --- 4. Mine blocks to confirm ---
         await DockerHelper.MineBlocks(6);
 
-        // --- 5. Sync boarding UTXOs from Esplora (Chopsticks) ---
-        var utxoProvider = new EsploraBlockchain(SharedArkInfrastructure.ChopsticksEndpoint);
+        // --- 5. Sync boarding UTXOs from Esplora (mempool /api) ---
+        var utxoProvider = new EsploraBlockchain(SharedArkInfrastructure.EsploraEndpoint);
         var syncService = new BoardingUtxoSyncService(
             contracts, vtxoStorage, clientTransport, utxoProvider);
 
-        // Chopsticks may need a moment to index — retry until the UTXO appears
+        // The Esplora indexer may need a moment to index — retry until the UTXO appears
         ArkVtxo? syncedVtxo = null;
         for (var i = 0; i < 10; i++)
         {

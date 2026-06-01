@@ -34,7 +34,7 @@ public class SharedDelegationInfrastructure
             {
                 Assert.Fail(
                     $"{name} not running. Start infrastructure with:\n" +
-                    "  ./regtest/start-env.sh\n\n" +
+                    "  node regtest/regtest.mjs start\n\n" +
                     $"Health check failed: {ex.Message}");
             }
         }

@@ -96,7 +96,7 @@ public static class FulmineLiquidityHelper
 
     /// <summary>
     /// Sends 1 BTC to Fulmine's boarding address via bitcoin-cli sendtoaddress.
-    /// Uses Docker exec to call Bitcoin Core directly (chopsticks faucet is inaccessible from test runner).
+    /// Uses Docker exec to call Bitcoin Core directly (the regtest CLI faucet is inaccessible from the test runner).
     /// </summary>
     private static async Task FundFulmineBoarding(HttpClient fulmineHttp)
     {
