@@ -102,7 +102,14 @@ public class WalletRecoveryTests
             // ArkPaymentContract scripts (HD-derived, so LastUsedIndex advances)
             // — exactly the kind of VTXO IndexerVtxoDiscoveryProvider rediscovers
             // on recovery. Same pattern as NoteTests.CanCompleteBatchWithOnlyOneNote.
-            var batchTcs = new TaskCompletionSource();
+            // RunContinuationsAsynchronously is REQUIRED: IIntentStorage.IntentChanged is
+            // raised synchronously from inside BatchManagementService's gRPC event-stream
+            // thread (HandleBatchFinalizedAsync → SaveIntent). A plain TCS runs the awaiting
+            // continuation inline on that thread, so the rest of this test — including
+            // host1.StopAsync(), which disposes BatchManagementService and awaits the very
+            // stream task that's running the continuation — self-deadlocks. Resuming on the
+            // thread pool frees the event-stream thread.
+            var batchTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             intentStorage.IntentChanged += (_, intent) =>
             {
                 if (intent.State == ArkIntentState.BatchSucceeded)
