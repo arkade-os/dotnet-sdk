@@ -120,7 +120,7 @@ public static class DockerHelper
     /// </summary>
     public static async Task<string> CreateArkNote(long amountSats = 1000000, CancellationToken ct = default)
     {
-        var output = await Exec("ark",
+        var output = await Exec("arkd",
             ["arkd", "note", "--amount", amountSats.ToString()], ct);
         return output.Trim();
     }

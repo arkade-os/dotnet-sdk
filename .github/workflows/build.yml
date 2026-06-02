@@ -37,20 +37,13 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          go-version: '1.23'
-      - name: Cache nigiri binary
-        uses: actions/cache@v4
-        with:
-          path: regtest/_build
-          key: nigiri-${{ runner.os }}-${{ hashFiles('regtest/.env.defaults', '.env.regtest') }}
+          node-version: '20'
       - name: Start regtest infrastructure
-        run: |
-          chmod +x regtest/*.sh regtest/helpers/*.sh
-          ./regtest/start-env.sh
-        timeout-minutes: 10
+        run: node regtest/regtest.mjs start --profile boltz,delegate
+        timeout-minutes: 20
       - name: Restore and build
         run: dotnet build
       - name: Run E2E tests
@@ -59,7 +52,7 @@ jobs:
       - name: Collect docker logs on failure
         if: failure()
         run: |
-          docker logs ark > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
           docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
           docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
@@ -73,9 +66,7 @@ jobs:
           path: /tmp/*-logs.txt
       - name: Stop infrastructure
         if: always()
-        run: |
-          chmod +x regtest/*.sh regtest/helpers/*.sh 2>/dev/null
-          ./regtest/clean-env.sh || true
+        run: node regtest/regtest.mjs clean || true
 
   publish:
     name: Publish NuGet Packages
