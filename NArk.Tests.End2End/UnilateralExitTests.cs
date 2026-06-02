@@ -370,8 +370,8 @@ public class UnilateralExitTests
         var onchainAddress = boardingContract.GetOnchainAddress(info.Network).ToString();
         var btcAmount = (BoardingAmountSats / 100_000_000m)
             .ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
-        var fundingTxid = (await DockerHelper.Exec(
-            "bitcoin", ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, btcAmount])).Trim();
+        var fundingTxid = await DockerHelper.BitcoinCli(
+            ["sendtoaddress", onchainAddress, btcAmount]);
         Assert.That(fundingTxid, Is.Not.Empty, "sendtoaddress should return a txid");
 
         await DockerHelper.MineBlocks(6);
@@ -545,8 +545,7 @@ public class UnilateralExitTests
 
     private static async Task<BitcoinAddress> GetFreshOnchainAddress()
     {
-        var addr = (await DockerHelper.Exec(
-            "bitcoin", ["bitcoin-cli", "-rpcwallet=", "getnewaddress"])).Trim();
+        var addr = await DockerHelper.BitcoinCli(["getnewaddress"]);
         Assert.That(addr, Is.Not.Empty, "bitcoin-cli getnewaddress returned empty");
         return BitcoinAddress.Create(addr, Network.RegTest);
     }

@@ -52,8 +52,7 @@ public class BoardingTests
         var btcAmount = (boardingAmountSats / 100_000_000m).ToString("0.########",
             System.Globalization.CultureInfo.InvariantCulture);
 
-        var sendOutput = await DockerHelper.Exec("bitcoin",
-            ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, btcAmount]);
+        var sendOutput = await DockerHelper.BitcoinCli(["sendtoaddress", onchainAddress, btcAmount]);
         var fundingTxid = sendOutput.Trim();
         Console.WriteLine($"[Boarding] Funding txid: {fundingTxid}");
         Assert.That(fundingTxid, Is.Not.Empty, "sendtoaddress should return a txid");
