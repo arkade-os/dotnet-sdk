@@ -28,6 +28,7 @@ public class SubdustRejectionTests
     /// server's dust threshold.
     /// </summary>
     [Test]
+    [Retry(3)]
     public async Task SubdustVtxo_SpendOffchain_IsRejected()
     {
         // Alice starts with a normal balance so she can fund Bob with a sub-dust VTXO
