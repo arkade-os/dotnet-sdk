@@ -167,6 +167,18 @@ public class BatchManagementService(
             case StreamStartedEvent streamStarted:
                 _streamId = streamStarted.StreamId;
                 logger?.LogDebug("Event stream started with ID {StreamId}", _streamId);
+                // An intent that reached WaitingForBatch during the stream-connect
+                // window (before _streamId was set) had its OnIntentChanged topic
+                // subscription silently skipped by UpdateTopicsAsync's null-stream
+                // guard, with no retry. Left unsubscribed, the intent never receives
+                // its BatchStartedEvent, never participates in signing, and gets
+                // re-proposed every batch round forever (a permanent settle stall).
+                // Now that the stream is live, reconcile by re-subscribing every
+                // active intent's topics. UpdateStreamTopics add is idempotent, so
+                // re-adding already-subscribed topics is a no-op.
+                var reconcileTopics = GetAllTopics();
+                if (reconcileTopics.Length > 0)
+                    await UpdateTopicsAsync(addTopics: reconcileTopics);
                 break;
 
             case BatchStartedEvent batchStarted:

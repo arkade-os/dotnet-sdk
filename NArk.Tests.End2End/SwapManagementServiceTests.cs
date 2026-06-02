@@ -407,6 +407,14 @@ public class SwapManagementServiceTests
         var settledA = new TaskCompletionSource();
         var settledB = new TaskCompletionSource();
 
+        // Boltz serializes swap creation through its Postgres backend under
+        // SERIALIZABLE isolation; two CreateSubmarineSwap POSTs racing in
+        // parallel abort one another with SQLSTATE 40001 ("could not serialize
+        // access due to read/write dependencies among transactions"). Gate just
+        // the creation call so both swaps still poll and settle concurrently
+        // afterwards but don't collide on Boltz's swap-insert transaction.
+        using var createGate = new SemaphoreSlim(1, 1);
+
         async Task<string> RunSwapAsync(
             (ISafetyService safetyService, InMemoryWalletProvider walletProvider, string walletIdentifier,
                 IVtxoStorage vtxoStorage, ContractService contractService, IContractStorage contracts,
@@ -453,7 +461,17 @@ public class SwapManagementServiceTests
 
             var invoice = BOLT11PaymentRequest.Parse(
                 await DockerHelper.CreateLndInvoice(invoiceSats, expirySecs: 0), Network.RegTest);
-            var swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, invoice, autoPay: true, token);
+
+            string swapId;
+            await createGate.WaitAsync(token);
+            try
+            {
+                swapId = await swapMgr.InitiateSubmarineSwap(prereq.walletIdentifier, invoice, autoPay: true, token);
+            }
+            finally
+            {
+                createGate.Release();
+            }
 
             await settledTcs.Task.WaitAsync(TimeSpan.FromMinutes(5), token);
             await swapMgr.DisposeAsync();
