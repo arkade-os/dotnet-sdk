@@ -145,14 +145,16 @@ public class WalletRecoveryTests
             "fresh storage starts with no contracts");
 
         var recovery = host2.Services.GetRequiredService<IWalletRecoveryService>();
-        // Bound the recovery: a tight gap-limit cuts the HD scan's per-index
-        // round-trips (indexer + boarding + boltz discovery providers run per
-        // index sequentially) and the CT gives the test a deterministic upper
-        // bound so a degraded shared fixture never makes us eat the workflow
-        // 15-min cap.
-        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        // Bound the recovery: the HD scan walks indices sequentially and probes
+        // each with a Boltz /v2/swap/restore round-trip (the boltz discovery
+        // provider). On CI the boltzr sidecar makes those calls slow, so a tight
+        // gap-limit (fewer indices) plus a generous CT keeps the test reliably
+        // under the workflow cap while still recovering the (low-index) funded
+        // contract. The funded payment contract sits at the first derivation
+        // index, so GapLimit 3 finds it comfortably.
+        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var report = await recovery.RecoverAsync(
-            walletId, new RecoveryOptions(GapLimit: 5), recoveryCts.Token);
+            walletId, new RecoveryOptions(GapLimit: 3), recoveryCts.Token);
 
         // Contracts + derivation index recovered.
         var recoveredContracts = await contractStorage2.GetContracts(walletIds: [walletId]);
