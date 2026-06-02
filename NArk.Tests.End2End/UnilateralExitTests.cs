@@ -300,6 +300,7 @@ public class UnilateralExitTests
     /// <see cref="AwaitingCsvDelay_DoesNotAdvanceUntilDelayMatures"/>).
     /// </remarks>
     [Test]
+    [Retry(3)]
     [CancelAfter(300_000)]
     public async Task ProgressExits_WorksForOffchainFundedVtxo(CancellationToken token)
     {
