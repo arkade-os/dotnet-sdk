@@ -32,9 +32,32 @@ public static class DockerHelper
         return result.StandardOutput;
     }
 
+    // denigiri's bitcoin container runs the btcpayserver image with
+    // BITCOIN_NETWORK=regtest and rpcuser=admin1/rpcpassword=123, and keeps
+    // exactly one wallet loaded so wallet RPCs route without an explicit
+    // -rpcwallet. bitcoin-cli must carry these connection flags or it defaults
+    // to mainnet (port 8332) and fails to connect.
+    private static readonly string[] BitcoinCliArgs =
+        ["bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123"];
+
+    /// <summary>
+    /// Runs bitcoin-cli inside the regtest bitcoin container with the correct
+    /// connection flags. Returns trimmed stdout; throws on a non-zero exit.
+    /// </summary>
+    public static async Task<string> BitcoinCli(string[] args, CancellationToken ct = default)
+    {
+        var result = await Cli.Wrap("docker")
+            .WithArguments(["exec", "bitcoin", .. BitcoinCliArgs, .. args])
+            .WithValidation(CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"bitcoin-cli {string.Join(' ', args)} failed (exit={result.ExitCode}): {result.StandardError.Trim()}");
+        return result.StandardOutput.Trim();
+    }
+
     public static async Task MineBlocks(int count = 20, CancellationToken ct = default)
-        => await Exec("bitcoin",
-            ["bitcoin-cli", "-rpcwallet=", "-generate", count.ToString()], ct);
+        => await Exec("bitcoin", [.. BitcoinCliArgs, "-generate", count.ToString()], ct);
 
     /// <summary>
     /// Drives a Boltz swap into a specific status on demand via the
@@ -120,7 +143,7 @@ public static class DockerHelper
     /// </summary>
     public static async Task<string> CreateArkNote(long amountSats = 1000000, CancellationToken ct = default)
     {
-        var output = await Exec("ark",
+        var output = await Exec("arkd",
             ["arkd", "note", "--amount", amountSats.ToString()], ct);
         return output.Trim();
     }
@@ -144,29 +167,11 @@ public static class DockerHelper
     /// Returns the transaction ID.
     /// </summary>
     public static async Task<string> BitcoinSendToAddress(string address, string btcAmount, CancellationToken ct = default)
-    {
-        var result = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", address, btcAmount])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-        if (!result.IsSuccess)
-            throw new InvalidOperationException(
-                $"bitcoin-cli sendtoaddress {address} {btcAmount} failed (exit={result.ExitCode}): {result.StandardError.Trim()}");
-        return result.StandardOutput.Trim();
-    }
+        => await BitcoinCli(["sendtoaddress", address, btcAmount], ct);
 
     /// <summary>
     /// Gets a new address from the Bitcoin Core wallet.
     /// </summary>
     public static async Task<string> BitcoinGetNewAddress(CancellationToken ct = default)
-    {
-        var result = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-        if (!result.IsSuccess)
-            throw new InvalidOperationException(
-                $"bitcoin-cli getnewaddress failed (exit={result.ExitCode}): {result.StandardError.Trim()}");
-        return result.StandardOutput.Trim();
-    }
+        => await BitcoinCli(["getnewaddress"], ct);
 }

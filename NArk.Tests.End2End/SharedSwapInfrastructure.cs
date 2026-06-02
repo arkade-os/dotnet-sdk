@@ -34,8 +34,7 @@ public class SharedSwapInfrastructure
             {
                 Assert.Fail(
                     $"{name} not running. Start infrastructure with:\n" +
-                    "  cd NArk.Tests.End2End/Infrastructure && ./start-env.sh\n" +
-                    "  (Windows: wsl bash ./start-env.sh)\n\n" +
+                    "  node regtest/regtest.mjs start --profile boltz,delegate\n\n" +
                     $"Health check failed: {ex.Message}");
             }
         }

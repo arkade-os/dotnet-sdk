@@ -113,8 +113,7 @@ public static class FulmineLiquidityHelper
             var onchainAddress = new Uri(arkAddress).AbsolutePath;
             Console.WriteLine($"[FulmineLiquidity] Funding boarding address: {onchainAddress}");
 
-            var output = await DockerHelper.Exec("bitcoin",
-                ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, "1"]);
+            var output = await DockerHelper.BitcoinCli(["sendtoaddress", onchainAddress, "1"]);
             Console.WriteLine($"[FulmineLiquidity] sendtoaddress txid: {output.Trim()}");
         }
         catch (Exception ex)
