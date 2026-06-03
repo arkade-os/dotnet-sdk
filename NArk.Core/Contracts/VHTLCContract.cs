@@ -77,6 +77,9 @@ public class VHTLCContract : ArkContract
     public override string Type => ContractType;
     public const string ContractType = "HTLC";
 
+    /// <summary>VHTLC funds live off-chain as a VTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
+
 
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {

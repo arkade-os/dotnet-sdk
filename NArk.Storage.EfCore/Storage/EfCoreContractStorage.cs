@@ -26,6 +26,7 @@ public class EfCoreContractStorage : IContractStorage
         string? searchText = null,
         int? skip = null,
         int? take = null,
+        ContractScope? scope = null,
         CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -69,6 +70,13 @@ public class EfCoreContractStorage : IContractStorage
         if (contractTypes is { })
         {
             query = query.Where(c => contractTypes.Contains(c.Type));
+        }
+
+        if (scope is { } s)
+        {
+            // Bitwise include: a row whose scope carries every bit of `s` matches.
+            // Must NOT use HasFlag — EF Core does not translate it to SQL.
+            query = query.Where(c => (c.Scope & s) == s);
         }
 
         query = query.OrderByDescending(c => c.CreatedAt);
@@ -133,6 +141,7 @@ public class EfCoreContractStorage : IContractStorage
         target.Type = source.Type;
         target.ContractData = source.AdditionalData;
         target.Metadata = source.Metadata ?? target.Metadata;
+        target.Scope = source.Scope;
     }
 
     private static ArkWalletContractEntity NewEntity(ArkContractEntity source) => new()
@@ -143,6 +152,7 @@ public class EfCoreContractStorage : IContractStorage
         Type = source.Type,
         ContractData = source.AdditionalData,
         Metadata = source.Metadata,
+        Scope = source.Scope,
         CreatedAt = source.CreatedAt
     };
 
@@ -222,7 +232,8 @@ public class EfCoreContractStorage : IContractStorage
             CreatedAt: entity.CreatedAt
         )
         {
-            Metadata = entity.Metadata
+            Metadata = entity.Metadata,
+            Scope = entity.Scope
         };
     }
 

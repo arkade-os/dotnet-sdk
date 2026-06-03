@@ -19,6 +19,9 @@ public class ArkNoteContract(uint amount, byte[] preimage) : ArkContract(null!)
     public override string Type => ContractType;
     public const string ContractType = "arknote";
 
+    /// <summary>Arkade note funds live off-chain as a VTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
+
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {
         yield return CreateClaimScript();

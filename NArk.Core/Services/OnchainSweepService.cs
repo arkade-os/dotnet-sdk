@@ -57,7 +57,7 @@ public class OnchainSweepService(
         var scripts = expiredUnrolled.Select(v => v.Script).Distinct().ToArray();
         var contracts = await contractStorage.GetContracts(
             scripts: scripts,
-            contractTypes: [ArkBoardingContract.ContractType],
+            scope: ContractScope.Onchain,
             cancellationToken: cancellationToken);
 
         var contractByScript = contracts.ToDictionary(c => c.Script);

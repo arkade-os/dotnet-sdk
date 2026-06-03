@@ -40,7 +40,7 @@ public class BoardingUtxoSyncService
     public async Task SyncAsync(CancellationToken cancellationToken = default)
     {
         var boardingContracts = await _contractStorage.GetContracts(
-            contractTypes: [ArkBoardingContract.ContractType],
+            scope: ContractScope.Onchain,
             cancellationToken: cancellationToken);
 
         if (boardingContracts.Count == 0)
