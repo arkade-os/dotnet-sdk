@@ -18,6 +18,9 @@ public class ArkDelegateContract : ArkContract
     public override string Type => ContractType;
     public const string ContractType = "Delegate";
 
+    /// <summary>Delegate funds live off-chain as a VTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
+
     public ArkDelegateContract(
         OutputDescriptor server,
         Sequence exitDelay,

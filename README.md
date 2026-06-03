@@ -638,6 +638,36 @@ var contract = await contractService.DeriveContract(
 // The contract's script can be converted to an ArkAddress for display
 ```
 
+### Contract scope (on-chain / off-chain)
+
+Every contract type declares which layer(s) its funds live on via
+`ArkContract.DefaultScope`, a `[Flags] ContractScope` (`Onchain`, `Offchain`, or
+both). Boarding contracts are `Onchain`; payment, VHTLC, delegate, hash-lock,
+note and unknown contracts are `Offchain`. This replaces ad-hoc
+`Type == "Boarding"` checks — sync, sweep and recovery ask the scope instead.
+
+The resolved scope is persisted on each contract (`ArkContractEntity.Scope`) and
+is SQL-queryable. Filter by scope through `IContractStorage.GetContracts`:
+
+```csharp
+// On-chain contracts to poll/sweep (boarding UTXOs, etc.)
+var onchain = await contractStorage.GetContracts(scope: ContractScope.Onchain);
+
+// Off-chain contracts (VTXOs) — also matches dual-scope contracts
+var offchain = await contractStorage.GetContracts(scope: ContractScope.Offchain);
+```
+
+The filter translates to a SQL bitwise predicate, so a dual-scope contract
+(`Onchain | Offchain`) is returned by both queries. A per-instance override can
+be supplied at persistence time via `ArkContract.ToEntity(scopeOverride: …)`;
+when omitted, the type's `DefaultScope` is used.
+
+> EF Core note: query scope with the bitwise form (the SDK does this internally);
+> `Enum.HasFlag` does **not** translate to SQL. The `Scope` column ships via the
+> entity configuration — consumers that manage their own schema with EF
+> migrations should add a migration that creates the column (default `Offchain`)
+> and backfills existing boarding rows to `Onchain`.
+
 ## HD Wallet Recovery
 
 When importing an HD wallet from its mnemonic, the SDK has no record of contracts the previous instance derived. `HdWalletRecoveryService` rebuilds that state by sweeping derivation indices via gap-limit and asking each registered `IContractDiscoveryProvider` whether it ever saw activity at that index.

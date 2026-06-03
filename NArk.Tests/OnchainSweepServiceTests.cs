@@ -94,6 +94,7 @@ public class OnchainSweepServiceTests
                 Arg.Any<string?>(),
                 Arg.Any<int?>(),
                 Arg.Any<int?>(),
+                Arg.Any<ContractScope?>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkContractEntity>>(entities));
     }
@@ -197,6 +198,7 @@ public class OnchainSweepServiceTests
             Arg.Any<string?>(),
             Arg.Any<int?>(),
             Arg.Any<int?>(),
+            Arg.Any<ContractScope?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -273,6 +275,7 @@ public class OnchainSweepServiceTests
             Arg.Any<string?>(),
             Arg.Any<int?>(),
             Arg.Any<int?>(),
+            Arg.Any<ContractScope?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -305,6 +308,7 @@ public class OnchainSweepServiceTests
             Arg.Any<string?>(),
             Arg.Any<int?>(),
             Arg.Any<int?>(),
+            Arg.Any<ContractScope?>(),
             Arg.Any<CancellationToken>());
     }
 }
