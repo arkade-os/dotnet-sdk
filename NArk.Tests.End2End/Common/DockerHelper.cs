@@ -34,7 +34,7 @@ public static class DockerHelper
 
     public static async Task MineBlocks(int count = 20, CancellationToken ct = default)
         => await Exec("bitcoin",
-            ["bitcoin-cli", "-rpcwallet=", "-generate", count.ToString()], ct);
+            ["bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "-generate", count.ToString()], ct);
 
     /// <summary>
     /// Drives a Boltz swap into a specific status on demand via the
@@ -146,7 +146,7 @@ public static class DockerHelper
     public static async Task<string> BitcoinSendToAddress(string address, string btcAmount, CancellationToken ct = default)
     {
         var result = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "sendtoaddress", address, btcAmount])
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "sendtoaddress", address, btcAmount])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
         if (!result.IsSuccess)
@@ -161,7 +161,7 @@ public static class DockerHelper
     public static async Task<string> BitcoinGetNewAddress(CancellationToken ct = default)
     {
         var result = await Cli.Wrap("docker")
-            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-rpcwallet=", "getnewaddress"])
+            .WithArguments(["exec", "bitcoin", "bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "getnewaddress"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
         if (!result.IsSuccess)

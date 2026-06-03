@@ -55,14 +55,14 @@ internal sealed class TestFeeWallet : IFeeWallet
 
         var btcAmount = fundAmountBtc.ToString("0.########", CultureInfo.InvariantCulture);
         var fundTxid = (await DockerHelper.Exec(
-            "bitcoin", ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", wallet.Address, btcAmount], ct)).Trim();
+            "bitcoin", ["bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "sendtoaddress", wallet.Address, btcAmount], ct)).Trim();
         if (string.IsNullOrEmpty(fundTxid))
             throw new InvalidOperationException("TestFeeWallet: bitcoin-cli sendtoaddress returned empty txid");
 
         await DockerHelper.MineBlocks(1, ct);
 
         var rawTx = (await DockerHelper.Exec(
-            "bitcoin", ["bitcoin-cli", "-rpcwallet=", "getrawtransaction", fundTxid, "1"], ct)).Trim();
+            "bitcoin", ["bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "getrawtransaction", fundTxid, "1"], ct)).Trim();
         var doc = JsonDocument.Parse(rawTx);
         var matchedVout = -1;
         Money? amount = null;

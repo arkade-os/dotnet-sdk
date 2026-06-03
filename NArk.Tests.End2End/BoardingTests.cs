@@ -53,7 +53,7 @@ public class BoardingTests
             System.Globalization.CultureInfo.InvariantCulture);
 
         var sendOutput = await DockerHelper.Exec("bitcoin",
-            ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, btcAmount]);
+            ["bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "sendtoaddress", onchainAddress, btcAmount]);
         var fundingTxid = sendOutput.Trim();
         Console.WriteLine($"[Boarding] Funding txid: {fundingTxid}");
         Assert.That(fundingTxid, Is.Not.Empty, "sendtoaddress should return a txid");

@@ -113,7 +113,7 @@ async Task<string> DockerExec(params string[] dockerArgs)
 
 async Task BitcoinCli(params string[] cliArgs)
 {
-    var allArgs = new[] { "exec", "bitcoin", "bitcoin-cli", "-rpcwallet=" }.Concat(cliArgs).ToArray();
+    var allArgs = new[] { "exec", "bitcoin", "bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123" }.Concat(cliArgs).ToArray();
     var result = await DockerExec(allArgs);
     if (!string.IsNullOrEmpty(result))
         Console.WriteLine($"  bitcoin-cli: {result}");
@@ -121,7 +121,7 @@ async Task BitcoinCli(params string[] cliArgs)
 
 async Task<string> BitcoinCliResult(params string[] cliArgs)
 {
-    var allArgs = new[] { "exec", "bitcoin", "bitcoin-cli", "-rpcwallet=" }.Concat(cliArgs).ToArray();
+    var allArgs = new[] { "exec", "bitcoin", "bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123" }.Concat(cliArgs).ToArray();
     return await DockerExec(allArgs);
 }
 

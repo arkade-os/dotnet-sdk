@@ -114,7 +114,7 @@ public static class FulmineLiquidityHelper
             Console.WriteLine($"[FulmineLiquidity] Funding boarding address: {onchainAddress}");
 
             var output = await DockerHelper.Exec("bitcoin",
-                ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, "1"]);
+                ["bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "sendtoaddress", onchainAddress, "1"]);
             Console.WriteLine($"[FulmineLiquidity] sendtoaddress txid: {output.Trim()}");
         }
         catch (Exception ex)
