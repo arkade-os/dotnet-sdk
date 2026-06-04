@@ -977,9 +977,9 @@ services.AddSingleton<ISwapProvider, MySwapProvider>();
 
 The `SwapsManagementService` will automatically discover it and route matching requests to it.
 
-## ArkadeScript & Introspector (`NArk.Arkade`)
+## ArkadeScript & Emulator (`NArk.Arkade`)
 
-The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/ArkLabsHQ/introspector) — a Bitcoin-Script superset (50+ extension opcodes for transaction introspection, asset queries, EC arithmetic, streaming SHA-256, …) that the [introspector](https://github.com/ArkLabsHQ/introspector) co-signs only when the script attached to an input passes validation.
+The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/arkade-os/emulator) — a Bitcoin-Script superset (50+ extension opcodes for transaction introspection, asset queries, EC arithmetic, streaming SHA-256, …) that the [emulator](https://github.com/arkade-os/emulator) co-signs only when the script attached to an input passes validation.
 
 Install:
 
@@ -987,7 +987,7 @@ Install:
 dotnet add package NArk.Arkade
 ```
 
-Build a script and resolve the introspector-tweaked signing key:
+Build a script and resolve the emulator-tweaked signing key:
 
 ```csharp
 using NArk.Arkade.Crypto;
@@ -998,9 +998,9 @@ using NBitcoin;
 var bytes = ArkadeScript.AsmToBytes(
     "OP_0 OP_INSPECTOUTPUTSCRIPTPUBKEY 1 OP_EQUALVERIFY deadbeef OP_EQUAL");
 
-// The introspector co-signs with this tweaked x-only pubkey for the script above
-TaprootPubKey introspectorPubKey = /* from /v1/info */ ;
-TaprootPubKey signingKey = ArkadeScriptHash.Tweak(introspectorPubKey, bytes);
+// The emulator co-signs with this tweaked x-only pubkey for the script above
+TaprootPubKey emulatorPubKey = /* from /v1/info */ ;
+TaprootPubKey signingKey = ArkadeScriptHash.Tweak(emulatorPubKey, bytes);
 ```
 
 Pin an ArkadeScript leaf to an `ArkContract`-based VTXO via the multisig wrapper:
@@ -1011,56 +1011,56 @@ using NArk.Core.Scripts;
 
 protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
 {
-    // Augmented N+1-of-N+1: alice + bob + tweaked introspector key
+    // Augmented N+1-of-N+1: alice + bob + tweaked emulator key
     yield return new ArkadeNofNMultisigTapScript(
         arkadeScript: bytes,
         baseOwners: [aliceXOnly, bobXOnly],
-        introspectorKeys: [introspectorPubKey]);
+        emulatorKeys: [emulatorPubKey]);
 
     // Plus your existing CSV / collab-path / etc. leaves alongside it
     yield return new UnilateralPathArkTapScript(...);
 }
 ```
 
-Build the introspector REST client through DI and submit intents / transactions for co-signing:
+Build the emulator REST client through DI and submit intents / transactions for co-signing:
 
 ```csharp
 using NArk.Arkade.Hosting;
 
 // One-liner: registers the REST client AND the IBatchSessionExtension that
 // transparently co-signs any batch with arkade-bound inputs.
-services.AddArkadeIntrospector(opts =>
+services.AddArkadeEmulator(opts =>
     opts.ServerUrl = "http://localhost:7073");
 
 // Or wire the REST client without batch integration, and inject manually:
-services.AddIntrospectorClient(opts =>
+services.AddEmulatorClient(opts =>
     opts.ServerUrl = "http://localhost:7073");
 
-// Inject IIntrospectorProvider and call:
-var info = await introspector.GetInfoAsync();             // GET  /v1/info
-var signed = await introspector.SubmitTxAsync(...);       // POST /v1/tx
-var sig = await introspector.SubmitIntentAsync(...);      // POST /v1/intent
-var fin = await introspector.SubmitFinalizationAsync(...);// POST /v1/finalization
+// Inject IEmulatorProvider and call:
+var info = await emulator.GetInfoAsync();             // GET  /v1/info
+var signed = await emulator.SubmitTxAsync(...);       // POST /v1/tx
+var sig = await emulator.SubmitIntentAsync(...);      // POST /v1/intent
+var fin = await emulator.SubmitFinalizationAsync(...);// POST /v1/finalization
 ```
 
 Or co-sign a PSBT inline once it carries the user's partial sigs:
 
 ```csharp
-using NArk.Arkade.Introspector;
+using NArk.Arkade.Emulator;
 
-if (ArkadePsbtExtensions.RequiresIntrospectorCoSigning(spendingCoins))
+if (ArkadePsbtExtensions.RequiresEmulatorCoSigning(spendingCoins))
 {
-    // Append the IntrospectorPacket OP_RETURN to the unsigned tx so the
+    // Append the EmulatorPacket OP_RETURN to the unsigned tx so the
     // server can find the script body for each arkade-bound input.
-    var packetOutput = ArkadePsbtExtensions.BuildIntrospectorOutput(spendingCoins);
+    var packetOutput = ArkadePsbtExtensions.BuildEmulatorOutput(spendingCoins);
     if (packetOutput is not null) tx.Outputs.Add(packetOutput);
 
-    // ...sign locally, then merge the introspector's partial sigs:
-    psbt = await psbt.CoSignWithIntrospectorAsync(introspector);
+    // ...sign locally, then merge the emulator's partial sigs:
+    psbt = await psbt.CoSignWithEmulatorAsync(emulator);
 }
 ```
 
-The wire encoding for the introspector's OP_RETURN packet is exposed as `IntrospectorPacket.Serialize` / `IntrospectorPacket.Parse` for callers that need to read or write the TLV directly. Cross-SDK byte-equality is enforced by the unit tests against the canonical fixtures vendored from `ArkLabsHQ/introspector pkg/arkade/testdata/`.
+The wire encoding for the emulator's OP_RETURN packet is exposed as `EmulatorPacket.Serialize` / `EmulatorPacket.Parse` for callers that need to read or write the TLV directly. Cross-SDK byte-equality is enforced by the unit tests against the canonical fixtures vendored from `arkade-os/emulator pkg/arkade/testdata/`.
 
 ## Extensibility Points
 

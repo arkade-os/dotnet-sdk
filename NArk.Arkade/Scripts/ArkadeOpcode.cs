@@ -7,9 +7,9 @@ namespace NArk.Arkade.Scripts;
 /// <remarks>
 /// <para>
 /// This enum is a 1:1 mirror of the ts-sdk <c>ARKADE_OP</c> table (and behind it,
-/// the introspector reference at <c>arkade-os/introspector pkg/arkade/opcode.go</c>).
+/// the emulator reference at <c>arkade-os/emulator pkg/arkade/opcode.go</c>).
 /// Byte values MUST stay in lockstep with both — scripts produced by one SDK are
-/// consumed by the introspector and the other SDKs, so a divergence here breaks
+/// consumed by the emulator and the other SDKs, so a divergence here breaks
 /// cross-SDK compatibility.
 /// </para>
 /// <para>

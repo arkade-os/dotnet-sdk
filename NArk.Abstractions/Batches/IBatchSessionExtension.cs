@@ -5,7 +5,7 @@ namespace NArk.Abstractions.Batches;
 /// <summary>
 /// Plug-point invoked by <c>BatchSession</c> at PSBT-emitting points in the
 /// batch flow. Lets extensions co-sign / mutate the PSBTs without
-/// <c>BatchSession</c> needing to know about specific co-signers (introspector,
+/// <c>BatchSession</c> needing to know about specific co-signers (emulator,
 /// future custody services, etc.).
 /// </summary>
 /// <remarks>
@@ -53,7 +53,7 @@ public enum BatchExtensionPhase
     /// <summary>
     /// After tree signing aggregates a partially-signed Ark tx tree, before
     /// the signatures are submitted upstream. Extension co-signs leaves whose
-    /// inputs need additional signatures (introspector for arkade-bound
+    /// inputs need additional signatures (emulator for arkade-bound
     /// inputs, etc.).
     /// </summary>
     PostTreeSigning = 1,

@@ -1,16 +1,16 @@
 using System.Text.Json;
-using NArk.Arkade.Introspector;
+using NArk.Arkade.Emulator;
 
 namespace NArk.Tests.Arkade;
 
 /// <summary>
-/// Drives <see cref="IntrospectorPacket"/> against the vendored
-/// <c>introspector_packet.json</c> fixture from
-/// <c>ArkLabsHQ/introspector pkg/arkade/testdata/</c>. Both <c>valid</c>
+/// Drives <see cref="EmulatorPacket"/> against the vendored
+/// <c>emulator_packet.json</c> fixture from
+/// <c>arkade-os/emulator pkg/arkade/testdata/</c>. Both <c>valid</c>
 /// vectors must round-trip byte-for-byte; <c>invalid</c> vectors must reject.
 /// </summary>
 [TestFixture]
-public class IntrospectorPacketFixtureTests
+public class EmulatorPacketFixtureTests
 {
     private static FixtureRoot Fixture { get; } = LoadFixture();
 
@@ -19,7 +19,7 @@ public class IntrospectorPacketFixtureTests
     {
         var v = Fixture.Valid.Single(x => x.Name == name);
         var entries = v.Entries.Select(ToEntry).ToArray();
-        var packet = new IntrospectorPacket(entries);
+        var packet = new EmulatorPacket(entries);
         var encoded = packet.SerializePacketData();
         Assert.That(Convert.ToHexString(encoded).ToLowerInvariant(),
             Is.EqualTo(v.Encoded.ToLowerInvariant()),
@@ -31,7 +31,7 @@ public class IntrospectorPacketFixtureTests
     {
         var v = Fixture.Valid.Single(x => x.Name == name);
         var bytes = Convert.FromHexString(v.Encoded);
-        var parsed = IntrospectorPacket.FromBytes(bytes).Entries;
+        var parsed = EmulatorPacket.FromBytes(bytes).Entries;
 
         Assert.That(parsed, Has.Count.EqualTo(v.Entries.Count));
         for (var i = 0; i < parsed.Count; i++)
@@ -63,7 +63,7 @@ public class IntrospectorPacketFixtureTests
         // empty packet, empty script, duplicate vin.
         var v = Fixture.Invalid.Single(x => x.Name == name);
         var entries = (v.Entries ?? Array.Empty<FixtureEntry>()).Select(ToEntry).ToArray();
-        Assert.Throws<ArgumentException>(() => IntrospectorPacket.Validate(entries));
+        Assert.Throws<ArgumentException>(() => EmulatorPacket.Validate(entries));
     }
 
     [TestCaseSource(nameof(InvalidParseVectorNames))]
@@ -75,7 +75,7 @@ public class IntrospectorPacketFixtureTests
         var bytes = Convert.FromHexString(v.Encoded!);
         // Either parse rejects with FormatException or validation rejects after
         // a successful parse — both count as "the wire vector is illegal".
-        Assert.That(() => IntrospectorPacket.FromBytes(bytes),
+        Assert.That(() => EmulatorPacket.FromBytes(bytes),
             Throws.TypeOf<FormatException>().Or.TypeOf<ArgumentException>());
     }
 
@@ -89,17 +89,17 @@ public class IntrospectorPacketFixtureTests
             [],
             Convert.FromHexString("ff"),
         };
-        var bytes = IntrospectorPacket.EncodePushList(pushes);
-        var decoded = IntrospectorPacket.DecodePushList(bytes);
+        var bytes = EmulatorPacket.EncodePushList(pushes);
+        var decoded = EmulatorPacket.DecodePushList(bytes);
         Assert.That(decoded, Has.Count.EqualTo(pushes.Length));
         for (var i = 0; i < pushes.Length; i++)
             Assert.That(decoded[i], Is.EqualTo(pushes[i]));
     }
 
-    private static IntrospectorEntry ToEntry(FixtureEntry e)
+    private static EmulatorEntry ToEntry(FixtureEntry e)
     {
         var pushes = (e.Witness ?? Array.Empty<string>()).Select(Convert.FromHexString).ToArray();
-        return new IntrospectorEntry(
+        return new EmulatorEntry(
             (ushort)e.Vin,
             Convert.FromHexString(e.Script ?? ""),
             pushes);
@@ -118,7 +118,7 @@ public class IntrospectorPacketFixtureTests
     {
         var path = Path.Combine(
             TestContext.CurrentContext.TestDirectory,
-            "Arkade", "Fixtures", "introspector_packet.json");
+            "Arkade", "Fixtures", "emulator_packet.json");
         var json = File.ReadAllText(path);
         var fixture = JsonSerializer.Deserialize<FixtureRoot>(json,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });

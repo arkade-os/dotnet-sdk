@@ -2,13 +2,13 @@ using System.Buffers.Binary;
 using NArk.Core.Assets;
 using NBitcoin;
 
-namespace NArk.Arkade.Introspector;
+namespace NArk.Arkade.Emulator;
 
 /// <summary>
 /// TLV record (type tag <c>0x01</c>) carried inside the same
 /// <see cref="Extension"/> OP_RETURN envelope the asset packet uses, binding
 /// ArkadeScript bytecode + a witness stack to specific transaction inputs
-/// for introspector co-signing.
+/// for emulator co-signing.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -25,25 +25,25 @@ namespace NArk.Arkade.Introspector;
 /// <c>wire.TxWitness</c>).
 /// </para>
 /// <para>
-/// 1:1 with <c>ArkLabsHQ/introspector pkg/arkade/introspector_packet.go</c>
-/// and the ts-sdk's <c>extension/introspector/packet.ts</c>. Fixtures are
-/// vendored verbatim from the introspector's
-/// <c>testdata/introspector_packet.json</c>.
+/// 1:1 with <c>arkade-os/emulator pkg/arkade/emulator_packet.go</c>
+/// and the ts-sdk's <c>extension/emulator/packet.ts</c>. Fixtures are
+/// vendored verbatim from the emulator's
+/// <c>testdata/emulator_packet.json</c>.
 /// </para>
 /// </remarks>
-public sealed class IntrospectorPacket : IExtensionPacket
+public sealed class EmulatorPacket : IExtensionPacket
 {
-    /// <summary>The 1-byte TLV type tag the Extension envelope uses for an Introspector Packet.</summary>
+    /// <summary>The 1-byte TLV type tag the Extension envelope uses for an Emulator Packet.</summary>
     public const byte PacketTypeId = 0x01;
 
     /// <summary>Validated, immutable list of entries.</summary>
-    public IReadOnlyList<IntrospectorEntry> Entries { get; }
+    public IReadOnlyList<EmulatorEntry> Entries { get; }
 
     /// <summary>
     /// Construct from a list of entries — validates non-empty packet,
     /// non-empty scripts, and unique <c>Vin</c> values.
     /// </summary>
-    public IntrospectorPacket(IReadOnlyList<IntrospectorEntry> entries)
+    public EmulatorPacket(IReadOnlyList<EmulatorEntry> entries)
     {
         Entries = Validate(entries);
     }
@@ -53,27 +53,27 @@ public sealed class IntrospectorPacket : IExtensionPacket
     public byte[] SerializePacketData() => SerializeEntries(Entries);
 
     /// <summary>
-    /// Parse the inner TLV payload bytes into an <see cref="IntrospectorPacket"/>.
+    /// Parse the inner TLV payload bytes into an <see cref="EmulatorPacket"/>.
     /// Throws <see cref="FormatException"/> on truncated input or trailing
     /// data; <see cref="ArgumentException"/> on validation rule violations.
     /// </summary>
-    public static IntrospectorPacket FromBytes(byte[] payload) => new(ParseEntries(payload));
+    public static EmulatorPacket FromBytes(byte[] payload) => new(ParseEntries(payload));
 
     /// <summary>
-    /// Look up the introspector packet riding alongside other packets in an
+    /// Look up the emulator packet riding alongside other packets in an
     /// already-parsed <see cref="Extension"/>. Returns <c>null</c> when
-    /// the extension carries no introspector record. Re-parses the
+    /// the extension carries no emulator record. Re-parses the
     /// underlying <see cref="UnknownPacket"/> bytes — <see cref="Extension"/>
-    /// itself doesn't know the introspector type natively (different package).
+    /// itself doesn't know the emulator type natively (different package).
     /// </summary>
-    public static IntrospectorPacket? FromExtension(Extension extension)
+    public static EmulatorPacket? FromExtension(Extension extension)
     {
         ArgumentNullException.ThrowIfNull(extension);
         foreach (var p in extension.Packets)
         {
             switch (p)
             {
-                case IntrospectorPacket already: return already;
+                case EmulatorPacket already: return already;
                 case UnknownPacket u when u.PacketType == PacketTypeId:
                     return FromBytes(u.Data);
             }
@@ -83,26 +83,26 @@ public sealed class IntrospectorPacket : IExtensionPacket
 
     /// <summary>
     /// Convenience: search a transaction's outputs for an Extension OP_RETURN
-    /// and return its embedded introspector packet, or <c>null</c>.
+    /// and return its embedded emulator packet, or <c>null</c>.
     /// </summary>
-    public static IntrospectorPacket? FromTransaction(Transaction tx)
+    public static EmulatorPacket? FromTransaction(Transaction tx)
     {
         var ext = Extension.FromTransaction(tx);
         return ext is null ? null : FromExtension(ext);
     }
 
-    // ─── Validation rules (matches the introspector reference) ────────
+    // ─── Validation rules (matches the emulator reference) ────────
 
     /// <summary>
-    /// Apply the introspector's validation rules: at least one entry,
+    /// Apply the emulator's validation rules: at least one entry,
     /// non-empty script per entry, unique <c>Vin</c>s. Returns a defensive
     /// copy on success; throws <see cref="ArgumentException"/> on violation.
     /// </summary>
-    public static IReadOnlyList<IntrospectorEntry> Validate(IReadOnlyList<IntrospectorEntry> entries)
+    public static IReadOnlyList<EmulatorEntry> Validate(IReadOnlyList<EmulatorEntry> entries)
     {
         ArgumentNullException.ThrowIfNull(entries);
         if (entries.Count == 0)
-            throw new ArgumentException("empty introspector packet", nameof(entries));
+            throw new ArgumentException("empty emulator packet", nameof(entries));
 
         var seen = new HashSet<ushort>();
         foreach (var entry in entries)
@@ -162,7 +162,7 @@ public sealed class IntrospectorPacket : IExtensionPacket
 
     // ─── Entry list (TLV payload, no envelope) codec ──────────────────
 
-    private static byte[] SerializeEntries(IReadOnlyList<IntrospectorEntry> entries)
+    private static byte[] SerializeEntries(IReadOnlyList<EmulatorEntry> entries)
     {
         using var ms = new MemoryStream();
         WriteCompactSize(ms, (ulong)entries.Count);
@@ -175,7 +175,7 @@ public sealed class IntrospectorPacket : IExtensionPacket
         return ms.ToArray();
     }
 
-    private static IReadOnlyList<IntrospectorEntry> ParseEntries(byte[] payload)
+    private static IReadOnlyList<EmulatorEntry> ParseEntries(byte[] payload)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var span = (ReadOnlySpan<byte>)payload;
@@ -183,16 +183,16 @@ public sealed class IntrospectorPacket : IExtensionPacket
 
         var count = ReadCompactSize(span, ref pos);
         if (count > int.MaxValue)
-            throw new FormatException($"introspector packet entry count too large: {count}");
+            throw new FormatException($"emulator packet entry count too large: {count}");
 
-        var entries = new List<IntrospectorEntry>((int)count);
+        var entries = new List<EmulatorEntry>((int)count);
         for (var i = 0UL; i < count; i++)
         {
             var vin = ReadUInt16Le(span, ref pos);
             var script = ReadCompactSlice(span, ref pos);
             var witnessBytes = ReadCompactSlice(span, ref pos);
             var witness = DecodePushList(witnessBytes);
-            entries.Add(new IntrospectorEntry(vin, script, witness));
+            entries.Add(new EmulatorEntry(vin, script, witness));
         }
 
         if (pos != span.Length)

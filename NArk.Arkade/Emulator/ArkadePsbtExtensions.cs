@@ -3,18 +3,18 @@ using NArk.Arkade.Scripts;
 using NArk.Core.Assets;
 using NBitcoin;
 
-namespace NArk.Arkade.Introspector;
+namespace NArk.Arkade.Emulator;
 
 /// <summary>
 /// Helpers that link the existing <see cref="ArkCoin"/> + PSBT spend flow
-/// to the introspector co-signing service. The two integration points:
+/// to the emulator co-signing service. The two integration points:
 /// </summary>
 /// <remarks>
 /// <list type="number">
 ///   <item>
 ///     <description>
-///     <see cref="BuildIntrospectorOutput"/> — produces the OP_RETURN
-///     <c>TxOut</c> the unsigned transaction must carry so the introspector
+///     <see cref="BuildEmulatorOutput"/> — produces the OP_RETURN
+///     <c>TxOut</c> the unsigned transaction must carry so the emulator
 ///     can find the script bytes for each arkade-bound input. The
 ///     <c>TxOut</c> must be appended to the tx <em>before</em> any input is
 ///     signed, since signatures commit to the full output set.
@@ -22,9 +22,9 @@ namespace NArk.Arkade.Introspector;
 ///   </item>
 ///   <item>
 ///     <description>
-///     <see cref="CoSignWithIntrospectorAsync"/> — submits the partially-
-///     signed PSBT to the introspector and returns the PSBT with the
-///     introspector's signatures added. Call after the user signer has
+///     <see cref="CoSignWithEmulatorAsync"/> — submits the partially-
+///     signed PSBT to the emulator and returns the PSBT with the
+///     emulator's signatures added. Call after the user signer has
 ///     attached its own partial sigs.
 ///     </description>
 ///   </item>
@@ -34,17 +34,17 @@ namespace NArk.Arkade.Introspector;
 /// any <see cref="ArkCoin"/> whose <c>SpendingScriptBuilder</c> implements
 /// the interface is treated as arkade-bound. Spends that mix arkade and
 /// non-arkade inputs are supported: only the arkade-bound inputs become
-/// entries in the IntrospectorPacket.
+/// entries in the EmulatorPacket.
 /// </para>
 /// </remarks>
 public static class ArkadePsbtExtensions
 {
     /// <summary>
     /// True if the spend uses at least one arkade-bound coin and therefore
-    /// needs both the IntrospectorPacket OP_RETURN attachment and the
-    /// post-sign introspector REST round-trip.
+    /// needs both the EmulatorPacket OP_RETURN attachment and the
+    /// post-sign emulator REST round-trip.
     /// </summary>
-    public static bool RequiresIntrospectorCoSigning(IEnumerable<ArkCoin> coins)
+    public static bool RequiresEmulatorCoSigning(IEnumerable<ArkCoin> coins)
     {
         ArgumentNullException.ThrowIfNull(coins);
         return coins.Any(c => c.SpendingScriptBuilder is IArkadeBoundScriptBuilder);
@@ -55,62 +55,62 @@ public static class ArkadePsbtExtensions
     /// input's <see cref="IArkadeBoundScriptBuilder.ArkadeScript"/> + the
     /// witness pushes the script reads. Returns <c>null</c> when no input
     /// in the spend is arkade-bound (in which case the tx needs no
-    /// IntrospectorPacket attached at all).
+    /// EmulatorPacket attached at all).
     /// </summary>
     /// <param name="coinsByVin">
     /// The spend inputs in transaction-input-index order — index <c>i</c> in
     /// this list corresponds to <c>vin = i</c> on the resulting tx.
     /// </param>
-    public static TxOut? BuildIntrospectorOutput(IReadOnlyList<ArkCoin> coinsByVin)
+    public static TxOut? BuildEmulatorOutput(IReadOnlyList<ArkCoin> coinsByVin)
     {
         ArgumentNullException.ThrowIfNull(coinsByVin);
 
-        var entries = new List<IntrospectorEntry>();
+        var entries = new List<EmulatorEntry>();
         for (var vin = 0; vin < coinsByVin.Count; vin++)
         {
             if (coinsByVin[vin].SpendingScriptBuilder is not IArkadeBoundScriptBuilder arkade) continue;
             var witness = ExtractWitnessPushes(coinsByVin[vin].SpendingConditionWitness);
-            entries.Add(new IntrospectorEntry((ushort)vin, arkade.ArkadeScript, witness));
+            entries.Add(new EmulatorEntry((ushort)vin, arkade.ArkadeScript, witness));
         }
 
         if (entries.Count == 0) return null;
 
-        var packet = new IntrospectorPacket(entries);
+        var packet = new EmulatorPacket(entries);
         var ext = new Extension([packet]);
         return ext.ToTxOut();
     }
 
     /// <summary>
     /// Submit a partially-signed PSBT (already carrying the user's sigs and
-    /// the IntrospectorPacket OP_RETURN output) to the introspector and
-    /// return the PSBT with the introspector's signatures merged in.
+    /// the EmulatorPacket OP_RETURN output) to the emulator and
+    /// return the PSBT with the emulator's signatures merged in.
     /// </summary>
     /// <remarks>
-    /// The introspector signs only inputs whose attached scripts pass its
+    /// The emulator signs only inputs whose attached scripts pass its
     /// validation; non-arkade inputs are passed through untouched. The
-    /// returned PSBT is the union of (input PSBT) + (introspector partial
+    /// returned PSBT is the union of (input PSBT) + (emulator partial
     /// sigs) — assembled server-side, so this method is a thin wrapper over
-    /// <see cref="IIntrospectorProvider.SubmitTxAsync"/>.
+    /// <see cref="IEmulatorProvider.SubmitTxAsync"/>.
     /// </remarks>
     /// <param name="psbt">PSBT with user partial sigs already attached.</param>
-    /// <param name="introspector">Provider client for the configured introspector instance.</param>
+    /// <param name="emulator">Provider client for the configured emulator instance.</param>
     /// <param name="checkpointTxs">Optional checkpoint PSBTs; pass an empty list when not used.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    public static async Task<PSBT> CoSignWithIntrospectorAsync(
+    public static async Task<PSBT> CoSignWithEmulatorAsync(
         this PSBT psbt,
-        IIntrospectorProvider introspector,
+        IEmulatorProvider emulator,
         IReadOnlyList<string>? checkpointTxs = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(psbt);
-        ArgumentNullException.ThrowIfNull(introspector);
+        ArgumentNullException.ThrowIfNull(emulator);
 
-        var resp = await introspector.SubmitTxAsync(
+        var resp = await emulator.SubmitTxAsync(
             psbt.ToBase64(),
             checkpointTxs ?? Array.Empty<string>(),
             cancellationToken);
 
-        // The introspector returns a PSBT that's the union of the input PSBT
+        // The emulator returns a PSBT that's the union of the input PSBT
         // (so user sigs are preserved) plus its own partial sigs. We can take
         // the response wholesale and parse it on the caller's network.
         return PSBT.Parse(resp.SignedArkTx, psbt.Network);

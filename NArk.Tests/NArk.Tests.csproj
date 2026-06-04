@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
@@ -39,8 +39,8 @@
     <ItemGroup>
       <Content Include="Assets\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
       <!--
-        Arkade fixtures are sourced verbatim from the introspector reference
-        (ArkLabsHQ/introspector pkg/arkade/testdata) so cross-SDK divergence
+        Arkade fixtures are sourced verbatim from the emulator reference
+        (arkade-os/emulator pkg/arkade/testdata) so cross-SDK divergence
         fails CI on both sides.
       -->
       <Content Include="Arkade\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />

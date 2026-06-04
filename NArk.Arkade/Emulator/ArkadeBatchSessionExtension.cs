@@ -3,18 +3,18 @@ using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NBitcoin;
 
-namespace NArk.Arkade.Introspector;
+namespace NArk.Arkade.Emulator;
 
 /// <summary>
-/// <see cref="IBatchSessionExtension"/> that drives introspector co-signing
+/// <see cref="IBatchSessionExtension"/> that drives emulator co-signing
 /// at the two PSBT-emitting points of a batch flow. Idempotent — passes
 /// PSBTs through unchanged when no input in the batch is arkade-bound.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Both phases route through the introspector's <c>POST /v1/tx</c> endpoint
-/// via <see cref="ArkadePsbtExtensions.CoSignWithIntrospectorAsync"/>. The
-/// introspector internally decides whether to sign each input (only those
+/// Both phases route through the emulator's <c>POST /v1/tx</c> endpoint
+/// via <see cref="ArkadePsbtExtensions.CoSignWithEmulatorAsync"/>. The
+/// emulator internally decides whether to sign each input (only those
 /// whose attached ArkadeScript validates against its tweaked key) and
 /// returns the union of the input PSBT and its own partial sigs. Inputs
 /// that aren't arkade-bound are passed through untouched on the server
@@ -24,7 +24,7 @@ namespace NArk.Arkade.Introspector;
 /// <para>
 /// The dedicated <c>POST /v1/finalization</c> endpoint (which carries a
 /// signed-intent envelope alongside forfeits and commitment tx) is not
-/// used here — that path requires threading the introspector-co-signed
+/// used here — that path requires threading the emulator-co-signed
 /// intent proof from intent-registration time, which lives upstream of
 /// <c>BatchSession</c>. Once that wire-up exists, this extension can
 /// switch <c>PreForfeitFinalization</c> to call <c>SubmitFinalizationAsync</c>
@@ -33,14 +33,14 @@ namespace NArk.Arkade.Introspector;
 /// </remarks>
 public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
 {
-    private readonly IIntrospectorProvider _introspector;
+    private readonly IEmulatorProvider _emulator;
     private readonly ILogger<ArkadeBatchSessionExtension>? _logger;
 
     public ArkadeBatchSessionExtension(
-        IIntrospectorProvider introspector,
+        IEmulatorProvider emulator,
         ILogger<ArkadeBatchSessionExtension>? logger = null)
     {
-        _introspector = introspector ?? throw new ArgumentNullException(nameof(introspector));
+        _emulator = emulator ?? throw new ArgumentNullException(nameof(emulator));
         _logger = logger;
     }
 
@@ -48,7 +48,7 @@ public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
     public Task<bool> ShouldHandleAsync(IReadOnlyList<ArkCoin> spendingCoins, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(spendingCoins);
-        var engaged = ArkadePsbtExtensions.RequiresIntrospectorCoSigning(spendingCoins);
+        var engaged = ArkadePsbtExtensions.RequiresEmulatorCoSigning(spendingCoins);
         if (engaged)
         {
             _logger?.LogInformation(
@@ -71,7 +71,7 @@ public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
 
         // Defensive — BatchSession should have called ShouldHandleAsync first
         // and short-circuited, but guard against direct callers too.
-        if (!ArkadePsbtExtensions.RequiresIntrospectorCoSigning(spendingCoins))
+        if (!ArkadePsbtExtensions.RequiresEmulatorCoSigning(spendingCoins))
         {
             _logger?.LogDebug(
                 "ArkadeBatchSessionExtension: no arkade-bound inputs at {Phase}; passing {Count} PSBT(s) through",
@@ -88,13 +88,13 @@ public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
         {
             try
             {
-                signed[i] = await psbts[i].CoSignWithIntrospectorAsync(
-                    _introspector, checkpointTxs: null, cancellationToken);
+                signed[i] = await psbts[i].CoSignWithEmulatorAsync(
+                    _emulator, checkpointTxs: null, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger?.LogError(ex,
-                    "ArkadeBatchSessionExtension: introspector rejected PSBT {Index}/{Count} at {Phase}",
+                    "ArkadeBatchSessionExtension: emulator rejected PSBT {Index}/{Count} at {Phase}",
                     i, psbts.Count, phase);
                 throw;
             }
