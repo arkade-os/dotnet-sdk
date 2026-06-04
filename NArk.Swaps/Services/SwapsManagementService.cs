@@ -105,11 +105,14 @@ public class SwapsManagementService : IAsyncDisposable
     // message bundles:
     //   tag:        domain-separates this signature from any other use of the signing key
     //               (versioned so a future scheme bump can coexist on recovery)
-    //   descriptor: scopes the preimage to the specific swap descriptor
-    //   index:      lets the caller derive multiple preimages from the same descriptor;
-    //               always 0 today, but baked into v1 so recovery iteration is forward-
-    //               compatible without a scheme bump
-    // Same (wallet, descriptor, index) → same signature → same preimage, so a restored
+    //   pubkey:     the descriptor's x-only public key — scopes the preimage to the swap
+    //               key. Canonical, unlike descriptor.ToString() (which differs between a
+    //               signing descriptor and the bare receiver descriptor a restore
+    //               reconstructs), so create-time and restore-time derive the same value.
+    //   index:      lets the caller derive multiple preimages from the same key; always 0
+    //               today, but baked into v1 so recovery iteration is forward-compatible
+    //               without a scheme bump
+    // Same (wallet, pubkey, index) → same signature → same preimage, so a restored
     // wallet that rediscovers an outstanding swap via Boltz /v2/swap/restore can re-derive
     // the preimage and claim the VHTLC. Watch-only and remote-signer-less wallets fall
     // through to a random preimage.
@@ -123,6 +126,24 @@ public class SwapsManagementService : IAsyncDisposable
     private const string PreimageTag = "Arkade-Boltz-Preimage-v1";
     private static readonly byte[] PreimageTagBytes = Encoding.UTF8.GetBytes(PreimageTag);
 
+    // Builds the message that gets BIP-340-signed. Format (cross-SDK):
+    // PreimageTag || x-only pubkey (32B) || u32le(index). Anchoring on the canonical
+    // x-only key — not descriptor.ToString(), which is non-canonical and differs
+    // between a signing descriptor and a reconstructed bare receiver descriptor —
+    // keeps create-time and restore-time derivation identical and reproducible by any
+    // Arkade SDK.
+    internal static byte[] BuildPreimageMessage(OutputDescriptor descriptor, uint index)
+    {
+        var keyBytes = OutputDescriptorHelpers.Extract(descriptor).XOnlyPubKey.ToBytes();
+        var indexBytes = BitConverter.GetBytes(index);
+        if (!BitConverter.IsLittleEndian) Array.Reverse(indexBytes); // canonical u32 LE
+        var message = new byte[PreimageTagBytes.Length + keyBytes.Length + indexBytes.Length];
+        Buffer.BlockCopy(PreimageTagBytes, 0, message, 0, PreimageTagBytes.Length);
+        Buffer.BlockCopy(keyBytes, 0, message, PreimageTagBytes.Length, keyBytes.Length);
+        Buffer.BlockCopy(indexBytes, 0, message, PreimageTagBytes.Length + keyBytes.Length, indexBytes.Length);
+        return message;
+    }
+
     private async Task<byte[]> DerivePreimageAsync(
         string walletId, OutputDescriptor descriptor, uint index, CancellationToken cancellationToken)
     {
@@ -130,15 +151,7 @@ public class SwapsManagementService : IAsyncDisposable
         if (signer is null)
             return RandomUtils.GetBytes(32); // watch-only — no entropy floor to draw from
 
-        var descriptorBytes = Encoding.UTF8.GetBytes(descriptor.ToString());
-        var indexBytes = BitConverter.GetBytes(index);
-        if (!BitConverter.IsLittleEndian) Array.Reverse(indexBytes); // canonical u32 LE
-        var message = new byte[PreimageTagBytes.Length + descriptorBytes.Length + indexBytes.Length];
-        Buffer.BlockCopy(PreimageTagBytes, 0, message, 0, PreimageTagBytes.Length);
-        Buffer.BlockCopy(descriptorBytes, 0, message, PreimageTagBytes.Length, descriptorBytes.Length);
-        Buffer.BlockCopy(indexBytes, 0, message, PreimageTagBytes.Length + descriptorBytes.Length, indexBytes.Length);
-        var messageHash = new uint256(SHA256.HashData(message));
-
+        var messageHash = new uint256(SHA256.HashData(BuildPreimageMessage(descriptor, index)));
         var (_, sig) = await signer.Sign(descriptor, messageHash, cancellationToken);
         return SHA256.HashData(sig.ToBytes());
     }
