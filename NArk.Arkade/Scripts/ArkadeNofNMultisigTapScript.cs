@@ -12,7 +12,7 @@ namespace NArk.Arkade.Scripts;
 /// The leaf's owner set is the base multisig owners <em>plus</em> one tweaked
 /// pubkey per emulator — each tweak computed as
 /// <c>emulator_pubkey + tagged_hash("ArkScriptHash", arkadeScript) · G</c>
-/// (see <see cref="ArkadeScriptHash.Tweak"/>).
+/// (see <see cref="ArkadeScriptHash.Tweak(NBitcoin.TaprootPubKey, System.ReadOnlySpan{byte})"/>).
 /// </summary>
 /// <remarks>
 /// <para>

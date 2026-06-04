@@ -979,7 +979,9 @@ The `SwapsManagementService` will automatically discover it and route matching r
 
 ## ArkadeScript & Emulator (`NArk.Arkade`)
 
-The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/arkade-os/emulator) — a Bitcoin-Script superset (50+ extension opcodes for transaction introspection, asset queries, EC arithmetic, streaming SHA-256, …) that the [emulator](https://github.com/arkade-os/emulator) co-signs only when the script attached to an input passes validation.
+The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/arkade-os/emulator) — a Bitcoin-Script superset (40+ extension opcodes for transaction introspection, asset queries, EC operations, streaming SHA-256, …) that the [emulator](https://github.com/arkade-os/emulator) co-signs only when the script attached to an input passes validation.
+
+> **Opcode table.** Byte values track the deployed Arkade VM in `arkade-os/emulator` (`pkg/arkade/opcode.go`) — the authority on what each byte executes as. They mostly match the ts-sdk `ARKADE_OP` table, but the two diverge on `0xd7`–`0xe2` (ts-sdk lists 64-bit arithmetic / scriptnum conversion; the emulator runs byte-string + EC ops such as `OP_NUM2BIN` / `OP_ECPAIRING`). The emulator wins, since it is what actually executes the script.
 
 Install:
 
@@ -993,13 +995,16 @@ Build a script and resolve the emulator-tweaked signing key:
 using NArk.Arkade.Crypto;
 using NArk.Arkade.Scripts;
 using NBitcoin;
+using NBitcoin.Secp256k1;
 
 // Compose an ArkadeScript via the opcode enum + ASM helpers
 var bytes = ArkadeScript.AsmToBytes(
     "OP_0 OP_INSPECTOUTPUTSCRIPTPUBKEY 1 OP_EQUALVERIFY deadbeef OP_EQUAL");
 
-// The emulator co-signs with this tweaked x-only pubkey for the script above
-TaprootPubKey emulatorPubKey = /* from /v1/info */ ;
+// GET /v1/info returns a compressed (33-byte hex) signerPubkey. Tweak it for the
+// script above to get the x-only key the emulator co-signs that input with:
+var info = await emulator.GetInfoAsync();
+ECPubKey emulatorPubKey = ECPubKey.Create(Convert.FromHexString(info.SignerPubkey));
 TaprootPubKey signingKey = ArkadeScriptHash.Tweak(emulatorPubKey, bytes);
 ```
 
@@ -1037,11 +1042,14 @@ services.AddEmulatorClient(opts =>
     opts.ServerUrl = "http://localhost:7073");
 
 // Inject IEmulatorProvider and call:
-var info = await emulator.GetInfoAsync();             // GET  /v1/info
-var signed = await emulator.SubmitTxAsync(...);       // POST /v1/tx
-var sig = await emulator.SubmitIntentAsync(...);      // POST /v1/intent
-var fin = await emulator.SubmitFinalizationAsync(...);// POST /v1/finalization
+var info   = await emulator.GetInfoAsync();              // GET  /v1/info  (signerPubkey + deprecatedSignerPubkeys)
+var signed = await emulator.SubmitTxAsync(...);          // POST /v1/tx
+var sig    = await emulator.SubmitIntentAsync(...);      // POST /v1/intent
+var fin    = await emulator.SubmitFinalizationAsync(...);// POST /v1/finalization
+var onchn  = await emulator.SubmitOnchainTxAsync(...);   // POST /v1/onchain-tx  (fully on-chain spends)
 ```
+
+For a `/v1/onchain-tx` spend whose ArkadeScript introspects a previous output, attach that output's transaction to the PSBT input so the emulator can read it — via `PsbtHelpers.SetArkFieldPrevoutTx(input, prevTx)` (the `prevouttx` ark field, key type `0xde`).
 
 Or co-sign a PSBT inline once it carries the user's partial sigs:
 

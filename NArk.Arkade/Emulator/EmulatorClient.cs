@@ -40,7 +40,10 @@ public sealed class EmulatorClient : IEmulatorProvider
                    ?? throw new InvalidOperationException("Empty emulator info response");
         if (string.IsNullOrEmpty(body.SignerPubkey))
             throw new InvalidOperationException("Invalid emulator info response: missing signerPubkey");
-        return new EmulatorInfo(body.Version ?? "", body.SignerPubkey);
+        return new EmulatorInfo(
+            body.Version ?? "",
+            body.SignerPubkey,
+            body.DeprecatedSignerPubkeys ?? Array.Empty<string>());
     }
 
     /// <inheritdoc />
@@ -112,6 +115,21 @@ public sealed class EmulatorClient : IEmulatorProvider
             body.SignedCommitmentTx);
     }
 
+    /// <inheritdoc />
+    public async Task<string> SubmitOnchainTxAsync(string tx, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tx);
+
+        var resp = await _http.PostAsJsonAsync(
+            "v1/onchain-tx", new SubmitOnchainTxRequest(tx), JsonOptions, cancellationToken);
+        await EnsureSuccessAsync(resp, "onchain-tx", cancellationToken);
+        var body = await resp.Content.ReadFromJsonAsync<SubmitOnchainTxResponse>(JsonOptions, cancellationToken)
+                   ?? throw new InvalidOperationException("Empty submitOnchainTx response");
+        if (string.IsNullOrEmpty(body.SignedTx))
+            throw new InvalidOperationException("Invalid submitOnchainTx response: missing signedTx");
+        return body.SignedTx;
+    }
+
     private static async Task EnsureSuccessAsync(HttpResponseMessage resp, string op, CancellationToken ct)
     {
         if (resp.IsSuccessStatusCode) return;
@@ -124,7 +142,8 @@ public sealed class EmulatorClient : IEmulatorProvider
 
     // ─── DTOs (private — public surface is on IEmulatorProvider) ────────
 
-    private sealed record InfoResponse(string? Version, string SignerPubkey);
+    private sealed record InfoResponse(
+        string? Version, string SignerPubkey, IReadOnlyList<string>? DeprecatedSignerPubkeys);
     private sealed record SubmitTxRequest(string ArkTx, IReadOnlyList<string> CheckpointTxs);
     private sealed record SubmitTxResponse(string SignedArkTx, IReadOnlyList<string>? SignedCheckpointTxs);
     private sealed record IntentEnvelope(string Proof, string Message);
@@ -140,6 +159,9 @@ public sealed class EmulatorClient : IEmulatorProvider
     private sealed record SubmitFinalizationResponse(
         IReadOnlyList<string>? SignedForfeits,
         string? SignedCommitmentTx);
+
+    private sealed record SubmitOnchainTxRequest(string Tx);
+    private sealed record SubmitOnchainTxResponse(string SignedTx);
 }
 
 /// <summary>Configuration for <see cref="EmulatorClient"/>.</summary>

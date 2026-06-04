@@ -54,4 +54,19 @@ public class ArkadeScriptHashTests
         var tweakedOther = ArkadeScriptHash.Tweak(emulatorPubKey, [0x52, 0xc4, 0xc6]);
         Assert.That(tweaked.ToBytes(), Is.Not.EqualTo(tweakedOther.ToBytes()));
     }
+
+    [Test]
+    public void Tweak_FromCompressedEmulatorKey_MatchesXOnlyTweak()
+    {
+        // GET /v1/info returns a 33-byte *compressed* signerPubkey; tweaking it
+        // via the ECPubKey overload must equal tweaking its x-only form — parity
+        // is dropped, matching the ts-sdk / emulator reference.
+        var emulatorPubKey = ECPubKey.Create(new Key().PubKey.ToBytes());
+        var script = new byte[] { 0x51, 0xc4 };
+
+        var fromCompressed = ArkadeScriptHash.Tweak(emulatorPubKey, script);
+        var fromXOnly = ArkadeScriptHash.Tweak(new TaprootPubKey(emulatorPubKey.ToXOnlyPubKey().ToBytes()), script);
+
+        Assert.That(fromCompressed.ToBytes(), Is.EqualTo(fromXOnly.ToBytes()));
+    }
 }

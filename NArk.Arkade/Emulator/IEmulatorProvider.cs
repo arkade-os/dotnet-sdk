@@ -55,12 +55,36 @@ public interface IEmulatorProvider
         IReadOnlyList<ConnectorTreeNode>? connectorTree,
         string commitmentTx,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <c>POST /v1/onchain-tx</c> — co-signs a fully on-chain spend (no arkd
+    /// counter-signature) whose inputs are emulator-owned Arkade tapscripts, and
+    /// returns the signed PSBT base64. Inputs whose tapscript closure also
+    /// contains the arkd signer pubkey are rejected by the emulator — those must
+    /// go through <see cref="SubmitTxAsync"/> instead. Attach the previous output
+    /// transaction to inputs that introspection opcodes read via
+    /// <see cref="NArk.Abstractions.Helpers.PsbtHelpers.SetArkFieldPrevoutTx"/>.
+    /// </summary>
+    Task<string> SubmitOnchainTxAsync(
+        string tx,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>Server identification returned from <c>GET /v1/info</c>.</summary>
 /// <param name="Version">Free-form server version string. Empty if absent.</param>
-/// <param name="SignerPubkey">x-only public key (32-byte hex) the emulator co-signs with — pre-tweak.</param>
-public sealed record EmulatorInfo(string Version, string SignerPubkey);
+/// <param name="SignerPubkey">
+/// Hex-encoded compressed (33-byte) secp256k1 public key the emulator co-signs
+/// with — pre-tweak. The per-input signing key is derived by tweaking its x-only
+/// form (see <see cref="NArk.Arkade.Crypto.ArkadeScriptHash.Tweak(NBitcoin.Secp256k1.ECPubKey, System.ReadOnlySpan{byte})"/>).
+/// </param>
+/// <param name="DeprecatedSignerPubkeys">
+/// Hex-encoded compressed public keys the emulator still accepts (e.g. after a
+/// key rotation) but no longer signs new inputs with. Empty when none.
+/// </param>
+public sealed record EmulatorInfo(
+    string Version,
+    string SignerPubkey,
+    IReadOnlyList<string> DeprecatedSignerPubkeys);
 
 /// <summary>Co-signed PSBTs returned from <c>POST /v1/tx</c>.</summary>
 public sealed record EmulatorSubmitTxResult(
