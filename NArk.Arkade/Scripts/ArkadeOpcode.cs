@@ -1,21 +1,25 @@
 namespace NArk.Arkade.Scripts;
 
 /// <summary>
-/// Arkade Script extension opcodes — the introspection / arithmetic / asset / EC
+/// Arkade Script extension opcodes — the introspection / byte-string / asset / EC
 /// helpers that ArkadeScript adds on top of standard Bitcoin Script.
 /// </summary>
 /// <remarks>
 /// <para>
-/// This enum is a 1:1 mirror of the ts-sdk <c>ARKADE_OP</c> table (and behind it,
-/// the emulator reference at <c>arkade-os/emulator pkg/arkade/opcode.go</c>).
-/// Byte values MUST stay in lockstep with both — scripts produced by one SDK are
-/// consumed by the emulator and the other SDKs, so a divergence here breaks
-/// cross-SDK compatibility.
+/// Byte values track the deployed Arkade VM in <c>arkade-os/emulator</c>
+/// (<c>pkg/arkade/opcode.go</c>) — the service that actually executes these
+/// opcodes, and therefore the authority on what each byte means. Most values
+/// also match the ts-sdk <c>ARKADE_OP</c> table, but the two currently diverge
+/// on <c>0xd7</c>–<c>0xe2</c>: ts-sdk #319 lists 64-bit arithmetic / scriptnum
+/// conversion there, whereas the emulator runs byte-string and elliptic-curve
+/// ops. The emulator wins — a script built with the wrong byte would silently
+/// execute as a different opcode.
 /// </para>
 /// <para>
-/// The values fall in <c>0xb3</c> (repurposed NOP4 slot) and <c>0xc4</c>–<c>0xf3</c>;
-/// standard Bitcoin opcodes are emitted via NBitcoin's <see cref="NBitcoin.Op"/>
-/// type and are NOT re-declared here.
+/// The values fall in <c>0xb3</c> (repurposed NOP4 slot) and <c>0xc4</c>–<c>0xf6</c>,
+/// with <c>0xd0</c> and <c>0xdb</c>–<c>0xdf</c> unassigned; standard Bitcoin
+/// opcodes are emitted via NBitcoin's <see cref="NBitcoin.Op"/> type and are NOT
+/// re-declared here.
 /// </para>
 /// </remarks>
 public enum ArkadeOpcode : byte
@@ -77,39 +81,29 @@ public enum ArkadeOpcode : byte
     /// <summary>0xd6 — Push the transaction weight.</summary>
     OP_TXWEIGHT = 0xd6,
 
-    // ─── 64-bit arithmetic (0xd7–0xdf) ─────────────────────────────
+    // ─── Byte-string / big-number ops (0xd7–0xda) ──────────────────
+    // The emulator places byte-string and modular-arithmetic ops here — NOT the
+    // 64-bit signed-arithmetic opcodes ts-sdk #319 lists at these bytes.
+    // 0xdb–0xdf are unassigned.
 
-    /// <summary>0xd7 — 64-bit signed addition with overflow check.</summary>
-    OP_ADD64 = 0xd7,
-    /// <summary>0xd8 — 64-bit signed subtraction with overflow check.</summary>
-    OP_SUB64 = 0xd8,
-    /// <summary>0xd9 — 64-bit signed multiplication with overflow check.</summary>
-    OP_MUL64 = 0xd9,
-    /// <summary>0xda — 64-bit signed division (quotient and remainder).</summary>
-    OP_DIV64 = 0xda,
-    /// <summary>0xdb — 64-bit signed negation.</summary>
-    OP_NEG64 = 0xdb,
-    /// <summary>0xdc — 64-bit signed less-than comparison.</summary>
-    OP_LESSTHAN64 = 0xdc,
-    /// <summary>0xdd — 64-bit signed less-than-or-equal comparison.</summary>
-    OP_LESSTHANOREQUAL64 = 0xdd,
-    /// <summary>0xde — 64-bit signed greater-than comparison.</summary>
-    OP_GREATERTHAN64 = 0xde,
-    /// <summary>0xdf — 64-bit signed greater-than-or-equal comparison.</summary>
-    OP_GREATERTHANOREQUAL64 = 0xdf,
+    /// <summary>0xd7 — Pad a BigNum to exactly <c>size</c> bytes; fails if it doesn't fit or <c>size</c> is out of range.</summary>
+    OP_NUM2BIN = 0xd7,
+    /// <summary>0xd8 — Normalise a byte string into a minimally-encoded BigNum.</summary>
+    OP_BIN2NUM = 0xd8,
+    /// <summary>0xd9 — Reverse the byte order of the top stack element.</summary>
+    OP_REVERSEBYTES = 0xd9,
+    /// <summary>0xda — Modular exponentiation: push <c>base^exp mod modulus</c> in <c>[0, modulus)</c> (operands ≤ 64 bytes).</summary>
+    OP_MODEXP = 0xda,
 
-    // ─── Conversion (0xe0–0xe2) ────────────────────────────────────
+    // ─── Elliptic-curve operations (0xe0–0xe4) ─────────────────────
 
-    /// <summary>0xe0 — Convert a script-num on the stack to a little-endian 64-bit number.</summary>
-    OP_SCRIPTNUMTOLE64 = 0xe0,
-    /// <summary>0xe1 — Convert a little-endian 64-bit number on the stack to a script-num.</summary>
-    OP_LE64TOSCRIPTNUM = 0xe1,
-    /// <summary>0xe2 — Sign-extend a little-endian 32-bit number to a little-endian 64-bit number.</summary>
-    OP_LE32TOLE64 = 0xe2,
-
-    // ─── EC operations (0xe3–0xe4) ─────────────────────────────────
-
-    /// <summary>0xe3 — Verify EC scalar multiplication: <c>scalar · G ?= expected_point</c>.</summary>
+    /// <summary>0xe0 — Add two affine points on the selected curve (<c>(0,0)</c> is the point at infinity).</summary>
+    OP_ECADD = 0xe0,
+    /// <summary>0xe1 — Multiply an affine point by a scalar on the selected curve.</summary>
+    OP_ECMUL = 0xe1,
+    /// <summary>0xe2 — Verify that the product of <c>alt_bn128</c> pairings is the identity in GT.</summary>
+    OP_ECPAIRING = 0xe2,
+    /// <summary>0xe3 — Verify <c>Q = k·P</c> on secp256k1 (<c>k</c> a 32-byte scalar, <c>P</c>/<c>Q</c> compressed pubkeys).</summary>
     OP_ECMULSCALARVERIFY = 0xe3,
     /// <summary>0xe4 — Verify a tweaked public key: <c>internal + hash · G ?= tweaked</c>.</summary>
     OP_TWEAKVERIFY = 0xe4,
@@ -149,4 +143,13 @@ public enum ArkadeOpcode : byte
 
     /// <summary>0xf3 — Push the txid of the current transaction.</summary>
     OP_TXID = 0xf3,
+
+    // ─── Packet introspection (0xf4–0xf5) + sighash (0xf6) ─────────
+
+    /// <summary>0xf4 — Look up a packet by type in the current tx's extension; push <c>(content, 1)</c> on hit or <c>(empty, 0)</c>.</summary>
+    OP_INSPECTPACKET = 0xf4,
+    /// <summary>0xf5 — Look up a packet by type in the Arkade tx spent by input <c>input_index</c>; push <c>(content, 1)</c> or <c>(empty, 0)</c>.</summary>
+    OP_INSPECTINPUTPACKET = 0xf5,
+    /// <summary>0xf6 — Push the Arkade tapscript sighash (non-BIP342) of the current input under a sighash flag.</summary>
+    OP_SIGHASH = 0xf6,
 }

@@ -36,12 +36,23 @@ public sealed class EmulatorPacket : IExtensionPacket
     /// <summary>The 1-byte TLV type tag the Extension envelope uses for an Emulator Packet.</summary>
     public const byte PacketTypeId = 0x01;
 
+    /// <summary>Maximum number of entries in a packet (emulator <c>MaxEntryCount</c>).</summary>
+    public const int MaxEntryCount = 1000;
+
+    /// <summary>Maximum ArkadeScript length per entry, in bytes (emulator <c>MaxScriptLength</c>).</summary>
+    public const int MaxScriptLength = 10_000;
+
+    /// <summary>Maximum encoded witness-blob length per entry, in bytes (emulator <c>MaxWitnessLength</c>).</summary>
+    public const int MaxWitnessLength = 1_000_000;
+
     /// <summary>Validated, immutable list of entries.</summary>
     public IReadOnlyList<EmulatorEntry> Entries { get; }
 
     /// <summary>
-    /// Construct from a list of entries — validates non-empty packet,
-    /// non-empty scripts, and unique <c>Vin</c> values.
+    /// Construct from a list of entries — validates the packet against the
+    /// emulator's rules: 1–<see cref="MaxEntryCount"/> entries, each script
+    /// 1–<see cref="MaxScriptLength"/> bytes, each encoded witness blob
+    /// ≤ <see cref="MaxWitnessLength"/> bytes, and unique <c>Vin</c> values.
     /// </summary>
     public EmulatorPacket(IReadOnlyList<EmulatorEntry> entries)
     {
@@ -94,15 +105,20 @@ public sealed class EmulatorPacket : IExtensionPacket
     // ─── Validation rules (matches the emulator reference) ────────
 
     /// <summary>
-    /// Apply the emulator's validation rules: at least one entry,
-    /// non-empty script per entry, unique <c>Vin</c>s. Returns a defensive
-    /// copy on success; throws <see cref="ArgumentException"/> on violation.
+    /// Apply the emulator's validation rules: 1–<see cref="MaxEntryCount"/>
+    /// entries, each script 1–<see cref="MaxScriptLength"/> bytes, each encoded
+    /// witness blob ≤ <see cref="MaxWitnessLength"/> bytes, and unique
+    /// <c>Vin</c>s. Returns a defensive copy on success; throws
+    /// <see cref="ArgumentException"/> on violation.
     /// </summary>
     public static IReadOnlyList<EmulatorEntry> Validate(IReadOnlyList<EmulatorEntry> entries)
     {
         ArgumentNullException.ThrowIfNull(entries);
         if (entries.Count == 0)
             throw new ArgumentException("empty emulator packet", nameof(entries));
+        if (entries.Count > MaxEntryCount)
+            throw new ArgumentException(
+                $"too many entries: {entries.Count} > {MaxEntryCount}", nameof(entries));
 
         var seen = new HashSet<ushort>();
         foreach (var entry in entries)
@@ -112,6 +128,15 @@ public sealed class EmulatorPacket : IExtensionPacket
             ArgumentNullException.ThrowIfNull(entry.Witness);
             if (entry.Script.Length == 0)
                 throw new ArgumentException($"empty script for vin {entry.Vin}", nameof(entries));
+            if (entry.Script.Length > MaxScriptLength)
+                throw new ArgumentException(
+                    $"script for vin {entry.Vin} too long: {entry.Script.Length} > {MaxScriptLength}",
+                    nameof(entries));
+            var witnessLength = EncodePushList(entry.Witness).Length;
+            if (witnessLength > MaxWitnessLength)
+                throw new ArgumentException(
+                    $"witness for vin {entry.Vin} too long: {witnessLength} > {MaxWitnessLength}",
+                    nameof(entries));
             if (!seen.Add(entry.Vin))
                 throw new ArgumentException($"duplicate vin {entry.Vin}", nameof(entries));
         }
@@ -182,15 +207,15 @@ public sealed class EmulatorPacket : IExtensionPacket
         var pos = 0;
 
         var count = ReadCompactSize(span, ref pos);
-        if (count > int.MaxValue)
-            throw new FormatException($"emulator packet entry count too large: {count}");
+        if (count > (ulong)MaxEntryCount)
+            throw new FormatException($"emulator packet entry count {count} exceeds max {MaxEntryCount}");
 
         var entries = new List<EmulatorEntry>((int)count);
         for (var i = 0UL; i < count; i++)
         {
             var vin = ReadUInt16Le(span, ref pos);
-            var script = ReadCompactSlice(span, ref pos);
-            var witnessBytes = ReadCompactSlice(span, ref pos);
+            var script = ReadCompactSlice(span, ref pos, MaxScriptLength, "script");
+            var witnessBytes = ReadCompactSlice(span, ref pos, MaxWitnessLength, "witness");
             var witness = DecodePushList(witnessBytes);
             entries.Add(new EmulatorEntry(vin, script, witness));
         }
@@ -282,12 +307,13 @@ public sealed class EmulatorPacket : IExtensionPacket
         s.Write(data, 0, data.Length);
     }
 
-    private static byte[] ReadCompactSlice(ReadOnlySpan<byte> span, ref int pos)
+    private static byte[] ReadCompactSlice(
+        ReadOnlySpan<byte> span, ref int pos, int maxLen = int.MaxValue, string field = "slice")
     {
         var len = ReadCompactSize(span, ref pos);
-        if (len > int.MaxValue) throw new FormatException($"slice length too large: {len}");
+        if (len > (ulong)maxLen) throw new FormatException($"{field} length {len} exceeds max {maxLen}");
         var size = (int)len;
-        if (pos + size > span.Length) throw new FormatException("slice: unexpected end of stream");
+        if (pos + size > span.Length) throw new FormatException($"{field}: unexpected end of stream");
         var bytes = span.Slice(pos, size).ToArray();
         pos += size;
         return bytes;

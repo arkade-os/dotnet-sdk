@@ -16,7 +16,7 @@ public static class ArkadeOpcodeRegistry
     static ArkadeOpcodeRegistry()
     {
         // Arkade extensions first — we know the values are unique across the
-        // <c>0xb3</c> + <c>0xc4–0xf3</c> range and don't collide with anything
+        // <c>0xb3</c> + <c>0xc4–0xf6</c> range and don't collide with anything
         // standard (the 0xb3 slot is the repurposed NOP4).
         var nameByValue = new Dictionary<byte, string>();
         var valueByName = new Dictionary<string, byte>(StringComparer.Ordinal);

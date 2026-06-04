@@ -69,4 +69,16 @@ public static class ArkadeScriptHash
 
         return new TaprootPubKey(tweaked.Q.x.ToBytes());
     }
+
+    /// <summary>
+    /// Convenience overload that accepts the emulator's compressed public key
+    /// (as returned by <c>GET /v1/info</c>'s <c>signerPubkey</c>) and tweaks its
+    /// x-only form. The key's parity is dropped before tweaking, matching the
+    /// ts-sdk / emulator reference.
+    /// </summary>
+    public static TaprootPubKey Tweak(ECPubKey emulatorPubKey, ReadOnlySpan<byte> script)
+    {
+        ArgumentNullException.ThrowIfNull(emulatorPubKey);
+        return Tweak(new TaprootPubKey(emulatorPubKey.ToXOnlyPubKey().ToBytes()), script);
+    }
 }
