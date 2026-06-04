@@ -5,7 +5,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <WarningsAsErrors>nullable</WarningsAsErrors>
-        <PackageDescription>Arkade Script support for the Arkade .NET SDK: opcode tables, script codec, tagged-hash key tweaking, ArkadeVtxoScript, PSBT field codecs, and the Introspector REST client. Mirrors the ts-sdk's Arkade module so that scripts produced/consumed by .NET clients are byte-compatible across SDKs.</PackageDescription>
+        <PackageDescription>Arkade Script support for the Arkade .NET SDK: opcode tables, script codec, tagged-hash key tweaking, ArkadeVtxoScript, PSBT field codecs, and the Emulator REST client. Mirrors the ts-sdk's Arkade module so that scripts produced/consumed by .NET clients are byte-compatible across SDKs.</PackageDescription>
     </PropertyGroup>
 
     <ItemGroup>

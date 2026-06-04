@@ -4,15 +4,15 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 using NArk.Core.Models;
 
-namespace NArk.Arkade.Introspector;
+namespace NArk.Arkade.Emulator;
 
 /// <summary>
-/// HTTP/JSON implementation of <see cref="IIntrospectorProvider"/>.
-/// Designed for DI — register via <c>services.AddIntrospectorClient(...)</c>
+/// HTTP/JSON implementation of <see cref="IEmulatorProvider"/>.
+/// Designed for DI — register via <c>services.AddEmulatorClient(...)</c>
 /// and inject. The <see cref="HttpClient"/> base address must be set to the
-/// introspector server root (e.g. <c>http://localhost:7073</c>).
+/// emulator server root (e.g. <c>http://localhost:7073</c>).
 /// </summary>
-public sealed class IntrospectorClient : IIntrospectorProvider
+public sealed class EmulatorClient : IEmulatorProvider
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -21,30 +21,30 @@ public sealed class IntrospectorClient : IIntrospectorProvider
 
     private readonly HttpClient _http;
 
-    public IntrospectorClient(HttpClient http, IOptions<IntrospectorClientOptions> options)
+    public EmulatorClient(HttpClient http, IOptions<EmulatorClientOptions> options)
     {
         _http = http ?? throw new ArgumentNullException(nameof(http));
         var url = options.Value.ServerUrl;
         if (string.IsNullOrWhiteSpace(url))
-            throw new ArgumentException("IntrospectorClientOptions.ServerUrl is required.", nameof(options));
+            throw new ArgumentException("EmulatorClientOptions.ServerUrl is required.", nameof(options));
         if (_http.BaseAddress is null)
             _http.BaseAddress = new Uri(url.EndsWith('/') ? url : url + "/", UriKind.Absolute);
     }
 
     /// <inheritdoc />
-    public async Task<IntrospectorInfo> GetInfoAsync(CancellationToken cancellationToken = default)
+    public async Task<EmulatorInfo> GetInfoAsync(CancellationToken cancellationToken = default)
     {
         var resp = await _http.GetAsync("v1/info", cancellationToken);
         await EnsureSuccessAsync(resp, "info", cancellationToken);
         var body = await resp.Content.ReadFromJsonAsync<InfoResponse>(JsonOptions, cancellationToken)
-                   ?? throw new InvalidOperationException("Empty introspector info response");
+                   ?? throw new InvalidOperationException("Empty emulator info response");
         if (string.IsNullOrEmpty(body.SignerPubkey))
-            throw new InvalidOperationException("Invalid introspector info response: missing signerPubkey");
-        return new IntrospectorInfo(body.Version ?? "", body.SignerPubkey);
+            throw new InvalidOperationException("Invalid emulator info response: missing signerPubkey");
+        return new EmulatorInfo(body.Version ?? "", body.SignerPubkey);
     }
 
     /// <inheritdoc />
-    public async Task<IntrospectorSubmitTxResult> SubmitTxAsync(
+    public async Task<EmulatorSubmitTxResult> SubmitTxAsync(
         string arkTx, IReadOnlyList<string> checkpointTxs, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(arkTx);
@@ -57,7 +57,7 @@ public sealed class IntrospectorClient : IIntrospectorProvider
                    ?? throw new InvalidOperationException("Empty submitTx response");
         if (string.IsNullOrEmpty(body.SignedArkTx))
             throw new InvalidOperationException("Invalid submitTx response: missing signedArkTx");
-        return new IntrospectorSubmitTxResult(
+        return new EmulatorSubmitTxResult(
             body.SignedArkTx,
             body.SignedCheckpointTxs ?? Array.Empty<string>());
     }
@@ -69,7 +69,7 @@ public sealed class IntrospectorClient : IIntrospectorProvider
         ArgumentNullException.ThrowIfNull(proof);
         ArgumentNullException.ThrowIfNull(message);
 
-        // The introspector's wire shape carries `message` as a JSON-serialized
+        // The emulator's wire shape carries `message` as a JSON-serialized
         // string, not a nested object — matches the ts-sdk's JSON.stringify(message).
         var payload = new SubmitIntentRequest(
             new IntentEnvelope(proof, JsonSerializer.Serialize(message, JsonOptions)));
@@ -84,7 +84,7 @@ public sealed class IntrospectorClient : IIntrospectorProvider
     }
 
     /// <inheritdoc />
-    public async Task<IntrospectorFinalizationResult> SubmitFinalizationAsync(
+    public async Task<EmulatorFinalizationResult> SubmitFinalizationAsync(
         string signedProof,
         Messages.RegisterIntentMessage message,
         IReadOnlyList<string> forfeits,
@@ -107,7 +107,7 @@ public sealed class IntrospectorClient : IIntrospectorProvider
         await EnsureSuccessAsync(resp, "finalization", cancellationToken);
         var body = await resp.Content.ReadFromJsonAsync<SubmitFinalizationResponse>(JsonOptions, cancellationToken)
                    ?? throw new InvalidOperationException("Empty submitFinalization response");
-        return new IntrospectorFinalizationResult(
+        return new EmulatorFinalizationResult(
             body.SignedForfeits ?? Array.Empty<string>(),
             body.SignedCommitmentTx);
     }
@@ -117,12 +117,12 @@ public sealed class IntrospectorClient : IIntrospectorProvider
         if (resp.IsSuccessStatusCode) return;
         var body = await resp.Content.ReadAsStringAsync(ct);
         throw new HttpRequestException(
-            $"Introspector {op} failed: {(int)resp.StatusCode} {resp.ReasonPhrase} — {body}",
+            $"Emulator {op} failed: {(int)resp.StatusCode} {resp.ReasonPhrase} — {body}",
             null,
             resp.StatusCode);
     }
 
-    // ─── DTOs (private — public surface is on IIntrospectorProvider) ────────
+    // ─── DTOs (private — public surface is on IEmulatorProvider) ────────
 
     private sealed record InfoResponse(string? Version, string SignerPubkey);
     private sealed record SubmitTxRequest(string ArkTx, IReadOnlyList<string> CheckpointTxs);
@@ -142,9 +142,9 @@ public sealed class IntrospectorClient : IIntrospectorProvider
         string? SignedCommitmentTx);
 }
 
-/// <summary>Configuration for <see cref="IntrospectorClient"/>.</summary>
-public sealed class IntrospectorClientOptions
+/// <summary>Configuration for <see cref="EmulatorClient"/>.</summary>
+public sealed class EmulatorClientOptions
 {
-    /// <summary>Base URL of the introspector server (e.g. <c>http://localhost:7073</c>).</summary>
+    /// <summary>Base URL of the emulator server (e.g. <c>http://localhost:7073</c>).</summary>
     public string ServerUrl { get; set; } = string.Empty;
 }

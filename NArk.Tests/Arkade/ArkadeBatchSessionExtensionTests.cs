@@ -2,7 +2,7 @@ using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
-using NArk.Arkade.Introspector;
+using NArk.Arkade.Emulator;
 using NArk.Arkade.Scripts;
 using NArk.Core.Scripts;
 using NBitcoin;
@@ -14,20 +14,20 @@ namespace NArk.Tests.Arkade;
 
 /// <summary>
 /// Drives <see cref="ArkadeBatchSessionExtension"/> with a substituted
-/// <see cref="IIntrospectorProvider"/> and verifies the engagement gate +
+/// <see cref="IEmulatorProvider"/> and verifies the engagement gate +
 /// the per-PSBT co-signing routing.
 /// </summary>
 [TestFixture]
 public class ArkadeBatchSessionExtensionTests
 {
-    private IIntrospectorProvider _introspector = null!;
+    private IEmulatorProvider _emulator = null!;
     private ArkadeBatchSessionExtension _sut = null!;
 
     [SetUp]
     public void SetUp()
     {
-        _introspector = Substitute.For<IIntrospectorProvider>();
-        _sut = new ArkadeBatchSessionExtension(_introspector);
+        _emulator = Substitute.For<IEmulatorProvider>();
+        _sut = new ArkadeBatchSessionExtension(_emulator);
     }
 
     [Test]
@@ -54,51 +54,51 @@ public class ArkadeBatchSessionExtensionTests
             BatchExtensionPhase.PostTreeSigning, psbts, coins, CancellationToken.None);
 
         Assert.That(signed, Is.SameAs(psbts), "should pass through unchanged");
-        await _introspector.DidNotReceive().SubmitTxAsync(
+        await _emulator.DidNotReceive().SubmitTxAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>());
     }
 
     [TestCase(BatchExtensionPhase.PostTreeSigning)]
     [TestCase(BatchExtensionPhase.PreForfeitFinalization)]
-    public async Task CoSign_DispatchesEachPsbtToIntrospector(BatchExtensionPhase phase)
+    public async Task CoSign_DispatchesEachPsbtToEmulator(BatchExtensionPhase phase)
     {
         var coins = new[] { MakeCoin(MakeArkadeBuilder()) };
         var psbts = new[] { BuildEmptyPsbt(), BuildEmptyPsbt(), BuildEmptyPsbt() };
 
         // Provider returns a fresh PSBT base64 each call so we can assert the
         // result isn't the input collection by reference.
-        _introspector
+        _emulator
             .SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns(callInfo => Task.FromResult(
-                new IntrospectorSubmitTxResult(BuildEmptyPsbt().ToBase64(), [])));
+                new EmulatorSubmitTxResult(BuildEmptyPsbt().ToBase64(), [])));
 
         var signed = await _sut.CoSignAsync(phase, psbts, coins, CancellationToken.None);
 
         Assert.That(signed, Has.Count.EqualTo(psbts.Length));
-        await _introspector.Received(psbts.Length).SubmitTxAsync(
+        await _emulator.Received(psbts.Length).SubmitTxAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>());
     }
 
     [Test]
-    public async Task CoSign_PropagatesIntrospectorFailure()
+    public async Task CoSign_PropagatesEmulatorFailure()
     {
         var coins = new[] { MakeCoin(MakeArkadeBuilder()) };
         var psbts = new[] { BuildEmptyPsbt() };
 
-        _introspector
+        _emulator
             .SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
-            .Returns<Task<IntrospectorSubmitTxResult>>(_ =>
-                throw new HttpRequestException("introspector down"));
+            .Returns<Task<EmulatorSubmitTxResult>>(_ =>
+                throw new HttpRequestException("emulator down"));
 
         var ex = Assert.ThrowsAsync<HttpRequestException>(async () =>
             await _sut.CoSignAsync(
                 BatchExtensionPhase.PostTreeSigning, psbts, coins, CancellationToken.None));
-        Assert.That(ex!.Message, Does.Contain("introspector down"));
+        Assert.That(ex!.Message, Does.Contain("emulator down"));
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
-    private static (ECXOnlyPubKey alice, ECXOnlyPubKey bob, TaprootPubKey introspector) MakeKeys()
+    private static (ECXOnlyPubKey alice, ECXOnlyPubKey bob, TaprootPubKey emulator) MakeKeys()
     {
         var rng = new Random(11);
         ECXOnlyPubKey Make()
@@ -109,8 +109,8 @@ public class ArkadeBatchSessionExtensionTests
         }
         var introSeed = new byte[32];
         rng.NextBytes(introSeed);
-        var introspector = new Key(introSeed).PubKey.GetTaprootFullPubKey().OutputKey;
-        return (Make(), Make(), introspector);
+        var emulator = new Key(introSeed).PubKey.GetTaprootFullPubKey().OutputKey;
+        return (Make(), Make(), emulator);
     }
 
     private static ScriptBuilder MakePlainBuilder()
@@ -121,8 +121,8 @@ public class ArkadeBatchSessionExtensionTests
 
     private static ScriptBuilder MakeArkadeBuilder()
     {
-        var (alice, _, introspector) = MakeKeys();
-        return new ArkadeNofNMultisigTapScript([0xc4], [alice], [introspector]);
+        var (alice, _, emulator) = MakeKeys();
+        return new ArkadeNofNMultisigTapScript([0xc4], [alice], [emulator]);
     }
 
     private static ArkCoin MakeCoin(ScriptBuilder spendingBuilder)

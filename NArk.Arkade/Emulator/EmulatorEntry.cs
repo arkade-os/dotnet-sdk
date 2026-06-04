@@ -1,8 +1,8 @@
-namespace NArk.Arkade.Introspector;
+namespace NArk.Arkade.Emulator;
 
 /// <summary>
-/// One entry in an <see cref="IntrospectorPacket"/> — binds a transaction
-/// input to the ArkadeScript bytecode the introspector should execute and
+/// One entry in an <see cref="EmulatorPacket"/> — binds a transaction
+/// input to the ArkadeScript bytecode the emulator should execute and
 /// the witness stack that script consumes.
 /// </summary>
 /// <param name="Vin">The 16-bit transaction input index (little-endian on the wire).</param>
@@ -13,7 +13,7 @@ namespace NArk.Arkade.Introspector;
 /// (<c>compactSize(num_items) + per-item compactSize(len) + bytes</c>),
 /// matching the Go reference's <c>wire.TxWitness</c>.
 /// </param>
-public sealed record IntrospectorEntry(
+public sealed record EmulatorEntry(
     ushort Vin,
     byte[] Script,
     IReadOnlyList<byte[]> Witness);

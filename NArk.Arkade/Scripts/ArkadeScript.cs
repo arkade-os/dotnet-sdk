@@ -6,7 +6,7 @@ namespace NArk.Arkade.Scripts;
 
 /// <summary>
 /// Encode/decode + ASM helpers for ArkadeScript — the Bitcoin-Script superset
-/// the introspector executes. Mirrors the ts-sdk's <c>ArkadeScript</c> coder
+/// the emulator executes. Mirrors the ts-sdk's <c>ArkadeScript</c> coder
 /// (and its <c>toASM</c> / <c>fromASM</c> helpers) so that the same script
 /// bytes round-trip across the .NET, TypeScript, and Go SDKs.
 /// </summary>

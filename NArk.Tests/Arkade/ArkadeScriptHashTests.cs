@@ -36,22 +36,22 @@ public class ArkadeScriptHashTests
     [Test]
     public void Tweak_ProducesValidTweakedKey()
     {
-        // Generate a random introspector pubkey, tweak with a fixed script,
+        // Generate a random emulator pubkey, tweak with a fixed script,
         // and verify the result is a 32-byte x-only pubkey.
         var seed = new byte[32];
         new Random(42).NextBytes(seed);
         var keyMaterial = new Key(seed);
-        var introspectorPubKey = keyMaterial.PubKey.GetTaprootFullPubKey().OutputKey;
+        var emulatorPubKey = keyMaterial.PubKey.GetTaprootFullPubKey().OutputKey;
 
-        var tweaked = ArkadeScriptHash.Tweak(introspectorPubKey, [0x51, 0xc4, 0xc6]);
+        var tweaked = ArkadeScriptHash.Tweak(emulatorPubKey, [0x51, 0xc4, 0xc6]);
         Assert.That(tweaked.ToBytes(), Has.Length.EqualTo(32));
 
         // Same tweak applied twice yields the same key.
-        var tweaked2 = ArkadeScriptHash.Tweak(introspectorPubKey, [0x51, 0xc4, 0xc6]);
+        var tweaked2 = ArkadeScriptHash.Tweak(emulatorPubKey, [0x51, 0xc4, 0xc6]);
         Assert.That(tweaked.ToBytes(), Is.EqualTo(tweaked2.ToBytes()));
 
         // Different scripts → different tweaked keys.
-        var tweakedOther = ArkadeScriptHash.Tweak(introspectorPubKey, [0x52, 0xc4, 0xc6]);
+        var tweakedOther = ArkadeScriptHash.Tweak(emulatorPubKey, [0x52, 0xc4, 0xc6]);
         Assert.That(tweaked.ToBytes(), Is.Not.EqualTo(tweakedOther.ToBytes()));
     }
 }

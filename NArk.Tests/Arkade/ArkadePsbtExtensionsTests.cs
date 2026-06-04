@@ -2,7 +2,7 @@ using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
 using NArk.Arkade.Crypto;
-using NArk.Arkade.Introspector;
+using NArk.Arkade.Emulator;
 using NArk.Arkade.Scripts;
 using NArk.Core.Assets;
 using NArk.Core.Scripts;
@@ -17,49 +17,49 @@ namespace NArk.Tests.Arkade;
 public class ArkadePsbtExtensionsTests
 {
     [Test]
-    public void RequiresIntrospectorCoSigning_TrueWhenAnyArkadeBound()
+    public void RequiresEmulatorCoSigning_TrueWhenAnyArkadeBound()
     {
-        var (alice, bob, introspector) = MakeKeys();
-        var arkade = new ArkadeNofNMultisigTapScript([0xc4], [alice], [introspector]);
+        var (alice, bob, emulator) = MakeKeys();
+        var arkade = new ArkadeNofNMultisigTapScript([0xc4], [alice], [emulator]);
         var plain = new NofNMultisigTapScript([alice, bob]);
 
         var coinArkade = MakeCoin(alice, bob, arkade);
         var coinPlain = MakeCoin(alice, bob, plain);
 
-        Assert.That(ArkadePsbtExtensions.RequiresIntrospectorCoSigning([coinArkade]), Is.True);
-        Assert.That(ArkadePsbtExtensions.RequiresIntrospectorCoSigning([coinPlain]), Is.False);
+        Assert.That(ArkadePsbtExtensions.RequiresEmulatorCoSigning([coinArkade]), Is.True);
+        Assert.That(ArkadePsbtExtensions.RequiresEmulatorCoSigning([coinPlain]), Is.False);
         // Mixed: still true as long as at least one is arkade.
-        Assert.That(ArkadePsbtExtensions.RequiresIntrospectorCoSigning([coinPlain, coinArkade]), Is.True);
+        Assert.That(ArkadePsbtExtensions.RequiresEmulatorCoSigning([coinPlain, coinArkade]), Is.True);
     }
 
     [Test]
-    public void BuildIntrospectorOutput_NullWhenNoArkadeCoin()
+    public void BuildEmulatorOutput_NullWhenNoArkadeCoin()
     {
         var (alice, bob, _) = MakeKeys();
         var plain = new NofNMultisigTapScript([alice, bob]);
         var coin = MakeCoin(alice, bob, plain);
 
-        Assert.That(ArkadePsbtExtensions.BuildIntrospectorOutput([coin]), Is.Null);
+        Assert.That(ArkadePsbtExtensions.BuildEmulatorOutput([coin]), Is.Null);
     }
 
     [Test]
-    public void BuildIntrospectorOutput_EmitsExtensionWithCorrectVinAndScript()
+    public void BuildEmulatorOutput_EmitsExtensionWithCorrectVinAndScript()
     {
-        var (alice, bob, introspector) = MakeKeys();
+        var (alice, bob, emulator) = MakeKeys();
         var arkadeBytes = new byte[] { 0xc4, 0xc6 };
-        var arkade = new ArkadeNofNMultisigTapScript(arkadeBytes, [alice], [introspector]);
+        var arkade = new ArkadeNofNMultisigTapScript(arkadeBytes, [alice], [emulator]);
         var plain = new NofNMultisigTapScript([alice, bob]);
 
         // vin 0 = plain, vin 1 = arkade — expect a single entry with vin=1.
         var coinPlain = MakeCoin(alice, bob, plain, witnessPushes: []);
         var coinArkade = MakeCoin(alice, bob, arkade, witnessPushes: [Convert.FromHexString("deadbeef")]);
 
-        var output = ArkadePsbtExtensions.BuildIntrospectorOutput([coinPlain, coinArkade]);
+        var output = ArkadePsbtExtensions.BuildEmulatorOutput([coinPlain, coinArkade]);
         Assert.That(output, Is.Not.Null);
 
         // Round-trip through Extension parsing — the packet should carry one entry.
         var ext = Extension.FromScript(output!.ScriptPubKey);
-        var packet = IntrospectorPacket.FromExtension(ext);
+        var packet = EmulatorPacket.FromExtension(ext);
         Assert.That(packet, Is.Not.Null);
         Assert.That(packet!.Entries, Has.Count.EqualTo(1));
         Assert.That(packet.Entries[0].Vin, Is.EqualTo((ushort)1));
@@ -69,9 +69,9 @@ public class ArkadePsbtExtensionsTests
     }
 
     [Test]
-    public async Task CoSignWithIntrospectorAsync_DelegatesToProviderAndReturnsParsedPsbt()
+    public async Task CoSignWithEmulatorAsync_DelegatesToProviderAndReturnsParsedPsbt()
     {
-        // Build an arbitrary unsigned PSBT and an introspector mock that returns a
+        // Build an arbitrary unsigned PSBT and an emulator mock that returns a
         // fresh PSBT base64. Caller should get back the parsed version of that base64.
         var network = Network.RegTest;
         var (alice, bob, _) = MakeKeys();
@@ -79,15 +79,15 @@ public class ArkadePsbtExtensionsTests
         var responsePsbt = BuildEmptyPsbt(network, alice, bob);
         var responseBase64 = responsePsbt.ToBase64();
 
-        var introspector = Substitute.For<IIntrospectorProvider>();
-        introspector
+        var emulator = Substitute.For<IEmulatorProvider>();
+        emulator
             .SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(new IntrospectorSubmitTxResult(responseBase64, [])));
+            .Returns(Task.FromResult(new EmulatorSubmitTxResult(responseBase64, [])));
 
-        var result = await unsigned.CoSignWithIntrospectorAsync(introspector);
+        var result = await unsigned.CoSignWithEmulatorAsync(emulator);
 
         Assert.That(result.ToBase64(), Is.EqualTo(responseBase64));
-        await introspector.Received(1).SubmitTxAsync(
+        await emulator.Received(1).SubmitTxAsync(
             unsigned.ToBase64(),
             Arg.Is<IReadOnlyList<string>>(l => l.Count == 0),
             Arg.Any<CancellationToken>());
@@ -95,7 +95,7 @@ public class ArkadePsbtExtensionsTests
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
-    private static (ECXOnlyPubKey alice, ECXOnlyPubKey bob, TaprootPubKey introspector) MakeKeys()
+    private static (ECXOnlyPubKey alice, ECXOnlyPubKey bob, TaprootPubKey emulator) MakeKeys()
     {
         var rng = new Random(7);
         ECXOnlyPubKey Make()
@@ -106,8 +106,8 @@ public class ArkadePsbtExtensionsTests
         }
         var introSeed = new byte[32];
         rng.NextBytes(introSeed);
-        var introspector = new Key(introSeed).PubKey.GetTaprootFullPubKey().OutputKey;
-        return (Make(), Make(), introspector);
+        var emulator = new Key(introSeed).PubKey.GetTaprootFullPubKey().OutputKey;
+        return (Make(), Make(), emulator);
     }
 
     private static ArkCoin MakeCoin(
