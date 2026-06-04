@@ -110,7 +110,7 @@ Typical states recorded against each `ArkSwap`:
 The preimages we generate for reverse and chain swaps are derived deterministically from the wallet's signing material so that a restored wallet can re-derive them and claim outstanding VHTLCs. The scheme:
 
 ```
-message  = SHA-256( "Arkade-Boltz-Preimage-v1" || descriptor.ToString() || u32_le(index) )
+message  = SHA-256( "Arkade-Boltz-Preimage-v1" || xonly_pubkey(32) || u32_le(index) )
 sig      = BIP-340-Schnorr( descriptor_key, message, aux_rand=null )
 preimage = SHA-256( sig )
 ```
@@ -118,10 +118,10 @@ preimage = SHA-256( sig )
 The signed input bundles three things:
 
 - **Tag** — domain-separates this signature from any other use of the descriptor's key. The string is intentionally protocol+provider scoped (`Arkade`+`Boltz`) rather than SDK-scoped, so an Arkade wallet implemented on top of any Arkade SDK (TypeScript, Go, Rust, .NET) can produce the same preimage from the same wallet material and recover swaps the .NET SDK created. Versioned (`-v1`) so a future scheme bump can ship as `-v2` while recovery still tries v1 for older swaps.
-- **Descriptor** — scopes the preimage to the specific swap descriptor.
-- **Index** — lets a caller derive multiple preimages from the same descriptor. Always `0` today; baked into v1 so recovery iteration is forward-compatible without a scheme bump.
+- **Public key** — the descriptor's x-only public key, *not* its string form. A descriptor stringifies differently for the same key (a signing descriptor carries key origin + derivation path + checksum; the bare receiver descriptor a restore reconstructs does not), so anchoring on the canonical pubkey keeps create-time and restore-time derivation identical — and lets any Arkade SDK reproduce it.
+- **Index** — lets a caller derive multiple preimages from the same key. Always `0` today; baked into v1 so recovery iteration is forward-compatible without a scheme bump.
 
-BIP-340 with `aux_rand=null` is deterministic per `(key, message)`, so same `(wallet, descriptor, index)` always yields the same preimage. Recovery: when `RestoreSwaps` rediscovers a reverse swap, it re-derives the candidate preimage with `index=0`, verifies `SHA-256(candidate) == restored.PreimageHash`, and attaches it to the swap's metadata for the sweeper to claim. Hash mismatch (legacy random preimage, or wrong descriptor) leaves the preimage out; `EnrichReverseSwapPreimage` remains the manual fallback.
+BIP-340 with `aux_rand=null` is deterministic per `(key, message)`, so same `(wallet, pubkey, index)` always yields the same preimage. Recovery: when `RestoreSwaps` rediscovers a reverse swap, it re-derives the candidate preimage with `index=0`, verifies `SHA-256(candidate) == restored.PreimageHash`, and attaches it to the swap's metadata for the sweeper to claim. Hash mismatch (legacy random preimage, or wrong key) leaves the preimage out; `EnrichReverseSwapPreimage` remains the manual fallback.
 
 Watch-only wallets (no signer) fall back to a random preimage on create — they don't get the recovery story but they can still execute swaps until they pair a signer.
 
