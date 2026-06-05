@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Options;
 using NArk.Blockchain;
 using NArk.Core.Fees;
@@ -19,6 +20,23 @@ using NBitcoin;
 using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 
 namespace NArk.Tests.End2End.Swaps;
+
+// ─── Shared helpers ─────────────────────────────────────────────────────────
+
+file static class ChainSwapTestHelpers
+{
+    public static BoltzClientOptions BoltzOptions() => new()
+    {
+        BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(),
+        WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString()
+    };
+
+    public static BoltzClient CreateBoltzClient() =>
+        new(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(BoltzOptions()));
+
+    public static CachedBoltzClient CreateCachedBoltzClient() =>
+        new(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(BoltzOptions()));
+}
 
 public class ChainSwapTests
 {
@@ -104,13 +122,12 @@ public class ChainSwapTests
                 CancellationToken.None
             ));
 
-        var btcAmount = (expectedLockupSats / 100_000_000m).ToString("0.########");
-        Console.WriteLine($"[BTC→ARK] Swap created: {swapId}, BTC lockup: {btcAddress}, expected: {expectedLockupSats} sats ({btcAmount} BTC)");
+        Console.WriteLine($"[BTC→ARK] Swap created: {swapId}, BTC lockup: {btcAddress}, expected: {expectedLockupSats} sats");
         Assert.That(btcAddress, Is.Not.Null.And.Not.Empty);
         Assert.That(swapId, Is.Not.Null.And.Not.Empty);
 
         // Fund the BTC lockup address with the exact expected amount
-        var txid = await DockerHelper.BitcoinSendToAddress(btcAddress, btcAmount);
+        var txid = await DockerHelper.BitcoinSendToAddress(btcAddress, Money.Satoshis(expectedLockupSats));
         Console.WriteLine($"[BTC→ARK] sendtoaddress txid: {txid}");
 
         // Mine blocks periodically so Boltz confirms the BTC lockup, locks ARK, and we claim
@@ -312,8 +329,7 @@ public class ChainSwapTests
         // +1000 sats is a clean unambiguous mismatch that's still trivially
         // covered by the test wallet's UTXO budget.
         var fundAmount = originalExpectedSats + 1000;
-        var btcAmount = (fundAmount / 100_000_000m).ToString("0.########");
-        var txid = await DockerHelper.BitcoinSendToAddress(btcAddress, btcAmount, token);
+        var txid = await DockerHelper.BitcoinSendToAddress(btcAddress, Money.Satoshis(fundAmount), token);
         Console.WriteLine($"[BTC→ARK reneg] Funded {fundAmount} sats (expected+1000), txid={txid}");
 
         // Mine to confirm the lockup so Boltz emits transaction.lockupFailed
@@ -434,26 +450,19 @@ public class ChainSwapTests
 
     /// <summary>
     /// ARK→BTC chain swap cooperative refund: the user funds the Arkade VHTLC
-    /// (lockup), Boltz is then forced into a refundable status before it
-    /// locks BTC, and the SDK's <c>PollSwapState</c> calls
-    /// <c>CoopRefundArkToBtcChainSwap</c> to return the locked VTXO to a
+    /// (lockup), Boltz is forced into a refundable status via
+    /// <c>boltzr-cli swap set-status</c>, and the SDK's <c>PollSwapState</c>
+    /// calls <c>CoopRefundArkToBtcChainSwap</c> to return the locked VTXO to a
     /// wallet-derived destination.
     /// <para>
-    /// <b>Currently disabled.</b> <c>boltzr-cli swap set-status</c> on regtest
-    /// only resolves submarine-swap IDs — chain swaps trigger
-    /// <c>could not find swap with id: …</c>. The other natural failure
-    /// trigger (waiting for chain-swap expiry) doesn't fire on regtest
-    /// because Boltz times chain swaps against wall-clock minutes that
-    /// nigiri's mining doesn't advance — the same limitation that forces
-    /// <see cref="BtcToArkChainSwapMarksFailedWhenUserDoesNotFund"/> to be
-    /// ignored. The refund code itself is covered by unit tests; an
-    /// end-to-end reproducer needs either mock Boltz or <c>setmocktime</c>
-    /// infrastructure (separate effort, tracked outside this PR).
+    /// Uses denigiri's Boltz build which supports forcing chain-swap statuses
+    /// via the admin CLI. If the CLI reports the swap is unknown (older builds
+    /// that only resolved submarine IDs), the test is skipped via
+    /// <c>Assert.Ignore</c> rather than failing, so the suite stays green on
+    /// any compatible regtest setup.
     /// </para>
     /// </summary>
     [Test]
-    [Ignore("Boltz chain-swap status forcing isn't available on regtest — see remarks. " +
-            "Refund code is unit-tested in NArk.Tests/SwapRecoveryTests.cs.")]
     [CancelAfter(360_000)]
     public async Task ArkToBtcChainSwapRefundsCooperatively(CancellationToken token)
     {
@@ -526,11 +535,20 @@ public class ChainSwapTests
         }
         await lockedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15), token);
 
-        // Force Boltz into invoice.failedToPay — same admin path that drives
-        // the submarine refund tests. The SDK's chain-swap refund branch
-        // observes this on the next poll and calls CoopRefundArkToBtcChainSwap.
+        // Force Boltz into invoice.failedToPay via the admin CLI.
+        // With denigiri's Boltz build the admin service resolves chain-swap IDs
+        // the same way it resolves submarine IDs, so this works for chain swaps.
+        // If it returns false the build doesn't support chain-swap status forcing
+        // — skip gracefully rather than failing the suite.
         Console.WriteLine($"[ARK→BTC refund] Forcing Boltz status invoice.failedToPay via boltzr-cli");
-        await DockerHelper.SetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
+        var statusForced = await DockerHelper.TrySetBoltzSwapStatus(swapId, "invoice.failedToPay", token);
+        if (!statusForced)
+        {
+            Assert.Ignore(
+                "boltzr-cli swap set-status could not force status on a chain swap — " +
+                "this Boltz build does not support chain-swap status forcing. " +
+                "The refund code path is covered by unit tests in NArk.Tests/.");
+        }
 
         // Wait for the SDK to observe the failure and settle the refund.
         // Mine blocks alongside the poll because the Arkade tx the SDK
