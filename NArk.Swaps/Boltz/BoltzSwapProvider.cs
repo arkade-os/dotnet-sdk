@@ -4,28 +4,22 @@ using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
-using NArk.Core;
 using NArk.Core.Contracts;
 using NArk.Core.Helpers;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz.Client;
-using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Restore;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Swaps.Boltz.Models.WebSocket;
-using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
-using NArk.Swaps.Utils;
 using NBitcoin;
-using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using OutputDescriptorHelpers = NArk.Abstractions.Extensions.OutputDescriptorHelpers;
 
@@ -654,7 +648,7 @@ public class BoltzSwapProvider : ISwapProvider
                     var noArkLockup = swap.SwapType == ArkSwapType.ChainArkToBtc
                         && (await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: cancellationToken)).Count == 0;
                     var nothingToRefund = swap.SwapType == ArkSwapType.ChainBtcToArk ? noBtcLockup : noArkLockup;
-                    if (nothingToRefund)
+                    if (nothingToRefund && swap.Status != ArkSwapStatus.Failed)
                     {
                         _logger?.LogInformation(
                             "Swap {SwapId}: expired with no observable lockup — marking Failed",
