@@ -56,11 +56,7 @@ public class ArkCashTests
             "tarkcash");
 
         var cashAddress = cash.GetAddress(serverInfo.Network);
-        var sendResult = await DockerHelper.ArkSend(amount, cashAddress.ToString(false), allowNonZeroExit: true);
-        if (!sendResult.IsSuccess)
-            throw new InvalidOperationException(
-                $"ark send failed (exit={sendResult.ExitCode}): stdout={sendResult.StandardOutput}, stderr={sendResult.StandardError}");
-
+        await DockerHelper.SendArkdNoteTo(cashAddress.ToString(false), amount);
         return cash;
     }
 
