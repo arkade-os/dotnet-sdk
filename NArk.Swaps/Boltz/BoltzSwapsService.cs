@@ -247,9 +247,10 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
+        var extracted = OutputDescriptorHelpers.Extract(refundDescriptor);
         var refundPubKeyHex = Convert.ToHexString(
-            OutputDescriptorHelpers.Extract(refundDescriptor).PubKey?.ToBytes()
-            ?? OutputDescriptorHelpers.Extract(refundDescriptor).XOnlyPubKey.ToBytes()
+            extracted.PubKey?.ToBytes()
+            ?? extracted.XOnlyPubKey.ToBytes()
         ).ToLowerInvariant();
 
         var preimage = RandomUtils.GetBytes(32);

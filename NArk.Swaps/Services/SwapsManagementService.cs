@@ -462,6 +462,8 @@ public class SwapsManagementService : IAsyncDisposable
             (lockupDetails?.Timeouts ?? lockupDetails?.TimeoutBlockHeights)?.Refund
             ?? lockupDetails?.TimeoutBlockHeight
             ?? 0;
+        if (timeoutBlockHeight == 0)
+            _logger?.LogWarning("ARK→BTC chain swap {SwapId}: Boltz response contained no refund timeout — defaulting to 0, which will prevent mining past expiry", result.Swap.Id);
 
  
         var swap = new ArkSwap(

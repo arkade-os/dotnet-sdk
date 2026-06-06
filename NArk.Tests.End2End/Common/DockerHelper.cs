@@ -229,11 +229,10 @@ public static class DockerHelper
         // restart Boltz refuses cooperative refund requests because its nursery
         // still holds the old status in memory.
         var dbResult = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", Container.Postgres,
+            .WithArguments(["exec", Container.Postgres,
                 "psql", "-U", "postgres", "-d", "boltz",
-                "-c", $"UPDATE \"chainSwaps\" SET status = '{status}' WHERE id = '{swapId}'"
-            ])
+                "-v", $"sid={swapId}", "-v", $"status={status}",
+                "-c", "UPDATE \"chainSwaps\" SET status = :'status' WHERE id = :'sid'"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
 
@@ -335,7 +334,6 @@ public static class DockerHelper
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
 
-        await StartContainer(Container.Boltz, ct);
         await RestartBoltzAndWait(ct);
     }
 
