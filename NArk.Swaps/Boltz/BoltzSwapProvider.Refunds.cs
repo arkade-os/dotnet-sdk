@@ -4,6 +4,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
+using NArk.Swaps.Boltz.Models.Swaps.Common;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
 using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
@@ -24,7 +25,7 @@ public partial class BoltzSwapProvider
     // The state transaction.lockupFailed is not final and changes to swap.expired after the swap expired;
     // the failure reason will be kept and informs e.g. if the user sending too little or too much was the reason for the swap to fail. T
     // he states invoice.failedToPay and swap.expired are final. Boltz is not monitoring user's refund transactions.
-   internal async Task RequestSubmarineCoopRefund(ArkSwap swap, CancellationToken cancellationToken = default)
+   internal async Task RequestSubmarineCoopRefund(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken = default)
    {
         if (swap.SwapType != ArkSwapType.Submarine)
         {
@@ -35,6 +36,9 @@ public partial class BoltzSwapProvider
         {
             return;
         }
+        
+        _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable, initiating cooperative refund",
+            swap.SwapId, swapStatus.Status);
 
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
         var matchedSwapContracts =
@@ -525,5 +529,88 @@ public partial class BoltzSwapProvider
             _logger?.LogError(ex, "Swap {SwapId}: BTC cooperative refund failed", swap.SwapId);
             return false;
         }
+    }
+
+    
+    /// <summary>
+    /// Chain swap cooperative refund — only on swap.expired.
+    /// 
+    /// User locked ARK in a VHTLC; we cooperatively
+    /// spend it back via POST /v2/swap/chain/{id}/refund/ark.
+    /// </summary>
+    public async Task<bool> TryCoopRefundArkToBtc(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken)
+    {
+        _logger?.LogInformation(
+            "Swap {SwapId}: chain swap expired ({SwapType}), attempting cooperative refund",
+            swap.SwapId, swap.SwapType);
+        
+        if (await CoopRefundArkToBtcChainSwap(swap, cancellationToken))
+        {
+            return true;
+        }
+
+        // Refund attempt failed. If there is nothing to recover
+        // (no lockup observable on either side) mark Failed so
+        // the poll stops retrying.
+        var vtxosLocked = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: cancellationToken);
+        if (vtxosLocked.Count == 0 && swap.Status != ArkSwapStatus.Failed)
+        {
+            _logger?.LogInformation(
+                "Swap {SwapId}: expired with no observable lockup — marking Failed",
+                swap.SwapId);
+            var failedSwap = swap with
+            {
+                Status = ArkSwapStatus.Failed,
+                    FailReason = "Swap expired before any funds were locked",
+                    UpdatedAt = DateTimeOffset.UtcNow
+            };
+            await _swapsStorage.SaveSwap(swap.WalletId, failedSwap, cancellationToken);
+            RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
+        }
+
+        return false;
+    }
+
+    
+    /// <summary>
+    /// Chain swap cooperative refund — only on swap.expired.
+    /// 
+    /// BTC→ARK (from=BTC): the BTC lockup is refunded on-chain by Boltz
+    /// after the timelock elapses — there is no client-side action.
+    /// Per arkade-os/boltz-swap TS SDK: "BTC-side lockup refunds are
+    /// handled on-chain by Boltz after the timelock expires."
+    /// We attempt a MuSig2 cooperative refund as an optimisation (saves
+    /// the user from waiting for the full timelock); if Boltz refuses
+    /// (e.g. the lockup tx isn't visible yet) we leave the swap Pending
+    /// so the routine poll retries.
+    /// </summary>
+    public async Task<bool> TryCoopRefundBtcToArk(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken)
+    {
+        
+        _logger?.LogInformation(
+            "Swap {SwapId}: chain swap expired ({SwapType}), attempting cooperative refund",
+            swap.SwapId, swap.SwapType);
+
+        if (await CoopRefundBtcToArkChainSwap(swap, cancellationToken))
+        {
+            return true;
+        }
+
+        var noBtcLockup = string.IsNullOrEmpty(swapStatus.Transaction?.Hex);
+        if (noBtcLockup && swap.Status != ArkSwapStatus.Failed)
+        {
+            _logger?.LogInformation(
+                "Swap {SwapId}: expired with no observable lockup — marking Failed",
+                swap.SwapId);
+            var failedSwap = swap with
+            {
+                Status = ArkSwapStatus.Failed,
+                    FailReason = "Swap expired before any funds were locked",
+                    UpdatedAt = DateTimeOffset.UtcNow
+            };
+            await _swapsStorage.SaveSwap(swap.WalletId, failedSwap, cancellationToken);
+            RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
+        }
+        return false;
     }
 }

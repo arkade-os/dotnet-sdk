@@ -651,7 +651,7 @@ public class SwapsManagementService : IAsyncDisposable
             ExpectedAmount: details.Amount ?? 0,
             ContractScript: "", // Will be updated after contract reconstruction
             Address: details.LockupAddress,
-            Status: BoltzSwapStatus.ToArkSwapStatus(restored.Status),
+            Status: BoltzSwapStatus.ToArkSwapStatus(restored.Status) ?? ArkSwapStatus.Pending,
             FailReason: null,
             CreatedAt: DateTimeOffset.FromUnixTimeSeconds(restored.CreatedAt),
             UpdatedAt: DateTimeOffset.UtcNow,

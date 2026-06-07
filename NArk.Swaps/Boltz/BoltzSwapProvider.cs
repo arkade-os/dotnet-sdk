@@ -409,7 +409,7 @@ public partial class BoltzSwapProvider : ISwapProvider
                 _scriptToSwapId[swap.ContractScript] = swap.SwapId;
 
                 // Terminal states: nothing to do
-                if (swap.Status.IsSuccess()) continue;
+                if (swap.Status.IsTerminalState()) continue;
 
                 // Refresh VTXO state for the swap's contract script directly against arkd.
                 // We cannot rely solely on the indexer subscription stream here: arkd does
@@ -442,64 +442,18 @@ public partial class BoltzSwapProvider : ISwapProvider
                 switch (BoltzOperationClassifier.Classify(swap, swapStatus.Status))
                 {
                     case BoltzOperationClassifier.BoltzSwapAction.CanCoopRefundSubmarine:
-                    {
-                        _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable, initiating cooperative refund",
-                            idToPoll, swapStatus.Status);
-                        var newSwap =
-                            swap with { Status = ArkSwapStatus.Failed, UpdatedAt = DateTimeOffset.Now };
-                        await RequestSubmarineCoopRefund(newSwap, cancellationToken);
+                        
+                        await RequestSubmarineCoopRefund(swap, swapStatus, cancellationToken);
                         continue;
-                    }
                     
                     case BoltzOperationClassifier.BoltzSwapAction.CanCoopRefundArkToBtc:
-                    case BoltzOperationClassifier.BoltzSwapAction.CanCoopRefundBtcToArk:
-                    {
-                        
-                        // Chain swap cooperative refund — only on swap.expired.
-                        //
-                        // ARK→BTC (from=ARK): user locked ARK in a VHTLC; we cooperatively
-                        // spend it back via POST /v2/swap/chain/{id}/refund/ark.
-                        //
-                        // BTC→ARK (from=BTC): the BTC lockup is refunded on-chain by Boltz
-                        // after the timelock elapses — there is no client-side action.
-                        // Per arkade-os/boltz-swap TS SDK: "BTC-side lockup refunds are
-                        // handled on-chain by Boltz after the timelock expires."
-                        // We attempt a MuSig2 cooperative refund as an optimisation (saves
-                        // the user from waiting for the full timelock); if Boltz refuses
-                        // (e.g. the lockup tx isn't visible yet) we leave the swap Pending
-                        // so the routine poll retries.
-                        _logger?.LogInformation(
-                            "Swap {SwapId}: chain swap expired ({SwapType}), attempting cooperative refund",
-                            idToPoll, swap.SwapType);
-
-                        var refunded = swap.SwapType is ArkSwapType.ChainBtcToArk
-                            ? await CoopRefundBtcToArkChainSwap(swap, cancellationToken)
-                            : await CoopRefundArkToBtcChainSwap(swap, cancellationToken);
-                        if (refunded) continue;
-
-                        // Refund attempt failed. If there is nothing to recover
-                        // (no lockup observable on either side) mark Failed so
-                        // the poll stops retrying.
-                        var noBtcLockup = string.IsNullOrEmpty(swapStatus.Transaction?.Hex);
-                        var noArkLockup = swap.SwapType == ArkSwapType.ChainArkToBtc
-                                          && (await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: cancellationToken)).Count == 0;
-                        var nothingToRefund = swap.SwapType == ArkSwapType.ChainBtcToArk ? noBtcLockup : noArkLockup;
-                        if (nothingToRefund && swap.Status != ArkSwapStatus.Failed)
-                        {
-                            _logger?.LogInformation(
-                                "Swap {SwapId}: expired with no observable lockup — marking Failed",
-                                idToPoll);
-                            var failedSwap = swap with
-                            {
-                                Status = ArkSwapStatus.Failed,
-                                FailReason = "Swap expired before any funds were locked",
-                                UpdatedAt = DateTimeOffset.UtcNow
-                            };
-                            await _swapsStorage.SaveSwap(swap.WalletId, failedSwap, cancellationToken);
-                            RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
-                        }
+                        await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
                         continue;
-                    }
+                    
+                    case BoltzOperationClassifier.BoltzSwapAction.CanCoopRefundBtcToArk:
+                        await TryCoopRefundBtcToArk(swap, swapStatus, cancellationToken);
+                        continue;
+                    
                     case BoltzOperationClassifier.BoltzSwapAction.CanRenegotiateChain:
                         await TryRenegotiateChainSwap(swap, cancellationToken);
                         continue;
@@ -517,30 +471,37 @@ public partial class BoltzSwapProvider : ISwapProvider
                 // Re-read swap — claim handlers may have updated status to terminal
                 var updatedSwaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
                 swap = updatedSwaps.FirstOrDefault() ?? swap;
-                if (swap.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded) continue;
+                if (swap.Status.IsSuccess())
+                {
+                    continue;
+                }
 
+                // Only update status for genuinely terminal Boltz statuses.
+                // Operational statuses (swap.expired, invoice.failedToPay, etc.)
+                // return null — the classifier above already handled the action.
                 var newStatus = BoltzSwapStatus.ToArkSwapStatus(swapStatus.Status);
+                if (newStatus is null)
+                {
+                    _logger?.LogDebug("Swap {SwapId}: Boltz '{BoltzStatus}' is an operational status, no status update",
+                        idToPoll, swapStatus.Status);
+                    continue;
+                }
 
                 if (swap.Status == newStatus)
                 {
-                    _logger?.LogDebug(
-                        "Swap {SwapId}: mapped Boltz '{BoltzStatus}' -> {Status}, unchanged",
+                    _logger?.LogDebug("Swap {SwapId}: Boltz '{BoltzStatus}' -> {Status}, unchanged",
                         idToPoll, swapStatus.Status, newStatus);
                     continue;
                 }
 
-                _logger?.LogInformation("Swap {SwapId}: status changed {OldStatus} -> {NewStatus} (Boltz: '{BoltzStatus}')",
+                _logger?.LogInformation("Swap {SwapId}: {OldStatus} -> {NewStatus} (Boltz: '{BoltzStatus}')",
                     idToPoll, swap.Status, newStatus, swapStatus.Status);
 
-                var swapWithNewStatus =
-                    swap with { Status = newStatus, UpdatedAt = DateTimeOffset.Now };
-
-                await _swapsStorage.SaveSwap(swap.WalletId,
-                    swapWithNewStatus, cancellationToken: cancellationToken);
-
+                var swapWithNewStatus = swap with { Status = newStatus.Value, UpdatedAt = DateTimeOffset.Now };
+                await _swapsStorage.SaveSwap(swap.WalletId, swapWithNewStatus, cancellationToken: cancellationToken);
                 RaiseSwapStatusChanged(swapWithNewStatus);
 
-                if (swapWithNewStatus.Status.IsSuccess())
+                if (swapWithNewStatus.Status.IsTerminalState())
                 {
                     _logger?.LogInformation("Swap {SwapId}: terminal state {Status}, removing from watch list",
                         idToPoll, swapWithNewStatus.Status);

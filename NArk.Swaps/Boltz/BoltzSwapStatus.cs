@@ -83,24 +83,17 @@ public static class BoltzSwapStatus
     public const string MinerFeePaid = "minerfee.paid";
 
 
-    public static ArkSwapStatus ToArkSwapStatus(string status)
+    /// <summary>
+    /// Maps a Boltz status string to an <see cref="ArkSwapStatus"/> only for statuses
+    /// that are <b>genuinely terminal with no further action required.</b>
+    /// Returns <c>null</c> for all other statuses — the caller (BoltzSwapProvider)
+    /// is responsible for classifying and acting on those via BoltzOperationClassifier.
+    /// </summary>
+    public static ArkSwapStatus? ToArkSwapStatus(string status) => status switch
     {
-        return status switch
-        {
-            SwapCreated or InvoiceSet => ArkSwapStatus.Pending, 
-            
-            InvoiceFailedToPay or InvoiceExpired or 
-            SwapExpired or TransactionFailed or 
-            TransactionRefunded => ArkSwapStatus.Failed, 
-            
-            TransactionMempool or TransactionConfirmed => ArkSwapStatus.Pending, 
-            InvoiceSettled or TransactionClaimed => ArkSwapStatus.Settled, 
-            
-            // Chain swap specific statuses 
-            TransactionServerMempool or TransactionServerConfirmed or TransactionClaimPending => ArkSwapStatus.Pending, 
-            TransactionLockupFailed => ArkSwapStatus.Failed, 
-            
-            _ => ArkSwapStatus.Unknown
-        };
-    }
+        InvoiceSettled or TransactionClaimed => ArkSwapStatus.Settled,
+        TransactionRefunded                  => ArkSwapStatus.Refunded,
+        InvoiceExpired                       => ArkSwapStatus.Failed,  // hold invoice cancelled, nothing left wallet
+        _                                    => null
+    };
 }
