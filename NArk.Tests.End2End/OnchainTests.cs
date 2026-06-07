@@ -127,8 +127,7 @@ public class OnchainTests
         var btcAmount = (boardingAmountSats / 100_000_000m).ToString("0.########",
             System.Globalization.CultureInfo.InvariantCulture);
 
-        await DockerHelper.Exec("bitcoin",
-            ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, btcAmount]);
+        await DockerHelper.BitcoinCli(["sendtoaddress", onchainAddress, btcAmount]);
         await DockerHelper.MineBlocks(6);
 
         // --- 2. Sync boarding UTXO via Esplora ---
