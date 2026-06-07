@@ -137,7 +137,7 @@ public partial class BoltzSwapProvider
                 cancellationToken);
 
             var newSwap =
-                swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.Now };
+                swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
 
             await _swapsStorage.SaveSwap(newSwap.WalletId, newSwap, cancellationToken);
             RaiseSwapStatusChanged(newSwap);
