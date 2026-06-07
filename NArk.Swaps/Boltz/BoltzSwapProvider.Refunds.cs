@@ -100,16 +100,9 @@ public partial class BoltzSwapProvider
         if (!vtxo.CanSpendOffchain(timeHeight))
             return;
 
-        // Get the user's wallet address for refund destination
-        var refundAddress =
-            await _contractService.DeriveContract(swap.WalletId, NextContractPurpose.SendToSelf,
-                ContractActivityState.AwaitingFundsBeforeDeactivate,
-                metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.SwapId}" },
-                cancellationToken: cancellationToken);
-        if (refundAddress == null)
-        {
-            throw new InvalidOperationException("Failed to get refund address");
-        }
+        IDestination refundDestination;
+        (refundDestination, swap) = await swap.GetOrDeriveRefundDestinationAsync(
+            _contractService, _swapsStorage, serverInfo.Network, cancellationToken);
 
         try
         {
@@ -117,7 +110,7 @@ public partial class BoltzSwapProvider
 
             var (arkTx, checkpoints) =
                 await _transactionBuilder.ConstructArkTransaction([arkCoin],
-                    [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundAddress.GetArkAddress())],
+                    [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDestination)],
                     serverInfo, cancellationToken);
 
             var checkpoint = checkpoints.Single();
@@ -152,10 +145,7 @@ public partial class BoltzSwapProvider
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Swap {SwapId}: cooperative refund failed, deactivating refund contract", swap.SwapId);
-            await _contractStorage.SaveContract(
-                refundAddress.ToEntity(swap.WalletId, activityState: ContractActivityState.Inactive),
-                cancellationToken);
+            _logger?.LogError(ex, "Swap {SwapId}: cooperative refund failed, will retry on next poll", swap.SwapId);
             throw;
         }
 
@@ -345,39 +335,9 @@ public partial class BoltzSwapProvider
                 return false;
             }
 
-            // Reuse a previously-derived refund destination if this is a retry.
-            // Without this, every poll retry calls DeriveContract again and leaks
-            // an orphan contract row into IContractStorage.
             IDestination refundAddress;
-            if (swap.Get(SwapMetadata.RefundDestination) is { } cachedAddress)
-            {
-                refundAddress = ArkAddress.Parse(cachedAddress);
-            }
-            else
-            {
-                var refundDest = await _contractService.DeriveContract(
-                    swap.WalletId, NextContractPurpose.SendToSelf,
-                    ContractActivityState.AwaitingFundsBeforeDeactivate,
-                    metadata: new Dictionary<string, string> { ["Source"] = $"chain-swap-refund:{swap.SwapId}" },
-                    cancellationToken: ct);
-                if (refundDest is null)
-                {
-                    _logger?.LogError("Swap {SwapId}: failed to derive ARK→BTC refund destination", swap.SwapId);
-                    return false;
-                }
-                var addr = refundDest.GetArkAddress();
-                refundAddress = addr;
-                var swapWithDestination = swap with
-                {
-                    Metadata = new Dictionary<string, string>(swap.Metadata ?? new Dictionary<string, string>())
-                    {
-                        [SwapMetadata.RefundDestination] = addr.ToString(serverInfo.Network == Network.Main),
-                    },
-                    UpdatedAt = DateTimeOffset.UtcNow,
-                };
-                await _swapsStorage.SaveSwap(swap.WalletId, swapWithDestination, ct);
-                swap = swapWithDestination;
-            }
+            (refundAddress, swap) = await swap.GetOrDeriveRefundDestinationAsync(
+                _contractService, _swapsStorage, serverInfo.Network, ct);
 
             var arkCoin = contract.ToCoopRefundCoin(swap.WalletId, vtxo);
 
