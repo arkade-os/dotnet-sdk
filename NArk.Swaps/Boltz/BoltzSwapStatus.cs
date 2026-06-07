@@ -38,7 +38,7 @@ public static class BoltzSwapStatus
 
     /// <summary>
     /// Boltz's server-side transaction failed (e.g. fee too low). Reverse and chain swaps.
-    /// Cooperative refund path applies.
+    /// Terminal — no client-side cooperative refund is attempted; swap is marked Failed.
     /// </summary>
     public const string TransactionFailed = "transaction.failed";
 
@@ -93,7 +93,7 @@ public static class BoltzSwapStatus
     {
         InvoiceSettled or TransactionClaimed => ArkSwapStatus.Settled,
         TransactionRefunded                  => ArkSwapStatus.Refunded,
-        InvoiceExpired                       => ArkSwapStatus.Failed,  // hold invoice cancelled, nothing left wallet
+        InvoiceExpired or TransactionFailed  => ArkSwapStatus.Failed,
         _                                    => null
     };
 }
