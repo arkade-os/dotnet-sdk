@@ -653,7 +653,7 @@ public class SwapsManagementService : IAsyncDisposable
             ExpectedAmount: details.Amount ?? 0,
             ContractScript: "", // Will be updated after contract reconstruction
             Address: details.LockupAddress,
-            Status: BoltzSwapProvider.MapBoltzStatus(restored.Status),
+            Status: BoltzSwapStatus.ToArkSwapStatus(restored.Status),
             FailReason: null,
             CreatedAt: DateTimeOffset.FromUnixTimeSeconds(restored.CreatedAt),
             UpdatedAt: DateTimeOffset.UtcNow,
