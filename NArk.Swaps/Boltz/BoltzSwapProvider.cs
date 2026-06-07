@@ -156,32 +156,10 @@ public partial class BoltzSwapProvider : ISwapProvider
     public string ProviderId => Id;
     public string DisplayName => "Boltz";
 
-    public bool SupportsRoute(SwapRoute route)
-    {
-        // Boltz supports:
-        // Ark <-> Lightning (submarine / reverse submarine)
-        // Ark <-> BTC on-chain (chain swaps)
-        return route switch
-        {
-            { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.Lightning } => true,
-            { Source.Network: SwapNetwork.Lightning, Destination.Network: SwapNetwork.Ark } => true,
-            { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.BitcoinOnchain } => true,
-            { Source.Network: SwapNetwork.BitcoinOnchain, Destination.Network: SwapNetwork.Ark } => true,
-            _ => false
-        };
-    }
+    public bool SupportsRoute(SwapRoute route) => BoltzRouteHelper.SupportsRoute(route);
 
-    public Task<IReadOnlyCollection<SwapRoute>> GetAvailableRoutesAsync(CancellationToken ct)
-    {
-        IReadOnlyCollection<SwapRoute> routes = new[]
-        {
-            new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning),   // Submarine: Ark -> LN
-            new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc),   // Reverse: LN -> Ark
-            new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain),     // Chain: Ark -> BTC
-            new SwapRoute(SwapAsset.BtcOnchain, SwapAsset.ArkBtc),     // Chain: BTC -> Ark
-        };
-        return Task.FromResult(routes);
-    }
+    public Task<IReadOnlyCollection<SwapRoute>> GetAvailableRoutesAsync(CancellationToken ct) =>
+        BoltzRouteHelper.GetAvailableRoutesAsync(ct);
 
     public async Task StartAsync(CancellationToken ct)
     {
@@ -252,51 +230,16 @@ public partial class BoltzSwapProvider : ISwapProvider
         _linkedStartCts = null;
     }
 
-    public async Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct)
-    {
-        var isReverse = route.Source.Network == SwapNetwork.Lightning;
-        var isChain = route.Source.Network == SwapNetwork.BitcoinOnchain ||
-                      route.Destination.Network == SwapNetwork.BitcoinOnchain;
+    public Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct) =>
+        BoltzRouteHelper.GetLimitsAsync(route, _limitsValidator, ct);
 
-        BoltzLimits? limits;
-        if (isChain)
-        {
-            var isBtcToArk = route.Source.Network == SwapNetwork.BitcoinOnchain;
-            limits = await _limitsValidator.GetChainLimitsAsync(isBtcToArk, ct);
-        }
-        else
-        {
-            limits = await _limitsValidator.GetLimitsAsync(isReverse, ct);
-        }
+    public Task<SwapQuote> GetQuoteAsync(SwapRoute route, long amount, CancellationToken ct) =>
+        BoltzRouteHelper.GetQuoteAsync(route, amount, _limitsValidator, ct);
 
-        if (limits == null)
-            throw new InvalidOperationException($"Unable to fetch Boltz limits for route {route}");
-
-        return new SwapLimits
-        {
-            Route = route,
-            MinAmount = limits.MinAmount,
-            MaxAmount = limits.MaxAmount,
-            FeePercentage = limits.FeePercentage,
-            MinerFee = limits.MinerFee
-        };
-    }
-
-    public async Task<SwapQuote> GetQuoteAsync(SwapRoute route, long amount, CancellationToken ct)
-    {
-        var limits = await GetLimitsAsync(route, ct);
-        // FeePercentage is a fraction (e.g. 0.005 for 0.5%) — normalised at
-        // BoltzLimits construction. Direct multiplication is correct.
-        var fee = (long)(amount * limits.FeePercentage) + limits.MinerFee;
-        return new SwapQuote
-        {
-            Route = route,
-            SourceAmount = amount,
-            DestinationAmount = amount - fee,
-            TotalFees = fee,
-            ExchangeRate = 1m // BTC-to-BTC, same asset
-        };
-    }
+    // kept for internal use by chain swap initiation (needs raw BoltzLimits, not SwapLimits)
+    internal Task<BoltzLimits?> GetChainLimitsAsync(bool isBtcToArk, CancellationToken ct) =>
+        _limitsValidator.GetChainLimitsAsync(isBtcToArk, ct);
+    
 
     public event EventHandler<SwapStatusChangedEvent>? SwapStatusChanged;
 
