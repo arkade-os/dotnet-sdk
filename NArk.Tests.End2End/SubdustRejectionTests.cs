@@ -65,6 +65,10 @@ public class SubdustRejectionTests
 
         await bobVtxoReceivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
+        // Mine a block to let arkd finalise the batch on-chain and exit the
+        // VTXO_RECOVERABLE window before we attempt the dust-rejection spend.
+        await DockerHelper.MineBlocks(1);
+
         // Bob now has a 100-sat VTXO. Trying to spend it must be rejected.
         var carolContract = await alice.contractService.DeriveContract(alice.walletIdentifier, NextContractPurpose.Receive);
         var bobCoinService = new CoinService(alice.clientTransport, bobStorage.ContractStorage,
@@ -74,9 +78,19 @@ public class SubdustRejectionTests
             bobContractService, alice.clientTransport, new DefaultCoinSelector(),
             alice.safetyService, TestStorage.CreateIntentStorage());
 
-        var ex = Assert.CatchAsync(
-            () => bobSpending.Spend(bobWalletId,
-                [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(100), carolContract.GetArkAddress())]));
+        // The server may still report VTXO_RECOVERABLE for a short window after
+        // the batch confirms. Retry until we get the expected dust rejection.
+        Exception? ex = null;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            ex = Assert.CatchAsync(
+                () => bobSpending.Spend(bobWalletId,
+                    [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(100), carolContract.GetArkAddress())]));
+            if (ex?.Message.Contains("VTXO_RECOVERABLE", StringComparison.OrdinalIgnoreCase) != true)
+                break;
+            await Task.Delay(TimeSpan.FromSeconds(3));
+        }
+
         Assert.That(ex, Is.Not.Null, "Spending a sub-dust VTXO must be rejected");
         Assert.That(ex!.Message, Does.Contain("dust").IgnoreCase,
             "Exception must originate from the dust threshold check, not an unrelated error");
