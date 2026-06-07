@@ -383,33 +383,90 @@ public class SwapsManagementService : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
-        var boltz = GetBoltzProvider();
 
         _logger?.LogInformation("Initiating ARK->BTC chain swap for wallet {WalletId}, amount={Amount}, dest={Dest}",
+            walletId, amountSats, btcDestination);
+
+        var (swapId, arkAddress, lockupAmount, _) =
+            await RegisterArkToBtcChainSwapAsync(walletId, amountSats, btcDestination, cancellationToken);
+
+        var swap = (await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken))
+            .Single();
+
+        try
+        {
+            await _spendingService.Spend(walletId,
+                [new ArkTxOut(ArkTxOutType.Vtxo, lockupAmount, arkAddress)], cancellationToken);
+        }
+        catch (Exception e)
+        {
+            await _swapsStorage.SaveSwap(walletId,
+                swap with { Status = ArkSwapStatus.Failed, FailReason = e.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
+                cancellationToken);
+            throw;
+        }
+
+        _logger?.LogInformation("ARK->BTC chain swap {SwapId} created, Ark locked", swapId);
+        return swapId;
+    }
+
+    /// <summary>
+    /// Registers an ARK→BTC chain swap with Boltz and imports the VHTLC contract into
+    /// storage, but does <b>not</b> send funds to the lockup address. Returns the swap ID,
+    /// the ARK lockup address, the lockup amount, and the BTC-side timeout block height.
+    /// </summary>
+    /// <remarks>
+    /// Exposed as <c>internal</c> for E2E tests that need to mine past the timeout before
+    /// funding — this lets them trigger the natural <c>swap.expired</c> path without DB
+    /// manipulation. Call <see cref="InitiateArkToBtcChainSwap"/> for normal flows.
+    /// </remarks>
+    internal async Task<(string SwapId, ArkAddress VhtlcAddress, long LockupAmount, int TimeoutBlockHeight)>
+        RegisterArkToBtcChainSwapAsync(
+            string walletId,
+            long amountSats,
+            BitcoinAddress btcDestination,
+            CancellationToken cancellationToken = default)
+    {
+        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
+        var boltz = GetBoltzProvider();
+
+        _logger?.LogInformation("Registering ARK->BTC chain swap for wallet {WalletId}, amount={Amount}, dest={Dest}",
             walletId, amountSats, btcDestination);
 
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
         var refundDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
 
-        // Extract pub key hex for Boltz API
-        var extractedRefund = OutputDescriptorHelpers.Extract(refundDescriptor);
-        var refundPubKeyHex = Convert.ToHexString(
-            extractedRefund.PubKey?.ToBytes() ?? extractedRefund.XOnlyPubKey.ToBytes()).ToLowerInvariant();
-
         var result = await boltz.BoltzService.CreateArkToBtcSwapAsync(
-            amountSats, refundPubKeyHex, cancellationToken);
+            amountSats, refundDescriptor, cancellationToken);
 
-        // Parse the Ark lockup address (Boltz's fulmine created the VHTLC)
         var arkLockupAddressStr = result.Swap.LockupDetails!.LockupAddress;
         var arkAddress = ArkAddress.Parse(arkLockupAddressStr);
+
+        var contract = result.Contract!;
+        var contractScript = contract.GetArkAddress().ScriptPubKey.ToHex();
+
+        await _contractService.ImportContract(walletId, contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"chain-swap:{result.Swap.Id}" },
+            cancellationToken: cancellationToken);
+
+        var lockupDetails = result.Swap.LockupDetails;
+        var lockupAmount = lockupDetails?.Amount is > 0 ? lockupDetails.Amount : amountSats;
+
+        var timeoutBlockHeight =
+            (lockupDetails?.Timeouts ?? lockupDetails?.TimeoutBlockHeights)?.Refund
+            ?? lockupDetails?.TimeoutBlockHeight
+            ?? 0;
+        if (timeoutBlockHeight == 0)
+            _logger?.LogWarning("ARK→BTC chain swap {SwapId}: Boltz response contained no refund timeout — defaulting to 0, which will prevent mining past expiry", result.Swap.Id);
 
         var swap = new ArkSwap(
             result.Swap.Id,
             walletId,
             ArkSwapType.ChainArkToBtc,
-            "", // No invoice for chain swaps
+            "",
             amountSats,
-            arkLockupAddressStr, // Store ARK lockup address as identifier
+            contractScript,
             arkLockupAddressStr,
             ArkSwapStatus.Pending,
             null,
@@ -431,23 +488,10 @@ public class SwapsManagementService : IAsyncDisposable
 
         await _swapsStorage.SaveSwap(walletId, swap, cancellationToken);
 
-        // Auto-pay: send Ark VTXOs to the lockup address
-        try
-        {
-            var lockupAmount = result.Swap.LockupDetails?.Amount ?? amountSats;
-            await _spendingService.Spend(walletId,
-                [new ArkTxOut(ArkTxOutType.Vtxo, lockupAmount, arkAddress)], cancellationToken);
-        }
-        catch (Exception e)
-        {
-            await _swapsStorage.SaveSwap(walletId,
-                swap with { Status = ArkSwapStatus.Failed, FailReason = e.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
-                cancellationToken);
-            throw;
-        }
+        _logger?.LogInformation("ARK->BTC chain swap {SwapId} registered (lockup not yet sent), timeout={Timeout}",
+            result.Swap.Id, timeoutBlockHeight);
 
-        _logger?.LogInformation("ARK->BTC chain swap {SwapId} created, Ark locked", result.Swap.Id);
-        return result.Swap.Id;
+        return (result.Swap.Id, arkAddress, lockupAmount, timeoutBlockHeight);
     }
 
     // ─── Swap Recovery Inspection ──────────────────────────────────

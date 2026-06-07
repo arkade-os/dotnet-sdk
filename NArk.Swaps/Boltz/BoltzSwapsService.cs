@@ -241,10 +241,16 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     /// </summary>
     public async Task<ChainSwapResult> CreateArkToBtcSwapAsync(
         long amountSats,
-        string refundPubKeyHex,
+        OutputDescriptor refundDescriptor,
         CancellationToken ct = default)
     {
-        await clientTransport.GetServerInfoAsync(ct);
+        var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
+        var extracted = OutputDescriptorHelpers.Extract(refundDescriptor);
+        var refundPubKeyHex = Convert.ToHexString(
+            extracted.PubKey?.ToBytes()
+            ?? extracted.XOnlyPubKey.ToBytes()
+        ).ToLowerInvariant();
+
 
         var preimage = RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
@@ -271,7 +277,34 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new InvalidOperationException(
                 $"Chain swap {response.Id}: missing claim details (BTC side). Raw: {SerializeChainResponse(response)}");
 
-        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey);
+        // Reconstruct the VHTLC that Boltz/Fulmine created on the ARK side.
+        // For ARK→BTC: user is the sender (refundDescriptor), Fulmine is the receiver.
+        var lockupDetails = response.LockupDetails;
+        var timeouts = lockupDetails.Timeouts ?? lockupDetails.TimeoutBlockHeights
+            ?? throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing timeouts in ARK lockup details");
+
+        var receiverDescriptor = KeyExtensions.ParseOutputDescriptor(
+            lockupDetails.ServerPublicKey!, operatorTerms.Network);
+
+        var vhtlcContract = new VHTLCContract(
+            server: operatorTerms.SignerKey,
+            sender: refundDescriptor,
+            receiver: receiverDescriptor,
+            preimage: preimage,
+            refundLocktime: new LockTime(timeouts.Refund),
+            unilateralClaimDelay: ParseSequence(timeouts.UnilateralClaim),
+            unilateralRefundDelay: ParseSequence(timeouts.UnilateralRefund),
+            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver));
+
+        var computedAddress = vhtlcContract.GetArkAddress()
+            .ToString(operatorTerms.Network.ChainName == ChainName.Mainnet);
+        if (computedAddress != lockupDetails.LockupAddress)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: ARK lockup address mismatch. " +
+                $"Computed {computedAddress}, Boltz expects {lockupDetails.LockupAddress}");
+
+        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey, vhtlcContract);
     }
 
     // Chain Swap Serialization
