@@ -13,8 +13,6 @@ using NArk.Core.Extensions;
 using NArk.Core.Services;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
-using NArk.Swaps.Boltz.Client;
-using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Restore;
 using NArk.Swaps.Models;
 using NArk.Core.Transport;

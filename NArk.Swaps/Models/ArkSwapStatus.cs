@@ -5,7 +5,6 @@ public enum ArkSwapStatus
     Pending,
     Settled,
     Failed,
-    Recoverable,
     Refunded,
     Unknown
 }
