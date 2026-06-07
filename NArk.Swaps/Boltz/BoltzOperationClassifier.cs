@@ -48,12 +48,7 @@ public static class BoltzOperationClassifier
     //It applies only to Chain Swaps, not Submarine or Reverse Swaps.
     public static bool CanRenegotiateChainSwap(ArkSwap swap, string chainSwapStatus)
     {
-        if (!IsChainSwap(swap))
-        {
-            return false;
-        }
-
-        if (swap.Status.IsSuccess())
+        if (!ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToBtc) && !ValidateTypeAndStatus(swap, ArkSwapType.ChainBtcToArk))
         {
             return false;
         }
@@ -61,31 +56,29 @@ public static class BoltzOperationClassifier
     }
     
     public static bool CanCoopRefundSubmarine(ArkSwap swap, string boltzSwapStatus) =>
-        IsCoopRefundable(swap, ArkSwapType.Submarine) && IsRefundableStatus(boltzSwapStatus);
+        ValidateTypeAndStatus(swap, ArkSwapType.Submarine) && IsRefundableStatus(boltzSwapStatus);
 
     public static bool CanCoopRefundArkToBtc(ArkSwap swap, string boltzSwapStatus) => 
-        IsCoopRefundable(swap, ArkSwapType.ChainArkToBtc) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
+        ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToBtc) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
     
     public static bool CanCoopRefundBtcToArk(ArkSwap swap, string boltzSwapStatus) =>
-        IsCoopRefundable(swap, ArkSwapType.ChainBtcToArk) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
+        ValidateTypeAndStatus(swap, ArkSwapType.ChainBtcToArk) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
     
     public static bool CanClaimChainSwap(ArkSwap swap, string status)
     {
-        if (swap.SwapType != ArkSwapType.ChainArkToBtc)
-        {
-            return false; 
-        }
-
-        return status is BoltzSwapStatus.TransactionServerMempool or BoltzSwapStatus.TransactionServerConfirmed;
-    }
-    
-    public static bool ShouldSignChainSwap(ArkSwap swap, string status)
-    {
-        if (swap.SwapType != ArkSwapType.ChainBtcToArk)
+        if (!ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToBtc))
         {
             return false;
         }
+        return status is BoltzSwapStatus.TransactionServerMempool or BoltzSwapStatus.TransactionServerConfirmed;
+    }
 
+    public static bool ShouldSignChainSwap(ArkSwap swap, string status)
+    {
+        if (!ValidateTypeAndStatus(swap, ArkSwapType.ChainBtcToArk))
+        {
+            return false;
+        }
         return status is BoltzSwapStatus.TransactionClaimPending;
     }
     
@@ -100,9 +93,8 @@ public static class BoltzOperationClassifier
             _ => false
         };
     }
-    private static bool IsChainSwap(ArkSwap swap) =>
-        swap.SwapType is ArkSwapType.ChainArkToBtc or ArkSwapType.ChainBtcToArk;
-    private static bool IsCoopRefundable(ArkSwap swap, ArkSwapType expectedType)
+    
+    private static bool ValidateTypeAndStatus(ArkSwap swap, ArkSwapType expectedType)
     {
         if (swap.SwapType != expectedType)
         {
