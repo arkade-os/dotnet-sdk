@@ -6,10 +6,10 @@ public static class BoltzRouteHelper
 {
     public static readonly SwapRoute[] Routes =
     [
-        new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning),   // Submarine: ARK → LN
-        new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc),   // Reverse:   LN  → ARK
-        new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain),     // Chain:     ARK → BTC
-        new SwapRoute(SwapAsset.BtcOnchain, SwapAsset.ArkBtc),     // Chain:     BTC → ARK
+        new (SwapAsset.ArkBtc, SwapAsset.BtcLightning),   // Submarine: ARK → LN
+        new (SwapAsset.BtcLightning, SwapAsset.ArkBtc),   // Reverse:   LN  → ARK
+        new (SwapAsset.ArkBtc, SwapAsset.BtcOnchain),     // Chain:     ARK → BTC
+        new (SwapAsset.BtcOnchain, SwapAsset.ArkBtc),     // Chain:     BTC → ARK
     ];
 
     public static Task<IReadOnlyCollection<SwapRoute>> GetAvailableRoutesAsync(CancellationToken _) =>

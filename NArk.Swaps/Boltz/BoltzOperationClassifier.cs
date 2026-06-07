@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
 
 namespace NArk.Swaps.Boltz;
@@ -18,9 +19,14 @@ public class BoltzOperationClassifier
             return BoltzSwapAction.CanCoopRefundSubmarine;
         }
 
-        if (CanCoopRefundChainSwap(swap, boltzStatus))
+        if (CanCoopRefundArkToBtc(swap, boltzStatus))
         {
-            return BoltzSwapAction.CanCoopRefundChain;
+            return BoltzSwapAction.CanCoopRefundArkToBtc;
+        }
+        
+        if (CanCoopRefundBtcToArk(swap, boltzStatus))
+        {
+            return BoltzSwapAction.CanCoopRefundBtcToArk;
         }
 
         if (CanClaimChainSwap(swap, boltzStatus))
@@ -47,42 +53,21 @@ public class BoltzOperationClassifier
             return false;
         }
 
-        if (swap.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded)
+        if (swap.Status.IsSuccess())
         {
             return false;
         }
         return chainSwapStatus == BoltzSwapStatus.TransactionLockupFailed;
     }
+    
+    public static bool CanCoopRefundSubmarine(ArkSwap swap, string boltzSwapStatus) =>
+        IsCoopRefundable(swap, ArkSwapType.Submarine) && IsRefundableStatus(boltzSwapStatus);
 
-    // if (swap.SwapType is ArkSwapType.Submarine && swap.Status is not ArkSwapStatus.Refunded &&
-    // IsRefundableStatus(swapStatus.Status))
-    public static bool CanCoopRefundSubmarine(ArkSwap swap, string boltzSwapStatus)
-    {
-        if (swap.SwapType != ArkSwapType.Submarine)
-        {
-            return false;
-        }
-
-        return swap.Status != ArkSwapStatus.Refunded && IsRefundableStatus(boltzSwapStatus);
-    }
-
-    //if ((swap.SwapType is ArkSwapType.ChainBtcToArk or ArkSwapType.ChainArkToBtc) &&
-    // (swap.Status is not (ArkSwapStatus.Settled or ArkSwapStatus.Refunded)) &&
-    // IsChainRefundableStatus(swapStatus.Status))
-    public static bool CanCoopRefundChainSwap(ArkSwap swap, string boltzSwapStatus)
-    {
-        if (!IsChainSwap(swap))
-        {
-            return false;
-        }
-
-        if (swap.Status is ArkSwapStatus.Settled or ArkSwapStatus.Refunded)
-        {
-            return false;
-        }
-
-        return boltzSwapStatus == BoltzSwapStatus.SwapExpired;
-    }
+    public static bool CanCoopRefundArkToBtc(ArkSwap swap, string boltzSwapStatus) => 
+        IsCoopRefundable(swap, ArkSwapType.ChainArkToBtc) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
+    
+    public static bool CanCoopRefundBtcToArk(ArkSwap swap, string boltzSwapStatus) =>
+        IsCoopRefundable(swap, ArkSwapType.ChainBtcToArk) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
     
     public static bool CanClaimChainSwap(ArkSwap swap, string status)
     {
@@ -93,8 +78,7 @@ public class BoltzOperationClassifier
 
         return status is BoltzSwapStatus.TransactionServerMempool or BoltzSwapStatus.TransactionServerConfirmed;
     }
-
-
+    
     public static bool ShouldSignChainSwap(ArkSwap swap, string status)
     {
         if (swap.SwapType != ArkSwapType.ChainBtcToArk)
@@ -109,13 +93,14 @@ public class BoltzOperationClassifier
     public enum BoltzSwapAction
     {
         CanCoopRefundSubmarine,
-        CanCoopRefundChain,
+        CanCoopRefundArkToBtc,
+        CanCoopRefundBtcToArk,
         CanRenegotiateChain,
         CanClaimChain,
         ReadyToSignClaim,
     }
     
-    internal static bool IsRefundableStatus(string status)
+    private static bool IsRefundableStatus(string status)
     {
         return status switch
         {
@@ -126,6 +111,15 @@ public class BoltzOperationClassifier
             _ => false
         };
     }
-    internal static bool IsChainSwap(ArkSwap swap) =>
+    private static bool IsChainSwap(ArkSwap swap) =>
         swap.SwapType is ArkSwapType.ChainArkToBtc or ArkSwapType.ChainBtcToArk;
+    private static bool IsCoopRefundable(ArkSwap swap, ArkSwapType expectedType)
+    {
+        if (swap.SwapType != expectedType)
+        {
+            return false;
+        }
+        return !swap.Status.IsSuccess();
+    }
+
 }

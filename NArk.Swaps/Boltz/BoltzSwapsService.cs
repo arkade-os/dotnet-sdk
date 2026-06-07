@@ -131,8 +131,6 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
                 $"Invoice amount ({invoiceAmountSats} sats) must be greater than onchain amount ({onchainAmountSats} sats) to cover swap fees");
         }
 
-        var swapFee = invoiceAmountSats - onchainAmountSats;
-
         var vhtlcContract = new VHTLCContract(
             server: operatorTerms.SignerKey,
             sender: KeyExtensions.ParseOutputDescriptor(response.RefundPublicKey, operatorTerms.Network),

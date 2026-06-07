@@ -75,7 +75,7 @@ public class ChainSwapTests
         var boltzProvider = new BoltzSwapProvider(boltzClient, new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions() { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
-            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
         await using var swapMgr = new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
             spendingService,
@@ -170,7 +170,7 @@ public class ChainSwapTests
         var boltzProvider = new BoltzSwapProvider(boltzClient, new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions() { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
-            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
         await using var swapMgr = new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
             spendingService,
@@ -279,7 +279,7 @@ public class ChainSwapTests
                 { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
-            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
         await using var swapMgr = new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
             spendingService, testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
@@ -389,7 +389,7 @@ public class ChainSwapTests
                 { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
-            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
         await using var swapMgr = new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
             spendingService, testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
@@ -483,7 +483,7 @@ public class ChainSwapTests
                 { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
-            testingPrerequisite.safetyService, spendingService, intentStorage, chainTimeProvider);
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
         await using var swapMgr = new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
             spendingService, testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,

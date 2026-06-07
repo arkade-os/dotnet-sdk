@@ -90,18 +90,17 @@ public static class BoltzSwapStatus
             SwapCreated or InvoiceSet => ArkSwapStatus.Pending, 
             
             InvoiceFailedToPay or InvoiceExpired or 
-                SwapExpired or TransactionFailed or 
-                TransactionRefunded => ArkSwapStatus.Failed, 
+            SwapExpired or TransactionFailed or 
+            TransactionRefunded => ArkSwapStatus.Failed, 
             
-                TransactionMempool or TransactionConfirmed => ArkSwapStatus.Pending, 
-                InvoiceSettled or TransactionClaimed => ArkSwapStatus.Settled, 
+            TransactionMempool or TransactionConfirmed => ArkSwapStatus.Pending, 
+            InvoiceSettled or TransactionClaimed => ArkSwapStatus.Settled, 
             
-                // Chain swap specific statuses 
-                TransactionServerMempool or TransactionServerConfirmed or TransactionClaimPending => ArkSwapStatus.Pending, 
-                TransactionLockupFailed => ArkSwapStatus.Failed, 
+            // Chain swap specific statuses 
+            TransactionServerMempool or TransactionServerConfirmed or TransactionClaimPending => ArkSwapStatus.Pending, 
+            TransactionLockupFailed => ArkSwapStatus.Failed, 
             
-                _ => ArkSwapStatus.Unknown
-        
+            _ => ArkSwapStatus.Unknown
         };
     }
 }
