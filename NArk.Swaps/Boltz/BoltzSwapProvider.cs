@@ -441,28 +441,40 @@ public partial class BoltzSwapProvider : ISwapProvider
 
                 switch (BoltzOperationClassifier.Classify(swap, swapStatus.Status))
                 {
-                    case BoltzOperationClassifier.BoltzSwapAction.CanCoopRefundSubmarine:
+                    case BoltzSwapAction.CanCoopRefundSubmarine:
                         
                         await RequestSubmarineCoopRefund(swap, swapStatus, cancellationToken);
                         continue;
                     
-                    case BoltzOperationClassifier.BoltzSwapAction.CanCoopRefundArkToBtc:
+                    case BoltzSwapAction.CanCoopRefundArkToBtc:
                         await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
                         continue;
                     
-                    case BoltzOperationClassifier.BoltzSwapAction.CanCoopRefundBtcToArk:
+                    case BoltzSwapAction.CanCoopRefundBtcToArk:
                         await TryCoopRefundBtcToArk(swap, swapStatus, cancellationToken);
                         continue;
-                    
-                    case BoltzOperationClassifier.BoltzSwapAction.CanRenegotiateChain:
-                        await TryRenegotiateChainSwap(swap, cancellationToken);
+
+                    case BoltzSwapAction.CanRenegotiateChain:
+                    {
+                        if (await TryRenegotiateChainSwap(swap, cancellationToken))
+                        {
+                            continue;
+                        }
+
+                        if (swap.SwapType == ArkSwapType.ChainArkToBtc)
+                        {
+                            await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
+                            continue;
+                        }
+                        await TryCoopRefundBtcToArk(swap, swapStatus, cancellationToken);
                         continue;
+                    }
                     
-                    case BoltzOperationClassifier.BoltzSwapAction.CanClaimChain:
+                    case BoltzSwapAction.CanClaimChain:
                         await TryClaimBtcForChainSwap(swap, cancellationToken);
                         break;
                     
-                    case BoltzOperationClassifier.BoltzSwapAction.ReadyToSignClaim:
+                    case BoltzSwapAction.ReadyToSignClaim:
                         await TrySignBoltzBtcClaim(swap, cancellationToken);
                         break;
                 }
@@ -497,7 +509,7 @@ public partial class BoltzSwapProvider : ISwapProvider
                 _logger?.LogInformation("Swap {SwapId}: {OldStatus} -> {NewStatus} (Boltz: '{BoltzStatus}')",
                     idToPoll, swap.Status, newStatus, swapStatus.Status);
 
-                var swapWithNewStatus = swap with { Status = newStatus.Value, UpdatedAt = DateTimeOffset.Now };
+                var swapWithNewStatus = swap with { Status = newStatus.Value, UpdatedAt = DateTimeOffset.UtcNow };
                 await _swapsStorage.SaveSwap(swap.WalletId, swapWithNewStatus, cancellationToken: cancellationToken);
                 RaiseSwapStatusChanged(swapWithNewStatus);
 

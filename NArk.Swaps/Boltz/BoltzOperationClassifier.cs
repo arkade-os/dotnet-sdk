@@ -4,7 +4,7 @@ using NArk.Swaps.Models;
 
 namespace NArk.Swaps.Boltz;
 
-public class BoltzOperationClassifier
+public static class BoltzOperationClassifier
 {
     
     public static BoltzSwapAction? Classify(ArkSwap swap, string boltzStatus)
@@ -87,17 +87,6 @@ public class BoltzOperationClassifier
         }
 
         return status is BoltzSwapStatus.TransactionClaimPending;
-    }
-    
-    
-    public enum BoltzSwapAction
-    {
-        CanCoopRefundSubmarine,
-        CanCoopRefundArkToBtc,
-        CanCoopRefundBtcToArk,
-        CanRenegotiateChain,
-        CanClaimChain,
-        ReadyToSignClaim,
     }
     
     private static bool IsRefundableStatus(string status)
