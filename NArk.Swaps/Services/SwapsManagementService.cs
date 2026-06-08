@@ -465,7 +465,7 @@ public class SwapsManagementService : IAsyncDisposable
             walletId,
             ArkSwapType.ChainArkToBtc,
             "",
-            amountSats,
+            lockupAmount,
             contractScript,
             arkLockupAddressStr,
             ArkSwapStatus.Pending,
