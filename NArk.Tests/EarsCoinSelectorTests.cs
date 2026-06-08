@@ -637,6 +637,43 @@ public class CoinSelectionEngineTests
     }
 
     [Test]
+    public void BuildBuckets_NoExpiryCoins_GoLastAndDontCorruptWindowing()
+    {
+        // Bug: windowStart == 0 caused all coins to merge into one bucket.
+        // No-expiry coin (ExpiryGroup=0) must be separated before windowing.
+        var candidates = new[]
+        {
+            EarsTestHelpers.Candidate(1000, expiry: 0u),   // no expiry — boarding UTXO
+            EarsTestHelpers.Candidate(1000, expiry: 100u),
+            EarsTestHelpers.Candidate(1000, expiry: 500u), // gap > 144 blocks from 100
+        };
+
+        var buckets = CoinSelectionEngine.BuildBuckets(candidates, windowBlocks: 144);
+
+        // Expect 3 buckets: [100], [500], [0] — not one collapsed bucket
+        Assert.That(buckets, Has.Count.EqualTo(3));
+        Assert.That(buckets[0].ExpiryGroup, Is.EqualTo(100u));
+        Assert.That(buckets[1].ExpiryGroup, Is.EqualTo(500u));
+        Assert.That(buckets[2].ExpiryGroup, Is.EqualTo(0u)); // no-expiry last
+    }
+
+    [Test]
+    public void BuildBuckets_OnlyNoExpiryCoins_FormsSingleBucket()
+    {
+        var candidates = new[]
+        {
+            EarsTestHelpers.Candidate(1000, expiry: 0u),
+            EarsTestHelpers.Candidate(2000, expiry: 0u),
+        };
+
+        var buckets = CoinSelectionEngine.BuildBuckets(candidates, windowBlocks: 144);
+
+        Assert.That(buckets, Has.Count.EqualTo(1));
+        Assert.That(buckets[0].ExpiryGroup, Is.EqualTo(0u));
+        Assert.That(buckets[0].Coins, Has.Count.EqualTo(2));
+    }
+
+    [Test]
     public void BuildBuckets_MultipleBatches_WithGaps()
     {
         // Three separate batches: [100,120], [300,310], [600]

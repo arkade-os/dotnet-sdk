@@ -112,24 +112,31 @@ public sealed class CoinSelectionEngine
 
     // Groups candidates into buckets where all coins within a bucket expire within
     // ExpiryWindowBlocks of the earliest coin in that bucket (~24h by default).
-    // Coins with no expiry height (ExpiryGroup == 0) form their own bucket.
+    // Coins with no expiry height (ExpiryGroup == 0) are separated before windowing —
+    // mixing them into the loop would set windowStart=0 and collapse all coins into one bucket.
+    // No-expiry coins go last: prefer spending expiring VTXOs first.
     internal static IReadOnlyList<ExpiryBucket> BuildBuckets(
         IReadOnlyList<CoinCandidate> candidates,
         uint windowBlocks)
     {
-        var sorted = candidates.OrderBy(c => c.ExpiryGroup).ToList();
+        var noExpiry = candidates.Where(c => c.ExpiryGroup == 0u).ToList();
+        var withExpiry = candidates
+            .Where(c => c.ExpiryGroup != 0u)
+            .OrderBy(c => c.ExpiryGroup)
+            .ToList();
+
         var buckets = new List<ExpiryBucket>();
         var current = new List<CoinCandidate>();
         var windowStart = 0u;
 
-        foreach (var coin in sorted)
+        foreach (var coin in withExpiry)
         {
             if (current.Count == 0)
             {
                 current.Add(coin);
                 windowStart = coin.ExpiryGroup;
             }
-            else if (windowStart == 0u || coin.ExpiryGroup - windowStart <= windowBlocks)
+            else if (coin.ExpiryGroup - windowStart <= windowBlocks)
             {
                 current.Add(coin);
             }
@@ -143,6 +150,9 @@ public sealed class CoinSelectionEngine
 
         if (current.Count > 0)
             buckets.Add(MakeBucket(current));
+
+        if (noExpiry.Count > 0)
+            buckets.Add(MakeBucket(noExpiry));
 
         return buckets;
     }
