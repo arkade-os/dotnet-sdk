@@ -19,7 +19,10 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
             if (bucket.Coins.Count > policy.MaxBnBInputs)
                 continue;
 
-            var result = SearchBnB(bucket.Coins, context, bucket.ExpiryGroup);
+            var eligible = context.AllowDustInputs
+                ? bucket.Coins
+                : bucket.Coins.Where(c => !c.IsDustProne).ToList();
+            var result = SearchBnB(eligible, context, bucket.ExpiryGroup);
             best = PickBetter(best, result);
 
             if (best?.Change == Money.Zero)

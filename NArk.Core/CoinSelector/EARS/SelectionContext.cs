@@ -7,6 +7,7 @@ public sealed record SelectionContext(
     Money DustThreshold,
     bool AllowExpiryMixing,
     bool AllowSubDust,
+    bool AllowDustInputs,
     int MaxInputs,
     int CurrentSubDustOutputs,
     int MaxSubDustOutputs,

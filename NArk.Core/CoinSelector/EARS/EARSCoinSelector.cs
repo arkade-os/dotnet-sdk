@@ -65,12 +65,13 @@ public sealed class EARSCoinSelector : ICoinSelector
         Money dust,
         int currentSubDust,
         int maxSubDust,
-        IReadOnlyList<AssetRequirement>? assetRequirements = null) =>
-        new(
-            TargetAmount: target,
+        IReadOnlyList<AssetRequirement>? assetRequirements = null,
+        bool allowDustInputs = true) =>
+        new(TargetAmount: target,
             DustThreshold: dust,
             AllowExpiryMixing: false,
             AllowSubDust: currentSubDust < maxSubDust,
+            AllowDustInputs: allowDustInputs,
             MaxInputs: 100,
             CurrentSubDustOutputs: currentSubDust,
             MaxSubDustOutputs: maxSubDust,

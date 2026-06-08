@@ -67,6 +67,9 @@ public sealed class RgliStrategy : ICoinSelectionStrategy
             if (selected.Count >= context.MaxInputs)
                 break;
 
+            if (coin.IsDustProne && !context.AllowDustInputs)
+                continue;
+
             selected.Add(coin.Coin);
             total += coin.Value;
 

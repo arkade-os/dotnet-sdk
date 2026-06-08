@@ -42,28 +42,44 @@ public sealed class SingleRandomDrawStrategy : ICoinSelectionStrategy
             if (selected.Count >= context.MaxInputs)
                 break;
 
+            if (coin.IsDustProne && !context.AllowDustInputs)
+                continue;
+
             selected.Add(coin.Coin);
             total += coin.Value;
 
-            if (total >= context.TargetAmount)
-                break;
+            if (total < context.TargetAmount)
+                continue;
+
+            var change = total - context.TargetAmount;
+
+            if (change == Money.Zero || change >= context.DustThreshold || context.AllowSubDust)
+                return new SelectionResult(
+                    SelectedCoins: selected,
+                    TotalValue: total,
+                    Change: change,
+                    ExpiryGroup: expiryGroup,
+                    Strategy: SelectionStrategy.SRD,
+                    Waste: change,
+                    IsValid: true,
+                    ExpiryMixedFallback: expiryMixed);
         }
 
         if (total < context.TargetAmount)
             return null;
 
-        var change = total - context.TargetAmount;
+        var finalChange = total - context.TargetAmount;
 
-        if (change > Money.Zero && change < context.DustThreshold && !context.AllowSubDust)
+        if (finalChange > Money.Zero && finalChange < context.DustThreshold && !context.AllowSubDust)
             return null;
 
         return new SelectionResult(
             SelectedCoins: selected,
             TotalValue: total,
-            Change: change,
+            Change: finalChange,
             ExpiryGroup: expiryGroup,
             Strategy: SelectionStrategy.SRD,
-            Waste: change,
+            Waste: finalChange,
             IsValid: true,
             ExpiryMixedFallback: expiryMixed);
     }
