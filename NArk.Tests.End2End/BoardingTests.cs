@@ -49,11 +49,8 @@ public class BoardingTests
 
         // --- 3. Fund the boarding address via bitcoin-cli ---
         const long boardingAmountSats = 100_000;
-        var btcAmount = (boardingAmountSats / 100_000_000m).ToString("0.########",
-            System.Globalization.CultureInfo.InvariantCulture);
 
-        var sendOutput = await DockerHelper.BitcoinCli(["sendtoaddress", onchainAddress, btcAmount]);
-        var fundingTxid = sendOutput.Trim();
+        var fundingTxid = await DockerHelper.BitcoinSendToAddress(onchainAddress, Money.Satoshis(boardingAmountSats));
         Console.WriteLine($"[Boarding] Funding txid: {fundingTxid}");
         Assert.That(fundingTxid, Is.Not.Empty, "sendtoaddress should return a txid");
 

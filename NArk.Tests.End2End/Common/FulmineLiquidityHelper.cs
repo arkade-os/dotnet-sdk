@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using NBitcoin;
 using NArk.Tests.End2End.Swaps;
 
 namespace NArk.Tests.End2End.Common;
@@ -113,8 +114,8 @@ public static class FulmineLiquidityHelper
             var onchainAddress = new Uri(arkAddress).AbsolutePath;
             Console.WriteLine($"[FulmineLiquidity] Funding boarding address: {onchainAddress}");
 
-            var output = await DockerHelper.BitcoinCli(["sendtoaddress", onchainAddress, "1"]);
-            Console.WriteLine($"[FulmineLiquidity] sendtoaddress txid: {output.Trim()}");
+            var output = await DockerHelper.BitcoinSendToAddress(onchainAddress, Money.Coins(1));
+            Console.WriteLine($"[FulmineLiquidity] sendtoaddress txid: {output}");
         }
         catch (Exception ex)
         {

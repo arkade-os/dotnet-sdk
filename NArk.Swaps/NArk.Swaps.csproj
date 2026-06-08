@@ -23,10 +23,14 @@
     <ItemGroup>
       <Folder Include="Helpers\" />
     </ItemGroup>
+    
 
     <ItemGroup>
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
             <_Parameter1>NArk.Tests</_Parameter1>
+        </AssemblyAttribute>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>NArk.Tests.End2End</_Parameter1>
         </AssemblyAttribute>
     </ItemGroup>
 </Project>

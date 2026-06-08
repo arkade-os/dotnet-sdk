@@ -368,10 +368,7 @@ public class UnilateralExitTests
         var boardingContract = (ArkBoardingContract)await contractService.DeriveContract(
             walletId, NextContractPurpose.Boarding, ContractActivityState.Active);
         var onchainAddress = boardingContract.GetOnchainAddress(info.Network).ToString();
-        var btcAmount = (BoardingAmountSats / 100_000_000m)
-            .ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
-        var fundingTxid = await DockerHelper.BitcoinCli(
-            ["sendtoaddress", onchainAddress, btcAmount]);
+        var fundingTxid = await DockerHelper.BitcoinSendToAddress(onchainAddress, Money.Satoshis(BoardingAmountSats));
         Assert.That(fundingTxid, Is.Not.Empty, "sendtoaddress should return a txid");
 
         await DockerHelper.MineBlocks(6);
