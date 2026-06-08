@@ -309,6 +309,113 @@ public class RgliStrategyTests
     }
 }
 
+[TestFixture]
+public class SingleRandomDrawStrategyTests
+{
+    private static readonly Money Dust = Money.Satoshis(546);
+    private readonly SingleRandomDrawStrategy _strategy = new();
+
+    private static SelectionContext Ctx(long targetSats, bool allowSubDust = false) =>
+        new(TargetAmount: Money.Satoshis(targetSats),
+            DustThreshold: Dust,
+            AllowExpiryMixing: false,
+            AllowSubDust: allowSubDust,
+            MaxInputs: 100,
+            CurrentSubDustOutputs: 0,
+            MaxSubDustOutputs: 1,
+            AssetRequirements: []);
+
+    private static CoinSelectionPolicy Policy(bool allowMixingFallback = false) =>
+        new(AllowExpiryMixingFallback: allowMixingFallback);
+
+    [Test]
+    public void ReturnsValidResult_CoveringTarget()
+    {
+        var candidates = new[]
+        {
+            EarsTestHelpers.Candidate(5000, expiry: 100u),
+            EarsTestHelpers.Candidate(3000, expiry: 100u),
+        };
+
+        var result = _strategy.TrySelect(candidates, Ctx(4000), Policy());
+
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result!.IsValid, Is.True);
+        Assert.That(result.TotalValue, Is.GreaterThanOrEqualTo(Money.Satoshis(4000)));
+    }
+
+    [Test]
+    public void ChangeIsAboveDustOrZero()
+    {
+        var candidates = new[]
+        {
+            EarsTestHelpers.Candidate(8000, expiry: 100u),
+            EarsTestHelpers.Candidate(3000, expiry: 100u),
+        };
+
+        var result = _strategy.TrySelect(candidates, Ctx(7000), Policy());
+
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result!.Change == Money.Zero || result.Change >= Dust, Is.True,
+            $"Change {result.Change} must be zero or >= dust");
+    }
+
+    [Test]
+    public void ReturnsNull_WhenInsufficientFunds()
+    {
+        var candidates = new[] { EarsTestHelpers.Candidate(1000, expiry: 100u) };
+
+        var result = _strategy.TrySelect(candidates, Ctx(5000), Policy());
+
+        Assert.That(result, Is.Null);
+    }
+
+    [Test]
+    public void RespectsExpiry_ReturnsNull_WhenMixingDisabledAndNoGroupSufficient()
+    {
+        var candidates = new[]
+        {
+            EarsTestHelpers.Candidate(3000, expiry: 100u),
+            EarsTestHelpers.Candidate(3000, expiry: 200u),
+        };
+
+        var result = _strategy.TrySelect(candidates, Ctx(5000), Policy(allowMixingFallback: false));
+
+        Assert.That(result, Is.Null);
+    }
+
+    [Test]
+    public void CombinesGroups_WhenMixingEnabled()
+    {
+        var candidates = new[]
+        {
+            EarsTestHelpers.Candidate(3000, expiry: 100u),
+            EarsTestHelpers.Candidate(3000, expiry: 200u),
+        };
+
+        var result = _strategy.TrySelect(candidates, Ctx(5000), Policy(allowMixingFallback: true));
+
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result!.IsValid, Is.True);
+        Assert.That(result.ExpiryMixedFallback, Is.True);
+    }
+
+    [Test]
+    public void ExpiryMixedFallback_IsFalse_WhenSingleGroupSufficient()
+    {
+        var candidates = new[]
+        {
+            EarsTestHelpers.Candidate(6000, expiry: 100u),
+            EarsTestHelpers.Candidate(6000, expiry: 200u),
+        };
+
+        var result = _strategy.TrySelect(candidates, Ctx(5000), Policy(allowMixingFallback: true));
+
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result!.ExpiryMixedFallback, Is.False);
+    }
+}
+
 internal static class EarsTestHelpers
 {
     internal static CoinCandidate Candidate(long satoshis, uint expiry)
