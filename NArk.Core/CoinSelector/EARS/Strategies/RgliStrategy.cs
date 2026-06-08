@@ -131,7 +131,8 @@ public sealed class RgliStrategy : ICoinSelectionStrategy
 
             var selectedSet = selected.ToHashSet(ReferenceEqualityComparer.Instance);
             var unused = allCoins
-                .Where(c => !selectedSet.Contains(c.Coin))
+                .Where(c => !selectedSet.Contains(c.Coin)
+                    && (context.AllowDustInputs || !c.IsDustProne))
                 .OrderBy(c => c.Value)
                 .ToList();
 

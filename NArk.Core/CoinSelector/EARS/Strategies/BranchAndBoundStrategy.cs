@@ -24,9 +24,10 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
                 continue;
 
             var result = SearchBnB(eligible, context, policy, bucket.ExpiryGroup, expiryMixed: false);
-            best = PickBetter(best, result, policy);
+            best = PickBetter(best, result);
 
-            if (best?.Change == Money.Zero)
+            // Single-input exact match is the global minimum waste — no point searching further.
+            if (best is { Change.Satoshi: 0, SelectedCoins.Count: 1 })
                 return best;
         }
 
@@ -35,12 +36,13 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
             var allEligible = buckets
                 .SelectMany(b => b.Coins)
                 .Where(c => context.AllowDustInputs || !c.IsDustProne)
+                .OrderByDescending(c => c.Value)
                 .ToList();
 
             if (allEligible.Count <= policy.MaxBnBInputs)
             {
                 var mixed = SearchBnB(allEligible, context, policy, expiryGroup: 0u, expiryMixed: true);
-                best = PickBetter(best, mixed, policy);
+                best = PickBetter(best, mixed);
             }
         }
 
@@ -66,7 +68,7 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
         Money? bestWaste = null;
         var included = new bool[coins.Count];
 
-        void Dfs(int idx, Money sum)
+        void Dfs(int idx, Money sum, int depth)
         {
             if (sum >= context.TargetAmount)
             {
@@ -75,7 +77,7 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
                 if (change > Money.Zero && change < context.DustThreshold && !context.AllowSubDust)
                     return;
 
-                var selected = new List<ArkCoin>(coins.Count);
+                var selected = new List<ArkCoin>(depth);
                 for (var i = 0; i < coins.Count; i++)
                     if (included[i]) selected.Add(coins[i].Coin);
 
@@ -103,19 +105,22 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
             if (sum + suffix[idx] < context.TargetAmount)
                 return;
 
+            if (depth >= context.MaxInputs)
+                return;
+
             included[idx] = true;
-            Dfs(idx + 1, sum + coins[idx].Value);
+            Dfs(idx + 1, sum + coins[idx].Value, depth + 1);
             included[idx] = false;
 
             if (sum + suffix[idx + 1] >= context.TargetAmount)
-                Dfs(idx + 1, sum);
+                Dfs(idx + 1, sum, depth);
         }
 
-        Dfs(0, Money.Zero);
+        Dfs(0, Money.Zero, 0);
         return best;
     }
 
-    private static SelectionResult? PickBetter(SelectionResult? a, SelectionResult? b, CoinSelectionPolicy policy)
+    private static SelectionResult? PickBetter(SelectionResult? a, SelectionResult? b)
     {
         if (a is null) return b;
         if (b is null) return a;

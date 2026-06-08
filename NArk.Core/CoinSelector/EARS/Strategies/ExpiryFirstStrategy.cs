@@ -81,7 +81,7 @@ public sealed class ExpiryFirstStrategy : ICoinSelectionStrategy
             Change: finalChange,
             ExpiryGroup: expiryGroup,
             Strategy: SelectionStrategy.ExpiryFirst,
-            Waste: finalChange,
+            Waste: CoinSelectionEngine.ComputeWaste(finalChange, selected.Count, policy),
             IsValid: true,
             ExpiryMixedFallback: expiryMixed);
     }

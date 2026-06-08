@@ -24,18 +24,24 @@ public sealed class CoinSelectionEngine
         var remainingTarget = context.TargetAmount - btcCoveredByAssets;
 
         // Phase 2: if asset coins alone cover the BTC target, we're done.
+        // Fall through to Phase 3 if the change would be sub-dust — strategies can find
+        // additional coins to push change above the threshold.
         if (remainingTarget <= Money.Zero)
         {
             var total = assetCoins.Sum(c => c.TxOut.Value);
-            return new SelectionResult(
-                SelectedCoins: assetCoins,
-                TotalValue: total,
-                Change: total - context.TargetAmount,
-                ExpiryGroup: assetCoins.Select(c => c.ExpiresAtHeight ?? 0u).DefaultIfEmpty(0u).Min(),
-                Strategy: SelectionStrategy.ExpiryFirst,
-                Waste: Money.Zero,
-                IsValid: true,
-                ExpiryMixedFallback: false);
+            var change = total - context.TargetAmount;
+            var subDust = change > Money.Zero && change < context.DustThreshold && !context.AllowSubDust;
+
+            if (!subDust)
+                return new SelectionResult(
+                    SelectedCoins: assetCoins,
+                    TotalValue: total,
+                    Change: change,
+                    ExpiryGroup: assetCoins.Select(c => c.ExpiresAtHeight ?? 0u).DefaultIfEmpty(0u).Min(),
+                    Strategy: SelectionStrategy.ExpiryFirst,
+                    Waste: ComputeWaste(change, assetCoins.Count, policy),
+                    IsValid: true,
+                    ExpiryMixedFallback: false);
         }
 
         // Phase 3: run strategies on remaining candidates to fill BTC gap.
@@ -61,14 +67,21 @@ public sealed class CoinSelectionEngine
 
         var merged = assetCoins.Concat(best.SelectedCoins).ToList();
         var mergedTotal = merged.Sum(c => c.TxOut.Value);
+        var mergedChange = mergedTotal - context.TargetAmount;
         return best with
         {
             SelectedCoins = merged,
             TotalValue = mergedTotal,
-            Change = mergedTotal - context.TargetAmount,
+            Change = mergedChange,
+            Waste = ComputeWaste(mergedChange, merged.Count, policy),
         };
     }
 
+    // TODO: greedy multi-asset allocation has a known failure case: a coin carrying assets A and B
+    // gets claimed by the first requirement that matches it, leaving the second requirement unsatisfied
+    // even when a valid assignment exists (e.g. route coin-A→req-X, coin-B→req-Y).
+    // For the 99% case (single-asset sends) this is fine. A proper fix requires backtracking or
+    // a max-flow assignment — out of scope for now.
     private static (List<ArkCoin> assetCoins, List<CoinCandidate> remaining, Money btcCovered)
         SelectAssetCoins(
             IReadOnlyList<CoinCandidate> candidates,

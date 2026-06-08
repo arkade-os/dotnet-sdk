@@ -1,5 +1,7 @@
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.VTXOs;
+using NArk.Core.CoinSelector;
 using NArk.Core.CoinSelector.EARCoinSelector;
 using NBitcoin;
 using NSubstitute;
@@ -15,7 +17,6 @@ public class ExpiryFirstStrategyTests
     private static SelectionContext Ctx(long targetSats, bool allowSubDust = false) =>
         new(TargetAmount: Money.Satoshis(targetSats),
             DustThreshold: Dust,
-            AllowExpiryMixing: false,
             AllowSubDust: allowSubDust,
             AllowDustInputs: true,
             MaxInputs: 100,
@@ -174,7 +175,6 @@ public class ExpiryFirstStrategyTests
         var context = new SelectionContext(
             TargetAmount: Money.Satoshis(500),
             DustThreshold: Dust,
-            AllowExpiryMixing: false,
             AllowSubDust: true,
             AllowDustInputs: true,
             MaxInputs: 3,
@@ -198,7 +198,6 @@ public class RgliStrategyTests
     private static SelectionContext Ctx(long targetSats, bool allowSubDust = false) =>
         new(TargetAmount: Money.Satoshis(targetSats),
             DustThreshold: Dust,
-            AllowExpiryMixing: false,
             AllowSubDust: allowSubDust,
             AllowDustInputs: true,
             MaxInputs: 100,
@@ -314,6 +313,106 @@ public class RgliStrategyTests
 }
 
 [TestFixture]
+public class CoinSelectionEngineAssetTests
+{
+    private static readonly Money Dust = Money.Satoshis(546);
+    private static readonly CoinSelectionPolicy Policy = new();
+
+    private static SelectionContext Ctx(long targetSats) =>
+        new(TargetAmount: Money.Satoshis(targetSats),
+            DustThreshold: Dust,
+            AllowSubDust: false,
+            AllowDustInputs: true,
+            MaxInputs: 100,
+            CurrentSubDustOutputs: 0,
+            MaxSubDustOutputs: 1,
+            AssetRequirements: []);
+
+    [Test]
+    public void SelectAssetCoins_ReservesAssetCoinsAndSubtractsBtc()
+    {
+        var assetCoin = EarsTestHelpers.CandidateWithAsset(3000, expiry: 100u, assetId: "usd", assetAmount: 100);
+        var btcCoin = EarsTestHelpers.Candidate(5000, expiry: 100u);
+        var candidates = new[] { assetCoin, btcCoin };
+        var requirements = new[] { new AssetRequirement("usd", 50) };
+
+        var context = Ctx(2000) with { AssetRequirements = requirements };
+        var engine = new CoinSelectionEngine([new ExpiryFirstStrategy()]);
+
+        var result = engine.Select(candidates.ToList(), context, Policy);
+
+        // Asset coin covers 3000 sats BTC, remaining target = 2000-3000 < 0 → asset coins alone suffice
+        Assert.That(result.SelectedCoins, Has.Count.EqualTo(1));
+        Assert.That(result.SelectedCoins[0].TxOut.Value, Is.EqualTo(Money.Satoshis(3000)));
+    }
+
+    [Test]
+    public void SelectAssetCoins_FillsRemainingBtcFromStrategies()
+    {
+        var assetCoin = EarsTestHelpers.CandidateWithAsset(1000, expiry: 100u, assetId: "usd", assetAmount: 100);
+        var btcCoin = EarsTestHelpers.Candidate(5000, expiry: 100u);
+        var candidates = new[] { assetCoin, btcCoin };
+        var requirements = new[] { new AssetRequirement("usd", 50) };
+
+        // Asset coin covers 1000 sats, remaining BTC target = 6000 - 1000 = 5000
+        var context = Ctx(6000) with { AssetRequirements = requirements };
+        var engine = new CoinSelectionEngine([new ExpiryFirstStrategy()]);
+
+        var result = engine.Select(candidates.ToList(), context, Policy);
+
+        Assert.That(result.SelectedCoins, Has.Count.EqualTo(2));
+        Assert.That(result.TotalValue, Is.EqualTo(Money.Satoshis(6000)));
+        Assert.That(result.Change, Is.EqualTo(Money.Zero));
+    }
+
+    [Test]
+    public void SelectAssetCoins_MergedResultHasCorrectWaste()
+    {
+        var assetCoin = EarsTestHelpers.CandidateWithAsset(2000, expiry: 100u, assetId: "usd", assetAmount: 100);
+        var btcCoin = EarsTestHelpers.Candidate(5000, expiry: 100u);
+        var candidates = new[] { assetCoin, btcCoin };
+        var requirements = new[] { new AssetRequirement("usd", 50) };
+
+        var context = Ctx(6000) with { AssetRequirements = requirements };
+        var engine = new CoinSelectionEngine([new ExpiryFirstStrategy()]);
+
+        var result = engine.Select(candidates.ToList(), context, Policy);
+
+        // 2 coins selected, change = 7000-6000 = 1000
+        var expectedWaste = CoinSelectionEngine.ComputeWaste(Money.Satoshis(1000), 2, Policy);
+        Assert.That(result.Waste, Is.EqualTo(expectedWaste));
+    }
+
+    [Test]
+    public void SelectAssetCoins_ThrowsNotEnoughFunds_WhenAssetInsufficient()
+    {
+        var coin = EarsTestHelpers.CandidateWithAsset(5000, expiry: 100u, assetId: "usd", assetAmount: 30);
+        var requirements = new[] { new AssetRequirement("usd", 50) };
+
+        var context = Ctx(1000) with { AssetRequirements = requirements };
+        var engine = new CoinSelectionEngine([new ExpiryFirstStrategy()]);
+
+        Assert.Throws<NotEnoughFundsException>(() =>
+            engine.Select([coin], context, Policy));
+    }
+
+    [Test]
+    public void SelectAssetCoins_PrefersEarliestExpiry_ForAssetCoins()
+    {
+        var early = EarsTestHelpers.CandidateWithAsset(3000, expiry: 100u, assetId: "usd", assetAmount: 100);
+        var late = EarsTestHelpers.CandidateWithAsset(3000, expiry: 500u, assetId: "usd", assetAmount: 100);
+        var requirements = new[] { new AssetRequirement("usd", 50) };
+
+        var context = Ctx(1000) with { AssetRequirements = requirements };
+        var engine = new CoinSelectionEngine([new ExpiryFirstStrategy()]);
+
+        var result = engine.Select([early, late], context, Policy);
+
+        Assert.That(result.SelectedCoins[0].ExpiresAtHeight, Is.EqualTo(100u));
+    }
+}
+
+[TestFixture]
 public class BranchAndBoundStrategyTests
 {
     private static readonly Money Dust = Money.Satoshis(546);
@@ -322,7 +421,6 @@ public class BranchAndBoundStrategyTests
     private static SelectionContext Ctx(long targetSats, bool allowSubDust = false) =>
         new(TargetAmount: Money.Satoshis(targetSats),
             DustThreshold: Dust,
-            AllowExpiryMixing: false,
             AllowSubDust: allowSubDust,
             AllowDustInputs: true,
             MaxInputs: 100,
@@ -471,7 +569,6 @@ public class SingleRandomDrawStrategyTests
     private static SelectionContext Ctx(long targetSats, bool allowSubDust = false) =>
         new(TargetAmount: Money.Satoshis(targetSats),
             DustThreshold: Dust,
-            AllowExpiryMixing: false,
             AllowSubDust: allowSubDust,
             AllowDustInputs: true,
             MaxInputs: 100,
@@ -727,6 +824,29 @@ internal static class EarsTestHelpers
                 Coins: g.OrderByDescending(c => c.Value).ToList(),
                 TotalValue: g.Sum(c => c.Value)))
             .ToList();
+
+    internal static CoinCandidate CandidateWithAsset(long satoshis, uint expiry, string assetId, ulong assetAmount)
+    {
+        var c = Candidate(satoshis, expiry);
+        var assets = new[] { new VtxoAsset(assetId, assetAmount) };
+        var coin = new ArkCoin(
+            walletIdentifier: c.Coin.WalletIdentifier,
+            contract: (ArkContract)c.Coin.Contract,
+            birth: c.Coin.Birth,
+            expiresAt: c.Coin.ExpiresAt,
+            expiresAtHeight: c.Coin.ExpiresAtHeight,
+            outPoint: c.Coin.Outpoint,
+            txOut: c.Coin.TxOut,
+            signerDescriptor: c.Coin.SignerDescriptor,
+            spendingScriptBuilder: c.Coin.SpendingScriptBuilder,
+            spendingConditionWitness: c.Coin.SpendingConditionWitness,
+            lockTime: c.Coin.LockTime,
+            sequence: c.Coin.Sequence,
+            swept: false,
+            unrolled: false,
+            assets: (IReadOnlyList<VtxoAsset>)assets);
+        return c with { Coin = coin, Assets = assets };
+    }
 
     internal static CoinCandidate Candidate(long satoshis, uint expiry)
     {

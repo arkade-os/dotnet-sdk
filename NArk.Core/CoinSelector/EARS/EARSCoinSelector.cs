@@ -69,7 +69,6 @@ public sealed class EARSCoinSelector : ICoinSelector
         bool allowDustInputs = true) =>
         new(TargetAmount: target,
             DustThreshold: dust,
-            AllowExpiryMixing: false,
             AllowSubDust: currentSubDust < maxSubDust,
             AllowDustInputs: allowDustInputs,
             MaxInputs: 100,

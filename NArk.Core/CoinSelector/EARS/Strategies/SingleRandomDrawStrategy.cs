@@ -82,7 +82,7 @@ public sealed class SingleRandomDrawStrategy : ICoinSelectionStrategy
             Change: finalChange,
             ExpiryGroup: expiryGroup,
             Strategy: SelectionStrategy.SRD,
-            Waste: finalChange,
+            Waste: CoinSelectionEngine.ComputeWaste(finalChange, selected.Count, policy),
             IsValid: true,
             ExpiryMixedFallback: expiryMixed);
     }
