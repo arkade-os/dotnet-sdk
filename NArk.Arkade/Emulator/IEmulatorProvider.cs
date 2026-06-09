@@ -1,0 +1,103 @@
+using NArk.Core.Models;
+
+namespace NArk.Arkade.Emulator;
+
+/// <summary>
+/// Client surface for an Arkade emulator co-signing service. Mirrors
+/// the ts-sdk's <c>EmulatorProvider</c> shape so callers picking a
+/// .NET vs. TypeScript wallet stack write the same orchestration code.
+/// </summary>
+/// <remarks>
+/// The emulator is a co-signing service that:
+/// <list type="number">
+///   <item>Owns a private key.</item>
+///   <item>Validates the ArkadeScript attached to each transaction input.</item>
+///   <item>Computes the per-input signing key as
+///         <c>emulator_pubkey + tagged_hash("ArkScriptHash", script) · G</c>.</item>
+///   <item>Returns its partial signature, or — when it's the last non-arkd
+///         signer — submits the full transaction set to arkd, finalises, and
+///         returns the complete PSBTs.</item>
+/// </list>
+/// </remarks>
+public interface IEmulatorProvider
+{
+    /// <summary><c>GET /v1/info</c> — version and signing-key fingerprint.</summary>
+    Task<EmulatorInfo> GetInfoAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <c>POST /v1/tx</c> — submits a partially-signed Arkade transaction plus
+    /// any checkpoint PSBTs and returns the emulator's co-signed PSBTs.
+    /// </summary>
+    Task<EmulatorSubmitTxResult> SubmitTxAsync(
+        string arkTx,
+        IReadOnlyList<string> checkpointTxs,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <c>POST /v1/intent</c> — co-signs the intent registration proof so the
+    /// resulting BIP-322 signature is valid for the emulator-tweaked key.
+    /// Returns the co-signed proof base64.
+    /// </summary>
+    Task<string> SubmitIntentAsync(
+        string proof,
+        Messages.RegisterIntentMessage message,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <c>POST /v1/finalization</c> — co-signs forfeit PSBTs and (conditionally)
+    /// the commitment tx after the emulator has already co-signed the
+    /// matching intent via <see cref="SubmitIntentAsync"/>.
+    /// </summary>
+    Task<EmulatorFinalizationResult> SubmitFinalizationAsync(
+        string signedProof,
+        Messages.RegisterIntentMessage message,
+        IReadOnlyList<string> forfeits,
+        IReadOnlyList<ConnectorTreeNode>? connectorTree,
+        string commitmentTx,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <c>POST /v1/onchain-tx</c> — co-signs a fully on-chain spend (no arkd
+    /// counter-signature) whose inputs are emulator-owned Arkade tapscripts, and
+    /// returns the signed PSBT base64. Inputs whose tapscript closure also
+    /// contains the arkd signer pubkey are rejected by the emulator — those must
+    /// go through <see cref="SubmitTxAsync"/> instead. Attach the previous output
+    /// transaction to inputs that introspection opcodes read via
+    /// <see cref="NArk.Abstractions.Helpers.PsbtHelpers.SetArkFieldPrevoutTx"/>.
+    /// </summary>
+    Task<string> SubmitOnchainTxAsync(
+        string tx,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Server identification returned from <c>GET /v1/info</c>.</summary>
+/// <param name="Version">Free-form server version string. Empty if absent.</param>
+/// <param name="SignerPubkey">
+/// Hex-encoded compressed (33-byte) secp256k1 public key the emulator co-signs
+/// with — pre-tweak. The per-input signing key is derived by tweaking its x-only
+/// form (see <see cref="NArk.Arkade.Crypto.ArkadeScriptHash.Tweak(NBitcoin.Secp256k1.ECPubKey, System.ReadOnlySpan{byte})"/>).
+/// </param>
+/// <param name="DeprecatedSignerPubkeys">
+/// Hex-encoded compressed public keys the emulator still accepts (e.g. after a
+/// key rotation) but no longer signs new inputs with. Empty when none.
+/// </param>
+public sealed record EmulatorInfo(
+    string Version,
+    string SignerPubkey,
+    IReadOnlyList<string> DeprecatedSignerPubkeys);
+
+/// <summary>Co-signed PSBTs returned from <c>POST /v1/tx</c>.</summary>
+public sealed record EmulatorSubmitTxResult(
+    string SignedArkTx,
+    IReadOnlyList<string> SignedCheckpointTxs);
+
+/// <summary>Co-signed forfeits + (conditionally) commitment tx from <c>POST /v1/finalization</c>.</summary>
+public sealed record EmulatorFinalizationResult(
+    IReadOnlyList<string> SignedForfeits,
+    string? SignedCommitmentTx);
+
+/// <summary>One node in the connector tree carried through the finalization request.</summary>
+public sealed record ConnectorTreeNode(
+    string Txid,
+    string Tx,
+    IReadOnlyDictionary<string, string> Children);
