@@ -16,13 +16,15 @@ public class DefaultCoinSelector : ICoinSelector
     /// <param name="dustThreshold">Dust threshold from operator terms</param>
     /// <param name="currentSubDustOutputs">Whether the user explicitly uses subdust change</param>
     /// <param name="maxOpReturnOutputs">Maximum OP_RETURN outputs allowed per transaction</param>
+    /// <param name="maxInputs">Maximum number of inputs the selection may use, or null for no limit</param>
     /// <returns>Selected coins or null if impossible</returns>
     public IReadOnlyCollection<ArkCoin> SelectCoins(
         List<ArkCoin> availableCoins,
         Money targetAmount,
         Money dustThreshold,
         int currentSubDustOutputs,
-        int maxOpReturnOutputs = 1)
+        int maxOpReturnOutputs = 1,
+        int? maxInputs = null)
     {
         if (availableCoins.Count == 0)
             throw new NotEnoughFundsException("Not enough funds to create transaction", null, targetAmount);
@@ -47,6 +49,15 @@ public class DefaultCoinSelector : ICoinSelector
                     break;
             }
 
+            if (maxInputs is { } cap && selected.Count >= cap)
+            {
+                // Target covered but change is awkward: stop here and let the
+                // strategies below sort out the change instead of adding inputs.
+                if (currentTotal >= targetAmount)
+                    break;
+                throw new TooManyInputsException(cap);
+            }
+
             selected.Add(coin);
             currentTotal += coin.TxOut.Value;
         }
@@ -58,14 +69,17 @@ public class DefaultCoinSelector : ICoinSelector
         if (finalChange > Money.Zero && finalChange < dustThreshold && !canAddSubdust)
         {
             // Strategy 2: Try adding one more coin to push change above dust threshold
-            var remainingCoins = availableCoins.Except(selected).ToList();
-            foreach (var extraCoin in remainingCoins)
+            if (selected.Count < (maxInputs ?? int.MaxValue))
             {
-                var newChange = finalChange + extraCoin.TxOut.Value;
-                if (newChange >= dustThreshold)
+                var remainingCoins = availableCoins.Except(selected).ToList();
+                foreach (var extraCoin in remainingCoins)
                 {
-                    selected.Add(extraCoin);
-                    return selected;
+                    var newChange = finalChange + extraCoin.TxOut.Value;
+                    if (newChange >= dustThreshold)
+                    {
+                        selected.Add(extraCoin);
+                        return selected;
+                    }
                 }
             }
 
@@ -77,6 +91,14 @@ public class DefaultCoinSelector : ICoinSelector
             }
 
             // Strategy 4: If we can't avoid subdust, use all coins to maximize change
+            // (capped to the largest maxInputs coins when a limit applies)
+            if (maxInputs is { } limit && availableCoins.Count > limit)
+            {
+                var capped = availableCoins.OrderByDescending(c => c.TxOut.Value).Take(limit).ToList();
+                if (capped.Sum(c => c.TxOut.Value) < targetAmount)
+                    throw new TooManyInputsException(limit);
+                return capped;
+            }
             return availableCoins;
         }
 
@@ -93,10 +115,11 @@ public class DefaultCoinSelector : ICoinSelector
         IReadOnlyList<AssetRequirement> assetRequirements,
         Money dustThreshold,
         int currentSubDustOutputs,
-        int maxOpReturnOutputs = 1)
+        int maxOpReturnOutputs = 1,
+        int? maxInputs = null)
     {
         if (assetRequirements.Count == 0)
-            return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs);
+            return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs, maxInputs);
 
         var selected = new HashSet<ArkCoin>(ReferenceEqualityComparer.Instance);
         var btcFromAssetCoins = Money.Zero;
@@ -114,6 +137,9 @@ public class DefaultCoinSelector : ICoinSelector
             {
                 if (assetTotal >= requirement.Amount)
                     break;
+
+                if (maxInputs is { } cap && selected.Count >= cap)
+                    throw new TooManyInputsException(cap);
 
                 selected.Add(coin);
                 btcFromAssetCoins += coin.TxOut.Value;
@@ -138,7 +164,8 @@ public class DefaultCoinSelector : ICoinSelector
             throw new NotEnoughFundsException("Not enough BTC funds to create transaction", null, remainingBtc);
         }
 
-        var btcSelected = SelectCoins(remainingCoins, remainingBtc, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs);
+        var btcSelected = SelectCoins(remainingCoins, remainingBtc, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs,
+            maxInputs is { } maxTotal ? maxTotal - selected.Count : null);
         foreach (var coin in btcSelected)
             selected.Add(coin);
 

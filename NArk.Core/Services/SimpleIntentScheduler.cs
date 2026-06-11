@@ -14,10 +14,6 @@ namespace NArk.Core.Services;
 
 public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport clientTransport, IContractService contractService, IBitcoinBlockchain chainTimeProvider, IOptions<SimpleIntentSchedulerOptions> options, ILogger<SimpleIntentScheduler>? logger = null) : IIntentScheduler
 {
-
-    //TODO(11.06.2026): maybe estimate tx size?
-    private const int MaxVtxosPerIntent = 50;
-    
     public async Task<IReadOnlyCollection<ArkIntentSpec>> GetIntentsToSubmit(
         IReadOnlyCollection<ArkCoin> unspentVtxos, CancellationToken cancellationToken = default)
     {
@@ -57,7 +53,7 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
             */
             .ToDictionary(
                 g => g.Key,
-                g => g.OrderByDescending(v => v.Amount).Chunk(MaxVtxosPerIntent).ToArray()
+                g => g.OrderByDescending(v => v.Amount).Chunk(ArkTransactionLimits.MaxVtxosPerArkTransaction).ToArray()
             );
 
         List<ArkIntentSpec> intentSpecs = [];
@@ -72,7 +68,7 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
                 var inputsSumAfterBeforeFees = chunk.Sum(c => c.Amount);
                 if (inputsSumAfterBeforeFees < serverInfo.Dust)
                 {
-                    logger?.LogWarning("Wallet {WalletId} has inputs below dust threshold - skipping until quota above dust", walletId);
+                    logger?.LogWarning("Skipping a {CoinCount}-input chunk for wallet {WalletId}: chunk sum is below the dust threshold", chunk.Length, walletId);
                     continue;
                 }
                 var specBeforeFees =

@@ -17,6 +17,16 @@ The `DefaultCoinSelector` uses a greedy algorithm that:
 3. Handles sub-dust change as OP_RETURN outputs
 4. Falls back to adding more coins if change is sub-dust and OP_RETURN limit is reached
 
+### Input Limit
+
+The Arkade server rejects transactions whose weight exceeds its configured
+`max_tx_weight` (`TX_TOO_LARGE`), so automatic coin selection is capped at
+`ArkTransactionLimits.MaxVtxosPerArkTransaction` (50) inputs. If the target
+amount cannot be covered within that cap — a wallet fragmented across many
+small VTXOs — `Spend` throws `TooManyInputsException`. Wait for the intent
+scheduler to consolidate the wallet's VTXOs (it batches them in chunks of the
+same size), or send a smaller amount.
+
 ## Manual Coin Selection
 
 For full control, specify inputs explicitly:
