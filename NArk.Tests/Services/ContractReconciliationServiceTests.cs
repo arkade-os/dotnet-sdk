@@ -1,5 +1,6 @@
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
+using NArk.Core;
 using NArk.Core.Recovery;
 using NArk.Core.Services;
 using NArk.Core.Transport;
@@ -14,6 +15,7 @@ public class ContractReconciliationServiceTests
     private IContractStorage _contractStorage = null!;
     private ISingleKeyDefaultEnsurer _ensurer = null!;
     private IServerInfoCacheInvalidation _serverInfoCache = null!;
+    private IClientTransport _clientTransport = null!;
 
     private const string CurrentScript = "aa" + "00";
     private const string StaleScript = "bb" + "11";
@@ -25,6 +27,13 @@ public class ContractReconciliationServiceTests
         _contractStorage = Substitute.For<IContractStorage>();
         _ensurer = Substitute.For<ISingleKeyDefaultEnsurer>();
         _serverInfoCache = Substitute.For<IServerInfoCacheInvalidation>();
+        _clientTransport = Substitute.For<IClientTransport>();
+
+        // Backend reachable by default: the reconcile-all availability probe succeeds.
+        // The success value is never inspected (it only gates whether the pass proceeds),
+        // so a null ArkServerInfo is fine here.
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkServerInfo>(null!));
 
         // Ensurer reports the current-signer default script.
         _ensurer.EnsureDefaultAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
@@ -44,7 +53,7 @@ public class ContractReconciliationServiceTests
     }
 
     private ContractReconciliationService CreateService(TimeSpan? retryDelay = null) =>
-        new(_walletStorage, _contractStorage, _ensurer, _serverInfoCache, logger: null,
+        new(_walletStorage, _contractStorage, _ensurer, _serverInfoCache, _clientTransport, logger: null,
             reconcileAllRetryDelay: retryDelay);
 
     private static ArkWalletInfo SingleKeyWallet(string id = "w1") =>
@@ -209,27 +218,44 @@ public class ContractReconciliationServiceTests
     }
 
     [Test]
-    public async Task StartupPass_WholesaleFailure_isRetried()
+    public async Task StartupPass_BackendUnavailable_isRetried_thenReconciles()
     {
-        // I1: a whole-pass failure (LoadAllWallets throwing because arkd is down at boot) must be
-        // requeued, bounded, so a transient outage self-heals. First call throws, second succeeds.
-        var calls = 0;
+        // I1 follow-up: "arkd down at boot" does NOT surface as LoadAllWallets throwing
+        // (that's pure DB) — it surfaces as the per-wallet EnsureDefaultAsync transport call
+        // throwing, which ReconcileAllAsync would otherwise absorb, so the pass would silently
+        // reconcile nothing and never retry. The reconcile-all pass must probe backend
+        // availability up front (GetServerInfoAsync); when the backend is unreachable the WHOLE
+        // pass fails and is requeued (bounded). Here the probe is unavailable on the first pass
+        // and available on the retry, so the retry must fire AND the wallet must get reconciled.
+        var wallet = SingleKeyWallet();
+        _walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
         _walletStorage.LoadAllWallets(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlySet<ArkWalletInfo>>(new HashSet<ArkWalletInfo> { wallet }));
+
+        var probeCalls = 0;
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
-                calls++;
-                if (calls == 1)
+                probeCalls++;
+                if (probeCalls == 1)
                     throw new InvalidOperationException("arkd unreachable");
-                return Task.FromResult<IReadOnlySet<ArkWalletInfo>>(new HashSet<ArkWalletInfo>());
+                return Task.FromResult<ArkServerInfo>(null!);
             });
 
         await using var sut = CreateService(retryDelay: TimeSpan.FromMilliseconds(50));
         await sut.StartAsync(CancellationToken.None);
 
-        // Startup enqueues one ReconcileAll (fails); the retry must drive a second LoadAllWallets.
-        await WaitForAsync(() => calls >= 2, timeoutMs: 3000);
+        // The first pass fails the availability probe (nothing reconciled); the bounded retry
+        // re-runs the pass once the backend is reachable, and the wallet is then reconciled.
+        await WaitForAsync(
+            () => _ensurer.ReceivedCalls().Any(c =>
+                c.GetMethodInfo().Name == nameof(ISingleKeyDefaultEnsurer.EnsureDefaultAsync)),
+            timeoutMs: 3000);
 
-        Assert.That(calls, Is.GreaterThanOrEqualTo(2), "wholesale startup failure should be retried");
+        Assert.That(probeCalls, Is.GreaterThanOrEqualTo(2),
+            "backend-unavailable startup pass should be retried");
+        await _ensurer.Received().EnsureDefaultAsync("w1", Arg.Any<CancellationToken>());
     }
 
     private static async Task WaitForAsync(Func<bool> condition, int timeoutMs = 2000)

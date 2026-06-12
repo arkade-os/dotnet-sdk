@@ -40,6 +40,7 @@ public class ContractReconciliationService(
     IContractStorage contractStorage,
     ISingleKeyDefaultEnsurer defaultEnsurer,
     IServerInfoCacheInvalidation serverInfoCacheInvalidation,
+    IClientTransport clientTransport,
     ILogger<ContractReconciliationService>? logger = null,
     TimeSpan? reconcileAllRetryDelay = null) : IAsyncDisposable
 {
@@ -99,10 +100,12 @@ public class ContractReconciliationService(
             {
                 logger?.LogInformation(0, e, "Error during reconciliation loop execution for job {JobType}", job.GetType().Name);
 
-                // A wholesale ReconcileAll failure (e.g. LoadAllWallets throwing because arkd is
-                // down at boot) means we may have missed rotations that happened while offline.
-                // Requeue after a short delay, bounded, so a transient outage self-heals without
-                // a tight retry loop. Per-wallet failures don't reach here (ReconcileAllAsync
+                // A wholesale ReconcileAll failure means we may have missed rotations that happened
+                // while offline. The common cause is arkd being unreachable at boot: that surfaces
+                // as the up-front GetServerInfoAsync availability probe in ReconcileAllAsync throwing
+                // (NOT LoadAllWallets, which is pure DB and doesn't depend on arkd). Requeue after a
+                // short delay, bounded, so a transient outage self-heals without a tight retry loop.
+                // Per-wallet failures during a reachable-backend pass don't reach here (ReconcileAllAsync
                 // absorbs them), so this only fires on a true whole-pass failure.
                 if (job is ReconcileAllJob allJob && allJob.Attempt < MaxReconcileAllRetries)
                 {
@@ -137,11 +140,26 @@ public class ContractReconciliationService(
     }
 
     /// <summary>
-    /// Reconciles every SingleKey wallet known to storage. Per-wallet failures are absorbed
-    /// and logged so one bad wallet doesn't abort the whole pass.
+    /// Reconciles every SingleKey wallet known to storage. Per-wallet failures during a
+    /// good-backend pass are absorbed and logged so one bad wallet doesn't abort the whole pass.
+    /// <para>
+    /// First probes backend availability via <see cref="IClientTransport.GetServerInfoAsync"/>.
+    /// If the backend is unreachable (e.g. arkd down at boot after a rotation-while-offline) the
+    /// probe throws and the WHOLE pass fails — surfaced to the loop so the bounded retry requeues
+    /// it. Without the probe, "arkd down" would only surface inside each wallet's
+    /// <see cref="ISingleKeyDefaultEnsurer.EnsureDefaultAsync"/> (its own GetServerInfo call),
+    /// which the per-wallet catch below absorbs, so the pass would silently reconcile nothing and
+    /// never retry. The probe is a cheap availability gate: a successful result is cached by the
+    /// transport, so the per-wallet ensures reuse it rather than re-fetching.
+    /// </para>
     /// </summary>
     public async Task ReconcileAllAsync(CancellationToken cancellationToken = default)
     {
+        // Availability probe: if the backend is unreachable this throws and aborts the whole pass
+        // (the loop's bounded retry will requeue it). A good-backend pass proceeds and the cached
+        // server info is reused by each wallet's EnsureDefaultAsync.
+        await clientTransport.GetServerInfoAsync(cancellationToken);
+
         var wallets = await walletStorage.LoadAllWallets(cancellationToken);
         foreach (var wallet in wallets)
         {
