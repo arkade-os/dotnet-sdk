@@ -43,8 +43,9 @@ public class ContractReconciliationServiceTests
             .Returns(Task.FromResult<IReadOnlyCollection<ArkContractEntity>>([]));
     }
 
-    private ContractReconciliationService CreateService() =>
-        new(_walletStorage, _contractStorage, _ensurer, _serverInfoCache);
+    private ContractReconciliationService CreateService(TimeSpan? retryDelay = null) =>
+        new(_walletStorage, _contractStorage, _ensurer, _serverInfoCache, logger: null,
+            reconcileAllRetryDelay: retryDelay);
 
     private static ArkWalletInfo SingleKeyWallet(string id = "w1") =>
         new(id, null, null, WalletType.SingleKey, "tr(0000000000000000000000000000000000000000000000000000000000000001)", 0);
@@ -205,6 +206,30 @@ public class ContractReconciliationServiceTests
         await Task.Delay(200);
 
         await _ensurer.DidNotReceive().EnsureDefaultAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StartupPass_WholesaleFailure_isRetried()
+    {
+        // I1: a whole-pass failure (LoadAllWallets throwing because arkd is down at boot) must be
+        // requeued, bounded, so a transient outage self-heals. First call throws, second succeeds.
+        var calls = 0;
+        _walletStorage.LoadAllWallets(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                calls++;
+                if (calls == 1)
+                    throw new InvalidOperationException("arkd unreachable");
+                return Task.FromResult<IReadOnlySet<ArkWalletInfo>>(new HashSet<ArkWalletInfo>());
+            });
+
+        await using var sut = CreateService(retryDelay: TimeSpan.FromMilliseconds(50));
+        await sut.StartAsync(CancellationToken.None);
+
+        // Startup enqueues one ReconcileAll (fails); the retry must drive a second LoadAllWallets.
+        await WaitForAsync(() => calls >= 2, timeoutMs: 3000);
+
+        Assert.That(calls, Is.GreaterThanOrEqualTo(2), "wholesale startup failure should be retried");
     }
 
     private static async Task WaitForAsync(Func<bool> condition, int timeoutMs = 2000)

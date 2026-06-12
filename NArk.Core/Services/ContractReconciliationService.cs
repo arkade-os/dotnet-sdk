@@ -40,14 +40,22 @@ public class ContractReconciliationService(
     IContractStorage contractStorage,
     ISingleKeyDefaultEnsurer defaultEnsurer,
     IServerInfoCacheInvalidation serverInfoCacheInvalidation,
-    ILogger<ContractReconciliationService>? logger = null) : IAsyncDisposable
+    ILogger<ContractReconciliationService>? logger = null,
+    TimeSpan? reconcileAllRetryDelay = null) : IAsyncDisposable
 {
     private const string SourceMetadataKey = "Source";
     private const string DefaultSourceValue = "Default";
 
+    /// <summary>Max times a wholesale ReconcileAll pass (e.g. startup with arkd unreachable) is retried.</summary>
+    private const int MaxReconcileAllRetries = 3;
+    private static readonly TimeSpan DefaultReconcileAllRetryDelay = TimeSpan.FromSeconds(30);
+
+    // Delay between wholesale-ReconcileAll retries. Overridable (tests use a short delay); defaults to 30s.
+    private readonly TimeSpan _reconcileAllRetryDelay = reconcileAllRetryDelay ?? DefaultReconcileAllRetryDelay;
+
     private abstract record ReconcileJob;
     private sealed record ReconcileWalletJob(string WalletId) : ReconcileJob;
-    private sealed record ReconcileAllJob : ReconcileJob;
+    private sealed record ReconcileAllJob(int Attempt = 0) : ReconcileJob;
 
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly Channel<ReconcileJob> _jobs = Channel.CreateUnbounded<ReconcileJob>();
@@ -90,8 +98,42 @@ public class ContractReconciliationService(
             catch (Exception e)
             {
                 logger?.LogInformation(0, e, "Error during reconciliation loop execution for job {JobType}", job.GetType().Name);
+
+                // A wholesale ReconcileAll failure (e.g. LoadAllWallets throwing because arkd is
+                // down at boot) means we may have missed rotations that happened while offline.
+                // Requeue after a short delay, bounded, so a transient outage self-heals without
+                // a tight retry loop. Per-wallet failures don't reach here (ReconcileAllAsync
+                // absorbs them), so this only fires on a true whole-pass failure.
+                if (job is ReconcileAllJob allJob && allJob.Attempt < MaxReconcileAllRetries)
+                {
+                    ScheduleReconcileAllRetry(allJob.Attempt + 1, loopShutdownToken);
+                }
             }
         }
+    }
+
+    /// <summary>
+    /// Requeues a <see cref="ReconcileAllJob"/> after <see cref="ReconcileAllRetryDelay"/>, off the
+    /// worker thread so the loop keeps draining. Cancellation-aware: a shutdown during the delay
+    /// silently drops the retry.
+    /// </summary>
+    private void ScheduleReconcileAllRetry(int attempt, CancellationToken loopShutdownToken)
+    {
+        logger?.LogInformation(
+            "Scheduling ReconcileAll retry {Attempt}/{Max} in {Delay}s",
+            attempt, MaxReconcileAllRetries, _reconcileAllRetryDelay.TotalSeconds);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(_reconcileAllRetryDelay, loopShutdownToken);
+                _jobs.Writer.TryWrite(new ReconcileAllJob(attempt));
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutting down — drop the retry.
+            }
+        }, loopShutdownToken);
     }
 
     /// <summary>

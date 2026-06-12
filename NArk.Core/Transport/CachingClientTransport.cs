@@ -66,6 +66,12 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
 
             _logger?.LogDebug("Fetching server info from Ark operator");
 
+            // Capture the digest of whatever we held (if anything) BEFORE swapping in the fresh
+            // value, so a routine TTL refresh that happens to observe a rotated signer is detected
+            // — not just the DigestMismatchException path. A null previous digest means this is the
+            // first populate, which is not a "change".
+            var previousDigest = _cachedServerInfo?.Digest;
+
             var serverInfo = await _inner.GetServerInfoAsync(cts.Token);
 
             _cachedServerInfo = serverInfo;
@@ -73,6 +79,24 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
 
             _logger?.LogDebug("Cached server info: Network={Network}, Dust={Dust}",
                 serverInfo.Network.Name, serverInfo.Dust);
+
+            // Refresh-path rotation detection: if we had a previous value and the digest changed,
+            // raise ServerInfoChanged WITHOUT invalidating — this is a normal refresh, the fresh
+            // value is already cached and valid. Handlers only enqueue, so raising under the lock
+            // doesn't deadlock. The DigestMismatchException path handles the mid-request case and
+            // doesn't overlap (that throws before reaching here).
+            if (previousDigest is not null && previousDigest != serverInfo.Digest)
+            {
+                _logger?.LogInformation(
+                    "Server info digest changed on TTL refresh ({Previous} -> {New}); raising ServerInfoChanged",
+                    previousDigest, serverInfo.Digest);
+                ServerInfoChanged?.Invoke(this, new ServerInfoChangedEventArgs
+                {
+                    Reason = ServerInfoChangedReason.TtlExpiry,
+                    PreviousDigest = previousDigest,
+                    NewDigest = serverInfo.Digest,
+                });
+            }
 
             return serverInfo;
         }
