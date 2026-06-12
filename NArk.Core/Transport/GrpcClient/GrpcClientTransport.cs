@@ -1,4 +1,5 @@
 using Ark.V1;
+using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using NArk.Core.Transport;
 
@@ -13,7 +14,8 @@ public partial class GrpcClientTransport : IClientTransport
     public GrpcClientTransport(string uri)
     {
         var channel = GrpcChannel.ForAddress(uri);
-        _serviceClient = new ArkService.ArkServiceClient(channel);
-        _indexerServiceClient = new IndexerService.IndexerServiceClient(channel);
+        var invoker = channel.CreateCallInvoker().Intercept(new BuildVersionInterceptor());
+        _serviceClient = new ArkService.ArkServiceClient(invoker);
+        _indexerServiceClient = new IndexerService.IndexerServiceClient(invoker);
     }
 }

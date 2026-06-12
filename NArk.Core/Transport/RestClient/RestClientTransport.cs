@@ -30,11 +30,13 @@ public partial class RestClientTransport : NArk.Core.Transport.IClientTransport
     {
         _baseUri = uri.TrimEnd('/');
         _http = new HttpClient { BaseAddress = new Uri(_baseUri) };
+        _http.InjectHeader();
     }
 
     public RestClientTransport(HttpClient http)
     {
         _http = http;
         _baseUri = http.BaseAddress?.ToString().TrimEnd('/') ?? "";
+        _http.InjectHeader();
     }
 }
