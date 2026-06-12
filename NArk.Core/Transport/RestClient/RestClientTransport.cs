@@ -37,6 +37,22 @@ public partial class RestClientTransport : NArk.Core.Transport.IClientTransport
         _http.InjectHeader();
     }
 
+    /// <summary>
+    /// Initialises the transport with a caller-supplied <see cref="HttpClient"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This overload is intended for environments where the <see cref="HttpClient"/> is managed externally
+    /// (e.g. Blazor WASM browser client, <c>IHttpClientFactory</c>, test fakes).
+    /// </para>
+    /// <para>
+    /// <strong>Limitation:</strong> <see cref="BuildVersionHandler"/> is <em>not</em> inserted into the
+    /// pipeline. As a result, <c>X-Digest</c> is never sent and neither
+    /// <c>BUILD_VERSION_TOO_OLD</c> nor <c>DIGEST_MISMATCH</c> responses are detected automatically.
+    /// The caller is responsible for adding <c>BuildVersionHandler</c> to the client's handler chain
+    /// if that behaviour is required.
+    /// </para>
+    /// </remarks>
     public RestClientTransport(HttpClient http)
     {
         _http = http;

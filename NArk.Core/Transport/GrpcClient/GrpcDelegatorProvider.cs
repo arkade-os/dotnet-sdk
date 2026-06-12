@@ -9,12 +9,12 @@ namespace NArk.Transport.GrpcClient;
 public class GrpcDelegatorProvider : IDelegatorProvider
 {
     private readonly DelegatorService.DelegatorServiceClient _client;
-    private readonly DigestHolder _digestHolder = new();
 
     public GrpcDelegatorProvider(string uri)
     {
         var channel = GrpcChannel.ForAddress(uri);
-        var invoker = channel.CreateCallInvoker().Intercept(new BuildVersionInterceptor(_digestHolder));
+        // Delegator service does not validate X-Digest — pass an empty, never-populated holder.
+        var invoker = channel.CreateCallInvoker().Intercept(new BuildVersionInterceptor(new DigestHolder()));
         _client = new DelegatorService.DelegatorServiceClient(invoker);
     }
 

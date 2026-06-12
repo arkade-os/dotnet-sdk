@@ -46,4 +46,32 @@ public class BuildVersionHeaderTests
             http.DefaultRequestHeaders.GetValues("X-Build-Version"),
             Contains.Item(ArkdVersion.TargetBuild));
     }
+
+    /// <summary>
+    /// The HttpClient constructor does not insert BuildVersionHandler into the pipeline —
+    /// X-Digest is never sent and DIGEST_MISMATCH / BUILD_VERSION_TOO_OLD are not detected.
+    /// This test documents that known limitation so the gap is visible and intentional.
+    /// </summary>
+    [Test]
+    public async Task RestClientTransport_HttpClientConstructor_DoesNotInjectXDigest()
+    {
+        HttpRequestMessage? captured = null;
+        var stub = new StubHandler(req => { captured = req; return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{}") }; });
+        var http = new HttpClient(stub) { BaseAddress = new Uri("http://localhost:9999") };
+
+        var transport = new RestClientTransport(http);
+        // Simulate having a digest by calling nothing — the holder is isolated and never populated.
+        // Even if a digest were somehow set, it would not reach the request.
+        try { await http.GetAsync("/v1/info"); } catch { /* ignored */ }
+
+        Assert.That(captured, Is.Not.Null);
+        Assert.That(captured!.Headers.Contains(ArkdVersion.DigestHeaderName), Is.False,
+            "HttpClient constructor does not insert BuildVersionHandler — X-Digest is the caller's responsibility.");
+    }
+
+    private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(handler(request));
+    }
 }

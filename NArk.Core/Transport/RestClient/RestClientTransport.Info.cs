@@ -47,7 +47,7 @@ public partial class RestClientTransport
         if (fees.ValueKind == JsonValueKind.Object)
             TryGetProp(fees, "intent_fee", "intentFee", out intentFee);
         
-        var digest = GetString(json, "digest", "digest");
+        var digest = TryGetProp(json, "digest", "digest", out var digestEl) ? digestEl.GetString() ?? "" : "";
 
         var result = new ArkServerInfo(
             Dust: Money.Satoshis(GetInt64(json, "dust")),
