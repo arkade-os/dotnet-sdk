@@ -1,4 +1,5 @@
 using Grpc.Core;
+using NArk.Core;
 
 namespace NArk.Transport;
 
@@ -30,5 +31,20 @@ public static class ArkdVersion
     {
         metadata.Add(HeaderName, TargetBuild);
         return metadata;
+    }
+
+    /// <summary>
+    /// Throws <see cref="IncompatibleSdkVersionException"/> when <paramref name="errorDetail"/> contains
+    /// <c>BUILD_VERSION_TOO_OLD</c>. The exception propagates to the caller; the SDK does not catch it.
+    /// </summary>
+    /// <exception cref="IncompatibleSdkVersionException">
+    /// Thrown when the Arkade server rejects the current SDK build version.
+    /// </exception>
+    internal static void ThrowIfVersionRejected(string errorDetail)
+    {
+        if (!errorDetail.Contains("BUILD_VERSION_TOO_OLD", StringComparison.OrdinalIgnoreCase))
+            return;
+        throw new IncompatibleSdkVersionException(
+            $"Arkade server rejected SDK build {TargetBuild}: server requires a newer SDK version. Upgrade the NArk SDK package.");
     }
 }
