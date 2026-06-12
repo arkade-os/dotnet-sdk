@@ -16,7 +16,10 @@ public static class ArkdVersion
     /// </summary>
     public static HttpClient InjectHeader(this HttpClient http)
     {
-        http.DefaultRequestHeaders.TryAddWithoutValidation(HeaderName, TargetBuild);
+        if (!http.DefaultRequestHeaders.Contains(HeaderName))
+        {
+            http.DefaultRequestHeaders.TryAddWithoutValidation(HeaderName, TargetBuild);
+        }
         return http;
     }
 
