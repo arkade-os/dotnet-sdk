@@ -46,8 +46,10 @@ public partial class RestClientTransport
         JsonElement intentFee = default;
         if (fees.ValueKind == JsonValueKind.Object)
             TryGetProp(fees, "intent_fee", "intentFee", out intentFee);
+        
+        var digest = GetString(json, "digest", "digest");
 
-        return new ArkServerInfo(
+        var result = new ArkServerInfo(
             Dust: Money.Satoshis(GetInt64(json, "dust")),
             SignerKey: PubKeyExtensions.ParseOutputDescriptor(signerPubkey, network),
             DeprecatedSigners: deprecatedSigners,
@@ -57,6 +59,7 @@ public partial class RestClientTransport
             ForfeitAddress: BitcoinAddress.Create(GetString(json, "forfeit_address", "forfeitAddress"), network),
             ForfeitPubKey: fPubKey,
             CheckpointTapScript: serverUnrollScript,
+            Digest: digest,
             FeeTerms: new ArkOperatorFeeTerms(
                 TxFeeRate: GetJsonStringOrZero(fees, "tx_fee_rate", "txFeeRate"),
                 IntentOffchainOutput: GetJsonStringOrZero(intentFee, "offchain_output", "offchainOutput"),
@@ -71,6 +74,8 @@ public partial class RestClientTransport
             UtxoMinAmount: Money.Satoshis(GetInt64Optional(json, "utxo_min_amount", "utxoMinAmount")),
             UtxoMaxAmount: ParseAmountLimit(GetInt64Optional(json, "utxo_max_amount", "utxoMaxAmount", -1))
         );
+        _digestHolder.Digest = result.Digest;
+        return result;
     }
 
     /// <summary>

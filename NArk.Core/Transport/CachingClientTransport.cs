@@ -74,6 +74,11 @@ public class CachingClientTransport : IClientTransport
 
             return serverInfo;
         }
+        catch (DigestMismatchException)
+        {
+            InvalidateServerInfoCache();
+            throw;
+        }
         catch (Exception ex)
         {
             _logger?.LogWarning(0, ex, "Failed to fetch server info from Ark operator");
@@ -109,73 +114,101 @@ public class CachingClientTransport : IClientTransport
     /// </summary>
     public bool HasValidServerInfoCache => _cachedServerInfo != null && DateTimeOffset.UtcNow < _serverInfoExpiresAt;
 
-    // Pass-through methods - no caching needed for these
+    // Pass-through methods — digest mismatch invalidates the server info cache before propagating.
 
     public Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts, string? subscriptionId, CancellationToken cancellationToken = default)
-        => _inner.SubscribeForScriptsAsync(scripts, subscriptionId, cancellationToken);
+        => Guard(() => _inner.SubscribeForScriptsAsync(scripts, subscriptionId, cancellationToken));
 
     public Task UnsubscribeForScriptsAsync(string subscriptionId, IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
-        => _inner.UnsubscribeForScriptsAsync(subscriptionId, scripts, cancellationToken);
+        => Guard(() => _inner.UnsubscribeForScriptsAsync(subscriptionId, scripts, cancellationToken));
 
     public IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoSubscriptionStreamAsync(subscriptionId, cancellationToken);
+        => GuardStream(_inner.GetVtxoSubscriptionStreamAsync(subscriptionId, cancellationToken));
 
     public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);
+        => GuardStream(_inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken));
 
     public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
         DateTimeOffset? after, DateTimeOffset? before, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoByScriptsAsSnapshot(scripts, after, before, cancellationToken);
+        => GuardStream(_inner.GetVtxoByScriptsAsSnapshot(scripts, after, before, cancellationToken));
 
     public IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(IReadOnlyCollection<OutPoint> outpoints, bool spentOnly = false, CancellationToken cancellationToken = default)
-        => _inner.GetVtxosByOutpoints(outpoints, spentOnly, cancellationToken);
+        => GuardStream(_inner.GetVtxosByOutpoints(outpoints, spentOnly, cancellationToken));
 
     public Task<string> RegisterIntent(ArkIntent intent, CancellationToken cancellationToken = default)
-        => _inner.RegisterIntent(intent, cancellationToken);
+        => Guard(() => _inner.RegisterIntent(intent, cancellationToken));
 
     public Task DeleteIntent(ArkIntent intent, CancellationToken cancellationToken = default)
-        => _inner.DeleteIntent(intent, cancellationToken);
+        => Guard(() => _inner.DeleteIntent(intent, cancellationToken));
 
     public Task<SubmitTxResponse> SubmitTx(string signedArkTx, string[] checkpointTxs, CancellationToken cancellationToken = default)
-        => _inner.SubmitTx(signedArkTx, checkpointTxs, cancellationToken);
+        => Guard(() => _inner.SubmitTx(signedArkTx, checkpointTxs, cancellationToken));
 
     public Task FinalizeTx(string arkTxId, string[] finalCheckpointTxs, CancellationToken cancellationToken)
-        => _inner.FinalizeTx(arkTxId, finalCheckpointTxs, cancellationToken);
+        => Guard(() => _inner.FinalizeTx(arkTxId, finalCheckpointTxs, cancellationToken));
 
     public Task SubmitTreeNoncesAsync(SubmitTreeNoncesRequest treeNonces, CancellationToken cancellationToken)
-        => _inner.SubmitTreeNoncesAsync(treeNonces, cancellationToken);
+        => Guard(() => _inner.SubmitTreeNoncesAsync(treeNonces, cancellationToken));
 
     public Task SubmitTreeSignaturesRequest(SubmitTreeSignaturesRequest treeSigs, CancellationToken cancellationToken)
-        => _inner.SubmitTreeSignaturesRequest(treeSigs, cancellationToken);
+        => Guard(() => _inner.SubmitTreeSignaturesRequest(treeSigs, cancellationToken));
 
     public Task SubmitSignedForfeitTxsAsync(SubmitSignedForfeitTxsRequest req, CancellationToken cancellationToken)
-        => _inner.SubmitSignedForfeitTxsAsync(req, cancellationToken);
+        => Guard(() => _inner.SubmitSignedForfeitTxsAsync(req, cancellationToken));
 
     public Task ConfirmRegistrationAsync(string intentId, CancellationToken cancellationToken)
-        => _inner.ConfirmRegistrationAsync(intentId, cancellationToken);
+        => Guard(() => _inner.ConfirmRegistrationAsync(intentId, cancellationToken));
 
     public IAsyncEnumerable<BatchEvent> GetEventStreamAsync(GetEventStreamRequest req, CancellationToken cancellationToken)
-        => _inner.GetEventStreamAsync(req, cancellationToken);
+        => GuardStream(_inner.GetEventStreamAsync(req, cancellationToken));
 
     public Task<ArkAssetDetails> GetAssetDetailsAsync(string assetId, CancellationToken cancellationToken = default)
-        => _inner.GetAssetDetailsAsync(assetId, cancellationToken);
+        => Guard(() => _inner.GetAssetDetailsAsync(assetId, cancellationToken));
 
     public Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default)
-        => _inner.UpdateStreamTopicsAsync(streamId, addTopics, removeTopics, cancellationToken);
+        => Guard(() => _inner.UpdateStreamTopicsAsync(streamId, addTopics, removeTopics, cancellationToken));
 
     public Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default)
-        => _inner.GetIntentsByProofAsync(proof, message, cancellationToken);
+        => Guard(() => _inner.GetIntentsByProofAsync(proof, message, cancellationToken));
 
     public Task<Models.PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
         CancellationToken cancellationToken = default)
-        => _inner.GetPendingTxAsync(proof, message, cancellationToken);
+        => Guard(() => _inner.GetPendingTxAsync(proof, message, cancellationToken));
 
     public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+        => Guard(() => _inner.GetVtxoChainAsync(vtxoOutpoint, cancellationToken));
 
     public Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default)
-        => _inner.GetVirtualTxsAsync(txids, cancellationToken);
+        => Guard(() => _inner.GetVirtualTxsAsync(txids, cancellationToken));
 
     public Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken);
+        => Guard(() => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken));
+
+    private async Task<T> Guard<T>(Func<Task<T>> action)
+    {
+        try { return await action(); }
+        catch (DigestMismatchException) { InvalidateServerInfoCache(); throw; }
+    }
+
+    private async Task Guard(Func<Task> action)
+    {
+        try { await action(); }
+        catch (DigestMismatchException) { InvalidateServerInfoCache(); throw; }
+    }
+
+    private async IAsyncEnumerable<T> GuardStream<T>(IAsyncEnumerable<T> source)
+    {
+        var e = source.GetAsyncEnumerator();
+        await using (e.ConfigureAwait(false))
+        {
+            while (true)
+            {
+                bool hasNext;
+                try { hasNext = await e.MoveNextAsync(); }
+                catch (DigestMismatchException) { InvalidateServerInfoCache(); throw; }
+                if (!hasNext) yield break;
+                yield return e.Current;
+            }
+        }
+    }
 }

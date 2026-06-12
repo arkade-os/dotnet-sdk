@@ -39,7 +39,8 @@ public class HdWalletRecoveryServiceTests
         CheckpointTapScript: new UnilateralPathArkTapScript(
             new Sequence(144),
             new NofNMultisigTapScript(Array.Empty<ECXOnlyPubKey>())),
-        FeeTerms: new ArkOperatorFeeTerms("0", "0", "0", "0", "0"));
+        FeeTerms: new ArkOperatorFeeTerms("0", "0", "0", "0", "0"),
+        Digest: "");
 
     private IWalletStorage _walletStorage = null!;
     private IContractStorage _contractStorage = null!;

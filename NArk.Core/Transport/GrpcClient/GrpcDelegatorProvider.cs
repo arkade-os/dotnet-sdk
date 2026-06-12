@@ -2,17 +2,19 @@ using Fulmine.V1;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using NArk.Abstractions.Services;
+using NArk.Core.Transport;
 
 namespace NArk.Transport.GrpcClient;
 
 public class GrpcDelegatorProvider : IDelegatorProvider
 {
     private readonly DelegatorService.DelegatorServiceClient _client;
+    private readonly DigestHolder _digestHolder = new();
 
     public GrpcDelegatorProvider(string uri)
     {
         var channel = GrpcChannel.ForAddress(uri);
-        var invoker = channel.CreateCallInvoker().Intercept(new BuildVersionInterceptor());
+        var invoker = channel.CreateCallInvoker().Intercept(new BuildVersionInterceptor(_digestHolder));
         _client = new DelegatorService.DelegatorServiceClient(invoker);
     }
 

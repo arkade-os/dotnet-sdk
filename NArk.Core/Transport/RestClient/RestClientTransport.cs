@@ -1,6 +1,6 @@
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NArk.Core.Transport;
 
 namespace NArk.Transport.RestClient;
 
@@ -18,6 +18,7 @@ public partial class RestClientTransport : NArk.Core.Transport.IClientTransport
 {
     private readonly HttpClient _http;
     private readonly string _baseUri;
+    internal readonly DigestHolder _digestHolder = new();
 
     internal static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -29,7 +30,7 @@ public partial class RestClientTransport : NArk.Core.Transport.IClientTransport
     public RestClientTransport(string uri)
     {
         _baseUri = uri.TrimEnd('/');
-        _http = new HttpClient(new BuildVersionHandler { InnerHandler = new HttpClientHandler() })
+        _http = new HttpClient(new BuildVersionHandler(_digestHolder) { InnerHandler = new HttpClientHandler() })
         {
             BaseAddress = new Uri(_baseUri)
         };

@@ -11,6 +11,7 @@ public static class ArkdVersion
 {
     public const string TargetBuild = "0.9.7";
     internal const string HeaderName = "X-Build-Version";
+    internal const string DigestHeaderName = "X-Digest";
 
     /// <summary>
     /// Adds the <c>X-Build-Version</c> default header to <paramref name="http"/>.

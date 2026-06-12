@@ -17,3 +17,10 @@ public class AdditionalInformationRequiredException(string msg) : Exception(msg)
 /// The SDK does not catch this exception — it propagates to the caller.
 /// </summary>
 public class IncompatibleSdkVersionException(string msg) : Exception(msg);
+
+/// <summary>
+/// Thrown when the Arkade server rejects a request because the cached server-info digest no longer matches.
+/// The SDK clears the cached digest and server info before throwing; the caller should retry after
+/// calling <c>GetServerInfoAsync</c> to refresh the configuration.
+/// </summary>
+public class DigestMismatchException(string msg) : Exception(msg);
