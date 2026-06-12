@@ -661,6 +661,31 @@ Console.WriteLine($"Discovered {report.DiscoveredContracts.Count} contract(s)");
 
 Custom discovery sources are added by implementing `IContractDiscoveryProvider` and registering it in DI; the orchestrator picks them up automatically. See [docs/articles/recovery.md](docs/articles/recovery.md) for the full API and tuning guidance.
 
+## Arkade Signer-Key Rotation
+
+When an Arkade server operator rotates its signing key, the SDK handles re-enrollment automatically — no consumer code required. Three regimes apply depending on when the rotation is detected relative to the cutoff:
+
+| Regime | Condition | Handled by |
+|--------|-----------|------------|
+| Collaborative sweep | Before cutoff (or no cutoff) | `ServerKeyRotationSweepPolicy` re-enrolls VTXOs under the current signer via the sweeper |
+| Wait | After cutoff, before VTXO expiry | VTXO waits until recoverable |
+| Recovery re-enroll | Expired VTXO | Intent scheduler; batch session skips forfeit so the old key is not needed |
+
+`ContractReconciliationService` keeps every SingleKey wallet's "Default" receive contract aligned with the current signer. It triggers automatically on startup, `WalletSaved`, and `ServerInfoChanged` — no extra registration needed beyond `AddArkCoreServices`.
+
+To react to a rotation event in your own service, inject `IServerInfoCacheInvalidation`:
+
+```csharp
+public class MyService(IServerInfoCacheInvalidation serverInfoCache)
+{
+    public void Start() =>
+        serverInfoCache.ServerInfoChanged += (_, e) =>
+            Console.WriteLine($"Arkade server info changed: {e.Reason}");
+}
+```
+
+See [docs/articles/signer-rotation.md](docs/articles/signer-rotation.md) for the full rotation model, detection paths, and version/digest header details.
+
 ## Pending Arkade Transaction Recovery
 
 Arkade off-chain transactions are a two-phase **Submit → Finalize** flow. If the process crashes between phases, the server holds the inputs as in-flight and only allows the original pending tx to be finalized — without recovery, those coins are stuck.

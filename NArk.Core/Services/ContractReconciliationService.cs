@@ -62,12 +62,13 @@ public class ContractReconciliationService(
     private readonly Channel<ReconcileJob> _jobs = Channel.CreateUnbounded<ReconcileJob>();
 
     private Task? _workerTask;
+    private CancellationTokenSource? _multiToken;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
         logger?.LogInformation("Starting contract reconciliation service");
-        var multiToken = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token, cancellationToken);
-        _workerTask = DoReconciliationLoop(multiToken.Token);
+        _multiToken = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token, cancellationToken);
+        _workerTask = DoReconciliationLoop(_multiToken.Token);
 
         walletStorage.WalletSaved += OnWalletSaved;
         serverInfoCacheInvalidation.ServerInfoChanged += OnServerInfoChanged;
@@ -98,7 +99,7 @@ public class ContractReconciliationService(
             }
             catch (Exception e)
             {
-                logger?.LogInformation(0, e, "Error during reconciliation loop execution for job {JobType}", job.GetType().Name);
+                logger?.LogWarning(0, e, "Error during reconciliation loop execution for job {JobType}", job.GetType().Name);
 
                 // A wholesale ReconcileAll failure means we may have missed rotations that happened
                 // while offline. The common cause is arkd being unreachable at boot: that surfaces
@@ -262,6 +263,7 @@ public class ContractReconciliationService(
             logger?.LogDebug(0, ex, "Reconciliation worker completed with error during shutdown");
         }
 
+        _multiToken?.Dispose();
         _shutdownCts.Dispose();
         logger?.LogInformation("Contract reconciliation service disposed");
     }

@@ -46,11 +46,11 @@ public partial class RestClientTransport : NArk.Core.Transport.IClientTransport
     /// (e.g. Blazor WASM browser client, <c>IHttpClientFactory</c>, test fakes).
     /// </para>
     /// <para>
-    /// <strong>Limitation:</strong> <see cref="BuildVersionHandler"/> is <em>not</em> inserted into the
-    /// pipeline. As a result, <c>X-Digest</c> is never sent and neither
-    /// <c>BUILD_VERSION_TOO_OLD</c> nor <c>DIGEST_MISMATCH</c> responses are detected automatically.
-    /// The caller is responsible for adding <c>BuildVersionHandler</c> to the client's handler chain
-    /// if that behaviour is required.
+    /// <strong>Limitation:</strong> <c>X-Digest</c> is never sent on outgoing requests and neither
+    /// <c>BUILD_VERSION_TOO_OLD</c> nor <c>DIGEST_MISMATCH</c> error responses are detected
+    /// automatically. This limitation is fundamental to this overload — if automatic digest/version
+    /// checking is required, use the <see cref="RestClientTransport(string)"/> URI-based constructor
+    /// instead.
     /// </para>
     /// </remarks>
     public RestClientTransport(HttpClient http)

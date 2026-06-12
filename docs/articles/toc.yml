@@ -16,5 +16,7 @@
   href: recovery.md
 - name: Pending Tx Recovery
   href: pending-tx-recovery.md
+- name: Signer-Key Rotation
+  href: signer-rotation.md
 - name: Development
   href: development.md
