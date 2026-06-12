@@ -11,14 +11,17 @@ public class ServerKeyRotationSweepPolicy(IClientTransport clientTransport): ISw
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
         
-        var recoverableKeys = serverInfo.DeprecatedSigners
-            // TODO(11.06.2026) remove this nullable cast after protobuf update, or just remove null check if unused
-            .Where(ds=> ds.Value > now || (long?)ds.Value is null)  
-            .Select(ds => ds.Key)
-            .ToArray();
+        // TODO(11.06.2026) remove the (long?) cast after protobuf is updated to `optional int64 cutoff_date`
+        var recoverableKeyHexes = serverInfo.DeprecatedSigners
+            .Where(ds => ds.Value > now || (long?)ds.Value is null)
+            .Select(ds => Convert.ToHexString(ds.Key.ToBytes()))
+            .ToHashSet();
 
+        // ECXOnlyPubKey uses reference equality, so compare by hex of the 32-byte x-coordinate.
         var coinsToRefresh = coins
-            .Where(v => recoverableKeys.Contains(v.SignerDescriptor?.ToXOnlyPubKey())).ToArray();
+            .Where(v => v.SignerDescriptor is not null &&
+                        recoverableKeyHexes.Contains(Convert.ToHexString(v.SignerDescriptor.ToXOnlyPubKey().ToBytes())))
+            .ToArray();
         
         if (coinsToRefresh.Length == 0)
         {
