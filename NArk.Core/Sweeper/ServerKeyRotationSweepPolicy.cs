@@ -15,9 +15,8 @@ public class ServerKeyRotationSweepPolicy(IClientTransport clientTransport): ISw
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
         
-        // TODO(11.06.2026) remove the (long?) cast after protobuf is updated to `optional int64 cutoff_date`
         var recoverableKeyHexes = serverInfo.DeprecatedSigners
-            .Where(ds => ds.Value > now || (long?)ds.Value is null)
+            .Where(ds => ds.Value > now || ds.Value == 0)
             .Select(ds => Convert.ToHexString(ds.Key.ToBytes()))
             .ToHashSet();
 

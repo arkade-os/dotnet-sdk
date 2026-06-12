@@ -45,17 +45,14 @@ public class ServerKeyRotationSweepPolicyTests
         Assert.That(result, Is.EqualTo(new[] { coin }));
     }
 
-    // TODO: enable once protobuf is updated to `optional int64 cutoff_date` so that
-    // ArkServerInfo.DeprecatedSigners becomes Dictionary<ECXOnlyPubKey, long?> and
-    // a missing cutoff_date from the server can be represented as null (DUE_NOW).
-    // [Test]
-    // public async Task Sweeps_coin_under_deprecated_signer_with_no_cutoff()
-    // {
-    //     var policy = MakePolicy(new Dictionary<ECXOnlyPubKey, long?> { { DeprecatedKeyA, null } });
-    //     var coin = MakeCoin(MakeDescriptor(DeprecatedKeyA));
-    //     var result = await CollectAsync(policy.SweepAsync([coin]));
-    //     Assert.That(result, Is.EqualTo(new[] { coin }));
-    // }
+    [Test]
+    public async Task Sweeps_coin_under_deprecated_signer_with_no_cutoff()
+    {
+        var policy = MakePolicy(new Dictionary<ECXOnlyPubKey, long> { { DeprecatedKeyA, 0 } });
+        var coin = MakeCoin(MakeDescriptor(DeprecatedKeyA));
+        var result = await CollectAsync(policy.SweepAsync([coin]));
+        Assert.That(result, Is.EqualTo(new[] { coin }));
+    }
 
     [Test]
     public async Task Does_not_sweep_coin_under_deprecated_signer_past_cutoff()
@@ -109,20 +106,19 @@ public class ServerKeyRotationSweepPolicyTests
         Assert.That(result, Is.EqualTo(new[] { migratable }));
     }
 
-    // TODO: enable once ArkServerInfo.DeprecatedSigners is Dictionary<ECXOnlyPubKey, long?>
-    // [Test]
-    // public async Task Sweeps_coins_under_all_due_now_deprecated_signers()
-    // {
-    //     var policy = MakePolicy(new Dictionary<ECXOnlyPubKey, long?>
-    //     {
-    //         { DeprecatedKeyA, null },
-    //         { DeprecatedKeyB, null },
-    //     });
-    //     var coinA = MakeCoin(MakeDescriptor(DeprecatedKeyA));
-    //     var coinB = MakeCoin(MakeDescriptor(DeprecatedKeyB));
-    //     var result = await CollectAsync(policy.SweepAsync([coinA, coinB]));
-    //     Assert.That(result, Is.EquivalentTo(new[] { coinA, coinB }));
-    // }
+    [Test]
+    public async Task Sweeps_coins_under_all_due_now_deprecated_signers()
+    {
+        var policy = MakePolicy(new Dictionary<ECXOnlyPubKey, long>
+        {
+            { DeprecatedKeyA, 0 },
+            { DeprecatedKeyB, 0 },
+        });
+        var coinA = MakeCoin(MakeDescriptor(DeprecatedKeyA));
+        var coinB = MakeCoin(MakeDescriptor(DeprecatedKeyB));
+        var result = await CollectAsync(policy.SweepAsync([coinA, coinB]));
+        Assert.That(result, Is.EquivalentTo(new[] { coinA, coinB }));
+    }
 
     [Test]
     public async Task Returns_empty_when_no_coins_provided()
