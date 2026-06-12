@@ -1,4 +1,5 @@
 using Fulmine.V1;
+using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using NArk.Abstractions.Services;
 
@@ -11,7 +12,8 @@ public class GrpcDelegatorProvider : IDelegatorProvider
     public GrpcDelegatorProvider(string uri)
     {
         var channel = GrpcChannel.ForAddress(uri);
-        _client = new DelegatorService.DelegatorServiceClient(channel);
+        var invoker = channel.CreateCallInvoker().Intercept(new BuildVersionInterceptor());
+        _client = new DelegatorService.DelegatorServiceClient(invoker);
     }
 
     public async Task<DelegatorInfo> GetDelegatorInfoAsync(CancellationToken cancellationToken = default)
