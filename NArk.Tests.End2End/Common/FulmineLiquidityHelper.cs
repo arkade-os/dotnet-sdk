@@ -10,31 +10,48 @@ namespace NArk.Tests.End2End.Common;
 public static class FulmineLiquidityHelper
 {
     /// <summary>
-    /// Ensures Fulmine has enough ARK VTXOs by funding its boarding address, mining, and settling.
+    /// Ensures Fulmine has enough *spendable* ARK VTXOs by settling (which renews
+    /// expired/recoverable VTXOs) and, when genuinely underfunded, boarding fresh BTC first.
     /// Call this after Boltz is healthy but before tests that create BTC→ARK or reverse swaps.
     /// </summary>
+    /// <remarks>
+    /// The raw <c>/api/v1/balance</c> amount also counts VTXOs that have passed their
+    /// renewal deadline — Fulmine reports them in the balance but a plain offchain send
+    /// fails with <c>{"code":2,"message":"missing vtxos"}</c>. VTXOs on the regtest stack
+    /// live only ~50 minutes, so a long-lived stack hits this constantly. Gate on the
+    /// spendable subset (from <c>/api/v1/vtxos</c>) instead, and recover via settle:
+    /// a settle round re-anchors the expired funds into a fresh spendable set.
+    /// </remarks>
     public static async Task EnsureArkLiquidity(long minBalance = 200_000, int maxAttempts = 20)
     {
         var fulmineHttp = new HttpClient { BaseAddress = new Uri(SharedSwapInfrastructure.FulmineEndpoint.ToString()) };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            var arkBalance = await GetFulmineArkBalance(fulmineHttp);
-            Console.WriteLine($"[FulmineLiquidity] ARK balance: {arkBalance} sats (attempt {attempt}, need {minBalance})");
-            if (arkBalance >= minBalance) return;
+            var rawBalance = await GetFulmineArkBalance(fulmineHttp);
+            var spendable = await GetFulmineSpendableBalance(fulmineHttp);
+            // Spendable probe is best-effort: if /api/v1/vtxos is unavailable, fall
+            // back to the raw balance (the original behaviour).
+            var effective = spendable >= 0 ? spendable : rawBalance;
+            Console.WriteLine($"[FulmineLiquidity] ARK balance: spendable={spendable} raw={rawBalance} sats (attempt {attempt}, need {minBalance})");
+            if (effective >= minBalance) return;
 
-            // Fund Fulmine's boarding address with fresh BTC each attempt
-            await FundFulmineBoarding(fulmineHttp);
+            if (rawBalance < minBalance)
+            {
+                // Genuinely underfunded — board fresh BTC before settling.
+                await FundFulmineBoarding(fulmineHttp);
 
-            // Mine blocks to confirm the boarding UTXO (arkd requires confirmed inputs)
-            for (var i = 0; i < 6; i++)
-                await DockerHelper.MineBlocks();
-            await Task.Delay(TimeSpan.FromSeconds(2));
+                // Mine blocks to confirm the boarding UTXO (arkd requires confirmed inputs)
+                for (var i = 0; i < 6; i++)
+                    await DockerHelper.MineBlocks();
+                await Task.Delay(TimeSpan.FromSeconds(2));
 
-            // Log raw balance after mining (to see if onchain increased)
-            await LogRawBalance(fulmineHttp, "after-mine");
+                // Log raw balance after mining (to see if onchain increased)
+                await LogRawBalance(fulmineHttp, "after-mine");
+            }
 
-            // Now settle — boarding UTXO is confirmed
+            // Settle — renews expired/recoverable VTXOs into a fresh spendable set
+            // and absorbs any just-boarded UTXO.
             await SettleWithLogging(fulmineHttp);
 
             // Wait for the arkd batch round to process the settle intent
@@ -120,6 +137,39 @@ public static class FulmineLiquidityHelper
         catch (Exception ex)
         {
             Console.WriteLine($"[FulmineLiquidity] Funding failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Sums Fulmine's *spendable* VTXOs in sats: not spent, not swept, and not
+    /// within a minute of their renewal deadline (a near-expiry VTXO can lapse
+    /// mid-flow). Returns -1 when the <c>/api/v1/vtxos</c> endpoint is
+    /// unavailable or unparseable, so callers can fall back to the raw balance.
+    /// </summary>
+    private static async Task<long> GetFulmineSpendableBalance(HttpClient fulmineHttp)
+    {
+        try
+        {
+            var vtxosJson = await fulmineHttp.GetStringAsync("/api/v1/vtxos");
+            var vtxos = JsonNode.Parse(vtxosJson)?["vtxos"]?.AsArray();
+            if (vtxos is null) return -1;
+
+            var cutoff = DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeSeconds();
+            long spendable = 0;
+            foreach (var vtxo in vtxos)
+            {
+                if (vtxo?["isSpent"]?.GetValue<bool>() == true) continue;
+                if (vtxo?["isSwept"]?.GetValue<bool>() == true) continue;
+                if (!long.TryParse(vtxo?["expiresAt"]?.ToString(), out var expiresAt) || expiresAt <= cutoff) continue;
+                if (long.TryParse(vtxo?["amount"]?.ToString(), out var amount))
+                    spendable += amount;
+            }
+            return spendable;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FulmineLiquidity] Spendable-balance check failed: {ex.Message}");
+            return -1;
         }
     }
 
