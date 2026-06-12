@@ -9,11 +9,13 @@ public class ArkHostedLifecycle(
     IntentSynchronizationService intentSynchronizationService,
     BatchManagementService batchManagementService,
     SweeperService sweeperService,
+    ContractReconciliationService contractReconciliationService,
     PendingArkTransactionRecoveryService pendingArkTransactionRecoveryService) : IHostedLifecycleService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         await sweeperService.StartAsync(cancellationToken);
+        await contractReconciliationService.StartAsync(cancellationToken);
         await batchManagementService.StartAsync(cancellationToken);
         await intentSynchronizationService.StartAsync(cancellationToken);
         await intentGenerationService.StartAsync(cancellationToken);

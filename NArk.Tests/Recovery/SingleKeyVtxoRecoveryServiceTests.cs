@@ -76,16 +76,30 @@ public class SingleKeyVtxoRecoveryServiceTests
     public async Task EnsureDefaultAsync_derives_current_signer_default_even_when_contracts_exist()
     {
         var user = NewKey();
+        var signer = NewKey();
         var wallet = new ArkWalletInfo("w1", null, null, WalletType.SingleKey, Desc(user).ToString(), 0);
         var walletStorage = Substitute.For<IWalletStorage>();
         walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
+
+        var derived = new ArkPaymentContract(Desc(signer), new Sequence(144), Desc(user));
+        var expectedScript = derived.GetScriptPubKey().ToHex();
+
         var contractService = Substitute.For<IContractService>();
+        contractService.DeriveContract(
+                "w1",
+                NextContractPurpose.SendToSelf,
+                ContractActivityState.Active,
+                Arg.Any<Dictionary<string, string>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkContract>(derived));
+
         var sut = new SingleKeyVtxoRecoveryService(
             [], walletStorage, Substitute.For<IContractStorage>(), contractService, Substitute.For<IClientTransport>());
 
-        await sut.EnsureDefaultAsync("w1");
+        var script = await sut.EnsureDefaultAsync("w1");
 
+        Assert.That(script, Is.EqualTo(expectedScript));
         await contractService.Received(1).DeriveContract(
             "w1",
             NextContractPurpose.SendToSelf,

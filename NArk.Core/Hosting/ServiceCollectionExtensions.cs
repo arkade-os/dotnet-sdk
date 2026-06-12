@@ -142,6 +142,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<BatchManagementService>();
         services.AddSingleton<IOnchainService, OnchainService>();
         services.AddSingleton<SweeperService>();
+        services.AddSingleton<ContractReconciliationService>();
         services.AddSingleton<ISweepPolicy, ServerKeyRotationSweepPolicy>();
         services.AddSingleton<PendingArkTransactionRecoveryService>();
         services.AddSingleton<IFeeEstimator, DefaultFeeEstimator>();
@@ -157,6 +158,7 @@ public static class ServiceCollectionExtensions
         // HD-wallet recovery: gap-limit scan for prior contract usage on import.
         services.AddSingleton<HdWalletRecoveryService>();
         services.AddSingleton<SingleKeyVtxoRecoveryService>();
+        services.AddSingleton<ISingleKeyDefaultEnsurer>(sp => sp.GetRequiredService<SingleKeyVtxoRecoveryService>());
         services.AddSingleton<IContractDiscoveryProvider, IndexerVtxoDiscoveryProvider>();
         // BoardingUtxoDiscoveryProvider activates only when an IBitcoinBlockchain has
         // been registered (typically by the plugin via NBXplorer/Esplora). When absent the

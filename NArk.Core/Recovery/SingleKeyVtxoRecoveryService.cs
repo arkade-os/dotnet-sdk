@@ -22,7 +22,7 @@ public class SingleKeyVtxoRecoveryService(
     IContractStorage contractStorage,
     IContractService contractService,
     IClientTransport clientTransport,
-    ILogger<SingleKeyVtxoRecoveryService>? logger = null)
+    ILogger<SingleKeyVtxoRecoveryService>? logger = null) : ISingleKeyDefaultEnsurer
 {
     public async Task<int> DiscoverAsync(string walletId, CancellationToken cancellationToken = default)
     {
@@ -84,9 +84,10 @@ public class SingleKeyVtxoRecoveryService(
     /// (Active, Source="Default"). DeriveContract derives from the current ArkServerInfo.SignerKey
     /// and upserts on {Script, WalletId}, so this is a no-op when the current default already
     /// exists, and after a signer rotation it creates the new-signer default. Deactivating the
-    /// stale old-signer default is the plugin's reconciliation job, not this one.
+    /// stale old-signer default is the reconciliation service's job, not this one.
     /// </summary>
-    public async Task EnsureDefaultAsync(string walletId, CancellationToken cancellationToken = default)
+    /// <returns>The script hex of the ensured current-signer Default contract.</returns>
+    public async Task<string> EnsureDefaultAsync(string walletId, CancellationToken cancellationToken = default)
     {
         var wallet = await walletStorage.GetWalletById(walletId, cancellationToken)
             ?? throw new InvalidOperationException($"Wallet '{walletId}' not found.");
@@ -94,11 +95,13 @@ public class SingleKeyVtxoRecoveryService(
             throw new InvalidOperationException(
                 $"SingleKeyVtxoRecoveryService only supports SingleKey wallets; '{walletId}' is {wallet.WalletType}.");
 
-        await contractService.DeriveContract(
+        var contract = await contractService.DeriveContract(
             walletId,
             NextContractPurpose.SendToSelf,
             ContractActivityState.Active,
             metadata: new Dictionary<string, string> { ["Source"] = "Default" },
             cancellationToken: cancellationToken);
+
+        return contract.GetScriptPubKey().ToHex();
     }
 }
