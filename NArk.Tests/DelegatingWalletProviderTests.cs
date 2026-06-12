@@ -36,7 +36,7 @@ public class DelegatingWalletProviderTests
     private static ArkServerInfo CreateServerInfo() => new(
         Dust: Money.Satoshis(1000),
         SignerKey: ServerKey,
-        DeprecatedSigners: new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(),
+        DeprecatedSigners: new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
         Network: Network.RegTest,
         UnilateralExit: ExitDelay,
         BoardingExit: new Sequence(1008),

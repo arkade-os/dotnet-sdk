@@ -354,7 +354,7 @@ public class BoardingUtxoSyncServiceTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: serverKey,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: BoardingExitDelay,

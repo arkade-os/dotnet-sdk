@@ -1,8 +1,10 @@
 using Ark.V1;
+using NArk.Abstractions.Extensions;
 using NArk.Core;
 using NArk.Core.Scripts;
 using NArk.Transport.GrpcClient.Extensions;
 using NBitcoin;
+using KeyExtensions = NArk.Transport.GrpcClient.Extensions.KeyExtensions;
 
 namespace NArk.Transport.GrpcClient;
 
@@ -32,7 +34,7 @@ public partial class GrpcClientTransport
             Dust: Money.Satoshis(response.Dust),
             SignerKey: KeyExtensions.ParseOutputDescriptor(response.SignerPubkey, network),
             DeprecatedSigners: response.DeprecatedSigners.ToDictionary(signer => signer.Pubkey.ToECXOnlyPubKey(),
-                signer => signer.CutoffDate),
+                signer => signer.CutoffDate, ECXOnlyPubKeyComparer.Instance),
             Network: network,
             UnilateralExit: ParseSequence(response.UnilateralExitDelay),
             BoardingExit: ParseSequence(response.BoardingExitDelay),
