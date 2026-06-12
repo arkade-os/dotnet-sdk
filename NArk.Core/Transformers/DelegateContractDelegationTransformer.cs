@@ -18,7 +18,7 @@ public class DelegateContractDelegationTransformer(
             return false;
 
         // Verify the delegator's pubkey matches the contract's delegate key
-        if (!delegateContract.Delegate.ToXOnlyPubKey().Equals(delegatePubkey.ToXOnlyPubKey()))
+        if (!ECXOnlyPubKeyComparer.Instance.Equals(delegateContract.Delegate.ToXOnlyPubKey(), delegatePubkey.ToXOnlyPubKey()))
         {
             logger?.LogDebug(
                 "Delegator pubkey mismatch: contract={ContractDelegate}, delegator={DelegatorPubkey}",

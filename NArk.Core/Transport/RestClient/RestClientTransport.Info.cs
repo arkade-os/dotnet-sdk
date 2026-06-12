@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using NArk.Abstractions.Extensions;
 using NArk.Core;
 using NArk.Core.Scripts;
 using NArk.Core.Transport.Extensions;
@@ -28,7 +29,7 @@ public partial class RestClientTransport
         var forfeitPubkey = GetString(json, "forfeit_pubkey", "forfeitPubkey");
         var fPubKey = forfeitPubkey.ToECXOnlyPubKey();
 
-        var deprecatedSigners = new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>();
+        var deprecatedSigners = new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance);
         if (TryGetProp(json, "deprecated_signers", "deprecatedSigners", out var ds) && ds.ValueKind == JsonValueKind.Array)
         {
             foreach (var signer in ds.EnumerateArray())

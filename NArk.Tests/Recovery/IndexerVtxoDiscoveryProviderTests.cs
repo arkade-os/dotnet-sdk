@@ -35,7 +35,7 @@ public class IndexerVtxoDiscoveryProviderTests
         new(
             Dust: Money.Satoshis(330),
             SignerKey: signer,
-            DeprecatedSigners: deprecated.ToDictionary(k => k, _ => 1_700_000_000L),
+            DeprecatedSigners: deprecated.ToDictionary(k => k, _ => 1_700_000_000L, ECXOnlyPubKeyComparer.Instance),
             Network: Net,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),
@@ -123,7 +123,7 @@ public class IndexerVtxoDiscoveryProviderTests
         var serverInfo = new ArkServerInfo(
             Dust: Money.Satoshis(330),
             SignerKey: current,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
             Network: Network.Main,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),

@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
 using NBitcoin;
 using NBitcoin.Secp256k1;
@@ -20,7 +21,7 @@ public class NofNMultisigTapScript(ECXOnlyPubKey[] owners) : ScriptBuilder
 
     public static NofNMultisigTapScript Parse(ScriptReader scriptReader)
     {
-        HashSet<ECXOnlyPubKey> owners = [];
+        HashSet<ECXOnlyPubKey> owners = new(ECXOnlyPubKeyComparer.Instance);
         Op lastOp = Op.GetPushOp(0);
         while (lastOp.Code != OpcodeType.OP_CHECKSIG)
         {
