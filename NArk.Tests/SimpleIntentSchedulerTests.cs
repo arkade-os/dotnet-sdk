@@ -146,6 +146,7 @@ public class SimpleIntentSchedulerTests
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
             FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "server-digest-abc",
             VtxoMinAmount: Money.Zero,
             VtxoMaxAmount: Money.Coins(21_000_000m),
             UtxoMinAmount: Money.Zero,
