@@ -3,7 +3,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Recovery;
 using NArk.Abstractions.Wallets;
-using NArk.Core.Services;
+using NArk.Core.Contracts;
 using NArk.Core.Transport;
 
 namespace NArk.Core.Recovery;
@@ -20,7 +20,6 @@ public class SingleKeyVtxoRecoveryService(
     IEnumerable<IContractDiscoveryProvider> providers,
     IWalletStorage walletStorage,
     IContractStorage contractStorage,
-    IContractService contractService,
     IClientTransport clientTransport,
     ILogger<SingleKeyVtxoRecoveryService>? logger = null) : ISingleKeyDefaultEnsurer
 {
@@ -81,10 +80,16 @@ public class SingleKeyVtxoRecoveryService(
 
     /// <summary>
     /// Idempotently ensures the SingleKey wallet's CURRENT-signer default contract exists
-    /// (Active, Source="Default"). DeriveContract derives from the current ArkServerInfo.SignerKey
-    /// and upserts on {Script, WalletId}, so this is a no-op when the current default already
-    /// exists, and after a signer rotation it creates the new-signer default. Deactivating the
-    /// stale old-signer default is the reconciliation service's job, not this one.
+    /// (Active, <c>Source="Default"</c>). The canonical default is the <see cref="ArkPaymentContract"/>
+    /// under the current <c>ArkServerInfo.SignerKey</c> — the very contract StoreOverview / the
+    /// dashboard render. We build it DIRECTLY rather than via the SendToSelf provider path, because
+    /// <see cref="Wallet.SingleKeyAddressProvider.GetNextContract"/> redirects SendToSelf to the
+    /// sweep <c>Destination</c> (as an Inactive <c>UnknownArkContract</c>) when one is configured;
+    /// going through that path would return the destination's script and let the reconciler
+    /// deactivate the genuine payment default. Persisting upserts on {Script, WalletId}, so this is
+    /// a no-op when the current default already exists, and after a signer rotation it creates the
+    /// new-signer default. Deactivating the stale old-signer default is the reconciliation
+    /// service's job, not this one.
     /// </summary>
     /// <returns>The script hex of the ensured current-signer Default contract.</returns>
     public async Task<string> EnsureDefaultAsync(string walletId, CancellationToken cancellationToken = default)
@@ -94,14 +99,19 @@ public class SingleKeyVtxoRecoveryService(
         if (wallet.WalletType != WalletType.SingleKey)
             throw new InvalidOperationException(
                 $"SingleKeyVtxoRecoveryService only supports SingleKey wallets; '{walletId}' is {wallet.WalletType}.");
+        if (string.IsNullOrEmpty(wallet.AccountDescriptor))
+            throw new InvalidOperationException($"SingleKey wallet '{walletId}' has no AccountDescriptor.");
 
-        var contract = await contractService.DeriveContract(
-            walletId,
-            NextContractPurpose.SendToSelf,
-            ContractActivityState.Active,
-            metadata: new Dictionary<string, string> { ["Source"] = "Default" },
-            cancellationToken: cancellationToken);
-
+        var info = await clientTransport.GetServerInfoAsync(cancellationToken);
+        var descriptor = KeyExtensions.ParseOutputDescriptor(wallet.AccountDescriptor!, info.Network);
+        // Canonical default = the payment contract under the CURRENT signer, built directly so a
+        // configured sweep Destination cannot redirect it (the SendToSelf provider path does that).
+        var contract = new ArkPaymentContract(info.SignerKey, info.UnilateralExit, descriptor);
+        var entity = contract.ToEntity(walletId, info.SignerKey, activityState: ContractActivityState.Active) with
+        {
+            Metadata = new Dictionary<string, string> { ["Source"] = "Default" },
+        };
+        await contractStorage.SaveContract(entity, cancellationToken);
         return contract.GetScriptPubKey().ToHex();
     }
 }

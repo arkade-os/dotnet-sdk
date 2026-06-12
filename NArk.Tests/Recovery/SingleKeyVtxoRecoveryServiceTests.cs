@@ -49,7 +49,7 @@ public class SingleKeyVtxoRecoveryServiceTests
         var contractStorage = Substitute.For<IContractStorage>();
 
         var sut = new SingleKeyVtxoRecoveryService(
-            [provider], walletStorage, contractStorage, Substitute.For<IContractService>(), transport);
+            [provider], walletStorage, contractStorage, transport);
 
         var persisted = await sut.DiscoverAsync("w1");
 
@@ -66,46 +66,103 @@ public class SingleKeyVtxoRecoveryServiceTests
         var walletStorage = Substitute.For<IWalletStorage>();
         walletStorage.GetWalletById("w2", Arg.Any<CancellationToken>()).Returns(Task.FromResult<ArkWalletInfo?>(wallet));
         var sut = new SingleKeyVtxoRecoveryService(
-            [], walletStorage, Substitute.For<IContractStorage>(), Substitute.For<IContractService>(),
+            [], walletStorage, Substitute.For<IContractStorage>(),
             Substitute.For<IClientTransport>());
 
         Assert.ThatAsync(() => sut.DiscoverAsync("w2"), Throws.InvalidOperationException);
     }
 
     [Test]
-    public async Task EnsureDefaultAsync_derives_current_signer_default_even_when_contracts_exist()
+    public async Task EnsureDefaultAsync_builds_current_signer_payment_contract_and_persists_active_default()
     {
         var user = NewKey();
         var signer = NewKey();
+        var serverInfo = TestServerInfo(signer, new Dictionary<ECXOnlyPubKey, long>());
         var wallet = new ArkWalletInfo("w1", null, null, WalletType.SingleKey, Desc(user).ToString(), 0);
         var walletStorage = Substitute.For<IWalletStorage>();
         walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
 
-        var derived = new ArkPaymentContract(Desc(signer), new Sequence(144), Desc(user));
-        var expectedScript = derived.GetScriptPubKey().ToHex();
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetServerInfoAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult(serverInfo));
 
-        var contractService = Substitute.For<IContractService>();
-        contractService.DeriveContract(
-                "w1",
-                NextContractPurpose.SendToSelf,
-                ContractActivityState.Active,
-                Arg.Any<Dictionary<string, string>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<ArkContract>(derived));
+        var contractStorage = Substitute.For<IContractStorage>();
+
+        // Canonical default = the payment contract under the current signer.
+        var expectedScript =
+            new ArkPaymentContract(serverInfo.SignerKey, serverInfo.UnilateralExit, Desc(user))
+                .GetScriptPubKey().ToHex();
 
         var sut = new SingleKeyVtxoRecoveryService(
-            [], walletStorage, Substitute.For<IContractStorage>(), contractService, Substitute.For<IClientTransport>());
+            [], walletStorage, contractStorage, transport);
 
         var script = await sut.EnsureDefaultAsync("w1");
 
         Assert.That(script, Is.EqualTo(expectedScript));
-        await contractService.Received(1).DeriveContract(
-            "w1",
-            NextContractPurpose.SendToSelf,
-            ContractActivityState.Active,
-            Arg.Is<Dictionary<string, string>>(m => m["Source"] == "Default"),
+        await contractStorage.Received(1).SaveContract(
+            Arg.Is<ArkContractEntity>(e =>
+                e.Script == expectedScript
+                && e.ActivityState == ContractActivityState.Active
+                && e.Metadata != null
+                && e.Metadata["Source"] == "Default"),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task EnsureDefaultAsync_ignores_sweep_destination_and_returns_payment_contract_script()
+    {
+        var user = NewKey();
+        var signer = NewKey();
+        var serverInfo = TestServerInfo(signer, new Dictionary<ECXOnlyPubKey, long>());
+
+        // A sweep Destination is configured. The buggy SendToSelf provider path would
+        // redirect the "default" to this destination's script; the fix must ignore it.
+        var sweepDestination =
+            BitcoinAddress.Create("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", Network.RegTest).ToString();
+        var wallet = new ArkWalletInfo(
+            "w1", null, sweepDestination, WalletType.SingleKey, Desc(user).ToString(), 0);
+        var walletStorage = Substitute.For<IWalletStorage>();
+        walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
+
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetServerInfoAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult(serverInfo));
+
+        var contractStorage = Substitute.For<IContractStorage>();
+
+        // The payment contract under the current signer — NOT the destination's script.
+        var paymentScript =
+            new ArkPaymentContract(serverInfo.SignerKey, serverInfo.UnilateralExit, Desc(user))
+                .GetScriptPubKey().ToHex();
+
+        var sut = new SingleKeyVtxoRecoveryService(
+            [], walletStorage, contractStorage, transport);
+
+        var script = await sut.EnsureDefaultAsync("w1");
+
+        Assert.That(script, Is.EqualTo(paymentScript),
+            "EnsureDefaultAsync must return the payment-contract script, not the sweep destination's");
+        await contractStorage.Received(1).SaveContract(
+            Arg.Is<ArkContractEntity>(e =>
+                e.Script == paymentScript
+                && e.ActivityState == ContractActivityState.Active
+                && e.Metadata != null
+                && e.Metadata["Source"] == "Default"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public void EnsureDefaultAsync_throws_when_account_descriptor_missing()
+    {
+        var wallet = new ArkWalletInfo("w1", null, null, WalletType.SingleKey, null, 0);
+        var walletStorage = Substitute.For<IWalletStorage>();
+        walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
+
+        var sut = new SingleKeyVtxoRecoveryService(
+            [], walletStorage, Substitute.For<IContractStorage>(), Substitute.For<IClientTransport>());
+
+        Assert.ThatAsync(() => sut.EnsureDefaultAsync("w1"), Throws.InvalidOperationException);
     }
 
     private static ArkServerInfo TestServerInfo(ECXOnlyPubKey signer, Dictionary<ECXOnlyPubKey, long> deprecated)

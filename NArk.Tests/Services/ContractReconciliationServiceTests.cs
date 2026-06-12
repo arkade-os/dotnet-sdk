@@ -49,6 +49,10 @@ public class ContractReconciliationServiceTests
     private static ArkWalletInfo SingleKeyWallet(string id = "w1") =>
         new(id, null, null, WalletType.SingleKey, "tr(0000000000000000000000000000000000000000000000000000000000000001)", 0);
 
+    private static ArkWalletInfo SingleKeyWalletWithDestination(string id = "w1") =>
+        new(id, null, "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", WalletType.SingleKey,
+            "tr(0000000000000000000000000000000000000000000000000000000000000001)", 0);
+
     private static ArkWalletInfo HdWallet(string id = "w2") =>
         new(id, null, null, WalletType.HD, "tr([00000000/86'/1'/0']xpub.../0/*)", 0);
 
@@ -109,6 +113,28 @@ public class ContractReconciliationServiceTests
         // Did NOT deactivate the non-Default contract.
         await _contractStorage.DidNotReceive().UpdateContractActivityState(
             "w1", "cc22", Arg.Any<ContractActivityState>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ReconcileWalletAsync_WithSweepDestination_doesNotDeactivate_matchingPaymentDefault()
+    {
+        // C1 guard: even when a sweep Destination is configured, the ensurer returns the
+        // payment-contract script (built directly). The active Source="Default" row whose
+        // script matches must NOT be superseded — the reconciler must not deactivate the
+        // genuine payment default for a destination-configured wallet.
+        var wallet = SingleKeyWalletWithDestination();
+        _walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
+
+        var paymentDefault = ContractEntity(CurrentScript, source: "Default");
+        SetupActiveContracts("w1", paymentDefault);
+
+        var sut = CreateService();
+        await sut.ReconcileWalletAsync("w1", CancellationToken.None);
+
+        await _ensurer.Received(1).EnsureDefaultAsync("w1", Arg.Any<CancellationToken>());
+        await _contractStorage.DidNotReceive().UpdateContractActivityState(
+            "w1", CurrentScript, Arg.Any<ContractActivityState>(), Arg.Any<CancellationToken>());
     }
 
     [Test]

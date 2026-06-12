@@ -137,6 +137,9 @@ public class ContractReconciliationService(
         if (wallet.WalletType != WalletType.SingleKey)
             return;
 
+        // currentScript is now always the ArkPaymentContract default script (C1 fix:
+        // EnsureDefaultAsync builds it directly and never returns a sweep-destination script),
+        // so the supersede loop below deactivates only stale Source="Default" rows.
         var currentScript = await defaultEnsurer.EnsureDefaultAsync(walletId, cancellationToken);
 
         var activeContracts = await contractStorage.GetContracts(
