@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Recovery;
+using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
 using NArk.Core.Contracts;
@@ -164,6 +165,150 @@ public class WalletRecoveryTests
 
         // Funds (VTXOs) re-synced from the indexer for the recovered scripts.
         Assert.That(report.FundsScriptsSynced, Is.GreaterThan(0), "funds (VTXOs) must be re-synced");
+
+        await host2.StopAsync();
+    }
+
+    /// <summary>
+    /// Gap-limit positive: a VTXO funded at derivation index <c>targetIndex</c> is
+    /// recovered when <c>GapLimit</c> exceeds <c>targetIndex</c>. The scan walks
+    /// 0…<c>targetIndex-1</c> as misses, then finds the funded script.
+    /// </summary>
+    [Test]
+    public async Task HdSeedRestore_GapLimitPositive_FindsVtxoBeyondGap()
+    {
+        const int targetIndex = 5;
+        const int gapLimit = 10; // > targetIndex — scan reaches and finds it
+        const int amountSats = 50_000;
+
+        var mnemonic = new Mnemonic(Wordlist.English, WordCount.Twelve).ToString();
+        string walletId;
+        string targetScript;
+
+        // ── Phase 1: fund a VTXO at a high HD index ───────────────────────
+        using (var host1 = BuildHost($"GapPos1_{Guid.NewGuid():N}"))
+        {
+            await host1.StartAsync();
+
+            var transport = host1.Services.GetRequiredService<IClientTransport>();
+            var serverInfo = await transport.GetServerInfoAsync();
+            var walletStorage = host1.Services.GetRequiredService<IWalletStorage>();
+            var contractService = host1.Services.GetRequiredService<IContractService>();
+            var vtxoStorage = host1.Services.GetRequiredService<IVtxoStorage>();
+
+            var walletInfo = await WalletFactory.CreateWallet(mnemonic, null, serverInfo);
+            await walletStorage.UpsertWallet(walletInfo);
+            walletId = walletInfo.Id;
+
+            // Advance the derivation index through 0..targetIndex-1 without funding.
+            for (var i = 0; i < targetIndex; i++)
+                await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
+
+            // Derive at targetIndex and fund it.
+            var contract = await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
+            targetScript = contract.GetScriptPubKey().ToHex();
+
+            var vtxoTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            vtxoStorage.VtxosChanged += (_, vtxo) =>
+            {
+                if (vtxo.Script == targetScript) vtxoTcs.TrySetResult();
+            };
+
+            await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSats);
+            await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90));
+
+            await host1.StopAsync();
+        }
+
+        // ── Phase 2: recover with GapLimit > targetIndex ──────────────────
+        using var host2 = BuildHost($"GapPos2_{Guid.NewGuid():N}");
+        await host2.StartAsync();
+
+        var serverInfo2 = await host2.Services.GetRequiredService<IClientTransport>().GetServerInfoAsync();
+        var walletStorage2 = host2.Services.GetRequiredService<IWalletStorage>();
+        var walletInfo2 = await WalletFactory.CreateWallet(mnemonic, null, serverInfo2);
+        await walletStorage2.UpsertWallet(walletInfo2);
+        Assert.That(walletInfo2.Id, Is.EqualTo(walletId), "re-import must yield the same wallet id");
+
+        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var report = await host2.Services.GetRequiredService<IWalletRecoveryService>()
+            .RecoverAsync(walletId, new RecoveryOptions(GapLimit: gapLimit), recoveryCts.Token);
+
+        Assert.That(report.HdScan, Is.Not.Null, "HD scan must run for an HD wallet");
+        Assert.That(report.HdScan!.HighestUsedIndex, Is.EqualTo(targetIndex),
+            $"Recovery must find the VTXO at derivation index {targetIndex}");
+        Assert.That(report.FundsScriptsSynced, Is.GreaterThan(0), "Funds (VTXOs) must be re-synced");
+
+        await host2.StopAsync();
+    }
+
+    /// <summary>
+    /// Gap-limit negative: a VTXO at index <c>targetIndex</c> is NOT recovered when
+    /// <c>GapLimit</c> is smaller than <c>targetIndex</c>. The scan accumulates
+    /// <c>GapLimit</c> consecutive misses before reaching the funded index and stops.
+    /// </summary>
+    [Test]
+    public async Task HdSeedRestore_GapLimitNegative_MissesVtxoBeyondGapLimit()
+    {
+        const int targetIndex = 5;
+        const int gapLimit = 3; // < targetIndex — scan stops before reaching the funded index
+        const int amountSats = 50_000;
+
+        var mnemonic = new Mnemonic(Wordlist.English, WordCount.Twelve).ToString();
+        string walletId;
+        string targetScript;
+
+        // ── Phase 1: fund a VTXO at a high HD index (mirrors positive test) ──
+        using (var host1 = BuildHost($"GapNeg1_{Guid.NewGuid():N}"))
+        {
+            await host1.StartAsync();
+
+            var transport = host1.Services.GetRequiredService<IClientTransport>();
+            var serverInfo = await transport.GetServerInfoAsync();
+            var walletStorage = host1.Services.GetRequiredService<IWalletStorage>();
+            var contractService = host1.Services.GetRequiredService<IContractService>();
+            var vtxoStorage = host1.Services.GetRequiredService<IVtxoStorage>();
+
+            var walletInfo = await WalletFactory.CreateWallet(mnemonic, null, serverInfo);
+            await walletStorage.UpsertWallet(walletInfo);
+            walletId = walletInfo.Id;
+
+            for (var i = 0; i < targetIndex; i++)
+                await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
+
+            var contract = await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
+            targetScript = contract.GetScriptPubKey().ToHex();
+
+            var vtxoTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            vtxoStorage.VtxosChanged += (_, vtxo) =>
+            {
+                if (vtxo.Script == targetScript) vtxoTcs.TrySetResult();
+            };
+
+            await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSats);
+            await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90));
+
+            await host1.StopAsync();
+        }
+
+        // ── Phase 2: recover with GapLimit < targetIndex — must NOT find it ─
+        using var host2 = BuildHost($"GapNeg2_{Guid.NewGuid():N}");
+        await host2.StartAsync();
+
+        var serverInfo2 = await host2.Services.GetRequiredService<IClientTransport>().GetServerInfoAsync();
+        var walletStorage2 = host2.Services.GetRequiredService<IWalletStorage>();
+        var walletInfo2 = await WalletFactory.CreateWallet(mnemonic, null, serverInfo2);
+        await walletStorage2.UpsertWallet(walletInfo2);
+        Assert.That(walletInfo2.Id, Is.EqualTo(walletId), "re-import must yield the same wallet id");
+
+        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var report = await host2.Services.GetRequiredService<IWalletRecoveryService>()
+            .RecoverAsync(walletId, new RecoveryOptions(GapLimit: gapLimit), recoveryCts.Token);
+
+        Assert.That(report.HdScan, Is.Not.Null, "HD scan must run for an HD wallet");
+        Assert.That(report.HdScan!.HighestUsedIndex, Is.EqualTo(-1),
+            $"Recovery with GapLimit={gapLimit} must NOT reach the VTXO at index {targetIndex}");
+        Assert.That(report.FundsScriptsSynced, Is.EqualTo(0), "No funds should be synced");
 
         await host2.StopAsync();
     }
