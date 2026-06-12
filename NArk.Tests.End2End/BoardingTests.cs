@@ -62,19 +62,27 @@ public class BoardingTests
         var syncService = new BoardingUtxoSyncService(
             contracts, vtxoStorage, clientTransport, utxoProvider);
 
-        // Chopsticks may need a moment to index — retry until the UTXO appears
+        // The Esplora backend may need a moment to index the just-mined blocks —
+        // retry until the UTXO appears *confirmed* (ExpiresAt set). A row synced
+        // while the funding tx still looked unconfirmed has ExpiresAt=null, which
+        // SimpleIntentScheduler silently filters out (arkd rejects unconfirmed
+        // inputs); since the generation cycle below runs only once per
+        // PollInterval, that would stall the whole test. SyncAsync re-reads
+        // Esplora and upserts each iteration, so the row flips to confirmed as
+        // soon as the indexer catches up.
         ArkVtxo? syncedVtxo = null;
         for (var i = 0; i < 10; i++)
         {
             await syncService.SyncAsync();
             var vtxos = await vtxoStorage.GetVtxos();
-            syncedVtxo = vtxos.FirstOrDefault(v => v.TransactionId == fundingTxid);
+            syncedVtxo = vtxos.FirstOrDefault(v => v.TransactionId == fundingTxid && v.ExpiresAt is not null);
             if (syncedVtxo is not null)
                 break;
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
 
-        Assert.That(syncedVtxo, Is.Not.Null, "BoardingUtxoSyncService should find the funded UTXO via Esplora");
+        Assert.That(syncedVtxo, Is.Not.Null,
+            "BoardingUtxoSyncService should find the funded UTXO via Esplora as confirmed (ExpiresAt set)");
         Assert.That(syncedVtxo!.Unrolled, Is.True);
         Assert.That(syncedVtxo.Amount, Is.EqualTo((ulong)boardingAmountSats));
         Console.WriteLine($"[Boarding] Synced VTXO: {syncedVtxo.TransactionId[..8]}..:{syncedVtxo.TransactionOutputIndex}");
@@ -119,6 +127,17 @@ public class BoardingTests
                     break;
                 case ArkIntentState.BatchSucceeded:
                     newSuccessBatch.TrySetResult();
+                    break;
+                // Surface terminal failures immediately instead of letting the
+                // staged waits below time out blind — the recorded reason makes
+                // intermittent failures attributable from CI output alone.
+                case ArkIntentState.BatchFailed:
+                case ArkIntentState.Cancelled:
+                    var failure = new InvalidOperationException(
+                        $"Intent {intent.IntentTxId} ended in {intent.State}: {intent.CancellationReason ?? "no reason recorded"}");
+                    newIntentTcs.TrySetException(failure);
+                    newSubmittedIntentTcs.TrySetException(failure);
+                    newSuccessBatch.TrySetException(failure);
                     break;
             }
         };

@@ -350,6 +350,13 @@ public class UnilateralExitTests
             if (!vtxo.IsSpent() && !vtxo.Unrolled) settledVtxoTcs.TrySetResult();
         };
 
+        // Logger used across the settle + exit pipeline services so failures
+        // surface in CI test output instead of being swallowed. Timestamps
+        // make the output correlatable with arkd/bitcoind container logs.
+        var loggerFactory = LoggerFactory.Create(b => b
+            .AddSimpleConsole(o => o.TimestampFormat = "HH:mm:ss.fff ")
+            .SetMinimumLevel(LogLevel.Debug));
+
         var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
         var info = await clientTransport.GetServerInfoAsync();
 
@@ -375,21 +382,28 @@ public class UnilateralExitTests
 
         var utxoProvider = new EsploraBlockchain(SharedArkInfrastructure.ChopsticksEndpoint);
         var boardingSync = new BoardingUtxoSyncService(
-            contractStorage, vtxoStorage, clientTransport, utxoProvider);
+            contractStorage, vtxoStorage, clientTransport, utxoProvider,
+            loggerFactory.CreateLogger<BoardingUtxoSyncService>());
 
+        // Poll until the boarding UTXO syncs as *confirmed* (ExpiresAt set), not
+        // merely present. The Esplora backend (mempool API) can lag the 6 blocks
+        // we just mined; BoardingUtxoSyncService stores a still-unconfirmed UTXO
+        // with ExpiresAt=null, and SimpleIntentScheduler silently skips such
+        // coins (arkd rejects unconfirmed inputs). Since the intent generation
+        // cycle below runs only once per PollInterval, a row synced while the
+        // funding tx looked unconfirmed would never settle within the test
+        // budget. SyncAsync re-reads Esplora and upserts on every iteration, so
+        // the row flips to confirmed as soon as the indexer catches up.
         ArkVtxo? syncedBoarding = null;
         for (var i = 0; i < 10 && syncedBoarding is null; i++)
         {
             await boardingSync.SyncAsync();
             syncedBoarding = (await vtxoStorage.GetVtxos())
-                .FirstOrDefault(v => v.TransactionId == fundingTxid);
+                .FirstOrDefault(v => v.TransactionId == fundingTxid && v.ExpiresAt is not null);
             if (syncedBoarding is null) await Task.Delay(TimeSpan.FromSeconds(2));
         }
-        Assert.That(syncedBoarding, Is.Not.Null, "Boarding UTXO should sync via Esplora");
-
-        // Logger used across exit-pipeline services so failures surface
-        // in CI test output instead of being swallowed.
-        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        Assert.That(syncedBoarding, Is.Not.Null,
+            "Boarding UTXO should sync via Esplora as confirmed (ExpiresAt set)");
 
         // ---- settle: intent gen + submit + batch session ----
         var chainTimeProvider = new NBXplorerBlockchain(info.Network, SharedArkInfrastructure.NbxplorerEndpoint);
@@ -404,6 +418,13 @@ public class UnilateralExitTests
         {
             if (intent.State == ArkIntentState.BatchSucceeded)
                 newSuccessBatch.TrySetResult();
+            // Surface terminal failures immediately. Waiting only for
+            // BatchSucceeded turns any BatchFailed/Cancelled intent into a
+            // silent 2-minute TimeoutException with no diagnostics; failing
+            // fast with the recorded reason makes flakes attributable.
+            else if (intent.State is ArkIntentState.BatchFailed or ArkIntentState.Cancelled)
+                newSuccessBatch.TrySetException(new InvalidOperationException(
+                    $"Intent {intent.IntentTxId} ended in {intent.State}: {intent.CancellationReason ?? "no reason recorded"}"));
         };
 
         var scheduler = new SimpleIntentScheduler(
@@ -415,7 +436,8 @@ public class UnilateralExitTests
             {
                 Threshold = TimeSpan.FromHours(25),
                 ThresholdHeight = 200,
-            }));
+            }),
+            loggerFactory.CreateLogger<SimpleIntentScheduler>());
 
         var intentGeneration = new IntentGenerationService(
             clientTransport,
@@ -428,10 +450,12 @@ public class UnilateralExitTests
             vtxoStorage,
             scheduler,
             new OptionsWrapper<IntentGenerationServiceOptions>(
-                new IntentGenerationServiceOptions { PollInterval = TimeSpan.FromHours(5) }));
+                new IntentGenerationServiceOptions { PollInterval = TimeSpan.FromHours(5) }),
+            loggerFactory.CreateLogger<IntentGenerationService>());
         await intentGeneration.StartAsync(CancellationToken.None);
 
-        var intentSync = new IntentSynchronizationService(intentStorage, clientTransport, safetyService);
+        var intentSync = new IntentSynchronizationService(intentStorage, clientTransport, safetyService,
+            loggerFactory.CreateLogger<IntentSynchronizationService>());
         await intentSync.StartAsync(CancellationToken.None);
 
         // SimpleIntentScheduler derives the SendToSelf output contract as
@@ -468,7 +492,8 @@ public class UnilateralExitTests
         var batchManager = new BatchManagementService(
             intentStorage, clientTransport, vtxoStorage, contractStorage,
             walletProvider, coinService, safetyService,
-            new IEventHandler<PostBatchSessionEvent>[] { postBatchHandler });
+            new IEventHandler<PostBatchSessionEvent>[] { postBatchHandler },
+            loggerFactory.CreateLogger<BatchManagementService>());
         await batchManager.StartAsync(CancellationToken.None);
 
         // Auto-fetch the virtual-tx chain on every VTXO arrival. This is
