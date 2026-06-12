@@ -15,10 +15,15 @@ namespace NArk.Tests;
 [TestFixture]
 public class ServerKeyRotationSweepPolicyTests
 {
+    // Server signer keys (the key that rotates). A contract is built "under" one of these.
     private static readonly ECXOnlyPubKey ActiveKey = NewKey();
     private static readonly ECXOnlyPubKey DeprecatedKeyA = NewKey();
     private static readonly ECXOnlyPubKey DeprecatedKeyB = NewKey();
     private static readonly ECXOnlyPubKey UnknownKey = NewKey();
+
+    // The wallet's USER key. In production this is what ArkCoin.SignerDescriptor holds
+    // (see PaymentContractTransformer) — never the server key. The policy must ignore it.
+    private static readonly ECXOnlyPubKey UserKey = NewKey();
 
     private static long FutureCutoff() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3_600;
     private static long PastCutoff() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10;
@@ -77,10 +82,23 @@ public class ServerKeyRotationSweepPolicyTests
     }
 
     [Test]
-    public async Task Does_not_sweep_coin_with_null_signer_descriptor()
+    public async Task Does_not_sweep_coin_with_null_server()
     {
         var policy = MakePolicy(new Dictionary<ECXOnlyPubKey, long> { { DeprecatedKeyA, FutureCutoff() } });
-        var coin = MakeCoin(signerDescriptor: null);
+        var coin = MakeCoin(serverDescriptor: null);
+
+        var result = await CollectAsync(policy.SweepAsync([coin]));
+
+        Assert.That(result, Is.Empty);
+    }
+
+    [Test]
+    public async Task Keys_off_contract_server_not_signer_descriptor()
+    {
+        // Regression guard for the inverted-key bug: a coin whose USER key (SignerDescriptor)
+        // matches a deprecated signer must NOT be swept — only the contract's SERVER key counts.
+        var policy = MakePolicy(new Dictionary<ECXOnlyPubKey, long> { { DeprecatedKeyA, FutureCutoff() } });
+        var coin = MakeCoin(serverDescriptor: MakeDescriptor(ActiveKey), signerDescriptor: MakeDescriptor(DeprecatedKeyA));
 
         var result = await CollectAsync(policy.SweepAsync([coin]));
 
@@ -157,10 +175,15 @@ public class ServerKeyRotationSweepPolicyTests
         return new ServerKeyRotationSweepPolicy(transport);
     }
 
-    private static ArkCoin MakeCoin(OutputDescriptor? signerDescriptor)
+    // Default coin: built under the given SERVER signer key, with a realistic USER key in
+    // the SignerDescriptor slot (mirrors production — see PaymentContractTransformer).
+    private static ArkCoin MakeCoin(OutputDescriptor? serverDescriptor)
+        => MakeCoin(serverDescriptor, MakeDescriptor(UserKey));
+
+    private static ArkCoin MakeCoin(OutputDescriptor? serverDescriptor, OutputDescriptor? signerDescriptor)
     {
         var script = new GenericTapScript([Op.GetPushOp(1), OpcodeType.OP_TRUE]);
-        var contract = new GenericArkContract(MakeDescriptor(ActiveKey), [script]);
+        var contract = new GenericArkContract(serverDescriptor!, [script]);
         return new ArkCoin(
             walletIdentifier: "test-wallet",
             contract: contract,
