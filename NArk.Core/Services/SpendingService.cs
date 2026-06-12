@@ -232,11 +232,14 @@ public class SpendingService(
         Money btcTarget = assetRequirements.Count > 0
             ? Money.Satoshis(outputsSumInSatoshis) + serverInfo.Dust  // extra dust for potential asset change output
             : Money.Satoshis(outputsSumInSatoshis);
+        // Bound the input count so the resulting Arkade transaction stays under the
+        // server's max_tx_weight — arkd rejects oversized offchain transactions with
+        // TX_TOO_LARGE, same as it does for oversized intent proofs.
         var selectedCoins = assetRequirements.Count > 0
             ? coinSelector.SelectCoins([.. coins], btcTarget, assetRequirements, serverInfo.Dust,
-                hasExplicitSubdustOutput, maxOpReturn)
+                hasExplicitSubdustOutput, maxOpReturn, ArkTransactionLimits.MaxVtxosPerArkTransaction)
             : coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
-                hasExplicitSubdustOutput, maxOpReturn);
+                hasExplicitSubdustOutput, maxOpReturn, ArkTransactionLimits.MaxVtxosPerArkTransaction);
         logger?.LogDebug("Selected {SelectedCount} coins for spending", selectedCoins.Count);
 
         try

@@ -206,6 +206,62 @@ public class DefaultCoinSelectorTests
         Assert.That(result, Has.Count.EqualTo(1));
     }
 
+    [Test]
+    public void RespectsMaxInputs_WhenTargetReachableWithinCap()
+    {
+        var coins = new List<ArkCoin>
+        {
+            CreateCoin(5000),
+            CreateCoin(3000),
+            CreateCoin(2000),
+        };
+
+        var result = _selector.SelectCoins(coins, Money.Satoshis(7000), Money.Satoshis(546),
+            currentSubDustOutputs: 0, maxInputs: 2);
+
+        Assert.That(result, Has.Count.LessThanOrEqualTo(2));
+        Assert.That(result.Sum(c => c.Amount.Satoshi), Is.GreaterThanOrEqualTo(7000L));
+    }
+
+    [Test]
+    public void ThrowsTooManyInputs_WhenTargetNeedsMoreInputsThanCap()
+    {
+        // 10 x 1000 sats; covering 5000 needs 5 inputs but the cap is 4.
+        var coins = Enumerable.Range(0, 10).Select(_ => CreateCoin(1000)).ToList();
+
+        Assert.Throws<TooManyInputsException>(() =>
+            _selector.SelectCoins(coins, Money.Satoshis(5000), Money.Satoshis(546),
+                currentSubDustOutputs: 0, maxInputs: 4));
+    }
+
+    [Test]
+    public void ThrowsNotEnoughFunds_NotTooManyInputs_WhenBalanceInsufficient()
+    {
+        // A genuinely insufficient balance reports NotEnoughFunds even when a cap applies.
+        var coins = new List<ArkCoin> { CreateCoin(1000), CreateCoin(1000) };
+
+        Assert.Throws<NotEnoughFundsException>(() =>
+            _selector.SelectCoins(coins, Money.Satoshis(5000), Money.Satoshis(546),
+                currentSubDustOutputs: 0, maxInputs: 1));
+    }
+
+    [Test]
+    public void AssetSelection_RespectsMaxInputs_AcrossAssetAndBtcCoins()
+    {
+        // The asset requirement consumes the only allowed input; filling the
+        // remaining BTC target would need a second input → throws.
+        var coins = new List<ArkCoin>
+        {
+            CreateCoinWithAssets(500, [new VtxoAsset("asset_x", 100)]),
+            CreateCoin(3000),
+        };
+        var requirements = new List<AssetRequirement> { new("asset_x", 50) };
+
+        Assert.Throws<TooManyInputsException>(() =>
+            _selector.SelectCoins(coins, Money.Satoshis(2000), requirements, Money.Satoshis(546),
+                currentSubDustOutputs: 0, maxInputs: 1));
+    }
+
     private static ArkCoin CreateCoinWithAssets(long satoshis, IReadOnlyList<VtxoAsset> assets)
     {
         var key = new Key();
