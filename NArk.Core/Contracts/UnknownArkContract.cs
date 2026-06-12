@@ -31,6 +31,12 @@ public class UnknownArkContract : ArkContract
 
     public override string Type => ContractType;
 
+    /// <summary>
+    /// Unknown contracts default to off-chain; a persisted Unknown contract carries
+    /// its stored effective scope when loaded.
+    /// </summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
+
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {
         throw new InvalidOperationException("Unknown contract cannot be used for signing");
