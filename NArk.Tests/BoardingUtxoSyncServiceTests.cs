@@ -363,6 +363,7 @@ public class BoardingUtxoSyncServiceTests
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
             FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "",
             UtxoMinAmount: utxoMinAmount ?? null!,
             UtxoMaxAmount: utxoMaxAmount ?? null!);
     }

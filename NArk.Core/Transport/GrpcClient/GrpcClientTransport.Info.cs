@@ -30,7 +30,7 @@ public partial class GrpcClientTransport
         // if (!serverUnrollScript.OwnersMultiSig.Owners[0].ToBytes().SequenceEqual(fPubKey.ToBytes()))
         //     throw new InvalidOperationException("Ark server advertises inconsistent forfeit pubkey");
 
-        return new ArkServerInfo(
+        var result = new ArkServerInfo(
             Dust: Money.Satoshis(response.Dust),
             SignerKey: KeyExtensions.ParseOutputDescriptor(response.SignerPubkey, network),
             DeprecatedSigners: response.DeprecatedSigners.ToDictionary(signer => signer.Pubkey.ToECXOnlyPubKey(),
@@ -41,6 +41,7 @@ public partial class GrpcClientTransport
             ForfeitAddress: BitcoinAddress.Create(response.ForfeitAddress, network),
             ForfeitPubKey: fPubKey,
             CheckpointTapScript: serverUnrollScript,
+            Digest: response.Digest,
             FeeTerms: new ArkOperatorFeeTerms(
                 TxFeeRate: GetOrZero(response.Fees.TxFeeRate),
                 IntentOffchainOutput: GetOrZero(response.Fees.IntentFee.OffchainOutput),
@@ -55,6 +56,8 @@ public partial class GrpcClientTransport
             UtxoMinAmount: Money.Satoshis(response.UtxoMinAmount),
             UtxoMaxAmount: response.UtxoMaxAmount < 0 ? Money.Coins(21_000_000m) : Money.Satoshis(response.UtxoMaxAmount)
         );
+        _digestHolder.Digest = result.Digest;
+        return result;
     }
 
     private static string GetOrZero(string feeTern)

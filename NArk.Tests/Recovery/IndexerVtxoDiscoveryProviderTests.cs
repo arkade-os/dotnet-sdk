@@ -43,7 +43,8 @@ public class IndexerVtxoDiscoveryProviderTests
             ForfeitPubKey: signer.Extract().XOnlyPubKey,
             CheckpointTapScript: new UnilateralPathArkTapScript(
                 new Sequence(144), new NofNMultisigTapScript(Array.Empty<ECXOnlyPubKey>())),
-            FeeTerms: new ArkOperatorFeeTerms("0", "0", "0", "0", "0"));
+            FeeTerms: new ArkOperatorFeeTerms("0", "0", "0", "0", "0"),
+            Digest: "");
 
     private static async IAsyncEnumerable<ArkVtxo> Stream(params string[] scripts)
     {
@@ -131,7 +132,8 @@ public class IndexerVtxoDiscoveryProviderTests
             ForfeitPubKey: current.Extract().XOnlyPubKey,
             CheckpointTapScript: new UnilateralPathArkTapScript(
                 new Sequence(144), new NofNMultisigTapScript(Array.Empty<ECXOnlyPubKey>())),
-            FeeTerms: new ArkOperatorFeeTerms("0", "0", "0", "0", "0"));
+            FeeTerms: new ArkOperatorFeeTerms("0", "0", "0", "0", "0"),
+            Digest: "");
 
         // MAINNET_UNILATERAL_EXIT_DELAY from arkade-os/ts-sdk: 605184 s (~7 days).
         var legacyDelay = new Sequence(TimeSpan.FromSeconds(605184));

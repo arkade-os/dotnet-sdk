@@ -43,7 +43,8 @@ public class DelegatingWalletProviderTests
         ForfeitAddress: BitcoinAddress.Create("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", Network.RegTest),
         ForfeitPubKey: ServerKey.ToXOnlyPubKey(),
         CheckpointTapScript: new UnilateralPathArkTapScript(new Sequence(144), new NofNMultisigTapScript([ServerKey.ToXOnlyPubKey()])),
-        FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0")
+        FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+        Digest: ""
     );
 
     [Test]

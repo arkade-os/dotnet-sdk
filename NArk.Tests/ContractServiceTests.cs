@@ -190,6 +190,7 @@ public class ContractServiceTests
             ForfeitPubKey: ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes()),
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
-            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"));
+            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "");
     }
 }
