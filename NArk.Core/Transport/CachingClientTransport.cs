@@ -13,7 +13,7 @@ namespace NArk.Core.Transport;
 /// Server info (network, dust limit, signer key) rarely changes during operation.
 /// All other methods are passed through to the underlying transport.
 /// </summary>
-public class CachingClientTransport : IClientTransport
+public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalidation
 {
     private readonly IClientTransport _inner;
     private readonly ILogger? _logger;
@@ -26,6 +26,8 @@ public class CachingClientTransport : IClientTransport
 
     public static readonly TimeSpan DefaultCacheExpiry = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan DefaultFetchTimeout = TimeSpan.FromSeconds(10);
+
+    public event EventHandler<ServerInfoChangedEventArgs>? ServerInfoChanged;
 
     public CachingClientTransport(
         IClientTransport inner,
@@ -76,7 +78,7 @@ public class CachingClientTransport : IClientTransport
         }
         catch (DigestMismatchException)
         {
-            InvalidateServerInfoCache();
+            InvalidateServerInfoCache(new ServerInfoChangedEventArgs { Reason = ServerInfoChangedReason.DigestMismatch });
             throw;
         }
         catch (Exception ex)
@@ -101,12 +103,15 @@ public class CachingClientTransport : IClientTransport
     /// <summary>
     /// Invalidates the server info cache, forcing the next call to fetch fresh data.
     /// Call this on wallet setup/clear or when connection errors occur.
+    /// Raises <see cref="ServerInfoChanged"/> so consumers can react (e.g. signer rotation).
     /// </summary>
-    public void InvalidateServerInfoCache()
+    public void InvalidateServerInfoCache(ServerInfoChangedEventArgs? args = null)
     {
         _cachedServerInfo = null;
         _serverInfoExpiresAt = DateTimeOffset.MinValue;
-        _logger?.LogDebug("Server info cache invalidated");
+        var eventArgs = args ?? new ServerInfoChangedEventArgs();
+        _logger?.LogDebug("Server info cache invalidated ({Reason})", eventArgs.Reason);
+        ServerInfoChanged?.Invoke(this, eventArgs);
     }
 
     /// <summary>
@@ -184,16 +189,19 @@ public class CachingClientTransport : IClientTransport
     public Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default)
         => Guard(() => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken));
 
+    private static readonly ServerInfoChangedEventArgs DigestMismatchArgs =
+        new() { Reason = ServerInfoChangedReason.DigestMismatch };
+
     private async Task<T> Guard<T>(Func<Task<T>> action)
     {
         try { return await action(); }
-        catch (DigestMismatchException) { InvalidateServerInfoCache(); throw; }
+        catch (DigestMismatchException) { InvalidateServerInfoCache(DigestMismatchArgs); throw; }
     }
 
     private async Task Guard(Func<Task> action)
     {
         try { await action(); }
-        catch (DigestMismatchException) { InvalidateServerInfoCache(); throw; }
+        catch (DigestMismatchException) { InvalidateServerInfoCache(DigestMismatchArgs); throw; }
     }
 
     private async IAsyncEnumerable<T> GuardStream<T>(IAsyncEnumerable<T> source)
@@ -205,7 +213,7 @@ public class CachingClientTransport : IClientTransport
             {
                 bool hasNext;
                 try { hasNext = await e.MoveNextAsync(); }
-                catch (DigestMismatchException) { InvalidateServerInfoCache(); throw; }
+                catch (DigestMismatchException) { InvalidateServerInfoCache(DigestMismatchArgs); throw; }
                 if (!hasNext) yield break;
                 yield return e.Current;
             }

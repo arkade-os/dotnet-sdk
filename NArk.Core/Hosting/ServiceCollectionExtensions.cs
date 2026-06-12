@@ -192,6 +192,8 @@ public static class ServiceCollectionExtensions
             var logger = sp.GetService<ILogger<CachingClientTransport>>();
             return new CachingClientTransport(inner, logger);
         });
+        services.AddSingleton<IServerInfoCacheInvalidation>(sp =>
+            (IServerInfoCacheInvalidation)sp.GetRequiredService<IClientTransport>());
 
         return services;
     }
@@ -217,6 +219,8 @@ public static class ServiceCollectionExtensions
             var logger = sp.GetService<ILogger<CachingClientTransport>>();
             return new CachingClientTransport(inner, logger);
         });
+        services.AddSingleton<IServerInfoCacheInvalidation>(sp =>
+            (IServerInfoCacheInvalidation)sp.GetRequiredService<IClientTransport>());
 
         return services;
     }
