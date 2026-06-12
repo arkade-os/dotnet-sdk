@@ -142,6 +142,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<BatchManagementService>();
         services.AddSingleton<IOnchainService, OnchainService>();
         services.AddSingleton<SweeperService>();
+        services.AddSingleton<ISweepPolicy, ServerKeyRotationSweepPolicy>();
         services.AddSingleton<PendingArkTransactionRecoveryService>();
         services.AddSingleton<IFeeEstimator, DefaultFeeEstimator>();
         services.AddSingleton<ICoinSelector, DefaultCoinSelector>();

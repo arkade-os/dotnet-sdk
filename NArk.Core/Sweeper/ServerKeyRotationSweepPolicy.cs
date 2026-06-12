@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using NArk.Abstractions;
 using NArk.Abstractions.Extensions;
 using NArk.Core.Transport;
@@ -6,7 +7,10 @@ namespace NArk.Core.Sweeper;
 
 public class ServerKeyRotationSweepPolicy(IClientTransport clientTransport): ISweepPolicy
 {
-    public async IAsyncEnumerable<ArkCoin> SweepAsync(IEnumerable<ArkCoin> coins, CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<ArkCoin> SweepAsync(
+        IEnumerable<ArkCoin> coins, 
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
