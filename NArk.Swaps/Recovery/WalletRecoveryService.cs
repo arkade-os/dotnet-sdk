@@ -23,9 +23,9 @@ namespace NArk.Swaps.Recovery;
 /// </summary>
 public class WalletRecoveryService(
     IWalletStorage walletStorage,
-    IContractService contractService,
     IContractStorage contractStorage,
     HdWalletRecoveryService hdRecovery,
+    SingleKeyVtxoRecoveryService singleKeyRecovery,
     PendingArkTransactionRecoveryService pendingTxRecovery,
     SwapsManagementService swaps,
     VtxoSynchronizationService vtxoSync,
@@ -59,14 +59,16 @@ public class WalletRecoveryService(
         }
         else
         {
-            // SingleKey: the contract set is fixed by the single key. Ensure that
-            // contract exists, then restore swaps for its descriptor directly
-            // (there is no index to scan).
+            // SingleKey: the contract set is fixed by the single key. Probe deprecated
+            // signers once (no index to scan), then ensure the current-signer default
+            // exists (idempotent; mints the new default after rotation). Finally restore
+            // swaps for its descriptor directly.
             if (string.IsNullOrEmpty(wallet.AccountDescriptor))
                 throw new InvalidOperationException(
                     $"SingleKey wallet '{walletId}' has no AccountDescriptor; cannot recover.");
 
-            await EnsureSingleKeyContractAsync(wallet, cancellationToken);
+            await singleKeyRecovery.DiscoverAsync(walletId, cancellationToken);
+            await singleKeyRecovery.EnsureDefaultAsync(walletId, cancellationToken);
             var network = (await clientTransport.GetServerInfoAsync(cancellationToken)).Network;
             var descriptor = KeyExtensions.ParseOutputDescriptor(wallet.AccountDescriptor!, network);
             restoredSwaps.AddRange(await swaps.RestoreSwaps(walletId, [descriptor], cancellationToken));
@@ -106,25 +108,5 @@ public class WalletRecoveryService(
             swapAudit,
             finalized,
             vtxosSynced);
-    }
-
-    /// <summary>
-    /// Derives the SingleKey wallet's deterministic default contract if storage
-    /// holds none (e.g. fresh import into cleared storage). Idempotent — does
-    /// nothing when a contract already exists.
-    /// </summary>
-    private async Task EnsureSingleKeyContractAsync(ArkWalletInfo wallet, CancellationToken cancellationToken)
-    {
-        var existing = await contractStorage.GetContracts(
-            walletIds: [wallet.Id], cancellationToken: cancellationToken);
-        if (existing.Count > 0)
-            return;
-
-        await contractService.DeriveContract(
-            wallet.Id,
-            NextContractPurpose.SendToSelf,
-            ContractActivityState.Active,
-            metadata: new Dictionary<string, string> { ["Source"] = "recovery" },
-            cancellationToken: cancellationToken);
     }
 }

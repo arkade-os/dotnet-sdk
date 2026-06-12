@@ -3,6 +3,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Recovery;
 using NArk.Abstractions.Wallets;
+using NArk.Core.Services;
 using NArk.Core.Transport;
 
 namespace NArk.Core.Recovery;
@@ -19,6 +20,7 @@ public class SingleKeyVtxoRecoveryService(
     IEnumerable<IContractDiscoveryProvider> providers,
     IWalletStorage walletStorage,
     IContractStorage contractStorage,
+    IContractService contractService,
     IClientTransport clientTransport,
     ILogger<SingleKeyVtxoRecoveryService>? logger = null)
 {
@@ -75,5 +77,28 @@ public class SingleKeyVtxoRecoveryService(
         }
         logger?.LogInformation("SingleKey recovery for {WalletId}: persisted {Count} contract(s)", walletId, persisted);
         return persisted;
+    }
+
+    /// <summary>
+    /// Idempotently ensures the SingleKey wallet's CURRENT-signer default contract exists
+    /// (Active, Source="Default"). DeriveContract derives from the current ArkServerInfo.SignerKey
+    /// and upserts on {Script, WalletId}, so this is a no-op when the current default already
+    /// exists, and after a signer rotation it creates the new-signer default. Deactivating the
+    /// stale old-signer default is the plugin's reconciliation job, not this one.
+    /// </summary>
+    public async Task EnsureDefaultAsync(string walletId, CancellationToken cancellationToken = default)
+    {
+        var wallet = await walletStorage.GetWalletById(walletId, cancellationToken)
+            ?? throw new InvalidOperationException($"Wallet '{walletId}' not found.");
+        if (wallet.WalletType != WalletType.SingleKey)
+            throw new InvalidOperationException(
+                $"SingleKeyVtxoRecoveryService only supports SingleKey wallets; '{walletId}' is {wallet.WalletType}.");
+
+        await contractService.DeriveContract(
+            walletId,
+            NextContractPurpose.SendToSelf,
+            ContractActivityState.Active,
+            metadata: new Dictionary<string, string> { ["Source"] = "Default" },
+            cancellationToken: cancellationToken);
     }
 }
