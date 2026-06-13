@@ -187,15 +187,14 @@ public static class ServiceCollectionExtensions
         // Register the raw gRPC transport
         services.AddSingleton(_ => new GrpcClientTransport(config.ArkUri));
 
-        // Register IClientTransport with caching wrapper as the default
-        services.AddSingleton<IClientTransport>(sp =>
-        {
-            var inner = sp.GetRequiredService<GrpcClientTransport>();
-            var logger = sp.GetService<ILogger<CachingClientTransport>>();
-            return new CachingClientTransport(inner, logger);
-        });
-        services.AddSingleton<IServerInfoCacheInvalidation>(sp =>
-            (IServerInfoCacheInvalidation)sp.GetRequiredService<IClientTransport>());
+        // Register the caching wrapper as the concrete singleton so both IClientTransport and
+        // IServerInfoCacheInvalidation alias the same instance without an unsafe cast.
+        services.AddSingleton<CachingClientTransport>(sp =>
+            new CachingClientTransport(
+                sp.GetRequiredService<GrpcClientTransport>(),
+                sp.GetService<ILogger<CachingClientTransport>>()));
+        services.AddSingleton<IClientTransport>(sp => sp.GetRequiredService<CachingClientTransport>());
+        services.AddSingleton<IServerInfoCacheInvalidation>(sp => sp.GetRequiredService<CachingClientTransport>());
 
         return services;
     }
@@ -214,15 +213,14 @@ public static class ServiceCollectionExtensions
         // Register the REST transport
         services.AddSingleton(_ => new RestClientTransport(config.ArkUri));
 
-        // Register IClientTransport with caching wrapper as the default
-        services.AddSingleton<IClientTransport>(sp =>
-        {
-            var inner = sp.GetRequiredService<RestClientTransport>();
-            var logger = sp.GetService<ILogger<CachingClientTransport>>();
-            return new CachingClientTransport(inner, logger);
-        });
-        services.AddSingleton<IServerInfoCacheInvalidation>(sp =>
-            (IServerInfoCacheInvalidation)sp.GetRequiredService<IClientTransport>());
+        // Register the caching wrapper as the concrete singleton so both IClientTransport and
+        // IServerInfoCacheInvalidation alias the same instance without an unsafe cast.
+        services.AddSingleton<CachingClientTransport>(sp =>
+            new CachingClientTransport(
+                sp.GetRequiredService<RestClientTransport>(),
+                sp.GetService<ILogger<CachingClientTransport>>()));
+        services.AddSingleton<IClientTransport>(sp => sp.GetRequiredService<CachingClientTransport>());
+        services.AddSingleton<IServerInfoCacheInvalidation>(sp => sp.GetRequiredService<CachingClientTransport>());
 
         return services;
     }
