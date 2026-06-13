@@ -16,6 +16,8 @@ Coin gathering is keyed on VTXO **script**, not contract `Active` state, so deac
 
 Regime 2 is enforced in the spendability model: `ArkCoin.CanSpendOffchain(current, deprecatedSigners)` (built on `ArkCoin.IsDeprecatedSignerPastCutoff`) returns `false` for a coin whose contract server key is a deprecated signer past its cutoff, so `SpendingService.GetAvailableCoins` keeps it out of offchain-spend selection — it can no longer be collaboratively spent. The coin stays **not** `IsRecoverable` (regime 3 still fires only on expiry), so it correctly waits rather than being re-enrolled prematurely.
 
+The intent scheduler applies the same veto on the renewal/re-enrollment path: `SimpleIntentScheduler` will not select a coin that still `RequiresForfeit()` while its contract server key is a deprecated signer past its cutoff. Such a coin cannot be forfeited — the operator won't co-sign with the retired key — so batching it would make arkd reject the entire intent and strand every other coin chunked alongside it. The coin re-enters selection only once it is **forfeit-free** (swept or unrolled), at which point the batch session skips its forfeit and re-enrolls it under the current signer (regime 3).
+
 ## Detection
 
 The SDK detects a rotation through two paths:

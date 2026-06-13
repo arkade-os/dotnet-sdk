@@ -33,18 +33,26 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
 
         var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
         var chainTime = await chainTimeProvider.GetChainTime(cancellationToken);
+        var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         var coins = unspentVtxos
             .Where(v =>
-                // Unrolled coins (boarding UTXOs, unrolled VTXOs) should be batched ASAP
-                // — they're sitting on-chain and we race against the exit delay expiry.
-                // Skip unconfirmed boarding UTXOs (no expiry yet) — arkd rejects unconfirmed inputs.
-                (v.Unrolled && v.ExpiresAt is not null) ||
-                v.IsRecoverable(chainTime) ||
-                (v.ExpiresAt is { } exp && options.Value.Threshold is { } thresh &&
-                 exp - thresh < chainTime.Timestamp) ||
-                (v.ExpiresAtHeight is { } height && options.Value.ThresholdHeight is { } threshHeight &&
-                 height - threshHeight < chainTime.Height)
+                (
+                    // Unrolled coins (boarding UTXOs, unrolled VTXOs) should be batched ASAP
+                    // — they're sitting on-chain and we race against the exit delay expiry.
+                    // Skip unconfirmed boarding UTXOs (no expiry yet) — arkd rejects unconfirmed inputs.
+                    (v.Unrolled && v.ExpiresAt is not null) ||
+                    v.IsRecoverable(chainTime) ||
+                    (v.ExpiresAt is { } exp && options.Value.Threshold is { } thresh &&
+                     exp - thresh < chainTime.Timestamp) ||
+                    (v.ExpiresAtHeight is { } height && options.Value.ThresholdHeight is { } threshHeight &&
+                     height - threshHeight < chainTime.Height)
+                )
+                // A coin under a deprecated signer past its cutoff that still requires a forfeit cannot
+                // join a batch — the operator won't co-sign its forfeit (the old key is gone), so arkd
+                // rejects the whole intent and bricks every other coin chunked with it. Hold it back
+                // until it is forfeit-free (swept/unrolled), when it re-enrolls under the current signer.
+                && !(v.RequiresForfeit() && v.IsDeprecatedSignerPastCutoff(serverInfo.DeprecatedSigners, nowUnix))
             )
             .GroupBy(v => v.WalletIdentifier)
             /*

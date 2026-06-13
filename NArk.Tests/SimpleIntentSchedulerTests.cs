@@ -126,7 +126,57 @@ public class SimpleIntentSchedulerTests
             i.Coins.Select(c => c.WalletIdentifier).Distinct().Count() == 1));
     }
 
-    private static ArkServerInfo CreateServerInfo()
+    [Test]
+    public async Task Excludes_pastCutoffDeprecatedCoin_thatNeedsForfeit_butKeepsCurrentSignerCoin()
+    {
+        // A deprecated signer whose cutoff has already passed: the operator no longer co-signs, so a
+        // coin under it that still needs a forfeit cannot join a batch — arkd would reject the whole
+        // intent and brick the other coins. It must be held back; the current-signer coin still batches.
+        var deprecatedKey = ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes());
+        _transport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateServerInfo(new Dictionary<ECXOnlyPubKey, long>
+            {
+                { deprecatedKey, DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3600 }
+            }));
+
+        var nearExpiry = DateTimeOffset.UtcNow.AddMinutes(30); // within the 1h threshold, not yet expired
+        var deprecatedCoin = CreateCoinUnder(deprecatedKey.ToOutputDescriptor(Network.RegTest), nearExpiry);
+        var currentCoin = CreateCoinUnder(
+            KeyExtensions.ParseOutputDescriptor(
+                "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88", Network.RegTest),
+            nearExpiry);
+
+        var intents = await _scheduler.GetIntentsToSubmit([deprecatedCoin, currentCoin]);
+
+        var selected = intents.SelectMany(i => i.Coins).Select(c => c.Outpoint).ToList();
+        Assert.That(selected, Does.Contain(currentCoin.Outpoint), "current-signer coin must still be batched");
+        Assert.That(selected, Does.Not.Contain(deprecatedCoin.Outpoint),
+            "past-cutoff deprecated coin that needs a forfeit must be held back, not brick the intent");
+    }
+
+    [Test]
+    public async Task Includes_pastCutoffDeprecatedCoin_onceForfeitFree()
+    {
+        // Once swept, the coin no longer requires a forfeit (RequiresForfeit() == false), so it can be
+        // re-enrolled under the current signer without the old key — it belongs in a batch.
+        var deprecatedKey = ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes());
+        _transport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateServerInfo(new Dictionary<ECXOnlyPubKey, long>
+            {
+                { deprecatedKey, DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3600 }
+            }));
+
+        var sweptCoin = CreateCoinUnder(
+            deprecatedKey.ToOutputDescriptor(Network.RegTest), DateTimeOffset.UtcNow.AddMinutes(30), swept: true);
+
+        var intents = await _scheduler.GetIntentsToSubmit([sweptCoin]);
+
+        var selected = intents.SelectMany(i => i.Coins).Select(c => c.Outpoint).ToList();
+        Assert.That(selected, Does.Contain(sweptCoin.Outpoint),
+            "a swept (forfeit-free) deprecated coin can re-enroll under the current signer");
+    }
+
+    private static ArkServerInfo CreateServerInfo(Dictionary<ECXOnlyPubKey, long>? deprecatedSigners = null)
     {
         var serverKey = KeyExtensions.ParseOutputDescriptor(
             "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
@@ -137,7 +187,7 @@ public class SimpleIntentSchedulerTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: serverKey,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
+            DeprecatedSigners: deprecatedSigners ?? new Dictionary<ECXOnlyPubKey, long>(),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),
@@ -189,6 +239,36 @@ public class SimpleIntentSchedulerTests
             sequence: new Sequence(1),
             swept: false,
             unrolled: true,
+            assets: null);
+    }
+
+    private static ArkCoin CreateCoinUnder(OutputDescriptor serverDescriptor, DateTimeOffset expiresAt,
+        bool swept = false, bool unrolled = false, string walletId = "test-wallet")
+    {
+        var key = new Key();
+        var script = key.PubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
+        var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
+        var txOut = new TxOut(Money.Satoshis(10_000), script);
+
+        var scriptBuilder = Substitute.For<NArk.Abstractions.Scripts.ScriptBuilder>();
+        scriptBuilder.BuildScript().Returns(Enumerable.Empty<Op>());
+        scriptBuilder.Build().Returns(new TapScript(Script.Empty, TapLeafVersion.C0));
+
+        return new ArkCoin(
+            walletIdentifier: walletId,
+            contract: Substitute.For<ArkContract>(serverDescriptor),
+            birth: DateTimeOffset.UtcNow,
+            expiresAt: expiresAt,
+            expiresAtHeight: null,
+            outPoint: outpoint,
+            txOut: txOut,
+            signerDescriptor: null,
+            spendingScriptBuilder: scriptBuilder,
+            spendingConditionWitness: null,
+            lockTime: null,
+            sequence: new Sequence(1),
+            swept: swept,
+            unrolled: unrolled,
             assets: null);
     }
 }
