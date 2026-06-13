@@ -46,10 +46,10 @@ namespace NArk.Tests.End2End.Core;
 /// </list>
 /// <para>Runs in a dedicated CI job (<c>e2e-rotation-recovery</c>) on its own stack: a live rotation
 /// recreates arkd-wallet and restarts arkd, which would cascade-fail any test sharing the stack. That job
-/// also shortens <c>ARKD_VTXO_TREE_EXPIRY</c> to 120s so the expiry → recovery transition happens inside the
-/// test window (the committed 1h would never expire in time). Tagged <c>RealRotationExpiry</c> — a SEPARATE
-/// category from <c>RealRotation</c> — because it needs that short-expiry stack, not the default one. Still
-/// marked non-parallel as belt-and-suspenders.</para>
+/// also switches arkd to short <b>block-based</b> delays (VTXO tree expiry = 40 blocks) so the coin's expiry
+/// is height-based and the test can mine it to recovery in-run (the committed 1h time-based expiry would
+/// never elapse). Tagged <c>RealRotationExpiry</c> — a SEPARATE category from <c>RealRotation</c> — because
+/// it needs that short-expiry stack, not the default one. Still marked non-parallel as belt-and-suspenders.</para>
 /// </summary>
 [NonParallelizable]
 [Category("RealRotationExpiry")]
@@ -162,18 +162,18 @@ public class PastCutoffRecoveryRotationTests
             "past-cutoff coin was not held back — it should have been excluded from available coins after the rotation");
 
         // ── Regime 3: recovered once it becomes recoverable ─────────────────────
-        // Expiry is evaluated against CHAIN time (block timestamps), not wall-clock — and the regtest
-        // auto-miner is far too slow to rely on — so we MINE to advance the chain past the VTXO's ExpiresAt
-        // (~120s on this short-expiry stack). Mining also confirms arkd's on-chain sweep of the expired
-        // output, which clears the forfeit requirement so the 4c guard stops vetoing the coin; the hosted
-        // IntentGenerationService then re-enrolls it into a recovery batch that settles a fresh spendable
-        // VTXO under the post-rotation current signer. Re-fetch server info each loop so we compare against
-        // the signer the recovery batch actually lands under.
+        // On this job arkd runs short BLOCK-based delays (VTXO tree expiry = 40 blocks), so the coin's expiry
+        // is height-based. We MINE to advance the chain height past the VTXO's ExpiresAtHeight (the regtest
+        // auto-miner is far too slow to rely on). Crossing the expiry makes the coin recoverable; arkd then
+        // sweeps the expired output (confirmed by the blocks we mine), clearing the forfeit requirement so the
+        // 4c guard stops vetoing it, and the hosted IntentGenerationService re-enrolls it into a recovery batch
+        // that settles a fresh spendable VTXO under the post-rotation current signer. Re-fetch server info each
+        // loop so we compare against the signer the recovery batch actually lands under.
         using (var recoveryCts = new CancellationTokenSource(TimeSpan.FromSeconds(240)))
         {
             while (true)
             {
-                await DockerHelper.MineBlocks(2);
+                await DockerHelper.MineBlocks(10);
                 var current = (await transport.GetServerInfoAsync()).SignerKey.ToXOnlyPubKey();
                 if ((await spendingService.GetAvailableCoins(walletId)).Any(c => IsUnder(c, current)))
                     break;

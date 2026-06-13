@@ -145,11 +145,17 @@ public class SweepMigrationRotationTests
             TimeSpan.FromSeconds(120),
             "the now-deprecated-signer VTXO was not migrated off its script after the rotation");
 
-        // Migrated funds must now be spendable under the CURRENT (post-rotation) signer.
-        var after = await transport.GetServerInfoAsync();
-        var coinsAfter = await spendingService.GetAvailableCoins(walletId);
-        Assert.That(coinsAfter.Any(c => IsUnder(c, after.SignerKey.ToXOnlyPubKey())), Is.True,
-            "swept funds must land under the current signer");
+        // Migrated funds must now be spendable under the CURRENT (post-rotation) signer. Migration is async —
+        // the old VTXO is spent first, then the migrated one settles under the current signer a batch-round
+        // later — so WAIT for the end-state rather than assert synchronously the instant the old coin is spent.
+        await WaitUntilAsync(async () =>
+            {
+                var after = await transport.GetServerInfoAsync();
+                return (await spendingService.GetAvailableCoins(walletId))
+                    .Any(c => IsUnder(c, after.SignerKey.ToXOnlyPubKey()));
+            },
+            TimeSpan.FromSeconds(120),
+            "swept funds never became spendable under the post-rotation current signer");
 
         await host.StopAsync();
     }

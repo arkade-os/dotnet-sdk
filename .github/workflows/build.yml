@@ -137,13 +137,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      # Unpin the operator signer (see e2e-rotation) AND shorten the VTXO tree expiry to 120s so the
-      # past-cutoff recovery test can watch a coin EXPIRE -> become recoverable -> re-enroll for a
-      # recovery batch within the test, instead of waiting the committed 1h. The ~1500s lower bound in
-      # .env.regtest only exists to stop nigiri's auto-miner sweeping the SHARED CLI wallet mid-suite;
-      # this job self-funds via an arkd note and runs one test alone, so it doesn't apply.
-      - name: Unpin signer + shorten VTXO expiry for the recovery test
-        run: sed -i -E '/^ARKD_WALLET_(SIGNER_KEY|DEPRECATED_SIGNER_KEYS)=/d; s/^ARKD_VTXO_TREE_EXPIRY=.*/ARKD_VTXO_TREE_EXPIRY=120/' .env.regtest
+      # Unpin the operator signer (see e2e-rotation) AND switch arkd to short BLOCK-based delays so the
+      # past-cutoff recovery test can mine the coin to expiry within the run (the committed 1h time-based
+      # expiry would never elapse). arkd requires ALL delays to be the same TYPE — block (<512) or time
+      # (>=512) — so the WHOLE set moves below 512, mirroring the default ordering (BOARDING > VTXO =
+      # CHECKPOINT > UNILATERAL = PUBLIC). Height-based expiry = deterministic via MineBlocks, no wall-clock.
+      - name: Unpin signer + switch arkd to short block-based delays for the recovery test
+        run: |
+          sed -i -E '/^ARKD_WALLET_(SIGNER_KEY|DEPRECATED_SIGNER_KEYS)=/d' .env.regtest
+          {
+            echo "ARKD_VTXO_TREE_EXPIRY=40"
+            echo "ARKD_UNILATERAL_EXIT_DELAY=20"
+            echo "ARKD_PUBLIC_UNILATERAL_EXIT_DELAY=20"
+            echo "ARKD_BOARDING_EXIT_DELAY=80"
+            echo "ARKD_CHECKPOINT_EXIT_DELAY=40"
+          } >> .env.regtest
       - name: Start regtest infrastructure
         run: node regtest/regtest.mjs start --profile boltz,delegate
         timeout-minutes: 20
