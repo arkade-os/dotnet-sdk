@@ -46,11 +46,11 @@ jobs:
         timeout-minutes: 20
       - name: Restore and build
         run: dotnet build
-      # The signer-rotation test runs in the isolated e2e-rotation job below: a live
-      # rotation recreates arkd-wallet + restarts arkd, which cascade-fails every test
-      # sharing this stack. Run everything EXCEPT it here.
+      # The live-rotation tests run in the isolated e2e-rotation[-recovery] jobs below: a real
+      # rotation recreates arkd-wallet + restarts arkd, cascade-failing every test sharing this
+      # stack. Run everything EXCEPT those (tagged RealRotation / RealRotationExpiry) here.
       - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName!~DestinationSafetyRotationTests"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=RealRotationExpiry"
         timeout-minutes: 15
       - name: Collect docker logs on failure
         if: failure()
@@ -72,7 +72,7 @@ jobs:
         run: node regtest/regtest.mjs clean || true
 
   e2e-rotation:
-    name: E2E Signer Rotation Test
+    name: E2E Signer Rotation Tests
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -101,8 +101,8 @@ jobs:
         timeout-minutes: 20
       - name: Restore and build
         run: dotnet build
-      - name: Run signer-rotation E2E test
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~DestinationSafetyRotationTests"
+      - name: Run signer-rotation E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=RealRotation"
         timeout-minutes: 15
       - name: Collect docker logs on failure
         if: failure()
@@ -120,10 +120,58 @@ jobs:
         if: always()
         run: node regtest/regtest.mjs clean || true
 
+  e2e-rotation-recovery:
+    name: E2E Signer Rotation Recovery Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # Unpin the operator signer (see e2e-rotation) AND shorten the VTXO tree expiry to 120s so the
+      # past-cutoff recovery test can watch a coin EXPIRE -> become recoverable -> re-enroll for a
+      # recovery batch within the test, instead of waiting the committed 1h. The ~1500s lower bound in
+      # .env.regtest only exists to stop nigiri's auto-miner sweeping the SHARED CLI wallet mid-suite;
+      # this job self-funds via an arkd note and runs one test alone, so it doesn't apply.
+      - name: Unpin signer + shorten VTXO expiry for the recovery test
+        run: sed -i -E '/^ARKD_WALLET_(SIGNER_KEY|DEPRECATED_SIGNER_KEYS)=/d; s/^ARKD_VTXO_TREE_EXPIRY=.*/ARKD_VTXO_TREE_EXPIRY=120/' .env.regtest
+      - name: Start regtest infrastructure
+        run: node regtest/regtest.mjs start --profile boltz,delegate
+        timeout-minutes: 20
+      - name: Restore and build
+        run: dotnet build
+      - name: Run past-cutoff recovery E2E test
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=RealRotationExpiry"
+        timeout-minutes: 15
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs arkd-wallet > /tmp/arkd-wallet-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-rotation-recovery
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
+
   publish:
     name: Publish NuGet Packages
     runs-on: ubuntu-latest
-    needs: [build, e2e, e2e-rotation]
+    needs: [build, e2e, e2e-rotation, e2e-rotation-recovery]
     if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write

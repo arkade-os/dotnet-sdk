@@ -31,6 +31,7 @@ namespace NArk.Tests.End2End.Core;
 /// actually rotate it. Still marked non-parallel as belt-and-suspenders.</para>
 /// </summary>
 [NonParallelizable]
+[Category("RealRotation")]
 public class DestinationSafetyRotationTests
 {
     private static IHost BuildHost(string dbName) =>
