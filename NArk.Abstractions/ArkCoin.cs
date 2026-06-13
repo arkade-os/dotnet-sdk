@@ -1,10 +1,12 @@
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
 using NBitcoin;
 using NBitcoin.Scripting;
+using NBitcoin.Secp256k1;
 
 namespace NArk.Abstractions;
 
@@ -88,6 +90,42 @@ public class ArkCoin : Coin
     public bool IsRecoverable(TimeHeight current)
     {
         return Swept || IsExpired(current) ;
+    }
+
+    /// <summary>
+    /// True when this coin's contract is bound to a deprecated Arkade server signer whose
+    /// cooperative-sign cutoff has already passed — the operator will no longer co-sign an offchain
+    /// spend, so the coin can only be redeemed once it becomes recoverable (after expiry). A cutoff
+    /// of <c>0</c> means "no cutoff" and is never treated as past.
+    /// </summary>
+    /// <param name="deprecatedSigners">Deprecated signer pubkeys mapped to their cutoff (unix seconds), from <c>ArkServerInfo.DeprecatedSigners</c>.</param>
+    /// <param name="nowUnixSeconds">The current time in unix seconds.</param>
+    public bool IsDeprecatedSignerPastCutoff(IReadOnlyDictionary<ECXOnlyPubKey, long> deprecatedSigners, long nowUnixSeconds)
+    {
+        if (Contract.Server is null || deprecatedSigners.Count == 0)
+            return false;
+
+        // ECXOnlyPubKey uses reference equality, so compare by the 32-byte x-coordinate.
+        var serverKey = Contract.Server.ToXOnlyPubKey().ToBytes();
+        foreach (var (key, cutoff) in deprecatedSigners)
+        {
+            // cutoff 0 == "no cutoff"; a non-zero cutoff at/before now means the operator no longer co-signs.
+            if (cutoff != 0 && cutoff <= nowUnixSeconds && key.ToBytes().AsSpan().SequenceEqual(serverKey))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// As <see cref="CanSpendOffchain(TimeHeight)"/>, but additionally excludes coins under a
+    /// deprecated signer past its cutoff (<see cref="IsDeprecatedSignerPastCutoff"/>): past the
+    /// cutoff the operator stops co-signing, so the coin is no longer offchain-spendable even though
+    /// it is not yet recoverable.
+    /// </summary>
+    public bool CanSpendOffchain(TimeHeight current, IReadOnlyDictionary<ECXOnlyPubKey, long> deprecatedSigners)
+    {
+        return CanSpendOffchain(current)
+               && !IsDeprecatedSignerPastCutoff(deprecatedSigners, current.Timestamp.ToUnixTimeSeconds());
     }
 
     public bool RequiresForfeit()

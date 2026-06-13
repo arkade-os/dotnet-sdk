@@ -203,6 +203,19 @@ public class SpendingService(
             }
         }
 
+        // A coin under a deprecated signer whose cutoff has passed can no longer be spent offchain
+        // (the operator stops co-signing), so keep it out of the spendable set — it waits for
+        // recovery after expiry. See ArkCoin.IsDeprecatedSignerPastCutoff.
+        var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+        if (serverInfo.DeprecatedSigners.Count > 0)
+        {
+            var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var removed = coins.RemoveWhere(c => c.IsDeprecatedSignerPastCutoff(serverInfo.DeprecatedSigners, nowUnix));
+            if (removed > 0)
+                logger?.LogDebug("Excluding {Count} coin(s) under a past-cutoff deprecated signer for wallet {WalletId}",
+                    removed, walletId);
+        }
+
         logger?.LogDebug("Found {CoinCount} available coins for wallet {WalletId}", coins.Count, walletId);
         return coins;
     }

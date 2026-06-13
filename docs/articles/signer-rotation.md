@@ -9,10 +9,12 @@ When arkd rotates its signer, the old key moves into `ArkServerInfo.DeprecatedSi
 | Regime | Condition | Action |
 |--------|-----------|--------|
 | 1 — Collaborative sweep | Before cutoff (or no cutoff) | `ServerKeyRotationSweepPolicy` sweeps the VTXO into a new one under the current signer |
-| 2 — Wait | After cutoff, before VTXO expiry | Operator refuses to co-sign; the VTXO waits until it becomes recoverable |
+| 2 — Wait | After cutoff, before VTXO expiry | Operator refuses to co-sign; the coin is excluded from offchain spends and waits until it becomes recoverable |
 | 3 — Recovery re-enroll | After VTXO expiry (`IsRecoverable`) | Wallet re-enrolls via the intent scheduler; the batch session skips forfeit so the old key is not needed |
 
 Coin gathering is keyed on VTXO **script**, not contract `Active` state, so deactivating a stale default contract never strands its funds.
+
+Regime 2 is enforced in the spendability model: `ArkCoin.CanSpendOffchain(current, deprecatedSigners)` (built on `ArkCoin.IsDeprecatedSignerPastCutoff`) returns `false` for a coin whose contract server key is a deprecated signer past its cutoff, so `SpendingService.GetAvailableCoins` keeps it out of offchain-spend selection — it can no longer be collaboratively spent. The coin stays **not** `IsRecoverable` (regime 3 still fires only on expiry), so it correctly waits rather than being re-enrolled prematurely.
 
 ## Detection
 

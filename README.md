@@ -668,7 +668,7 @@ When an Arkade server operator rotates its signing key, the SDK handles re-enrol
 | Regime | Condition | Handled by |
 |--------|-----------|------------|
 | Collaborative sweep | Before cutoff (or no cutoff) | `ServerKeyRotationSweepPolicy` re-enrolls VTXOs under the current signer via the sweeper |
-| Wait | After cutoff, before VTXO expiry | VTXO waits until recoverable |
+| Wait | After cutoff, before VTXO expiry | `CanSpendOffchain` excludes the coin from offchain spends; it waits until recoverable |
 | Recovery re-enroll | Expired VTXO | Intent scheduler; batch session skips forfeit so the old key is not needed |
 
 `ContractReconciliationService` keeps every SingleKey wallet's "Default" receive contract aligned with the current signer. It triggers automatically on startup, `WalletSaved`, and `ServerInfoChanged` — no extra registration needed beyond `AddArkCoreServices`.
