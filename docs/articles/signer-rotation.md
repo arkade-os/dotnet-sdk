@@ -57,6 +57,27 @@ The headers are injected by `BuildVersionInterceptor` (gRPC) and `BuildVersionHa
 
 > **Note:** The `RestClientTransport(HttpClient)` constructor overload (for Blazor WASM / `IHttpClientFactory`) does not insert `BuildVersionHandler` into the pipeline. Use the `RestClientTransport(string uri)` URI-based constructor if automatic digest/version checking is required.
 
+## Destination Safety
+
+A wallet can carry a sweep **destination** (`ArkWalletInfo.Destination`), an `ArkAddress` that encodes a server signer key. When a recipient sweeps funds offchain, `DefaultWalletProvider` routes them to that destination instead of a self-output. If the destination was derived from the now-rotated signer, the swept funds would land on a key the operator no longer co-signs with — which would leave them stranded.
+
+`ContractReconciliationService` guards against this on every check point where a stale destination could appear:
+
+- **Startup** — checks every wallet's destination after loading.
+- **`ServerInfoChanged`** — re-checks all wallets whenever the server info (and thus the deprecated-signer set) changes.
+- **`WalletSaved`** — re-checks the newly saved wallet immediately.
+
+On each check, `DestinationSafety.IsStale` tests whether the destination's `ServerKey` is in `ArkServerInfo.DeprecatedSigners`. Only server keys that were previously the active signer and are now deprecated are considered stale; a destination keyed to the current signer or any external key that was never in the deprecated set is left untouched.
+
+When a destination transitions from not-stale to stale the service:
+
+1. Writes `DestinationSafety.PendingConfirmationMetadataKey` (`"destination:pendingConfirmation"`) into the wallet `Metadata` to flag it.
+2. Raises `IDestinationSafetyNotifier.DestinationDisabled` once (on the set transition, not on every subsequent check).
+
+While the flag is set, `DefaultWalletProvider` skips the destination: swept funds go to a self-output instead of the stale address. This protection is entirely in the SDK layer — it is independent of any UI or confirmation flow, so funds are never swept onto a rotated-away signer even if the user has not reacted yet.
+
+The flag clears automatically when the wallet is saved with a destination whose server key is no longer stale — i.e. the user re-confirms a fresh destination keyed to the current signer.
+
 ## Listening for Rotation Events
 
 Inject `IServerInfoCacheInvalidation` to react to a rotation in your own services:

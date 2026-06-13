@@ -684,6 +684,21 @@ public class MyService(IServerInfoCacheInvalidation serverInfoCache)
 }
 ```
 
+To react when a wallet's sweep destination is auto-disabled because the signer it was keyed to was rotated away, inject `IDestinationSafetyNotifier`:
+
+```csharp
+public class MyService(IDestinationSafetyNotifier destinationSafety)
+{
+    public void Start() =>
+        destinationSafety.DestinationDisabled += (_, e) =>
+            Console.WriteLine($"Destination disabled for wallet {e.WalletId}: " +
+                $"address {e.Destination} was keyed to deprecated signer {e.DeprecatedServerKey}. " +
+                "Ask the user to confirm a new sweep destination.");
+}
+```
+
+`IDestinationSafetyNotifier` is DI-aliased to the same `ContractReconciliationService` singleton that performs detection, so no extra registration is needed — just inject the interface. While the destination is flagged the SDK automatically routes swept funds to a self-output instead of the stale address; the destination resumes once the user re-confirms a fresh one.
+
 See [docs/articles/signer-rotation.md](docs/articles/signer-rotation.md) for the full rotation model, detection paths, and version/digest header details.
 
 ## Pending Arkade Transaction Recovery
