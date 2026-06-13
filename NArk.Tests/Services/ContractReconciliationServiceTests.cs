@@ -1,9 +1,15 @@
+using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Wallets;
 using NArk.Core;
 using NArk.Core.Recovery;
+using NArk.Core.Scripts;
 using NArk.Core.Services;
 using NArk.Core.Transport;
+using NBitcoin;
+using NBitcoin.Scripting;
+using NBitcoin.Secp256k1;
 using NSubstitute;
 
 namespace NArk.Tests.Services;
@@ -267,5 +273,130 @@ public class ContractReconciliationServiceTests
                 return;
             await Task.Delay(20);
         }
+    }
+
+    // ── Destination-safety tests ──────────────────────────────────────────────
+
+    [Test]
+    public async Task ReconcileWallet_flags_and_raises_when_destination_is_stale()
+    {
+        var deprecated = NewKey();
+        var serverInfo = MakeServerInfo(currentSigner: NewKey(), deprecated: [deprecated]);
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(serverInfo));
+
+        var address = MakeAddress(serverKey: deprecated);
+        var wallet = new ArkWalletInfo("w1", null, address.ToString(isMainnet: false), WalletType.SingleKey,
+            "tr(0000000000000000000000000000000000000000000000000000000000000001)", 0, Metadata: null);
+        _walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
+
+        DestinationDisabledEventArgs? raised = null;
+        var sut = CreateService();
+        ((IDestinationSafetyNotifier)sut).DestinationDisabled += (_, e) => raised = e;
+
+        await sut.ReconcileWalletAsync("w1", CancellationToken.None);
+
+        await _walletStorage.Received(1).SetMetadataValue(
+            "w1",
+            DestinationSafety.PendingConfirmationMetadataKey,
+            Arg.Is<string?>(v => v != null),
+            Arg.Any<CancellationToken>());
+
+        Assert.That(raised, Is.Not.Null, "DestinationDisabled event should have fired");
+        Assert.That(raised!.WalletId, Is.EqualTo("w1"));
+    }
+
+    [Test]
+    public async Task ReconcileWallet_clears_flag_when_destination_not_stale()
+    {
+        var current = NewKey();
+        var serverInfo = MakeServerInfo(currentSigner: current, deprecated: [NewKey()]);
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(serverInfo));
+
+        var address = MakeAddress(serverKey: current);
+        var metadata = new Dictionary<string, string>
+        {
+            [DestinationSafety.PendingConfirmationMetadataKey] = "some-old-hex"
+        };
+        var wallet = new ArkWalletInfo("w1", null, address.ToString(isMainnet: false), WalletType.SingleKey,
+            "tr(0000000000000000000000000000000000000000000000000000000000000001)", 0, Metadata: metadata);
+        _walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
+
+        var sut = CreateService();
+        await sut.ReconcileWalletAsync("w1", CancellationToken.None);
+
+        await _walletStorage.Received(1).SetMetadataValue(
+            "w1",
+            DestinationSafety.PendingConfirmationMetadataKey,
+            null,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ReconcileWallet_no_duplicate_event_when_already_flagged()
+    {
+        var deprecated = NewKey();
+        var deprecatedHex = Convert.ToHexString(deprecated.ToBytes()).ToLowerInvariant();
+        var serverInfo = MakeServerInfo(currentSigner: NewKey(), deprecated: [deprecated]);
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(serverInfo));
+
+        var address = MakeAddress(serverKey: deprecated);
+        var metadata = new Dictionary<string, string>
+        {
+            [DestinationSafety.PendingConfirmationMetadataKey] = deprecatedHex
+        };
+        var wallet = new ArkWalletInfo("w1", null, address.ToString(isMainnet: false), WalletType.SingleKey,
+            "tr(0000000000000000000000000000000000000000000000000000000000000001)", 0, Metadata: metadata);
+        _walletStorage.GetWalletById("w1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(wallet));
+
+        var eventFired = false;
+        var sut = CreateService();
+        ((IDestinationSafetyNotifier)sut).DestinationDisabled += (_, _) => eventFired = true;
+
+        await sut.ReconcileWalletAsync("w1", CancellationToken.None);
+
+        Assert.That(eventFired, Is.False, "DestinationDisabled event must NOT fire when already flagged");
+        await _walletStorage.DidNotReceive().SetMetadataValue(
+            "w1",
+            DestinationSafety.PendingConfirmationMetadataKey,
+            Arg.Any<string?>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    // ── Test helpers ─────────────────────────────────────────────────────────
+
+    private static ECXOnlyPubKey NewKey()
+        => ECXOnlyPubKey.Create(new NBitcoin.Key().PubKey.TaprootInternalKey.ToBytes());
+
+    private static ArkServerInfo MakeServerInfo(ECXOnlyPubKey currentSigner, ECXOnlyPubKey[] deprecated)
+    {
+        var deprecatedDict = new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance);
+        foreach (var key in deprecated)
+            deprecatedDict[key] = 0;
+
+        var emptyMultisig = new NofNMultisigTapScript(Array.Empty<ECXOnlyPubKey>());
+        return new ArkServerInfo(
+            Dust: Money.Satoshis(546),
+            SignerKey: currentSigner.ToOutputDescriptor(Network.RegTest),
+            DeprecatedSigners: deprecatedDict,
+            Network: Network.RegTest,
+            UnilateralExit: new Sequence(144),
+            BoardingExit: new Sequence(144),
+            ForfeitAddress: BitcoinAddress.Create("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", Network.RegTest),
+            ForfeitPubKey: currentSigner,
+            CheckpointTapScript: new UnilateralPathArkTapScript(new Sequence(144), emptyMultisig),
+            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "test-digest");
+    }
+
+    private static ArkAddress MakeAddress(ECXOnlyPubKey serverKey)
+    {
+        var tweakedKey = NewKey();
+        return new ArkAddress(tweakedKey, serverKey, version: 0, isMainnet: false);
     }
 }
