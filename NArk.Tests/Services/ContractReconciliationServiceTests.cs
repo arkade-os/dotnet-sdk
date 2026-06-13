@@ -224,6 +224,36 @@ public class ContractReconciliationServiceTests
     }
 
     [Test]
+    public async Task WalletSaved_Hd_with_stale_destination_enqueues_and_flags()
+    {
+        // OnWalletSaved is broadened to enqueue HD wallets that carry a destination (so a re-save
+        // clears the flag). Here an HD wallet with a stale destination must be reconciled and flagged
+        // — but still NOT get a default ensured (that path stays SingleKey-only).
+        var deprecated = NewKey();
+        _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(MakeServerInfo(currentSigner: NewKey(), deprecated: [deprecated])));
+
+        var hd = HdWallet() with { Destination = MakeAddress(serverKey: deprecated).ToString(isMainnet: false) };
+        _walletStorage.GetWalletById(hd.Id, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ArkWalletInfo?>(hd));
+        _walletStorage.LoadAllWallets(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlySet<ArkWalletInfo>>(new HashSet<ArkWalletInfo>()));
+
+        await using var sut = CreateService();
+        await sut.StartAsync(CancellationToken.None);
+
+        _walletStorage.WalletSaved += Raise.Event<EventHandler<ArkWalletInfo>>(_walletStorage, hd);
+
+        await WaitForAsync(() => _walletStorage.ReceivedCalls()
+            .Any(c => c.GetMethodInfo().Name == nameof(IWalletStorage.SetMetadataValue)));
+
+        await _walletStorage.Received().SetMetadataValue(
+            hd.Id, DestinationSafety.PendingConfirmationMetadataKey,
+            Arg.Is<string?>(v => v != null), Arg.Any<CancellationToken>());
+        await _ensurer.DidNotReceive().EnsureDefaultAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task StartupPass_BackendUnavailable_isRetried_thenReconciles()
     {
         // I1 follow-up: "arkd down at boot" does NOT surface as LoadAllWallets throwing

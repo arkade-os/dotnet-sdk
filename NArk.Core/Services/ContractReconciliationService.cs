@@ -10,7 +10,8 @@ namespace NArk.Core.Services;
 
 /// <summary>
 /// Keeps every SingleKey wallet's advertised "Default" contract aligned with the
-/// CURRENT arkd signer.
+/// CURRENT arkd signer, and flags any wallet whose Arkade sweep destination was
+/// orphaned by a signer rotation.
 /// <para>
 /// A SingleKey wallet's Default contract is derived from <c>ArkServerInfo.SignerKey</c>.
 /// When arkd rotates its signer, the old-signer Default becomes stale: the new-signer
@@ -24,6 +25,15 @@ namespace NArk.Core.Services;
 /// <item><see cref="IServerInfoCacheInvalidation.ServerInfoChanged"/> (signer rotated) → reconcile ALL SingleKey wallets.</item>
 /// <item>Startup pass on <see cref="StartAsync"/> → reconcile ALL SingleKey wallets (covers wallets rotated while offline).</item>
 /// </list>
+/// </para>
+/// <para>
+/// <b>Destination safety:</b> on the same triggers, for ANY wallet (SingleKey or HD) that has a
+/// sweep destination, if the destination's <see cref="ArkAddress"/> server key is now a deprecated
+/// signer the destination is flagged pending re-confirmation (a Metadata marker via
+/// <see cref="DestinationSafety"/>) and <see cref="IDestinationSafetyNotifier.DestinationDisabled"/>
+/// is raised once (on the set transition); a destination that is no longer stale clears the flag.
+/// <see cref="IWalletStorage.WalletSaved"/> therefore also enqueues HD wallets that carry a
+/// destination, so a re-save clears the flag.
 /// </para>
 /// <para>
 /// <b>Supersede semantics:</b> funds safety does NOT depend on the deactivation — the sweeper
