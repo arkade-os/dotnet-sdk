@@ -94,6 +94,14 @@ public class IntentSynchronizationService(
         {
             logger?.LogDebug("Intent submit loop cancelled");
         }
+        catch (ObjectDisposedException) when (token.IsCancellationRequested)
+        {
+            // Shutdown race: the DI scope was disposed (host teardown) while a storage query was in
+            // flight, so an EF/DbContext access threw ObjectDisposedException instead of honouring the
+            // cancellation. Benign during shutdown — stop the loop quietly. Outside shutdown an
+            // ObjectDisposedException is a real fault and still propagates (the `when` guard).
+            logger?.LogDebug("Intent submit loop stopped: service provider disposed during shutdown");
+        }
     }
 
     private async Task SubmitIntent(ArkIntent intentToSubmit, CancellationToken token)
@@ -207,6 +215,12 @@ public class IntentSynchronizationService(
         catch (OperationCanceledException)
         {
             logger?.LogDebug("Intent submit loop cancelled during disposal");
+        }
+        catch (ObjectDisposedException)
+        {
+            // Belt-and-suspenders: an in-flight storage query lost the race with DI-scope disposal at
+            // teardown. Always benign here (DisposeAsync only runs during shutdown).
+            logger?.LogDebug("Intent submit loop observed a disposed service provider during disposal");
         }
 
         logger?.LogInformation("Intent synchronization service disposed");
