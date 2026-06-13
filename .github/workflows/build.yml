@@ -46,8 +46,11 @@ jobs:
         timeout-minutes: 20
       - name: Restore and build
         run: dotnet build
+      # The signer-rotation test runs in the isolated e2e-rotation job below: a live
+      # rotation recreates arkd-wallet + restarts arkd, which cascade-fails every test
+      # sharing this stack. Run everything EXCEPT it here.
       - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName!~DestinationSafetyRotationTests"
         timeout-minutes: 15
       - name: Collect docker logs on failure
         if: failure()
@@ -68,10 +71,59 @@ jobs:
         if: always()
         run: node regtest/regtest.mjs clean || true
 
+  e2e-rotation:
+    name: E2E Signer Rotation Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # The committed .env.regtest pins a fixed operator signer (S2) plus a pre-deprecated
+      # signer (S1) for the main suite's sweeper test. That pin overrides the key
+      # rotate-signer generates, so the rotation never takes effect (arkd keeps reporting
+      # the pinned signer and the command times out). Drop both pins for this isolated job
+      # so the stack boots on the compose default key, which is exactly the key
+      # rotate-signer's DEFAULT_SIGNER_KEY expects to deprecate on the first rotation.
+      - name: Unpin operator signer so rotate-signer can manage it
+        run: sed -i -E '/^ARKD_WALLET_(SIGNER_KEY|DEPRECATED_SIGNER_KEYS)=/d' .env.regtest
+      - name: Start regtest infrastructure
+        run: node regtest/regtest.mjs start --profile boltz,delegate
+        timeout-minutes: 20
+      - name: Restore and build
+        run: dotnet build
+      - name: Run signer-rotation E2E test
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~DestinationSafetyRotationTests"
+        timeout-minutes: 15
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs arkd-wallet > /tmp/arkd-wallet-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-rotation
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
+
   publish:
     name: Publish NuGet Packages
     runs-on: ubuntu-latest
-    needs: [build, e2e]
+    needs: [build, e2e, e2e-rotation]
     if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write

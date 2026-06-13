@@ -25,7 +25,10 @@ namespace NArk.Tests.End2End.Core;
 /// uses arkade-regtest's <c>rotate-signer</c> CLI (PR #30) to rotate the live stack mid-test, exercising
 /// the production path: <c>ServerInfoChanged</c> → <see cref="ContractReconciliationService"/> flags the
 /// stale destination in wallet metadata and raises <see cref="IDestinationSafetyNotifier.DestinationDisabled"/>.
-/// <para>Marked non-parallel: a rotation mutates the shared operator signer set for the whole stack.</para>
+/// <para>Runs in a dedicated CI job (<c>e2e-rotation</c>) on its own stack: a live rotation recreates
+/// arkd-wallet and restarts arkd, which would cascade-fail any test sharing the stack. That job boots the
+/// stack on the compose <i>default</i> signer (unpinning <c>.env.regtest</c>) so <c>rotate-signer</c> can
+/// actually rotate it. Still marked non-parallel as belt-and-suspenders.</para>
 /// </summary>
 [NonParallelizable]
 public class DestinationSafetyRotationTests
