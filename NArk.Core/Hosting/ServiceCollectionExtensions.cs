@@ -143,6 +143,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IOnchainService, OnchainService>();
         services.AddSingleton<SweeperService>();
         services.AddSingleton<ContractReconciliationService>();
+        services.AddSingleton<IDestinationSafetyNotifier>(sp => sp.GetRequiredService<ContractReconciliationService>());
         services.AddSingleton<ISweepPolicy, ServerKeyRotationSweepPolicy>();
         services.AddSingleton<PendingArkTransactionRecoveryService>();
         services.AddSingleton<IFeeEstimator, DefaultFeeEstimator>();
