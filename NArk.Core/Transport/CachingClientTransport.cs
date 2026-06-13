@@ -53,6 +53,9 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
         }
 
         await _lock.WaitAsync(cancellationToken);
+        // Captured under the lock, fired AFTER release to prevent deadlock if a handler
+        // calls GetServerInfoAsync (SemaphoreSlim(1,1) is not reentrant).
+        ServerInfoChangedEventArgs? postLockEvent = null;
         try
         {
             // Double-check after acquiring lock
@@ -81,28 +84,29 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
                 serverInfo.Network.Name, serverInfo.Dust);
 
             // Refresh-path rotation detection: if we had a previous value and the digest changed,
-            // raise ServerInfoChanged WITHOUT invalidating — this is a normal refresh, the fresh
-            // value is already cached and valid. Handlers only enqueue, so raising under the lock
-            // doesn't deadlock. The DigestMismatchException path handles the mid-request case and
-            // doesn't overlap (that throws before reaching here).
+            // schedule ServerInfoChanged for after the lock is released.
             if (previousDigest is not null && previousDigest != serverInfo.Digest)
             {
                 _logger?.LogInformation(
                     "Server info digest changed on TTL refresh ({Previous} -> {New}); raising ServerInfoChanged",
                     previousDigest, serverInfo.Digest);
-                ServerInfoChanged?.Invoke(this, new ServerInfoChangedEventArgs
+                postLockEvent = new ServerInfoChangedEventArgs
                 {
                     Reason = ServerInfoChangedReason.TtlExpiry,
                     PreviousDigest = previousDigest,
                     NewDigest = serverInfo.Digest,
-                });
+                };
             }
 
             return serverInfo;
         }
         catch (DigestMismatchException)
         {
-            InvalidateServerInfoCache(new ServerInfoChangedEventArgs { Reason = ServerInfoChangedReason.DigestMismatch });
+            // Clear cache state under the lock for consistency; the event fires after release
+            // via postLockEvent so handlers can safely call GetServerInfoAsync without deadlocking.
+            ClearCacheCore();
+            _logger?.LogDebug("Server info cache invalidated ({Reason})", ServerInfoChangedReason.DigestMismatch);
+            postLockEvent = new ServerInfoChangedEventArgs { Reason = ServerInfoChangedReason.DigestMismatch };
             throw;
         }
         catch (Exception ex)
@@ -121,7 +125,15 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
         finally
         {
             _lock.Release();
+            if (postLockEvent is not null)
+                ServerInfoChanged?.Invoke(this, postLockEvent);
         }
+    }
+
+    private void ClearCacheCore()
+    {
+        _cachedServerInfo = null;
+        _serverInfoExpiresAt = DateTimeOffset.MinValue;
     }
 
     /// <summary>
@@ -131,8 +143,7 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
     /// </summary>
     public void InvalidateServerInfoCache(ServerInfoChangedEventArgs? args = null)
     {
-        _cachedServerInfo = null;
-        _serverInfoExpiresAt = DateTimeOffset.MinValue;
+        ClearCacheCore();
         var eventArgs = args ?? new ServerInfoChangedEventArgs();
         _logger?.LogDebug("Server info cache invalidated ({Reason})", eventArgs.Reason);
         ServerInfoChanged?.Invoke(this, eventArgs);
