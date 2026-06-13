@@ -4,6 +4,7 @@ using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
+using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Core.Wallet.SigningSources;
 using NBitcoin;
@@ -104,9 +105,9 @@ public class DefaultWalletProvider(
                 infoMs, swLoad.ElapsedMilliseconds);
 
             ArkAddress? sweepDestination = null;
-            if (!string.IsNullOrEmpty(wallet.Destination))
+            if (ShouldUseDestination(wallet))
             {
-                sweepDestination = ArkAddress.Parse(wallet.Destination);
+                sweepDestination = ArkAddress.Parse(wallet.Destination!);
             }
 
             // Cross-check the stored descriptor against the one derived from the local nsec —
@@ -138,4 +139,13 @@ public class DefaultWalletProvider(
             return null;
         }
     }
+
+    /// <summary>
+    /// Returns <c>true</c> when the wallet's destination is present and not flagged pending
+    /// re-confirmation after an Arkade signer rotation. When <c>false</c>, the sweep destination
+    /// is suppressed and funds sweep to self-output instead.
+    /// </summary>
+    internal static bool ShouldUseDestination(ArkWalletInfo wallet)
+        => !string.IsNullOrEmpty(wallet.Destination)
+           && wallet.Metadata?.ContainsKey(DestinationSafety.PendingConfirmationMetadataKey) != true;
 }
