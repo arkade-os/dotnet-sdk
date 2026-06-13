@@ -36,7 +36,7 @@ internal sealed class BuildVersionInterceptor(DigestHolder digestHolder) : Inter
     {
         var call = continuation(request, WithHeaders(context));
         return new AsyncServerStreamingCall<TResponse>(
-            call.ResponseStream,
+            new GuardedStreamReader<TResponse>(call.ResponseStream, digestHolder),
             GuardAsync(call.ResponseHeadersAsync),
             call.GetStatus,
             call.GetTrailers,
@@ -64,7 +64,7 @@ internal sealed class BuildVersionInterceptor(DigestHolder digestHolder) : Inter
         var call = continuation(WithHeaders(context));
         return new AsyncDuplexStreamingCall<TRequest, TResponse>(
             call.RequestStream,
-            call.ResponseStream,
+            new GuardedStreamReader<TResponse>(call.ResponseStream, digestHolder),
             GuardAsync(call.ResponseHeadersAsync),
             call.GetStatus,
             call.GetTrailers,
@@ -87,6 +87,35 @@ internal sealed class BuildVersionInterceptor(DigestHolder digestHolder) : Inter
             digestHolder.Clear();
             throw new DigestMismatchException(
                 "Arkade server reported a configuration digest mismatch. Server info cache has been cleared; retry after calling GetServerInfoAsync.");
+        }
+    }
+
+    /// <summary>
+    /// Wraps an <see cref="IAsyncStreamReader{T}"/> so that <c>DIGEST_MISMATCH</c> and
+    /// <c>BUILD_VERSION_TOO_OLD</c> gRPC trailing-status errors are translated to the
+    /// typed SDK exceptions on every <see cref="MoveNext"/> call, not just on response headers.
+    /// </summary>
+    private sealed class GuardedStreamReader<T>(IAsyncStreamReader<T> inner, DigestHolder digestHolder) : IAsyncStreamReader<T>
+    {
+        public T Current => inner.Current;
+
+        public async Task<bool> MoveNext(CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await inner.MoveNext(cancellationToken).ConfigureAwait(false);
+            }
+            catch (RpcException ex) when (ex.Status.Detail.Contains("BUILD_VERSION_TOO_OLD", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IncompatibleSdkVersionException(
+                    $"Arkade server rejected SDK build {ArkdVersion.TargetBuild}: server requires a newer SDK version. Upgrade the NArk SDK package.");
+            }
+            catch (RpcException ex) when (ex.Status.Detail.Contains("DIGEST_MISMATCH", StringComparison.OrdinalIgnoreCase))
+            {
+                digestHolder.Clear();
+                throw new DigestMismatchException(
+                    "Arkade server reported a configuration digest mismatch. Server info cache has been cleared; retry after calling GetServerInfoAsync.");
+            }
         }
     }
 
