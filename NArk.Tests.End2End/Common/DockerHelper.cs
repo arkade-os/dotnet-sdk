@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -139,6 +140,51 @@ public static class DockerHelper
         var output = await Exec(Container.Arkd,
             ["arkd", "note", "--amount", amountSats.ToString()], ct);
         return output.Trim();
+    }
+
+    /// <summary>
+    /// Simulates an arkd operator signer-key rotation via the regtest node CLI
+    /// (<c>node regtest/regtest.mjs rotate-signer</c>, added in ArkLabsHQ/arkade-regtest#30): a new
+    /// active signer is generated and the current one is moved into the deprecated set with
+    /// <paramref name="cutoff"/> (e.g. <c>"+86400"</c> = a migratable cutoff one day out). Blocks until
+    /// arkd has re-synced and advertises the new signer set on <c>/v1/info</c>.
+    /// </summary>
+    public static async Task RotateSigner(string? cutoff = null, CancellationToken ct = default)
+    {
+        var regtestRoot = FindRegtestRoot();
+        var args = new List<string> { "regtest/regtest.mjs", "rotate-signer" };
+        if (cutoff is not null)
+        {
+            args.Add("--cutoff");
+            args.Add(cutoff);
+        }
+
+        var result = await Cli.Wrap("node")
+            .WithArguments(args)
+            .WithWorkingDirectory(regtestRoot)
+            .WithValidation(CommandResultValidation.None)
+            .ExecuteBufferedAsync(ct);
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"regtest.mjs rotate-signer failed (exit={result.ExitCode}): " +
+                $"{result.StandardError.Trim()} {result.StandardOutput.Trim()}");
+    }
+
+    /// <summary>
+    /// Walks up from the test assembly directory to the SDK repo root — the directory that contains
+    /// <c>regtest/regtest.mjs</c> — so the regtest CLI can be invoked regardless of the test's cwd.
+    /// </summary>
+    private static string FindRegtestRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir, "regtest", "regtest.mjs")))
+                return dir;
+            dir = Path.GetDirectoryName(dir);
+        }
+        throw new InvalidOperationException(
+            $"Could not locate regtest/regtest.mjs by walking up from {AppContext.BaseDirectory}");
     }
 
     /// <summary>
