@@ -47,7 +47,7 @@ Every outgoing gRPC and REST request carries two headers:
 
 | Header | Value | Purpose |
 |--------|-------|---------|
-| `X-Build-Version` | `ArkdVersion.TargetBuild` (e.g. `0.9.7`) | Lets arkd reject SDKs that are too old (`BUILD_VERSION_TOO_OLD`) |
+| `X-Build-Version` | `ArkdVersion.TargetBuild` (e.g. `0.9.9`) | Lets arkd reject SDKs that are too old (`BUILD_VERSION_TOO_OLD`) |
 | `X-Digest` | Current server-info digest | Lets arkd detect stale cached configuration (`DIGEST_MISMATCH`) |
 
 The headers are injected by `BuildVersionInterceptor` (gRPC) and `BuildVersionHandler` (REST). Both throw typed exceptions on rejection:

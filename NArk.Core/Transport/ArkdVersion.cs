@@ -9,7 +9,7 @@ namespace NArk.Transport;
 /// </summary>
 public static class ArkdVersion
 {
-    public const string TargetBuild = "0.9.7";
+    public const string TargetBuild = "0.9.9";
     internal const string HeaderName = "X-Build-Version";
     internal const string DigestHeaderName = "X-Digest";
 

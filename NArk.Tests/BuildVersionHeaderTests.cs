@@ -9,7 +9,7 @@ public class BuildVersionHeaderTests
     [Test]
     public void ArkdVersion_TargetBuild_IsExpected()
     {
-        Assert.That(ArkdVersion.TargetBuild, Is.EqualTo("0.9.7"));
+        Assert.That(ArkdVersion.TargetBuild, Is.EqualTo("0.9.9"));
     }
 
     [Test]
