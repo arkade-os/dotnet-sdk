@@ -28,14 +28,13 @@ namespace NArk.Tests.End2End.Core;
 /// <see cref="SpendingService.GetAvailableCoins"/> excludes it (<see cref="ArkCoin.IsDeprecatedSignerPastCutoff"/>)
 /// and the 4c guard in <see cref="SimpleIntentScheduler"/> vetoes it from batches. Uses arkade-regtest's
 /// <c>rotate-signer --cutoff -60</c> for a REAL rotation to a cutoff already in the past.
-/// <para><b>Why not the full recovery (regime 3)?</b> Driving a coin to recovery in-test needs a short VTXO
-/// expiry. arkd requires all delays to share a type, and the only short option (block-based, &lt;512) trips
-/// an arkd rc.1 nil-pointer panic in <c>Settings.Digest</c>. Even past that, arkd <i>rejects</i> re-enrolling
-/// the expired coin into a recovery batch with <c>INVALID_VTXO_SCRIPT: ... is a deprecated key</c> — the coin
-/// cannot join a batch while its script still carries the deprecated key. So the live recovery path needs an
-/// arkd fix and/or an SDK-side unroll-to-onchain + recovery-script step before it is E2E-testable. The
-/// recovery LOGIC (past-cutoff spendability exclusion, 4c-guard veto, re-enrollment selection) is covered by
-/// unit tests; this E2E pins the reliable, in-protocol regime-2 behaviour.</para>
+/// <para><b>Why not the full recovery (regime 3) here?</b> Driving a coin to recovery in-test needs a short
+/// VTXO expiry, and the only short-expiry config (block-based delays, &lt;512) trips an arkd rc.1 nil-pointer
+/// panic in <c>Settings.Digest</c> — so regime 3 cannot be exercised in this harness. The recovery path itself
+/// is sound: within cutoff the offchain sweep migrates coins (see <see cref="SweepMigrationRotationTests"/>);
+/// past cutoff a coin is held back until expiry, then renews via an intent that arkd accepts once the coin is
+/// recoverable. This E2E pins the in-protocol regime-2 (held-back) behaviour; the post-expiry regime-3
+/// recovery awaits a working short-expiry config.</para>
 /// <para>Runs in the <c>e2e-rotation</c> CI job (tagged <c>RealRotation</c>) on the normal time-based stack —
 /// held-back needs no short-expiry config. Marked non-parallel as belt-and-suspenders.</para>
 /// </summary>
