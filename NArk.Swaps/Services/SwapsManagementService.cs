@@ -350,7 +350,7 @@ public class SwapsManagementService : IAsyncDisposable
                 walletId,
                 ArkSwapType.ReverseSubmarine,
                 revSwap.Swap.Invoice,
-                (long)invoiceParams.Amount.ToUnit(LightMoneyUnit.Satoshi),
+                revSwap.Swap.OnchainAmount,
                 revSwap.Contract.GetArkAddress().ScriptPubKey.ToHex(),
                 revSwap.Swap.LockupAddress,
                 ArkSwapStatus.Pending,
