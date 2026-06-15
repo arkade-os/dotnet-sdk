@@ -43,11 +43,12 @@ Reconciliation calls `ISingleKeyDefaultEnsurer.EnsureDefaultAsync` to upsert the
 
 ## Version and Digest Headers
 
-Every outgoing gRPC and REST request carries two headers:
+Every outgoing gRPC and REST request carries these headers:
 
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `X-Build-Version` | `ArkdVersion.TargetBuild` (e.g. `0.9.9`) | Lets arkd reject SDKs that are too old (`BUILD_VERSION_TOO_OLD`) |
+| `X-SDK-VERSION` | `ArkdVersion.SdkVersionHeaderValue` (e.g. `dotnet-sdk/1.0.327-beta`) | Identifies the SDK and its own package version (from Nerdbank.GitVersioning) in `name/version` form, so arkd can distinguish the .NET SDK from other SDKs |
 | `X-Digest` | Current server-info digest | Lets arkd detect stale cached configuration (`DIGEST_MISMATCH`) |
 
 The headers are injected by `BuildVersionInterceptor` (gRPC) and `BuildVersionHandler` (REST). Both throw typed exceptions on rejection:

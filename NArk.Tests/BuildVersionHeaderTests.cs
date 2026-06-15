@@ -25,6 +25,46 @@ public class BuildVersionHeaderTests
     }
 
     [Test]
+    public void SdkVersion_IsCleanSemVerWithoutBuildMetadata()
+    {
+        // nbgv computes this from git; the value changes per commit, so assert shape, not a literal.
+        Assert.That(ArkdVersion.SdkVersion, Is.Not.Empty);
+        Assert.That(ArkdVersion.SdkVersion, Does.Not.Contain("+"),
+            "SdkVersion must be the clean version without the +commit build-metadata suffix.");
+    }
+
+    [Test]
+    public void SdkVersionHeaderValue_IsDotnetSdkProductToken()
+    {
+        // Product-token form "name/version", e.g. dotnet-sdk/1.0.327-beta.
+        Assert.That(ArkdVersion.SdkVersionHeaderValue, Is.EqualTo($"dotnet-sdk/{ArkdVersion.SdkVersion}"));
+        Assert.That(ArkdVersion.SdkVersionHeaderValue, Does.StartWith("dotnet-sdk/"));
+    }
+
+    [Test]
+    public void InjectHeader_HttpClient_AddsXSdkVersionHeader()
+    {
+        var http = new HttpClient();
+
+        http.InjectHeader();
+
+        Assert.That(
+            http.DefaultRequestHeaders.GetValues("X-SDK-VERSION"),
+            Contains.Item(ArkdVersion.SdkVersionHeaderValue));
+    }
+
+    [Test]
+    public void InjectHeader_HttpClient_XSdkVersionIsIdempotent()
+    {
+        var http = new HttpClient();
+
+        http.InjectHeader();
+        http.InjectHeader();
+
+        Assert.That(http.DefaultRequestHeaders.GetValues("X-SDK-VERSION").ToList(), Has.Count.EqualTo(1));
+    }
+
+    [Test]
     public void InjectHeader_HttpClient_IsIdempotent()
     {
         var http = new HttpClient();
