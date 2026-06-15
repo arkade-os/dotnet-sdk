@@ -88,12 +88,13 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         var preimageHash = Hashes.SHA256(preimage);
 
         // First make the Boltz request to get the swap details including timeout block heights
-        // Use OnchainAmount so the merchant receives the full requested amount (user pays swap fees)
+        // Use InvoiceAmount so the Lightning invoice is for exactly the requested amount
+        // The receiver absorbs the Boltz reverse-swap fee, netting OnchainAmount = InvoiceAmount - fee
         var request = new ReverseRequest
         {
             From = "BTC",
             To = "ARK",
-            OnchainAmount = (long)createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi),
+            InvoiceAmount = (long)createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi),
             ClaimPublicKey =
                 (extractedReceiver.PubKey?.ToBytes() ??
                                          extractedReceiver.XOnlyPubKey.ToBytes()).ToHexStringLower(), // Receiver will claim the VTXO
@@ -124,13 +125,20 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new InvalidOperationException("Boltz did not provide the correct preimage hash");
         }
 
-        // Verify the invoice amount is greater than onchain amount (includes fees)
+        // Verify the invoice amount equals exactly the requested amount
         var invoiceAmountSats = bolt11.MinimumAmount.ToUnit(LightMoneyUnit.Satoshi);
-        var onchainAmountSats = createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi);
-        if (invoiceAmountSats < onchainAmountSats)
+        var requestedAmountSats = createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi);
+        if (invoiceAmountSats != requestedAmountSats)
         {
             throw new InvalidOperationException(
-                $"Invoice amount ({invoiceAmountSats} sats) must be greater than onchain amount ({onchainAmountSats} sats) to cover swap fees");
+                $"Invoice amount ({invoiceAmountSats} sats) does not match the requested amount ({requestedAmountSats} sats)");
+        }
+
+        // The receiver claims OnchainAmount (invoice minus the Boltz fee).
+        if (response.OnchainAmount <= 0 || response.OnchainAmount > invoiceAmountSats)
+        {
+            throw new InvalidOperationException(
+                $"Onchain amount ({response.OnchainAmount} sats) must be greater than zero and not exceed invoice amount ({invoiceAmountSats} sats)");
         }
 
         var vhtlcContract = new VHTLCContract(
