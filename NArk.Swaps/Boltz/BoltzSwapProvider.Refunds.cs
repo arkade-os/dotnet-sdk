@@ -1,7 +1,5 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
-using NArk.Abstractions.Contracts;
-using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Common;
@@ -544,7 +542,7 @@ public partial class BoltzSwapProvider
     /// (e.g. the lockup tx isn't visible yet) we leave the swap Pending
     /// so the routine poll retries.
     /// </summary>
-    public async Task<bool> TryCoopRefundBtcToArk(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken)
+    public async Task<bool> TryRefundBtcToArk(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken)
     {
         
         _logger?.LogInformation(
@@ -552,6 +550,12 @@ public partial class BoltzSwapProvider
             swap.SwapId, swap.SwapType);
 
         if (await CoopRefundBtcToArkChainSwap(swap, cancellationToken))
+        {
+            return true;
+        }
+
+        // Coop refused — fall through to unilateral script-path spend once CLTV timeout is reached.
+        if (await UnilateralRefundBtcToArkChainSwap(swap, cancellationToken))
         {
             return true;
         }
@@ -572,5 +576,107 @@ public partial class BoltzSwapProvider
             RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
         }
         return false;
+    }
+    
+    
+    /// <summary>
+    /// Script-path unilateral CLTV refund for a BTC→ARK chain swap whose BTC
+    /// lockup was never redeemed and cooperative refund was refused by Boltz.
+    /// Spends the BTC HTLC output via the refund tapscript leaf once the CLTV
+    /// timelock (<c>lockupDetails.TimeoutBlockHeight</c>) has elapsed.
+    /// Returns <c>false</c> until the timeout is reached so the poll loop
+    /// continues retrying on each tick.
+    /// </summary>
+    private async Task<bool> UnilateralRefundBtcToArkChainSwap(ArkSwap swap, CancellationToken ct)
+    {
+        if (swap.SwapType != ArkSwapType.ChainBtcToArk) return false;
+        if (swap.Status == ArkSwapStatus.Refunded) return true;
+
+        var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
+        var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
+        var btcAddress = swap.Get(SwapMetadata.BtcAddress);
+        if (string.IsNullOrEmpty(ephemeralKeyHex) ||
+            string.IsNullOrEmpty(boltzResponseJson) ||
+            string.IsNullOrEmpty(btcAddress))
+        {
+            _logger?.LogWarning("Swap {SwapId}: missing metadata for unilateral BTC refund", swap.SwapId);
+            return false;
+        }
+
+        try
+        {
+            var response = BoltzSwapService.DeserializeChainResponse(boltzResponseJson);
+            var lockupDetails = response?.LockupDetails;
+            if (lockupDetails?.SwapTree is null || string.IsNullOrEmpty(lockupDetails.ServerPublicKey))
+            {
+                _logger?.LogWarning("Swap {SwapId}: BTC lockup details missing, cannot unilateral refund", swap.SwapId);
+                return false;
+            }
+
+            // CLTV timeout is provided directly by Boltz — no script parsing needed.
+            var cltvTimeout = (uint)lockupDetails.TimeoutBlockHeight;
+            var chainTime = await _chainTimeProvider.GetChainTime(ct);
+            if (chainTime.Height < cltvTimeout)
+            {
+                _logger?.LogDebug(
+                    "Swap {SwapId}: CLTV timeout {Timeout} not yet reached (height={Height}), deferring unilateral refund",
+                    swap.SwapId, cltvTimeout, chainTime.Height);
+                return false;
+            }
+
+            var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, ct);
+            if (string.IsNullOrEmpty(swapStatus?.Transaction?.Hex))
+            {
+                _logger?.LogDebug("Swap {SwapId}: BTC lockup tx not yet observable, deferring unilateral refund", swap.SwapId);
+                return false;
+            }
+
+            var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
+            var ephemeralKey = new Key(Convert.FromHexString(ephemeralKeyHex));
+            var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
+            var boltzPubKey = ECPubKey.Create(Convert.FromHexString(lockupDetails.ServerPublicKey));
+
+            var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
+                lockupDetails.SwapTree, ecPrivKey.CreatePubKey(), boltzPubKey,
+                lockupDetails.LockupAddress, serverInfo.Network);
+            var refundLeaf = BtcHtlcScripts.GetRefundLeaf(lockupDetails.SwapTree);
+            var refundDest = BitcoinAddress.Create(btcAddress, serverInfo.Network);
+
+            var lockupTx = Transaction.Parse(swapStatus.Transaction.Hex, serverInfo.Network);
+            var lockupScript = BitcoinAddress.Create(lockupDetails.LockupAddress, serverInfo.Network).ScriptPubKey;
+            var vout = -1;
+            for (var i = 0; i < lockupTx.Outputs.Count; i++)
+            {
+                if (lockupTx.Outputs[i].ScriptPubKey == lockupScript) { vout = i; break; }
+            }
+            if (vout < 0)
+            {
+                _logger?.LogWarning("Swap {SwapId}: lockup tx has no output paying to {Address}", swap.SwapId, lockupDetails.LockupAddress);
+                return false;
+            }
+
+            var outpoint = new OutPoint(lockupTx.GetHash(), vout);
+            var prevOut = lockupTx.Outputs[vout];
+            var refundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, DefaultRefundClaimFeeSats);
+            BtcTransactionBuilder.SignScriptPathRefund(refundTx, 0, prevOut, spendInfo, refundLeaf, cltvTimeout, ephemeralKey);
+
+            _logger?.LogInformation(
+                "Swap {SwapId}: broadcasting unilateral script-path BTC refund (CLTV={Timeout})",
+                swap.SwapId, cltvTimeout);
+            var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(
+                new BroadcastRequest { Hex = refundTx.ToHex() }, ct);
+            _logger?.LogInformation("Swap {SwapId}: unilateral BTC refund broadcast — txid={TxId}",
+                swap.SwapId, broadcastResult.Id);
+
+            var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
+            await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
+            RaiseSwapStatusChanged(refunded);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogError(ex, "Swap {SwapId}: unilateral BTC refund failed", swap.SwapId);
+            return false;
+        }
     }
 }
