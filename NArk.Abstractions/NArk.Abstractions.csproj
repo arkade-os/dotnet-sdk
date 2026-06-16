@@ -14,6 +14,6 @@
 
     <ItemGroup>
       <PackageReference Include="NBitcoin" Version="10.0.1" />
-      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.0" />
+      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.1" />
     </ItemGroup>
 </Project>
