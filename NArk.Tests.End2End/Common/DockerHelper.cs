@@ -1,10 +1,10 @@
 using System.Globalization;
-using System.IO;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CliWrap;
 using CliWrap.Buffered;
+using NArk.Swaps.Boltz;
 using NBitcoin;
 
 namespace NArk.Tests.End2End.Common;
@@ -330,7 +330,7 @@ public static class DockerHelper
             .WithArguments([
                 "exec", Container.Postgres,
                 "psql", "-U", "postgres", "-d", "boltz",
-                "-c", $"UPDATE \"chainSwaps\" SET status = '{ChainSwapStatus.SwapExpired}' WHERE id = '{swapId}'"
+                "-c", $"UPDATE \"chainSwaps\" SET status = '{BoltzSwapStatus.SwapExpired}' WHERE id = '{swapId}'"
             ])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
@@ -366,7 +366,7 @@ public static class DockerHelper
             .WithArguments([
                 "exec", Container.Postgres,
                 "psql", "-U", "postgres", "-d", "boltz",
-                "-c", $"UPDATE \"chainSwaps\" SET status = '{ChainSwapStatus.SwapExpired}' WHERE id = '{swapId}'"
+                "-c", $"UPDATE \"chainSwaps\" SET status = '{BoltzSwapStatus.SwapExpired}' WHERE id = '{swapId}'"
             ])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
@@ -426,26 +426,4 @@ public static class DockerHelper
         public const string Fulmine = "boltz-fulmine";
         public const string Postgres = "postgres";
     }
-}
-
-
-
-/// <summary>
-/// Boltz chain swap status strings as emitted on the WebSocket and REST API.
-/// Use these constants instead of raw string literals so a Boltz API rename
-/// shows up as a single compile-time change.
-/// </summary>
-public static class ChainSwapStatus
-{
-    public const string SwapCreated = "swap.created";
-    public const string TransactionMempool = "transaction.mempool";                   // user's lockup in mempool
-    public const string TransactionConfirmed = "transaction.confirmed";               // user's lockup confirmed
-    public const string TransactionServerMempool = "transaction.server.mempool";      // cooperative claim
-    public const string TransactionServerConfirmed = "transaction.server.confirmed";  // cooperative claim
-    public const string TransactionClaimPending = "transaction.claim.pending";        // cooperative claim
-    public const string TransactionClaimed = "transaction.claimed";                   // terminal — claim confirmed
-    public const string TransactionLockupFailed = "transaction.lockupFailed";         // cooperative refund (or renegotiate via quote endpoint)
-    public const string SwapExpired = "swap.expired";                                 // cooperative refund
-    public const string TransactionFailed = "transaction.failed";                     // cooperative refund
-    public const string TransactionRefunded = "transaction.refunded";                 // terminal — refund confirmed
 }
