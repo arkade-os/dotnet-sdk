@@ -14,6 +14,7 @@ using NArk.Core.Contracts;
 using NArk.Core.Extensions;
 using NArk.Core.Services;
 using NArk.Swaps.Abstractions;
+using NArk.Swaps.Bolt12;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Models.Restore;
 using NArk.Swaps.Models;
@@ -233,60 +234,124 @@ public class SwapsManagementService : IAsyncDisposable
         var swap = await boltz.BoltzService.CreateSubmarineSwap(invoice,
             await addressProvider!.GetNextSigningDescriptor(cancellationToken),
             cancellationToken);
-        await _contractService.ImportContract(walletId, swap.Contract,
+        return await SaveAndFundSubmarineSwap(
+            walletId, swap.Contract, swap.Swap.Id, invoice.ToString(),
+            swap.Swap.ExpectedAmount, swap.Address,
+            invoice.Hash.ToString(),
+            serverInfo.Network.ChainName == ChainName.Mainnet,
+            autoPay, cancellationToken);
+    }
+
+    /// <summary>
+    /// Initiates an Arkade → Lightning submarine swap where the destination is a
+    /// BOLT 12 offer (<c>lno1…</c>) rather than a BOLT 11 invoice.
+    /// </summary>
+    /// <remarks>
+    /// Boltz is asked to fetch a BOLT 12 invoice from the offer first; the resulting
+    /// invoice is then used to create the submarine swap in the same way as the
+    /// standard BOLT 11 path (<see cref="InitiateSubmarineSwap"/>).
+    ///
+    /// The swap is stored with <see cref="ArkSwapType.Submarine"/> and the fetched
+    /// BOLT 12 invoice string in the <c>Invoice</c> field.
+    ///
+    /// When <paramref name="autoPay"/> is <c>true</c> (default) the method funds the
+    /// VHTLC immediately and returns the Arkade batch transaction ID.
+    /// When <c>false</c> it saves the swap and returns the Boltz swap ID so the caller
+    /// can fund it later via <see cref="PayExistingSubmarineSwap"/>.
+    /// </remarks>
+    /// <param name="walletId">Identifier of the Arkade wallet that will pay.</param>
+    /// <param name="bolt12Offer">A BOLT 12 offer string (<c>lno1…</c>).</param>
+    /// <param name="amountSats">Amount to pay in satoshis.</param>
+    /// <param name="autoPay">
+    /// When <c>true</c> the VHTLC is funded immediately; returns the batch tx ID.
+    /// When <c>false</c> returns the Boltz swap ID for deferred payment.
+    /// </param>
+    /// <param name="currency">Lightning currency forwarded to Boltz, defaults to <c>"BTC"</c>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// The Arkade batch transaction ID (when <paramref name="autoPay"/> is <c>true</c>)
+    /// or the Boltz swap ID (when <c>false</c>).
+    /// </returns>
+    public async Task<string> InitiateSubmarineSwapBolt12(
+        string walletId,
+        string bolt12Offer,
+        long amountSats,
+        bool autoPay = true,
+        string currency = "BTC",
+        CancellationToken cancellationToken = default)
+    {
+        using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
+        var boltz = GetBoltzProvider();
+
+        _logger?.LogInformation(
+            "Initiating BOLT 12 submarine swap for wallet {WalletId}, amount={Amount}, autoPay={AutoPay}",
+            walletId, amountSats, autoPay);
+
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
+        var swap = await boltz.BoltzService.CreateSubmarineSwapBolt12(
+            bolt12Offer,
+            amountSats,
+            await addressProvider!.GetNextSigningDescriptor(cancellationToken),
+            currency,
+            cancellationToken);
+
+        var invoiceStr = swap.Invoice
+            ?? throw new InvalidOperationException("BOLT 12 submarine swap did not return an invoice string");
+        var paymentHashHex = swap.PaymentHashHex
+            ?? throw new InvalidOperationException("BOLT 12 submarine swap did not return a payment hash");
+
+        return await SaveAndFundSubmarineSwap(
+            walletId, swap.Contract, swap.Swap.Id, invoiceStr,
+            swap.Swap.ExpectedAmount, swap.Address,
+            paymentHashHex,
+            serverInfo.Network.ChainName == ChainName.Mainnet,
+            autoPay, cancellationToken);
+    }
+
+    private async Task<string> SaveAndFundSubmarineSwap(
+        string walletId,
+        VHTLCContract contract,
+        string swapId,
+        string invoiceStr,
+        long expectedAmount,
+        ArkAddress lockupAddress,
+        string paymentHashHex,
+        bool isMainnet,
+        bool autoPay,
+        CancellationToken cancellationToken)
+    {
+        await _contractService.ImportContract(walletId, contract,
             ContractActivityState.AwaitingFundsBeforeDeactivate,
-            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swap.Swap.Id}" },
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{swapId}" },
             cancellationToken: cancellationToken);
-        await _swapsStorage.SaveSwap(
-            walletId,
+
+        ArkSwap BuildSwap(ArkSwapStatus status, string? failReason = null) =>
             new ArkSwap(
-                swap.Swap.Id,
-                walletId,
-                ArkSwapType.Submarine,
-                invoice.ToString(),
-                swap.Swap.ExpectedAmount,
-                swap.Contract.GetArkAddress().ScriptPubKey.ToHex(),
-                swap.Address.ToString(serverInfo.Network.ChainName == ChainName.Mainnet),
-                ArkSwapStatus.Pending,
-                null,
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow,
-                invoice.Hash.ToString()
-            )
+                swapId, walletId, ArkSwapType.Submarine, invoiceStr, expectedAmount,
+                contract.GetArkAddress().ScriptPubKey.ToHex(),
+                lockupAddress.ToString(isMainnet),
+                status, failReason,
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                paymentHashHex)
             {
                 ProviderId = BoltzSwapProvider.Id,
                 Route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning)
-            }, cancellationToken);
+            };
+
+        await _swapsStorage.SaveSwap(walletId, BuildSwap(ArkSwapStatus.Pending), cancellationToken);
+
         try
         {
             return autoPay
                 ? (await _spendingService.Spend(walletId,
-                    [new ArkTxOut(ArkTxOutType.Vtxo, swap.Swap.ExpectedAmount, swap.Address)], cancellationToken))
-                .ToString()
-                : swap.Swap.Id;
+                    [new ArkTxOut(ArkTxOutType.Vtxo, expectedAmount, lockupAddress)],
+                    cancellationToken)).ToString()
+                : swapId;
         }
         catch (Exception e)
         {
-            await _swapsStorage.SaveSwap(
-                walletId,
-                new ArkSwap(
-                    swap.Swap.Id,
-                    walletId,
-                    ArkSwapType.Submarine,
-                    invoice.ToString(),
-                    swap.Swap.ExpectedAmount,
-                    swap.Contract.GetArkAddress().ScriptPubKey.ToHex(),
-                    swap.Address.ToString(serverInfo.Network.ChainName == ChainName.Mainnet),
-                    ArkSwapStatus.Failed,
-                    e.ToString(),
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow,
-                    invoice.Hash.ToString()
-                )
-                {
-                    ProviderId = BoltzSwapProvider.Id,
-                    Route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning)
-                }, cancellationToken);
+            await _swapsStorage.SaveSwap(walletId, BuildSwap(ArkSwapStatus.Failed, e.ToString()), cancellationToken);
             throw;
         }
     }

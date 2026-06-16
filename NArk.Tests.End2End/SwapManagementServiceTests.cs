@@ -770,4 +770,110 @@ public class SwapManagementServiceTests
         var swapsAfterRestore = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
         Assert.That(swapsAfterRestore, Has.Count.GreaterThanOrEqualTo(1));
     }
+
+    // BOLT 12 submarine swap test.
+    //
+    // Nigiri ships a CLN container so the offer can be generated with:
+    //   docker exec cln lightning-cli --network=regtest offer any "nark bolt12 e2e"
+    //
+    // Pass the returned `bolt12` value via BOLT12_OFFER when running this test:
+    //   BOLT12_OFFER=lno1... dotnet test --filter CanPayBolt12OfferWithArkadeUsingBoltz
+    //
+    // The test is [Explicit] because Boltz must also be configured to use a BOLT12-capable
+    // Lightning backend (CLN or LDK). The default regtest stack connects Boltz only to LND,
+    // which does not support BOLT12.
+    private const string Bolt12OfferEnv = "BOLT12_OFFER";
+    private const long Bolt12TestAmountSats = 2_000;
+
+    [Test]
+    [Explicit("Requires BOLT12_OFFER env var and Boltz configured with a BOLT12-capable Lightning backend (CLN/LDK)")]
+    [Category("Bolt12")]
+    public async Task CanPayBolt12OfferWithArkadeUsingBoltz()
+    {
+        var offer = Environment.GetEnvironmentVariable(Bolt12OfferEnv)
+            ?? await DockerHelper.CreateClnBolt12Offer(amountSats: 0, description: "nark bolt12 e2e");
+
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions
+            {
+                BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(),
+                WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString()
+            }));
+        var intentStorage = TestStorage.CreateIntentStorage();
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var coinService = new CoinService(
+            testingPrerequisite.clientTransport,
+            testingPrerequisite.contracts,
+            [
+                new PaymentContractTransformer(testingPrerequisite.walletProvider),
+                new HashLockedContractTransformer(testingPrerequisite.walletProvider)
+            ]);
+        var spendingService = new SpendingService(
+            testingPrerequisite.vtxoStorage,
+            testingPrerequisite.contracts,
+            testingPrerequisite.walletProvider,
+            coinService,
+            testingPrerequisite.contractService,
+            testingPrerequisite.clientTransport,
+            new DefaultCoinSelector(),
+            testingPrerequisite.safetyService,
+            intentStorage);
+        var boltzProvider = new BoltzSwapProvider(
+            boltzClient,
+            new BoltzLimitsValidator(new CachedBoltzClient(
+                new HttpClient(),
+                new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions
+                {
+                    BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(),
+                    WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString()
+                }))),
+            testingPrerequisite.clientTransport,
+            testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider,
+            swapStorage,
+            testingPrerequisite.contractService,
+            testingPrerequisite.contracts,
+            testingPrerequisite.safetyService,
+            spendingService,
+            intentStorage,
+            chainTimeProvider);
+
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService,
+            testingPrerequisite.clientTransport,
+            testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider,
+            swapStorage,
+            testingPrerequisite.contractService,
+            testingPrerequisite.contracts,
+            testingPrerequisite.safetyService,
+            intentStorage,
+            chainTimeProvider);
+
+        var settledSwapTcs = new TaskCompletionSource();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            if (swap.Status == ArkSwapStatus.Settled)
+                settledSwapTcs.TrySetResult();
+        };
+
+        await swapMgr.StartAsync(CancellationToken.None);
+
+        await swapMgr.InitiateSubmarineSwapBolt12(
+            testingPrerequisite.walletIdentifier,
+            offer,
+            amountSats: Bolt12TestAmountSats,
+            autoPay: true,
+            cancellationToken: CancellationToken.None);
+
+        await settledSwapTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
+
+        var swaps = (await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier])).ToList();
+        Assert.That(swaps, Has.Count.EqualTo(1));
+        Assert.That(swaps[0].Status, Is.EqualTo(ArkSwapStatus.Settled));
+        Assert.That(swaps[0].Invoice, Does.StartWith("lni"));
+    }
 }
