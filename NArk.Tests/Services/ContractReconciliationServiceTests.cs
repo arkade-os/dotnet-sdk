@@ -405,7 +405,7 @@ public class ContractReconciliationServiceTests
 
     private static ArkServerInfo MakeServerInfo(ECXOnlyPubKey currentSigner, ECXOnlyPubKey[] deprecated)
     {
-        var deprecatedDict = new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance);
+        var deprecatedDict = new Dictionary<ECXOnlyPubKey, long>();
         foreach (var key in deprecated)
             deprecatedDict[key] = 0;
 
