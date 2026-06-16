@@ -1,6 +1,9 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
+using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
+using NArk.Core.Services;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Common;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
@@ -143,8 +146,12 @@ public partial class BoltzSwapProvider
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Swap {SwapId}: cooperative refund failed, will retry on next poll", swap.SwapId);
-            throw;
+            _logger?.LogError(ex, "Swap {SwapId}: cooperative refund failed", swap.SwapId);
+            // If UnilateralExitService is registered, start the on-chain exit instead of retrying coop.
+            // TryStartVhtlcUnilateralExitAsync is idempotent — safe to call on every poll.
+            if (!await TryStartVhtlcUnilateralExitAsync(swap, cancellationToken))
+                throw; // no exit service or no VTXO yet — let poll loop retry
+            return; // exit session created, swap marked Refunded
         }
 
         // Synchronization barrier
@@ -507,9 +514,13 @@ public partial class BoltzSwapProvider
             return true;
         }
 
-        // Refund attempt failed. If there is nothing to recover
-        // (no lockup observable on either side) mark Failed so
-        // the poll stops retrying.
+        // Coop failed — fall back to unilateral ARK exit if UnilateralExitService is registered.
+        if (await TryStartVhtlcUnilateralExitAsync(swap, cancellationToken))
+        {
+            return true;
+        }
+
+        // Nothing to recover — mark Failed so the poll stops retrying.
         var vtxosLocked = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: cancellationToken);
         if (vtxosLocked.Count == 0 && swap.Status != ArkSwapStatus.Failed)
         {
@@ -519,8 +530,8 @@ public partial class BoltzSwapProvider
             var failedSwap = swap with
             {
                 Status = ArkSwapStatus.Failed,
-                    FailReason = "Swap expired before any funds were locked",
-                    UpdatedAt = DateTimeOffset.UtcNow
+                FailReason = "Swap expired before any funds were locked",
+                UpdatedAt = DateTimeOffset.UtcNow
             };
             await _swapsStorage.SaveSwap(swap.WalletId, failedSwap, cancellationToken);
             RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
@@ -677,6 +688,67 @@ public partial class BoltzSwapProvider
         {
             _logger?.LogError(ex, "Swap {SwapId}: unilateral BTC refund failed", swap.SwapId);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// When Boltz permanently refuses cooperative refund for an ARK-side VTXO
+    /// (submarine or ARK→BTC chain swap), triggers a unilateral exit: broadcasts
+    /// the virtual tx tree to Bitcoin L1 and creates an <see cref="ExitSession"/>
+    /// that <c>UnilateralExitService.ProgressExitsAsync</c> advances through the
+    /// CSV wait and final claim. Returns <c>false</c> if
+    /// <see cref="_unilateralExitService"/> is not registered, no unspent VTXO
+    /// exists, or claim address derivation fails.
+    /// </summary>
+    private async Task<bool> TryStartVhtlcUnilateralExitAsync(ArkSwap swap, CancellationToken ct)
+    {
+        if (_unilateralExitService is null) return false;
+
+        var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct);
+        var vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
+        if (vtxo is null)
+        {
+            _logger?.LogDebug("Swap {SwapId}: no unspent canonical VTXO — skipping unilateral exit", swap.SwapId);
+            return false;
+        }
+
+        var claimAddress = await DeriveExitClaimAddressAsync(swap.WalletId, ct);
+        if (claimAddress is null) return false;
+
+        _logger?.LogWarning(
+            "Swap {SwapId}: cooperative refund exhausted, starting unilateral ARK exit for VTXO {Outpoint} → {Claim}",
+            swap.SwapId, vtxo.OutPoint, claimAddress);
+        await _unilateralExitService.StartExitAsync(swap.WalletId, [vtxo.OutPoint], claimAddress, ct);
+
+        // Mark the swap Refunded — the exit session in UnilateralExitService now owns recovery.
+        var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
+        await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
+        RaiseSwapStatusChanged(refunded);
+        return true;
+    }
+
+    /// <summary>
+    /// Derives a P2TR Bitcoin address for the unilateral exit claim output.
+    /// Prefers a boarding contract so recovered funds can re-enter Arkade
+    /// without a separate onboarding step. Mirrors the identical helper in
+    /// <c>ExitWatchtowerService</c>.
+    /// </summary>
+    private async Task<BitcoinAddress?> DeriveExitClaimAddressAsync(string walletId, CancellationToken ct)
+    {
+        try
+        {
+            var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
+            var contract = await _contractService.DeriveContract(
+                walletId, NextContractPurpose.Boarding, ContractActivityState.Active, cancellationToken: ct);
+            if (contract is ArkBoardingContract boarding)
+                return boarding.GetOnchainAddress(serverInfo.Network);
+            var spendInfo = contract.GetTaprootSpendInfo();
+            return spendInfo.OutputPubKey.GetAddress(serverInfo.Network);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Failed to derive exit claim address for wallet {WalletId}", walletId);
+            return null;
         }
     }
 }

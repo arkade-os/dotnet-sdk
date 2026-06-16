@@ -488,7 +488,7 @@ public class ChainSwapTests
             testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
             testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
             testingPrerequisite.safetyService, intentStorage, chainTimeProvider,
-            loggerFactory.CreateLogger<BoltzSwapProvider>());
+            logger: loggerFactory.CreateLogger<BoltzSwapProvider>());
         await using var swapMgr = new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
             spendingService, testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
