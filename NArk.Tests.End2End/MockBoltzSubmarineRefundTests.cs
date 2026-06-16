@@ -223,7 +223,7 @@ public class MockBoltzSubmarineRefundTests
     /// endpoint must have been called at least twice (proving the retry
     /// loop is running) and the swap must remain in a non-terminal state.
     ///
-    /// Note: the SDK currently has no joinBatch fallback when Boltz refuses
+    /// TODO: the SDK currently has no joinBatch fallback when Boltz refuses
     /// to co-sign a submarine refund. This test documents the retry-loop
     /// behaviour and will need updating once that fallback is implemented
     /// (tracked in GitHub issue #88 Wave 3).
