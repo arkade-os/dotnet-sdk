@@ -181,7 +181,7 @@ public class DelegationMonitorService(
             outpoint, vtxo.TxOut, signerDescriptor, forfeitScriptBuilder,
             null, null, null, vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
 
-        var forfeitTx = CreateForfeitTransaction(serverInfo.Network, forfeitCoin);
+        var forfeitTx = CreateForfeitTransaction(serverInfo, forfeitCoin);
         var forfeitPrecomputed = forfeitTx.GetGlobalTransaction()
             .PrecomputeTransactionData([forfeitCoin.TxOut]);
 
@@ -194,13 +194,19 @@ public class DelegationMonitorService(
             [forfeitTx.ToBase64()]);
     }
 
-    private static PSBT CreateForfeitTransaction(Network network, ArkCoin coin)
+    // Builds the partial forfeit the delegator co-signs and later submits in a batch: a TRUC (v3) tx
+    // spending the VTXO to the operator's forfeit address (VTXO amount + Dust) plus a P2A anchor, with a
+    // single input. The delegator appends the connector input at batch time — signing the VTXO input
+    // with ANYONECANPAY|ALL (done by the caller) keeps this signature valid when that happens.
+    private static PSBT CreateForfeitTransaction(ArkServerInfo serverInfo, ArkCoin coin)
     {
+        var network = serverInfo.Network;
         var tx = network.CreateTransaction();
-        tx.Version = 2;
-        tx.LockTime = 0;
-        tx.Inputs.Add(new TxIn(coin.Outpoint) { Sequence = 0 });
-        tx.Outputs.Add(new TxOut(Money.Zero, new Script(OpcodeType.OP_RETURN)));
+        tx.Version = 3;
+        tx.LockTime = coin.LockTime ?? LockTime.Zero;
+        tx.Inputs.Add(new TxIn(coin.Outpoint) { Sequence = coin.Sequence ?? Sequence.Final });
+        tx.Outputs.Add(new TxOut(coin.Amount + serverInfo.Dust, serverInfo.ForfeitAddress.ScriptPubKey));
+        tx.Outputs.Add(new TxOut(Money.Zero, Script.FromHex("51024e73")));
 
         var psbt = PSBT.FromTransaction(tx, network);
         psbt.Settings.AutomaticUTXOTrimming = false;
