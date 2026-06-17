@@ -634,9 +634,15 @@ public sealed class MockBoltzServer : IAsyncDisposable
         uint160 hash, TimeoutBlockHeights t) =>
         new(server: serverInfo.SignerKey, sender: sender, receiver: receiver, hash: hash,
             refundLocktime: new LockTime(t.Refund),
-            unilateralClaimDelay: new Sequence(t.UnilateralClaim),
-            unilateralRefundDelay: new Sequence(t.UnilateralRefund),
-            unilateralRefundWithoutReceiverDelay: new Sequence(t.UnilateralRefundWithoutReceiver));
+            unilateralClaimDelay: ParseSequence(t.UnilateralClaim),
+            unilateralRefundDelay: ParseSequence(t.UnilateralRefund),
+            unilateralRefundWithoutReceiverDelay: ParseSequence(t.UnilateralRefundWithoutReceiver));
+
+    // Mirrors BoltzSwapsService.ParseSequence: values >= 512 are treated as seconds
+    // (time-based CSV), values < 512 are block counts. Must stay in sync with the
+    // SDK so MockBoltz derives identical VHTLC scripts and addresses.
+    private static Sequence ParseSequence(long val) =>
+        val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
 
     // ── Utilities ────────────────────────────────────────────────────
 
