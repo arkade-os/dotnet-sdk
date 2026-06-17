@@ -10,6 +10,8 @@
   href: assets.md
 - name: Swaps
   href: swaps.md
+- name: Delegator Server
+  href: delegator-server.md
 - name: Storage
   href: storage.md
 - name: Recovery
