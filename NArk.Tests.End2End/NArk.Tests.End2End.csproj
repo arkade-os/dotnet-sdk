@@ -32,10 +32,15 @@
     </ItemGroup>
 
     <ItemGroup>
+      <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <ItemGroup>
       <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
       <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
+      <ProjectReference Include="..\NArk.Delegator\NArk.Delegator.csproj" />
     </ItemGroup>
 
 </Project>
