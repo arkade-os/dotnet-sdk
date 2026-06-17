@@ -1,13 +1,12 @@
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
-using NArk.Core.Exit;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
-using NArk.Core.VirtualTxs;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
@@ -25,10 +24,10 @@ using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 namespace NArk.Tests.End2End.Swaps;
 
 /// <summary>
-/// Chain swap unilateral exit scenarios exercised with the in-process
+/// Chain swap refund scenarios exercised with the in-process
 /// <see cref="MockBoltzServer"/>: BTC→ARK CLTV script-path refund and
-/// ARK→BTC VHTLC unilateral Arkade exit when Boltz permanently refuses
-/// the cooperative co-sign.
+/// ARK→BTC VHTLC refund-without-receiver Arkade batch path when Boltz
+/// permanently refuses the cooperative co-sign.
 /// </summary>
 [NonParallelizable]
 public class MockBoltzChainUnilateralTests
@@ -42,8 +41,7 @@ public class MockBoltzChainUnilateralTests
         IContractStorage contracts,
         NArk.Core.Transport.IClientTransport clientTransport,
         ISwapStorage swapStorage,
-        NArk.Abstractions.Intents.IIntentStorage intentStorage,
-        UnilateralExitService? unilateralExitService = null)
+        IIntentStorage intentStorage)
     {
         var opts = new BoltzClientOptions
             { BoltzUrl = mock.BaseUrl, WebsocketUrl = mock.WsBaseUrl };
@@ -67,31 +65,13 @@ public class MockBoltzChainUnilateralTests
             new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), optsWrapper)),
             clientTransport, vtxoStorage, walletProvider,
             swapStorage, contractService, contracts,
-            safetyService, intentStorage, blockchain,
-            unilateralExitService);
+            safetyService, intentStorage, blockchain);
 
         return new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
             spendingService, clientTransport, vtxoStorage,
             walletProvider, swapStorage, contractService,
             contracts, safetyService, intentStorage, blockchain);
-    }
-
-    private static UnilateralExitService BuildUnilateralExitService(
-        NArk.Core.Transport.IClientTransport clientTransport,
-        IVtxoStorage vtxoStorage,
-        IContractStorage contracts,
-        IWalletProvider walletProvider)
-    {
-        var virtualTxStorage = new InMemoryVirtualTxStorage();
-        var exitSessionStorage = new InMemoryExitSessionStorage();
-        var blockchain = new NBXplorerBlockchain(
-            Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-        var virtualTxService = new VirtualTxService(clientTransport, virtualTxStorage);
-        return new UnilateralExitService(
-            clientTransport, virtualTxStorage, exitSessionStorage,
-            vtxoStorage, contracts, blockchain,
-            walletProvider, virtualTxService);
     }
 
     private static Task WaitForVtxoAtScript(
@@ -177,20 +157,21 @@ public class MockBoltzChainUnilateralTests
             "SDK must have attempted the cooperative BTC refund at least once");
     }
 
-    // ── Test 2: ARK→BTC unilateral VHTLC exit ────────────────────────
+    // ── Test 2: ARK→BTC refund-without-receiver via Arkade batch ─────
 
     /// <summary>
     /// Boltz refuses every cooperative ARK refund co-sign (<c>RefundMode.Fail</c>)
-    /// after the swap expires. The SDK must fall through from
-    /// <c>CoopRefundArkToBtcChainSwap</c> to the unilateral Arkade exit via
-    /// <see cref="UnilateralExitService"/>, mark the swap
-    /// <see cref="ArkSwapStatus.Refunded"/>, and the exit session must be
-    /// persisted so <c>ProgressExitsAsync</c> can later advance it through the
-    /// CSV wait and on-chain claim.
+    /// after the swap expires. Once the <c>RefundLocktime</c> (block 2, set by
+    /// <see cref="MockBoltzServer"/> for ARK→BTC swaps) elapses, the SDK must
+    /// fall through from <c>CoopRefundArkToBtcChainSwap</c> to
+    /// <c>TryRefundWithoutReceiverAsync</c>, which joins an Arkade batch session
+    /// using the <c>refundWithoutReceiver</c> tapscript path (server + sender,
+    /// absolute CLTV). The swap must reach <see cref="ArkSwapStatus.Refunded"/>
+    /// without touching Bitcoin L1 — the funds stay inside Arkade.
     /// </summary>
     [Test]
     [CancelAfter(180_000)]
-    public async Task ChainArkToBtc_UnilateralVhtlcExit_WhenBoltzRefusesCoop(CancellationToken token)
+    public async Task ChainArkToBtc_RefundWithoutReceiver_WhenBoltzRefusesCoop(CancellationToken token)
     {
         await using var mock = await MockBoltzServer.StartAsync();
         mock.SetRefundMode(RefundMode.Fail);
@@ -200,20 +181,16 @@ public class MockBoltzChainUnilateralTests
 
         var swapStorage = TestStorage.CreateSwapStorage();
         var intentStorage = TestStorage.CreateIntentStorage();
-        var unilateralExit = BuildUnilateralExitService(
-            prereq.clientTransport, prereq.vtxoStorage,
-            prereq.contracts, prereq.walletProvider);
 
         await using var swapMgr = BuildSwapMgr(mock,
             prereq.safetyService, prereq.walletProvider, prereq.vtxoStorage,
             prereq.contractService, prereq.contracts, prereq.clientTransport,
-            swapStorage, intentStorage,
-            unilateralExitService: unilateralExit);
+            swapStorage, intentStorage);
 
         var refundedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         swapStorage.SwapsChanged += (_, swap) =>
         {
-            Console.WriteLine($"[ArkToBtcVhtlc] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            Console.WriteLine($"[ArkToBtcRefund] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
             if (swap.Status == ArkSwapStatus.Refunded) refundedTcs.TrySetResult();
         };
 
@@ -224,24 +201,29 @@ public class MockBoltzChainUnilateralTests
 
         var swapId = await swapMgr.InitiateArkToBtcChainSwap(
             prereq.walletIdentifier, 50_000, btcDest, token);
-        Console.WriteLine($"[ArkToBtcVhtlc] Swap {swapId} created");
+        Console.WriteLine($"[ArkToBtcRefund] Swap {swapId} created");
 
         var arkSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
 
-        Console.WriteLine("[ArkToBtcVhtlc] Waiting for VTXO at swap script...");
+        Console.WriteLine("[ArkToBtcRefund] Waiting for VTXO at swap script...");
         await WaitForVtxoAtScript(prereq.vtxoStorage, arkSwap.ContractScript, arkSwap.ExpectedAmount, token);
-        Console.WriteLine("[ArkToBtcVhtlc] VTXO at swap script confirmed");
+        Console.WriteLine("[ArkToBtcRefund] VTXO at swap script confirmed");
+
+        // Mine past the RefundLocktime (MockBoltzServer sets Refund = 2 for ARK→BTC
+        // so the refundWithoutReceiver path unlocks at block height 2).
+        await DockerHelper.MineRegtestBlocksToHeight(3, token);
+        Console.WriteLine("[ArkToBtcRefund] Mined to height 3 (past RefundLocktime 2)");
 
         // Push swap.expired — triggers TryCoopRefundArkToBtc → coop fails →
-        // TryStartVhtlcUnilateralExitAsync fires since UnilateralExitService is registered.
+        // RefundLocktime elapsed → TryRefundWithoutReceiverAsync joins Arkade batch.
         await mock.PushSwapEvent(swapId, "swap.expired", token);
-        Console.WriteLine("[ArkToBtcVhtlc] Pushed swap.expired");
+        Console.WriteLine("[ArkToBtcRefund] Pushed swap.expired");
 
         await refundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(60), token);
 
         var final = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
         Assert.That(final.Status, Is.EqualTo(ArkSwapStatus.Refunded),
-            "Swap must reach Refunded after unilateral VHTLC exit is triggered");
+            "Swap must reach Refunded via the refundWithoutReceiver Arkade batch path");
         Assert.That(mock.ChainArkRefundRequestsFor(swapId), Is.GreaterThan(0),
             "SDK must have attempted the cooperative ARK refund at least once");
     }

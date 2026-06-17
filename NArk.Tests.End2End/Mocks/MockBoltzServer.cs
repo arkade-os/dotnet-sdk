@@ -438,6 +438,9 @@ public sealed class MockBoltzServer : IAsyncDisposable
         {
             var amount       = req.UserLockAmount > 0 ? req.UserLockAmount : 50_000;
             var serverAmount = amount - 500;
+            // Use a low refund locktime so tests can mine past it and trigger
+            // the refundWithoutReceiver batch path without Boltz co-sign.
+            timeouts.Refund = 2;
             var (btcAddr, btcScript, swapTree, claimEcPub, _) =
                 BuildBtcHtlc(req.ClaimPublicKey  ?? serverPubHex,
                              req.RefundPublicKey ?? serverPubHex,

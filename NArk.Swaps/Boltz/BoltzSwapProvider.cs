@@ -42,7 +42,6 @@ public partial class BoltzSwapProvider : ISwapProvider
     private readonly ISafetyService _safetyService;
     private readonly IBitcoinBlockchain _chainTimeProvider;
     private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
-    private readonly UnilateralExitService? _unilateralExitService;
     private readonly ILogger<BoltzSwapProvider>? _logger;
 
     private readonly CancellationTokenSource _shutdownCts = new();
@@ -131,7 +130,6 @@ public partial class BoltzSwapProvider : ISwapProvider
         ISafetyService safetyService,
         IIntentStorage intentStorage,
         IBitcoinBlockchain chainTimeProvider,
-        UnilateralExitService? unilateralExitService = null,
         ILogger<BoltzSwapProvider>? logger = null)
     {
         _boltzClient = boltzClient;
@@ -143,7 +141,6 @@ public partial class BoltzSwapProvider : ISwapProvider
         _contractStorage = contractStorage;
         _safetyService = safetyService;
         _chainTimeProvider = chainTimeProvider;
-        _unilateralExitService = unilateralExitService;
         _logger = logger;
         _boltzService = new BoltzSwapService(boltzClient, clientTransport);
         _chainSwapMusig = new ChainSwapMusigSession(boltzClient);

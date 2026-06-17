@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core;
 using NArk.Core.Contracts;
 using NArk.Core.Services;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
@@ -147,11 +149,8 @@ public partial class BoltzSwapProvider
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Swap {SwapId}: cooperative refund failed", swap.SwapId);
-            // If UnilateralExitService is registered, start the on-chain exit instead of retrying coop.
-            // TryStartVhtlcUnilateralExitAsync is idempotent — safe to call on every poll.
-            if (!await TryStartVhtlcUnilateralExitAsync(swap, cancellationToken))
-                throw; // no exit service or no VTXO yet — let poll loop retry
-            return; // exit session created, swap marked Refunded
+            if (!await TryRefundWithoutReceiverAsync(swap, contract, vtxo, refundDestination, serverInfo, cancellationToken))
+                throw; // RefundLocktime not yet elapsed — let poll loop retry coop
         }
 
         // Synchronization barrier
@@ -275,9 +274,13 @@ public partial class BoltzSwapProvider
         if (swap.SwapType != ArkSwapType.ChainArkToBtc) return false;
         if (swap.Status == ArkSwapStatus.Refunded) return true;
 
+        ArkServerInfo? serverInfo = null;
+        VHTLCContract? contract = null;
+        ArkVtxo? vtxo = null;
+        IDestination? refundAddress = null;
         try
         {
-            var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
+            serverInfo = await _clientTransport.GetServerInfoAsync(ct);
 
             var matchedSwapContracts =
                 await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript],
@@ -288,8 +291,9 @@ public partial class BoltzSwapProvider
                 _logger?.LogWarning("Swap {SwapId}: VHTLC contract row not found for ARK→BTC refund", swap.SwapId);
                 return false;
             }
-            if (ArkContractParser.Parse(matchedSwapContractEntity.Type, matchedSwapContractEntity.AdditionalData,
-                    serverInfo.Network) is not VHTLCContract contract)
+            contract = ArkContractParser.Parse(matchedSwapContractEntity.Type, matchedSwapContractEntity.AdditionalData,
+                    serverInfo.Network) as VHTLCContract;
+            if (contract is null)
             {
                 _logger?.LogWarning("Swap {SwapId}: failed to parse VHTLC contract for ARK→BTC refund", swap.SwapId);
                 return false;
@@ -314,7 +318,7 @@ public partial class BoltzSwapProvider
             // Same multi-VTXO handling as the submarine refund path: Boltz
             // only signs the canonical lockup VTXO; extras are recovered by
             // SweeperService via the timelock path.
-            var vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
+            vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
             if (vtxo is null)
             {
                 _logger?.LogWarning(
@@ -340,7 +344,6 @@ public partial class BoltzSwapProvider
                 return false;
             }
 
-            IDestination refundAddress;
             (refundAddress, swap) = await swap.GetOrDeriveRefundDestinationAsync(
                 _contractService, _swapsStorage, serverInfo.Network, ct);
 
@@ -386,6 +389,8 @@ public partial class BoltzSwapProvider
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger?.LogError(ex, "Swap {SwapId}: ARK→BTC cooperative refund failed", swap.SwapId);
+            if (contract is not null && vtxo is not null && refundAddress is not null && serverInfo is not null)
+                return await TryRefundWithoutReceiverAsync(swap, contract, vtxo, refundAddress, serverInfo, ct);
             return false;
         }
     }
@@ -510,12 +515,6 @@ public partial class BoltzSwapProvider
             swap.SwapId, swap.SwapType);
         
         if (await CoopRefundArkToBtcChainSwap(swap, cancellationToken))
-        {
-            return true;
-        }
-
-        // Coop failed — fall back to unilateral ARK exit if UnilateralExitService is registered.
-        if (await TryStartVhtlcUnilateralExitAsync(swap, cancellationToken))
         {
             return true;
         }
@@ -692,63 +691,63 @@ public partial class BoltzSwapProvider
     }
 
     /// <summary>
-    /// When Boltz permanently refuses cooperative refund for an ARK-side VTXO
-    /// (submarine or ARK→BTC chain swap), triggers a unilateral exit: broadcasts
-    /// the virtual tx tree to Bitcoin L1 and creates an <see cref="ExitSession"/>
-    /// that <c>UnilateralExitService.ProgressExitsAsync</c> advances through the
-    /// CSV wait and final claim. Returns <c>false</c> if
-    /// <see cref="_unilateralExitService"/> is not registered, no unspent VTXO
-    /// exists, or claim address derivation fails.
+    /// Fallback for submarine swaps when Boltz permanently refuses the cooperative
+    /// co-sign: spends the VHTLC via the <c>refundWithoutReceiver</c> collaborative
+    /// path (server + sender, no Boltz) once <see cref="VHTLCContract.RefundLocktime"/>
+    /// has elapsed. Submits the Arkade transaction directly — funds return to the
+    /// user's wallet inside Arkade without an on-chain exit. Mirrors fulmine's
+    /// <c>SettleVhtlcWithRefundPath</c>.
     /// </summary>
-    private async Task<bool> TryStartVhtlcUnilateralExitAsync(ArkSwap swap, CancellationToken ct)
+    private async Task<bool> TryRefundWithoutReceiverAsync(
+        ArkSwap swap,
+        VHTLCContract contract,
+        ArkVtxo vtxo,
+        IDestination refundDestination,
+        ArkServerInfo serverInfo,
+        CancellationToken ct)
     {
-        if (_unilateralExitService is null) return false;
+        var timeHeight = await _chainTimeProvider.GetChainTime(ct);
 
-        var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct);
-        var vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
-        if (vtxo is null)
+        var elapsed = contract.RefundLocktime.IsTimeLock
+            ? contract.RefundLocktime.Date <= timeHeight.Timestamp
+            : (uint)timeHeight.Height >= contract.RefundLocktime.Value;
+
+        if (!elapsed)
         {
-            _logger?.LogDebug("Swap {SwapId}: no unspent canonical VTXO — skipping unilateral exit", swap.SwapId);
+            _logger?.LogDebug(
+                "Swap {SwapId}: RefundLocktime {Locktime} not yet elapsed — retrying coop on next poll",
+                swap.SwapId, contract.RefundLocktime.Value);
             return false;
         }
 
-        var claimAddress = await DeriveExitClaimAddressAsync(swap.WalletId, ct);
-        if (claimAddress is null) return false;
-
-        _logger?.LogWarning(
-            "Swap {SwapId}: cooperative refund exhausted, starting unilateral ARK exit for VTXO {Outpoint} → {Claim}",
-            swap.SwapId, vtxo.OutPoint, claimAddress);
-        await _unilateralExitService.StartExitAsync(swap.WalletId, [vtxo.OutPoint], claimAddress, ct);
-
-        // Mark the swap Refunded — the exit session in UnilateralExitService now owns recovery.
-        var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
-        await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
-        RaiseSwapStatusChanged(refunded);
-        return true;
-    }
-
-    /// <summary>
-    /// Derives a P2TR Bitcoin address for the unilateral exit claim output.
-    /// Prefers a boarding contract so recovered funds can re-enter Arkade
-    /// without a separate onboarding step. Mirrors the identical helper in
-    /// <c>ExitWatchtowerService</c>.
-    /// </summary>
-    private async Task<BitcoinAddress?> DeriveExitClaimAddressAsync(string walletId, CancellationToken ct)
-    {
         try
         {
-            var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
-            var contract = await _contractService.DeriveContract(
-                walletId, NextContractPurpose.Boarding, ContractActivityState.Active, cancellationToken: ct);
-            if (contract is ArkBoardingContract boarding)
-                return boarding.GetOnchainAddress(serverInfo.Network);
-            var spendInfo = contract.GetTaprootSpendInfo();
-            return spendInfo.OutputPubKey.GetAddress(serverInfo.Network);
+            _logger?.LogInformation(
+                "Swap {SwapId}: RefundLocktime elapsed, submitting refund-without-receiver Arkade tx",
+                swap.SwapId);
+
+            var arkCoin = new ArkCoin(swap.WalletId, contract, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight,
+                vtxo.OutPoint, vtxo.TxOut, contract.Sender,
+                contract.CreateRefundWithoutReceiverScript(), null, contract.RefundLocktime, null,
+                vtxo.Swept, vtxo.Unrolled);
+            var (arkTx, checkpoints) = await _transactionBuilder.ConstructArkTransaction(
+                [arkCoin],
+                [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDestination)],
+                serverInfo, ct);
+            var checkpoint = checkpoints.Single();
+            await _transactionBuilder.SubmitArkTransaction([arkCoin], arkTx, [checkpoint], ct);
+
+            var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
+            await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
+            RaiseSwapStatusChanged(refunded);
+            _logger?.LogInformation("Swap {SwapId}: refund-without-receiver completed", swap.SwapId);
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger?.LogWarning(ex, "Failed to derive exit claim address for wallet {WalletId}", walletId);
-            return null;
+            _logger?.LogError(ex, "Swap {SwapId}: refund-without-receiver failed", swap.SwapId);
+            return false;
         }
     }
+
 }
