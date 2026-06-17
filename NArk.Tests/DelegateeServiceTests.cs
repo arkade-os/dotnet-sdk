@@ -1,8 +1,12 @@
 using Microsoft.Extensions.Options;
+using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Intents;
+using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
+using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
@@ -31,7 +35,13 @@ public class DelegateeServiceTests
         walletProvider.GetSignerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IArkadeWalletSigner?>(signer));
 
-        return new DelegateeService(walletProvider, new OptionsWrapper<DelegatorOptions>(options));
+        return new DelegateeService(
+            walletProvider,
+            Substitute.For<IClientTransport>(),
+            Substitute.For<IIntentStorage>(),
+            Substitute.For<IContractStorage>(),
+            Substitute.For<IVtxoStorage>(),
+            new OptionsWrapper<DelegatorOptions>(options));
     }
 
     [Test]

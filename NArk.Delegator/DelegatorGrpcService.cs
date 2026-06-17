@@ -24,6 +24,18 @@ public class DelegatorGrpcService(DelegateeService delegatee) : DelegatorService
     }
 
     /// <inheritdoc />
-    public override Task<DelegateResponse> Delegate(DelegateRequest request, ServerCallContext context)
-        => throw new RpcException(new Status(StatusCode.Unimplemented, "Delegate intake lands in Task 7"));
+    public override async Task<DelegateResponse> Delegate(DelegateRequest request, ServerCallContext context)
+    {
+        try
+        {
+            await delegatee.AcceptAsync(
+                request.Intent.Message, request.Intent.Proof,
+                request.ForfeitTxs.ToArray(), request.RejectReplace, context.CancellationToken);
+            return new DelegateResponse();
+        }
+        catch (DelegationRejectedException ex)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));
+        }
+    }
 }

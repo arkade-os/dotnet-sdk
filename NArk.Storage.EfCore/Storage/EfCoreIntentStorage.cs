@@ -46,6 +46,7 @@ public class EfCoreIntentStorage : IIntentStorage
             existing.CommitmentTransactionId = intent.CommitmentTransactionId;
             existing.CancellationReason = intent.CancellationReason;
             existing.SignerDescriptor = intent.SignerDescriptor;
+            existing.PartialForfeits = intent.PartialForfeits;
         }
         else
         {
@@ -67,6 +68,7 @@ public class EfCoreIntentStorage : IIntentStorage
                 CommitmentTransactionId = intent.CommitmentTransactionId,
                 CancellationReason = intent.CancellationReason,
                 SignerDescriptor = intent.SignerDescriptor,
+                PartialForfeits = intent.PartialForfeits,
                 IntentVtxos = intent.IntentVtxos.Select(op => new ArkIntentVtxoEntity
                 {
                     VtxoTransactionId = op.Hash.ToString(),
@@ -201,6 +203,9 @@ public class EfCoreIntentStorage : IIntentStorage
                 new OutPoint(new uint256(iv.VtxoTransactionId), (uint)iv.VtxoTransactionOutputIndex)
             ).ToArray() ?? [],
             SignerDescriptor: entity.SignerDescriptor ?? ""
-        );
+        )
+        {
+            PartialForfeits = entity.PartialForfeits ?? []
+        };
     }
 }

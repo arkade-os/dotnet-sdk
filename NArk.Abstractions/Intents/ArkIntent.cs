@@ -22,6 +22,13 @@ public record ArkIntent(
     string SignerDescriptor
 )
 {
+    /// <summary>
+    /// Partially-signed forfeit transactions (base64), one per input VTXO. Populated for delegated
+    /// intents (the client's pre-signed forfeit co-signed by the delegator); empty for owner-generated
+    /// intents, whose forfeits are constructed at batch time.
+    /// </summary>
+    public string[] PartialForfeits { get; init; } = [];
+
     private sealed class IntentTxIdEqualityComparer : IEqualityComparer<ArkIntent>
     {
         public bool Equals(ArkIntent? x, ArkIntent? y)
