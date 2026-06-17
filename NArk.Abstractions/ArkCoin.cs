@@ -43,7 +43,7 @@ public class ArkCoin : Coin
         Unrolled = unrolled;
         Assets = assets;
 
-        if (sequence is null && spendingScriptBuilder.BuildScript().Contains(OpcodeType.OP_CHECKSEQUENCEVERIFY))
+        if (sequence is null && spendingScriptBuilder.BuildScript().Any(op => op.Code == OpcodeType.OP_CHECKSEQUENCEVERIFY))
         {
             throw new InvalidOperationException("Sequence is required");
         }
