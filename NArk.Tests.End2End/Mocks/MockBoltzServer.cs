@@ -377,7 +377,11 @@ public sealed class MockBoltzServer : IAsyncDisposable
         var req = await httpReq.ReadFromJsonAsync<SubmarineRequest>(JsonOpts);
         if (req is null) return Results.BadRequest();
         var swapId  = NewSwapId();
-        var boltzKey = new Key();
+        // Use the persistent server key as the Boltz claim key so that
+        // SignTaprootPsbt (which signs with _serverKey) produces a valid
+        // co-sign when the SDK calls the refund endpoint. This mirrors
+        // fulmine's mock which uses s.privateKey for every swap role.
+        var boltzKey = _serverKey;
         var timeouts = DefaultTimeouts();
         string address;
         if (ServerInfo is not null) { try { address = ComputeSubmarineVhtlcAddress(req, boltzKey, ServerInfo, timeouts); } catch { address = FallbackArkAddress(); } }
