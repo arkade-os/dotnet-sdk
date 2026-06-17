@@ -136,13 +136,16 @@ public class DelegationMonitorService(
             _ => throw new InvalidOperationException($"Unsupported contract type for delegation: {contract.Type}")
         };
 
-        var signerPubKey = await signer.GetPubKey(signerDescriptor);
+        // The DELEGATOR cosigns the refreshed VTXO tree on the owner's behalf (the owner is offline by
+        // the time of the batch), so the delegator's key — not the owner's — must be the declared
+        // cosigner. Otherwise the batch tree signing would require the absent owner.
+        var delegatePubkey = await GetDelegatePubkeyAsync();
 
         // Build the intent message
         var intentMessage = JsonSerializer.Serialize(new
         {
             type = "register",
-            cosignersPublicKeys = new[] { Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant() },
+            cosignersPublicKeys = new[] { Convert.ToHexString(delegatePubkey.ToBytes()).ToLowerInvariant() },
             validAt = 0,
             expireAt = 0
         });
