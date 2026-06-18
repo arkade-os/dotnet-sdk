@@ -259,7 +259,6 @@ public static class TransactionHelpers
             if (coin.Contract.Server is null)
                 throw new ArgumentException("Server key is required for checkpoint contract creation");
 
-
             var scriptBuilders = new List<ScriptBuilder>
             {
                 coin.SpendingScriptBuilder,
@@ -379,16 +378,26 @@ public static class TransactionHelpers
             txBuilder.ShuffleOutputs = false;
             txBuilder.SetLockTime(coin.LockTime ?? LockTime.Zero);
 
-            // Add VTXO input
+            // Sequences must match arkd's tree.BuildForfeitTx exactly, or the txid
+            // diverges and the forfeit is rejected (INVALID_FORFEIT_TXS). arkd uses
+            // 0xFFFFFFFE on the VTXO input when the forfeit closure has a CLTV
+            // (non-final, so nLockTime applies) and 0xFFFFFFFF otherwise.
+            var hasLocktime = coin.LockTime is not null && coin.LockTime != LockTime.Zero;
+            var vtxoSequence = coin.Sequence
+                ?? (hasLocktime ? new Sequence(0xFFFFFFFE) : new Sequence(0xFFFFFFFF));
             txBuilder.AddCoin(coin, new CoinOptions()
             {
-                Sequence = coin.Sequence
+                Sequence = vtxoSequence
             });
 
-            // Add connector input if provided
+            // Connector is always final (0xFFFFFFFF), set explicitly so NBitcoin
+            // doesn't lower it to 0xFFFFFFFE when a non-zero nLockTime is present.
             if (connector is not null)
             {
-                txBuilder.AddCoin(connector);
+                txBuilder.AddCoin(connector, new CoinOptions()
+                {
+                    Sequence = new Sequence(0xFFFFFFFF)
+                });
             }
 
             // Calculate total input amount based on connector + input OR assumed connector amount (dust)
