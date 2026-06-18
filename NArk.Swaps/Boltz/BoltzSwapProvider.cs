@@ -42,7 +42,13 @@ public partial class BoltzSwapProvider : ISwapProvider
     private readonly ISafetyService _safetyService;
     private readonly IBitcoinBlockchain _chainTimeProvider;
     private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
+    private readonly IIntentStorage _intentStorage;
+    private readonly IIntentGenerationService? _intentGenerationService;
     private readonly ILogger<BoltzSwapProvider>? _logger;
+
+    /// <summary>Maps refund intent txId → swapId so <see cref="OnRefundIntentChanged"/> can
+    /// trigger a poll when the batch session for a refund-without-receiver intent completes.</summary>
+    private readonly ConcurrentDictionary<string, string> _intentToSwapId = new();
 
     private readonly CancellationTokenSource _shutdownCts = new();
     /// <summary>
@@ -130,6 +136,7 @@ public partial class BoltzSwapProvider : ISwapProvider
         ISafetyService safetyService,
         IIntentStorage intentStorage,
         IBitcoinBlockchain chainTimeProvider,
+        IIntentGenerationService? intentGenerationService = null,
         ILogger<BoltzSwapProvider>? logger = null)
     {
         _boltzClient = boltzClient;
@@ -141,6 +148,8 @@ public partial class BoltzSwapProvider : ISwapProvider
         _contractStorage = contractStorage;
         _safetyService = safetyService;
         _chainTimeProvider = chainTimeProvider;
+        _intentStorage = intentStorage;
+        _intentGenerationService = intentGenerationService;
         _logger = logger;
         _boltzService = new BoltzSwapService(boltzClient, clientTransport);
         _chainSwapMusig = new ChainSwapMusigSession(boltzClient);
@@ -404,7 +413,7 @@ public partial class BoltzSwapProvider : ISwapProvider
                 // TrySignBoltzBtcClaim, RequestRefundCooperatively. The using
                 // block targets the foreach iteration body; its finally disposes
                 // the scope before continue/break exits this iteration.
-                using var _walletScope = _logger?.BeginScope(("WalletId", swap.WalletId));
+                using var walletScope = _logger?.BeginScope(("WalletId", swap.WalletId));
 
                 _scriptToSwapId[swap.ContractScript] = swap.SwapId;
 

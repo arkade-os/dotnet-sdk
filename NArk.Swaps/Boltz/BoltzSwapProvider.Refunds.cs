@@ -1,11 +1,10 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
-using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Intents;
 using NArk.Abstractions.VTXOs;
-using NArk.Abstractions.Wallets;
 using NArk.Core;
 using NArk.Core.Contracts;
-using NArk.Core.Services;
+using NArk.Core.Fees;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Common;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
@@ -513,7 +512,14 @@ public partial class BoltzSwapProvider
         _logger?.LogInformation(
             "Swap {SwapId}: chain swap expired ({SwapType}), attempting cooperative refund",
             swap.SwapId, swap.SwapType);
-        
+
+        // A refund-without-receiver batch may already be in flight (or settled) from a
+        // previous poll. Resolve that first: once the batch settles the lockup VTXO is
+        // spent, and without this check the coop attempt below would see "no lockup" and
+        // the Failed-marking branch would clobber a swap that was actually Refunded.
+        var refundIntentStatus = await CheckRefundWithoutReceiverIntentAsync(swap, cancellationToken);
+        if (refundIntentStatus is not null) return refundIntentStatus.Value;
+
         if (await CoopRefundArkToBtcChainSwap(swap, cancellationToken))
         {
             return true;
@@ -691,13 +697,71 @@ public partial class BoltzSwapProvider
     }
 
     /// <summary>
-    /// Fallback for submarine swaps when Boltz permanently refuses the cooperative
-    /// co-sign: spends the VHTLC via the <c>refundWithoutReceiver</c> collaborative
-    /// path (server + sender, no Boltz) once <see cref="VHTLCContract.RefundLocktime"/>
-    /// has elapsed. Submits the Arkade transaction directly — funds return to the
-    /// user's wallet inside Arkade without an on-chain exit. Mirrors fulmine's
-    /// <c>SettleVhtlcWithRefundPath</c>.
+    /// Fallback for chain ARK→BTC swaps when Boltz permanently refuses the cooperative
+    /// co-sign: submits the VHTLC spend via the <c>refundWithoutReceiver</c> tapscript
+    /// (server + sender, absolute CLTV) as an Arkade batch intent once
+    /// <see cref="VHTLCContract.RefundLocktime"/> has elapsed. Funds return to the
+    /// user's wallet inside Arkade without an on-chain exit. The batch path is required
+    /// because the <c>refundWithoutReceiver</c> closure uses a block-height CLTV that
+    /// arkd's <c>SubmitTx</c> (checkpoint) endpoint rejects (<c>blockTypeAllowed=false</c>);
+    /// the batch/<c>JoinRound</c> path sets <c>blockTypeAllowed=true</c> and enforces the
+    /// locktime via the forfeit tx's <c>nLockTime</c> instead.
     /// </summary>
+    /// <summary>
+    /// Inspects the in-flight refund-without-receiver batch intent (if any) recorded in
+    /// <see cref="SwapMetadata.RefundIntentTxId"/> and reports what the caller should do:
+    /// <list type="bullet">
+    /// <item><c>true</c> — the batch settled; the swap has been transitioned to
+    /// <see cref="ArkSwapStatus.Refunded"/> here.</item>
+    /// <item><c>false</c> — an intent is still in flight; the caller should wait and must
+    /// not re-attempt the cooperative refund or mark the swap failed.</item>
+    /// <item><c>null</c> — no intent is recorded, or the last one reached a terminal failure;
+    /// the caller should (re-)submit / fall through.</item>
+    /// </list>
+    /// Centralising this lets both <see cref="TryCoopRefundArkToBtc"/> (before the coop
+    /// attempt) and <see cref="TryRefundWithoutReceiverAsync"/> (before submitting) reason
+    /// about the batch. The first matters because once the refund batch settles the lockup
+    /// VTXO is spent, so a subsequent poll would otherwise see "no lockup" and wrongly mark
+    /// the swap <see cref="ArkSwapStatus.Failed"/>.
+    /// </summary>
+    private async Task<bool?> CheckRefundWithoutReceiverIntentAsync(ArkSwap swap, CancellationToken ct)
+    {
+        var existingIntentTxId = swap.Get(SwapMetadata.RefundIntentTxId);
+        if (existingIntentTxId is null) return null;
+
+        var intents = await _intentStorage.GetIntents(intentTxIds: [existingIntentTxId], cancellationToken: ct);
+        var intent = intents.FirstOrDefault();
+        if (intent is null) return null;
+
+        // Re-arm the event trigger in case we restarted after saving the metadata.
+        _intentToSwapId.TryAdd(existingIntentTxId, swap.SwapId);
+
+        if (intent.State == ArkIntentState.BatchSucceeded)
+        {
+            var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
+            await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
+            RaiseSwapStatusChanged(refunded);
+            _intentToSwapId.TryRemove(existingIntentTxId, out _);
+            _logger?.LogInformation("Swap {SwapId}: refund-without-receiver batch succeeded", swap.SwapId);
+            return true;
+        }
+
+        if (intent.State is ArkIntentState.WaitingToSubmit or ArkIntentState.WaitingForBatch or ArkIntentState.BatchInProgress)
+        {
+            _logger?.LogDebug(
+                "Swap {SwapId}: refund intent {IntentTxId} still in state {State} — waiting for batch",
+                swap.SwapId, existingIntentTxId, intent.State);
+            return false;
+        }
+
+        // Terminal failure (BatchFailed / Cancelled) — remove and signal re-submit.
+        _logger?.LogWarning(
+            "Swap {SwapId}: refund intent {IntentTxId} reached terminal failure state {State} — re-submitting",
+            swap.SwapId, existingIntentTxId, intent.State);
+        _intentToSwapId.TryRemove(existingIntentTxId, out _);
+        return null;
+    }
+
     private async Task<bool> TryRefundWithoutReceiverAsync(
         ArkSwap swap,
         VHTLCContract contract,
@@ -720,28 +784,49 @@ public partial class BoltzSwapProvider
             return false;
         }
 
+        // If we already submitted a refund intent, check its state before creating another.
+        var intentStatus = await CheckRefundWithoutReceiverIntentAsync(swap, ct);
+        if (intentStatus is not null) return intentStatus.Value;
+
+        if (_intentGenerationService is null)
+        {
+            _logger?.LogError(
+                "Swap {SwapId}: cannot generate refund intent — no IIntentGenerationService registered",
+                swap.SwapId);
+            return false;
+        }
+
         try
         {
             _logger?.LogInformation(
-                "Swap {SwapId}: RefundLocktime elapsed, submitting refund-without-receiver Arkade tx",
+                "Swap {SwapId}: RefundLocktime elapsed, submitting refund-without-receiver batch intent",
                 swap.SwapId);
 
             var arkCoin = new ArkCoin(swap.WalletId, contract, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight,
                 vtxo.OutPoint, vtxo.TxOut, contract.Sender,
                 contract.CreateRefundWithoutReceiverScript(), null, contract.RefundLocktime, null,
                 vtxo.Swept, vtxo.Unrolled);
-            var (arkTx, checkpoints) = await _transactionBuilder.ConstructArkTransaction(
-                [arkCoin],
-                [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDestination)],
-                serverInfo, ct);
-            var checkpoint = checkpoints.Single();
-            await _transactionBuilder.SubmitArkTransaction([arkCoin], arkTx, [checkpoint], ct);
 
-            var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
-            await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
-            RaiseSwapStatusChanged(refunded);
-            _logger?.LogInformation("Swap {SwapId}: refund-without-receiver completed", swap.SwapId);
-            return true;
+            // Estimate fee against the full input amount, then deduct to get the net output.
+            var feeEstimator = new DefaultFeeEstimator(_clientTransport, _chainTimeProvider);
+            var fee = await feeEstimator.EstimateFeeAsync(
+                [arkCoin], [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDestination)], ct);
+            var netOutput = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(arkCoin.Amount.Satoshi - fee), refundDestination);
+
+            var spec = new ArkIntentSpec([arkCoin], [netOutput], DateTimeOffset.UtcNow, null);
+            var intentTxId = await _intentGenerationService.GenerateManualIntent(swap.WalletId, spec, ct);
+            _intentToSwapId[intentTxId] = swap.SwapId;
+
+            var updatedSwap = swap with
+            {
+                Metadata = new Dictionary<string, string>(swap.Metadata ?? []) { [SwapMetadata.RefundIntentTxId] = intentTxId },
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            await _swapsStorage.SaveSwap(swap.WalletId, updatedSwap, ct);
+            _logger?.LogInformation(
+                "Swap {SwapId}: refund intent {IntentTxId} submitted — waiting for Arkade batch settlement",
+                swap.SwapId, intentTxId);
+            return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

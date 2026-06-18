@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Intents;
 
 namespace NArk.Swaps.Boltz;
 
@@ -35,6 +36,24 @@ public partial class BoltzSwapProvider
         _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
         _cacheTask = DoUpdateStorage(multiToken.Token);
         _websocketTask = RunWebsocketLoop(multiToken.Token);
+
+        // Watch for batch-session completions on refund-without-receiver intents so we can
+        // trigger a poll immediately rather than waiting up to 1 minute for RoutinePoll.
+        _intentStorage.IntentChanged += OnRefundIntentChanged;
+    }
+
+    private void OnRefundIntentChanged(object? sender, ArkIntent intent)
+    {
+        if (!_intentToSwapId.TryGetValue(intent.IntentTxId, out var swapId))
+            return;
+
+        if (intent.State is ArkIntentState.BatchSucceeded or ArkIntentState.BatchFailed or ArkIntentState.Cancelled)
+        {
+            _logger?.LogInformation(
+                "Refund intent {IntentTxId} for swap {SwapId} reached terminal state {State} — triggering poll",
+                intent.IntentTxId, swapId, intent.State);
+            _triggerChannel.Writer.TryWrite($"id:{swapId}");
+        }
     }
 
     public Task StopAsync(CancellationToken ct)
@@ -55,6 +74,7 @@ public partial class BoltzSwapProvider
     {
         if (Interlocked.Exchange(ref _shutdownStarted, 1) == 1) return;
 
+        _intentStorage.IntentChanged -= OnRefundIntentChanged;
         _logger?.LogInformation("Shutting down Boltz swap provider");
         try { await _shutdownCts.CancelAsync(); } catch { /* already cancelled */ }
 

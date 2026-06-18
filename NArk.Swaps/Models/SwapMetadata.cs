@@ -19,6 +19,13 @@ public static class SwapMetadata
     /// </summary>
     public const string RefundDestination = "refundDestination";
 
+    /// <summary>
+    /// Intent transaction ID of the in-flight refund-without-receiver batch intent.
+    /// Set by <c>TryRefundWithoutReceiverAsync</c> after submitting the intent so
+    /// subsequent poll ticks can query the intent state instead of re-generating it.
+    /// </summary>
+    public const string RefundIntentTxId = "refundIntentTxId";
+
     // ── Persistence shim for the ProviderId / Route fields on ArkSwap.
     // These properties don't have dedicated columns on ArkSwapEntity (yet —
     // see issue #79 review), so EfCoreSwapStorage round-trips them through
