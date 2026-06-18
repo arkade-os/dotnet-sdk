@@ -17,16 +17,6 @@ namespace NArk.Swaps.Boltz;
 
 public partial class BoltzSwapProvider
 {
-    // REFUNDS 
-    // Submarine swaps:
-    //For the swap states invoice.failedToPay, swap.expired where bitcoin were sent,
-    //and transaction.lockupFailed, the user needs to submit a refund transaction to reclaim the locked chain bitcoin.
-    //For more information about how Boltz API clients can construct and submit refund transactions for users,
-    //check the Claim & Refund Transactions section.
-    // 
-    // The state transaction.lockupFailed is not final and changes to swap.expired after the swap expired;
-    // the failure reason will be kept and informs e.g. if the user sending too little or too much was the reason for the swap to fail. T
-    // he states invoice.failedToPay and swap.expired are final. Boltz is not monitoring user's refund transactions.
    internal async Task RequestSubmarineCoopRefund(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken = default)
    {
         if (swap.SwapType != ArkSwapType.Submarine)
@@ -38,7 +28,17 @@ public partial class BoltzSwapProvider
         {
             return;
         }
-        
+
+        // A refund-without-receiver batch may already be in flight (or settled) from a
+        // previous poll (e.g. Boltz refused the co-sign and we fell back to the batch
+        // exit). Resolve that first: once the batch settles the lockup VTXO is spent, so
+        // the canonical-VTXO lookup below would otherwise never find it and the swap
+        // would never reach Refunded.
+        if (await CheckRefundWithoutReceiverIntentAsync(swap, cancellationToken) is not null)
+        {
+            return;
+        }
+
         _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable, initiating cooperative refund",
             swap.SwapId, swapStatus.Status);
 

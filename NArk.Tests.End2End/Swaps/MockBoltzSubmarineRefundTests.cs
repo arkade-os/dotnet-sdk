@@ -1,10 +1,14 @@
 using BTCPayServer.Lightning;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
+using NArk.Core.Fees;
+using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
 using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
@@ -45,7 +49,8 @@ public class MockBoltzSubmarineRefundTests
         IContractStorage contracts,
         NArk.Core.Transport.IClientTransport clientTransport,
         ISwapStorage swapStorage,
-        NArk.Abstractions.Intents.IIntentStorage intentStorage)
+        IIntentStorage intentStorage,
+        IIntentGenerationService? intentGenerationService = null)
     {
         var opts = new BoltzClientOptions
             { BoltzUrl = mock.BaseUrl, WebsocketUrl = mock.WsBaseUrl };
@@ -64,12 +69,15 @@ public class MockBoltzSubmarineRefundTests
             vtxoStorage, contracts, walletProvider,
             coinService, contractService, clientTransport,
             new DefaultCoinSelector(), safetyService, intentStorage);
+        var loggerFactory = LoggerFactory.Create(b => b.AddSimpleConsole(o => o.SingleLine = true).SetMinimumLevel(LogLevel.Debug));
         var boltzProvider = new BoltzSwapProvider(
             boltzClient,
             new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), optsWrapper)),
             clientTransport, vtxoStorage, walletProvider,
             swapStorage, contractService, contracts,
-            safetyService, intentStorage, chainTimeProvider);
+            safetyService, intentStorage, chainTimeProvider,
+            intentGenerationService,
+            loggerFactory.CreateLogger<BoltzSwapProvider>());
 
         return new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
@@ -218,19 +226,15 @@ public class MockBoltzSubmarineRefundTests
 
     /// <summary>
     /// Boltz refuses every cooperative-refund co-sign request
-    /// (<c>RefundMode.Fail</c>). The SDK must retry repeatedly and never
-    /// silently drop the swap — after waiting long enough the refund
-    /// endpoint must have been called at least twice (proving the retry
-    /// loop is running) and the swap must remain in a non-terminal state.
-    ///
-    /// TODO: the SDK currently has no joinBatch fallback when Boltz refuses
-    /// to co-sign a submarine refund. This test documents the retry-loop
-    /// behaviour and will need updating once that fallback is implemented
-    /// (tracked in GitHub issue #88 Wave 3).
+    /// (<c>RefundMode.Fail</c>). After at least one refused attempt the SDK must
+    /// fall back to the <c>refundWithoutReceiver</c> Arkade batch exit — the VHTLC
+    /// is spent via the sender + Arkade-server tapscript (absolute CLTV, already
+    /// elapsed) as a batch intent, returning the funds to the user's wallet inside
+    /// Arkade without Boltz. The swap must reach <see cref="ArkSwapStatus.Refunded"/>.
     /// </summary>
     [Test]
-    [CancelAfter(60_000)]
-    public async Task SubmarineRefund_BoltzRefusesCosign_RetryLoop(CancellationToken token)
+    [CancelAfter(180_000)]
+    public async Task SubmarineRefund_BoltzRefusesCosign_FallsBackToJoinBatch(CancellationToken token)
     {
         await using var mock = await MockBoltzServer.StartAsync();
         mock.SetRefundMode(RefundMode.Fail);
@@ -240,10 +244,56 @@ public class MockBoltzSubmarineRefundTests
 
         var swapStorage = TestStorage.CreateSwapStorage();
         var intentStorage = TestStorage.CreateIntentStorage();
+
+        // Full batch stack so the refundWithoutReceiver spend can settle as a manual
+        // batch intent (the checkpoint/SubmitTx path can't be used here — the closure's
+        // sender+server multisig needs the Arkade server's forfeit co-sign via JoinRound).
+        var blockchain = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
+        [
+            new PaymentContractTransformer(prereq.walletProvider),
+            new HashLockedContractTransformer(prereq.walletProvider),
+            new VHTLCContractTransformer(prereq.walletProvider, blockchain)
+        ]);
+
+        var scheduler = new SimpleIntentScheduler(
+            new DefaultFeeEstimator(prereq.clientTransport, blockchain),
+            prereq.clientTransport, prereq.contractService, blockchain,
+            new OptionsWrapper<SimpleIntentSchedulerOptions>(
+                new SimpleIntentSchedulerOptions { Threshold = TimeSpan.FromHours(24), ThresholdHeight = 100_000 }));
+
+        // NOTE: we deliberately do NOT call intentGeneration.StartAsync(). Its first
+        // poll cycle would auto-register the wallet's VTXOs for a batch, racing the
+        // submarine funding spend below (VTXO_ALREADY_REGISTERED). The refund uses
+        // GenerateManualIntent (a direct call), which doesn't need the poll loop.
+        await using var intentGeneration = new IntentGenerationService(
+            prereq.clientTransport,
+            new DefaultFeeEstimator(prereq.clientTransport, blockchain),
+            coinService, prereq.walletProvider, intentStorage,
+            prereq.safetyService, prereq.contracts, prereq.vtxoStorage, scheduler,
+            new OptionsWrapper<IntentGenerationServiceOptions>(new IntentGenerationServiceOptions
+                { PollInterval = TimeSpan.FromHours(5) }));
+
+        await using var intentSync = new IntentSynchronizationService(
+            intentStorage, prereq.clientTransport, prereq.safetyService);
+        await intentSync.StartAsync(token);
+
+        await using var batchManager = new BatchManagementService(
+            intentStorage, prereq.clientTransport, prereq.vtxoStorage,
+            prereq.contracts, prereq.walletProvider, coinService, prereq.safetyService);
+        await batchManager.StartAsync(token);
+
         await using var swapMgr = BuildSwapMgr(mock,
             prereq.safetyService, prereq.walletProvider, prereq.vtxoStorage,
             prereq.contractService, prereq.contracts, prereq.clientTransport,
-            swapStorage, intentStorage);
+            swapStorage, intentStorage, intentGeneration);
+
+        var refundedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[RefusesCosign] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            if (swap.Status == ArkSwapStatus.Refunded) refundedTcs.TrySetResult();
+        };
 
         await swapMgr.StartAsync(token);
 
@@ -258,20 +308,18 @@ public class MockBoltzSubmarineRefundTests
         await swapMgr.PayExistingSubmarineSwap(prereq.walletIdentifier, swapId, token);
 
         await WaitForVtxoAtScript(prereq.vtxoStorage, arkSwap.ContractScript, arkSwap.ExpectedAmount, token);
+
+        // Nudge the next Arkade batch session; refundWithoutReceiver locktime is a past
+        // timestamp (mock DefaultTimeouts) so it is already elapsed.
+        await DockerHelper.MineBlocks(1, token);
         await mock.PushSwapEvent(swapId, "invoice.failedToPay", token);
 
-        // Wait long enough for at least 2 retry cycles (near-term retry fires
-        // every 2 s after the first failed cooperative-refund attempt).
-        await TestWaiter.WaitFor(
-            () => mock.SubmarineRefundRequestsFor(swapId) >= 2,
-            timeout: TimeSpan.FromSeconds(30),
-            pollInterval: TimeSpan.FromSeconds(1),
-            ct: token);
+        await refundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(120), token);
 
         var final = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
-        Assert.That(mock.SubmarineRefundRequestsFor(swapId), Is.GreaterThanOrEqualTo(2),
-            "SDK must retry the cooperative-refund request when Boltz refuses");
-        Assert.That(final.Status, Is.Not.EqualTo(ArkSwapStatus.Refunded),
-            "Swap must not reach Refunded when Boltz refuses every co-sign");
+        Assert.That(final.Status, Is.EqualTo(ArkSwapStatus.Refunded),
+            "Swap must reach Refunded via the refundWithoutReceiver Arkade batch path");
+        Assert.That(mock.SubmarineRefundRequestsFor(swapId), Is.GreaterThan(0),
+            "SDK must have attempted the cooperative refund at least once before falling back");
     }
 }

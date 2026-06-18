@@ -117,10 +117,13 @@ public sealed class MockBoltzServer : IAsyncDisposable
                     Checkpoint  = SignTaprootPsbt(body.Checkpoint)
                 }, JsonOpts);
             }
-            catch
+            catch (Exception ex)
             {
-                return Results.Json(new SubmarineRefundResponse
-                    { Transaction = body.Transaction, Checkpoint = body.Checkpoint }, JsonOpts);
+                // A signing failure is a mock bug, not a refusal — surface it as a 500
+                // (distinct from RefundMode.Fail's 400) instead of silently returning the
+                // unsigned PSBT, which would masquerade as success and only blow up later
+                // at arkd with an opaque INVALID_SIGNATURE.
+                return Results.Json(new { error = ex.Message }, JsonOpts, statusCode: 500);
             }
         });
 
@@ -217,7 +220,7 @@ public sealed class MockBoltzServer : IAsyncDisposable
                     Checkpoint  = SignTaprootPsbt(body.Checkpoint)
                 }, JsonOpts);
             }
-            catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (Exception ex) { return Results.Json(new { error = ex.Message }, JsonOpts, statusCode: 500); }
         });
 
         app.MapPost("/v2/chain/BTC/transaction",
@@ -281,11 +284,16 @@ public sealed class MockBoltzServer : IAsyncDisposable
             var input = psbt.Inputs[i];
             if (input.WitnessUtxo is null) continue;
 
-            foreach (var (keyBytes, valueBytes) in input.Unknown)
-            {
-                if (keyBytes.Length == 0 || keyBytes[0] != TapLeafPrefix) continue;
-                if (valueBytes.Length < 2) continue;
+            // Snapshot the leaf-script entries before signing: SetTaprootScriptSpendSignature
+            // writes back into input.Unknown, which would otherwise throw
+            // "Collection was modified" mid-enumeration (silently swallowed by the
+            // endpoint's catch, leaving the PSBT unsigned → arkd INVALID_SIGNATURE).
+            var leafEntries = input.Unknown
+                .Where(kv => kv.Key.Length > 0 && kv.Key[0] == TapLeafPrefix && kv.Value.Length >= 2)
+                .ToList();
 
+            foreach (var (_, valueBytes) in leafEntries)
+            {
                 var leafVersion = (TapLeafVersion)valueBytes[^1];
                 var script      = Script.FromBytesUnsafe(valueBytes[..^1]);
                 var leaf        = new TapScript(script, leafVersion);
@@ -438,11 +446,8 @@ public sealed class MockBoltzServer : IAsyncDisposable
         {
             var amount       = req.UserLockAmount > 0 ? req.UserLockAmount : 50_000;
             var serverAmount = amount - 500;
-            // Use a past Unix timestamp (Sept 2001) so the refundWithoutReceiver
-            // locktime is already elapsed without mining extra blocks. Values
-            // >= 500_000_000 are time-type CLTV; arkd only rejects block-type
-            // CLTV (< 500_000_000) in forfeit closures on RegisterIntent.
-            timeouts.Refund = 1_000_000_000;
+            // refund locktime is the time-type past timestamp from DefaultTimeouts
+            // (see note there) so the refundWithoutReceiver path is already unlocked.
             var (btcAddr, btcScript, swapTree, claimEcPub, _) =
                 BuildBtcHtlc(req.ClaimPublicKey  ?? serverPubHex,
                              req.RefundPublicKey ?? serverPubHex,
@@ -684,9 +689,16 @@ public sealed class MockBoltzServer : IAsyncDisposable
         return new ArkAddress(tweakedKey, serverKey, version: 0, isMainnet: false).ToString(isMainnet: false);
     }
 
+    // Real Boltz Ark VHTLCs encode `refund` as an absolute Unix timestamp (time-type
+    // CLTV), not a block height — see boltz-swap src/arkade-swaps.ts. arkd rejects
+    // block-type CLTV in forfeit closures unless its VTXO-tree expiry is itself
+    // block-type (it isn't on denigiri: ARKD_VTXO_TREE_EXPIRY=3600 → time-type), so a
+    // block-height refund locktime would make the VHTLC unspendable on every path.
+    // A past timestamp (Sept 2001) keeps the refund path already unlocked for tests.
+    // UnilateralClaim/Refund are BIP68 relative (CSV) delays in seconds (>= 512).
     private static TimeoutBlockHeights DefaultTimeouts() => new()
     {
-        Refund = 1000, UnilateralClaim = 512, UnilateralRefund = 512,
+        Refund = 1_000_000_000, UnilateralClaim = 512, UnilateralRefund = 512,
         UnilateralRefundWithoutReceiver = 576
     };
 

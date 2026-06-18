@@ -390,8 +390,10 @@ public static class TransactionHelpers
                 Sequence = vtxoSequence
             });
 
-            // Connector is always final (0xFFFFFFFF), set explicitly so NBitcoin
-            // doesn't lower it to 0xFFFFFFFE when a non-zero nLockTime is present.
+            // Connector is always final (0xFFFFFFFF), set explicitly: with a non-zero
+            // nLockTime and no explicit sequence, NBitcoin defaults inputs to
+            // Sequence.FeeSnipping (0xFFFFFFFE), which would skew
+            // the txid here.
             if (connector is not null)
             {
                 txBuilder.AddCoin(connector, new CoinOptions()
@@ -419,7 +421,6 @@ public static class TransactionHelpers
                 : new[] { coin.TxOut };
 
             //sort the checkpoint coins based on the input index in arkTx
-
             var sortedCheckpointCoins =
                 forfeitTx
                     .Inputs
