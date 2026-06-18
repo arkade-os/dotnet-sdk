@@ -195,11 +195,24 @@ public class MockBoltzChainUnilateralTests
         // rejected by arkd because the refundWithoutReceiver closure uses a block-height
         // CLTV and SubmitTx only allows time-lock CLTVs).
         var blockchain = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+
+        // Full coin service (with VHTLC) for BatchManagementService — it must sign
+        // the VHTLC refund checkpoint once the intent lands in a batch.
         var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
         [
             new PaymentContractTransformer(prereq.walletProvider),
             new HashLockedContractTransformer(prereq.walletProvider),
             new VHTLCContractTransformer(prereq.walletProvider, blockchain)
+        ]);
+
+        // Coin service WITHOUT VHTLCContractTransformer for IntentGenerationService.
+        // IntentGeneration must not auto-sweep VHTLC VTXOs — the swap provider's
+        // TryRefundWithoutReceiverAsync owns that path via GenerateManualIntent.
+        // If both raced on the same VTXO, arkd would reject one with VTXO_ALREADY_REGISTERED.
+        var coinServiceForIntentGen = new CoinService(prereq.clientTransport, prereq.contracts,
+        [
+            new PaymentContractTransformer(prereq.walletProvider),
+            new HashLockedContractTransformer(prereq.walletProvider),
         ]);
 
         var scheduler = new SimpleIntentScheduler(
@@ -211,20 +224,17 @@ public class MockBoltzChainUnilateralTests
         var intentGeneration = new IntentGenerationService(
             prereq.clientTransport,
             new DefaultFeeEstimator(prereq.clientTransport, blockchain),
-            coinService, prereq.walletProvider, intentStorage,
+            coinServiceForIntentGen, prereq.walletProvider, intentStorage,
             prereq.safetyService, prereq.contracts, prereq.vtxoStorage, scheduler,
             new OptionsWrapper<IntentGenerationServiceOptions>(new IntentGenerationServiceOptions
                 { PollInterval = TimeSpan.FromHours(5) }));
-        await intentGeneration.StartAsync(token);
 
         await using var intentSync = new IntentSynchronizationService(
             intentStorage, prereq.clientTransport, prereq.safetyService);
-        await intentSync.StartAsync(token);
 
         await using var batchManager = new BatchManagementService(
             intentStorage, prereq.clientTransport, prereq.vtxoStorage,
             prereq.contracts, prereq.walletProvider, coinService, prereq.safetyService);
-        await batchManager.StartAsync(token);
 
         await using var _ = intentGeneration;
 
@@ -261,6 +271,14 @@ public class MockBoltzChainUnilateralTests
         Console.WriteLine("[ArkToBtcRefund] Waiting for VTXO at swap script...");
         await WaitForVtxoAtScript(prereq.vtxoStorage, arkSwap.ContractScript, arkSwap.ExpectedAmount, token);
         Console.WriteLine("[ArkToBtcRefund] VTXO at swap script confirmed");
+
+        // Start the batch stack only after the VHTLC VTXO is confirmed. Starting
+        // before InitiateArkToBtcChainSwap would race: IntentGenerationService
+        // immediately sweeps the user's payment VTXO on its first cycle, and
+        // SpendingService.SubmitTx then hits VTXO_ALREADY_REGISTERED from arkd.
+        await intentGeneration.StartAsync(token);
+        await intentSync.StartAsync(token);
+        await batchManager.StartAsync(token);
 
         // Mine a block to help arkd trigger the next batch session.
         // The RefundLocktime is a past Unix timestamp (Sept 2001) so it is
