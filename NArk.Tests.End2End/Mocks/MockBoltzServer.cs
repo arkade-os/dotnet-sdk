@@ -438,13 +438,19 @@ public sealed class MockBoltzServer : IAsyncDisposable
         {
             var amount       = req.UserLockAmount > 0 ? req.UserLockAmount : 50_000;
             var serverAmount = amount - 500;
-            // Use a low refund locktime so tests can mine past it and trigger
-            // the refundWithoutReceiver batch path without Boltz co-sign.
-            timeouts.Refund = 2;
+            // Use a past Unix timestamp (Sept 2001) so the refundWithoutReceiver
+            // locktime is already elapsed without mining extra blocks. Values
+            // >= 500_000_000 are time-type CLTV; arkd only rejects block-type
+            // CLTV (< 500_000_000) in forfeit closures on RegisterIntent.
+            timeouts.Refund = 1_000_000_000;
             var (btcAddr, btcScript, swapTree, claimEcPub, _) =
                 BuildBtcHtlc(req.ClaimPublicKey  ?? serverPubHex,
                              req.RefundPublicKey ?? serverPubHex,
                              hash160, btcTimeout, serverIsClaimer: false);
+            string arkLockupAddr;
+            if (ServerInfo is not null && req.RefundPublicKey is not null && req.PreimageHash is not null)
+            { try { arkLockupAddr = ComputeArkToBtcVhtlcAddress(req, _serverKey, ServerInfo, timeouts); } catch { arkLockupAddr = FallbackArkAddress(); } }
+            else { arkLockupAddr = FallbackArkAddress(); }
             resp = new ChainResponse
             {
                 Id = swapId,
@@ -456,7 +462,7 @@ public sealed class MockBoltzServer : IAsyncDisposable
                 },
                 LockupDetails = new ChainSwapData
                 {
-                    LockupAddress = FallbackArkAddress(), ServerPublicKey = serverPubHex,
+                    LockupAddress = arkLockupAddr, ServerPublicKey = serverPubHex,
                     TimeoutBlockHeight = timeouts.Refund, Timeouts = timeouts, Amount = (int)amount
                 }
             };
@@ -636,6 +642,16 @@ public sealed class MockBoltzServer : IAsyncDisposable
             .GetArkAddress().ToString(serverInfo.Network.ChainName == ChainName.Mainnet);
     }
 
+    private static string ComputeArkToBtcVhtlcAddress(
+        ChainRequest req, Key boltzReceiverKey, ArkServerInfo serverInfo, TimeoutBlockHeights t)
+    {
+        var hash      = new uint160(Hashes.RIPEMD160(Convert.FromHexString(req.PreimageHash!)), false);
+        var userDesc  = ParseDescriptor(req.RefundPublicKey!, serverInfo.Network);
+        var boltzDesc = ParseDescriptor(Hex(boltzReceiverKey.PubKey.ToBytes()), serverInfo.Network);
+        return BuildVhtlc(serverInfo, userDesc, boltzDesc, hash, t)
+            .GetArkAddress().ToString(serverInfo.Network.ChainName == ChainName.Mainnet);
+    }
+
     private static VHTLCContract BuildVhtlc(
         ArkServerInfo serverInfo, OutputDescriptor sender, OutputDescriptor receiver,
         uint160 hash, TimeoutBlockHeights t) =>
@@ -670,7 +686,7 @@ public sealed class MockBoltzServer : IAsyncDisposable
 
     private static TimeoutBlockHeights DefaultTimeouts() => new()
     {
-        Refund = 1000, UnilateralClaim = 288, UnilateralRefund = 288,
+        Refund = 1000, UnilateralClaim = 512, UnilateralRefund = 512,
         UnilateralRefundWithoutReceiver = 576
     };
 

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
@@ -5,6 +6,8 @@ using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
+using NArk.Core.Fees;
+using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
 using NArk.Swaps.Abstractions;
@@ -41,7 +44,8 @@ public class MockBoltzChainUnilateralTests
         IContractStorage contracts,
         NArk.Core.Transport.IClientTransport clientTransport,
         ISwapStorage swapStorage,
-        IIntentStorage intentStorage)
+        IIntentStorage intentStorage,
+        IIntentGenerationService? intentGenerationService = null)
     {
         var opts = new BoltzClientOptions
             { BoltzUrl = mock.BaseUrl, WebsocketUrl = mock.WsBaseUrl };
@@ -60,12 +64,15 @@ public class MockBoltzChainUnilateralTests
             vtxoStorage, contracts, walletProvider,
             coinService, contractService, clientTransport,
             new DefaultCoinSelector(), safetyService, intentStorage);
+        var loggerFactory = LoggerFactory.Create(b => b.AddSimpleConsole(o => o.SingleLine = true).SetMinimumLevel(LogLevel.Debug));
         var boltzProvider = new BoltzSwapProvider(
             boltzClient,
             new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), optsWrapper)),
             clientTransport, vtxoStorage, walletProvider,
             swapStorage, contractService, contracts,
-            safetyService, intentStorage, blockchain);
+            safetyService, intentStorage, blockchain,
+            intentGenerationService,
+            loggerFactory.CreateLogger<BoltzSwapProvider>());
 
         return new SwapsManagementService(
             new ISwapProvider[] { boltzProvider },
@@ -134,6 +141,7 @@ public class MockBoltzChainUnilateralTests
         // accepts any hex and returns a synthetic txid without touching L1.
         var serverInfo = await prereq.clientTransport.GetServerInfoAsync(token);
         var fakeLockupTx = serverInfo.Network.CreateTransaction();
+        fakeLockupTx.Inputs.Add(new TxIn(new OutPoint(uint256.Zero, 0)));
         fakeLockupTx.Outputs.Add(
             Money.Satoshis(expectedSats),
             BitcoinAddress.Create(btcAddress, serverInfo.Network));
@@ -171,7 +179,7 @@ public class MockBoltzChainUnilateralTests
     /// </summary>
     [Test]
     [CancelAfter(180_000)]
-    public async Task ChainArkToBtc_RefundWithoutReceiver_WhenBoltzRefusesCoop(CancellationToken token)
+    public async Task ChainArkToBtc_WhenBoltzRefusesCoop(CancellationToken token)
     {
         await using var mock = await MockBoltzServer.StartAsync();
         mock.SetRefundMode(RefundMode.Fail);
@@ -182,16 +190,61 @@ public class MockBoltzChainUnilateralTests
         var swapStorage = TestStorage.CreateSwapStorage();
         var intentStorage = TestStorage.CreateIntentStorage();
 
+        // Wire up the full batch stack so TryRefundWithoutReceiverAsync can submit
+        // the VHTLC spend as a manual batch intent (the checkpoint/SubmitTx path is
+        // rejected by arkd because the refundWithoutReceiver closure uses a block-height
+        // CLTV and SubmitTx only allows time-lock CLTVs).
+        var blockchain = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var coinService = new CoinService(prereq.clientTransport, prereq.contracts,
+        [
+            new PaymentContractTransformer(prereq.walletProvider),
+            new HashLockedContractTransformer(prereq.walletProvider),
+            new VHTLCContractTransformer(prereq.walletProvider, blockchain)
+        ]);
+
+        var scheduler = new SimpleIntentScheduler(
+            new DefaultFeeEstimator(prereq.clientTransport, blockchain),
+            prereq.clientTransport, prereq.contractService, blockchain,
+            new OptionsWrapper<SimpleIntentSchedulerOptions>(
+                new SimpleIntentSchedulerOptions { Threshold = TimeSpan.FromHours(24), ThresholdHeight = 100_000 }));
+
+        var intentGeneration = new IntentGenerationService(
+            prereq.clientTransport,
+            new DefaultFeeEstimator(prereq.clientTransport, blockchain),
+            coinService, prereq.walletProvider, intentStorage,
+            prereq.safetyService, prereq.contracts, prereq.vtxoStorage, scheduler,
+            new OptionsWrapper<IntentGenerationServiceOptions>(new IntentGenerationServiceOptions
+                { PollInterval = TimeSpan.FromHours(5) }));
+        await intentGeneration.StartAsync(token);
+
+        await using var intentSync = new IntentSynchronizationService(
+            intentStorage, prereq.clientTransport, prereq.safetyService);
+        await intentSync.StartAsync(token);
+
+        await using var batchManager = new BatchManagementService(
+            intentStorage, prereq.clientTransport, prereq.vtxoStorage,
+            prereq.contracts, prereq.walletProvider, coinService, prereq.safetyService);
+        await batchManager.StartAsync(token);
+
+        await using var _ = intentGeneration;
+
         await using var swapMgr = BuildSwapMgr(mock,
             prereq.safetyService, prereq.walletProvider, prereq.vtxoStorage,
             prereq.contractService, prereq.contracts, prereq.clientTransport,
-            swapStorage, intentStorage);
+            swapStorage, intentStorage, intentGeneration);
 
         var refundedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         swapStorage.SwapsChanged += (_, swap) =>
         {
             Console.WriteLine($"[ArkToBtcRefund] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
             if (swap.Status == ArkSwapStatus.Refunded) refundedTcs.TrySetResult();
+        };
+        intentStorage.IntentChanged += (_, intent) =>
+        {
+            if (intent.State == ArkIntentState.Cancelled)
+                Console.WriteLine($"[Intent] CANCELLED {intent.IntentTxId}: {intent.CancellationReason}");
+            else
+                Console.WriteLine($"[Intent] {intent.IntentTxId} → {intent.State}");
         };
 
         await swapMgr.StartAsync(token);
@@ -209,17 +262,18 @@ public class MockBoltzChainUnilateralTests
         await WaitForVtxoAtScript(prereq.vtxoStorage, arkSwap.ContractScript, arkSwap.ExpectedAmount, token);
         Console.WriteLine("[ArkToBtcRefund] VTXO at swap script confirmed");
 
-        // Mine past the RefundLocktime (MockBoltzServer sets Refund = 2 for ARK→BTC
-        // so the refundWithoutReceiver path unlocks at block height 2).
-        await DockerHelper.MineRegtestBlocksToHeight(3, token);
-        Console.WriteLine("[ArkToBtcRefund] Mined to height 3 (past RefundLocktime 2)");
+        // Mine a block to help arkd trigger the next batch session.
+        // The RefundLocktime is a past Unix timestamp (Sept 2001) so it is
+        // already elapsed — no specific height target is needed.
+        await DockerHelper.MineBlocks(1, token);
+        Console.WriteLine("[ArkToBtcRefund] Mined 1 block to nudge next Arkade batch");
 
         // Push swap.expired — triggers TryCoopRefundArkToBtc → coop fails →
         // RefundLocktime elapsed → TryRefundWithoutReceiverAsync joins Arkade batch.
         await mock.PushSwapEvent(swapId, "swap.expired", token);
         Console.WriteLine("[ArkToBtcRefund] Pushed swap.expired");
 
-        await refundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(60), token);
+        await refundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(120), token);
 
         var final = (await swapStorage.GetSwaps(swapIds: [swapId])).Single();
         Assert.That(final.Status, Is.EqualTo(ArkSwapStatus.Refunded),
