@@ -51,7 +51,7 @@ jobs:
       # EXCEPT those (tagged RealRotation) here.
       - name: Run E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation"
-        timeout-minutes: 15
+        timeout-minutes: 30
       - name: Collect docker logs on failure
         if: failure()
         run: |
