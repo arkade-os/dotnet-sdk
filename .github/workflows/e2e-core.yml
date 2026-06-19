@@ -1,0 +1,34 @@
+name: E2E Core
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/e2e-setup
+      # Swap and recovery tests run in dedicated parallel workflows (e2e-swaps, e2e-recovery).
+      # Rotation tests run in e2e-rotation. Run everything else here.
+      - name: Run E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery"
+        timeout-minutes: 20
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+          docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
+          docker logs boltz-lnd > /tmp/boltz-lnd-logs.txt 2>&1 || true
+          docker logs boltz-fulmine > /tmp/fulmine-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-core
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
