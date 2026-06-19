@@ -8,6 +8,10 @@ jobs:
     name: E2E Recovery Tests
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
       - uses: ./.github/actions/e2e-setup
       - name: Run recovery E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Recovery"

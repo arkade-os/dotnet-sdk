@@ -8,6 +8,10 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
       - uses: ./.github/actions/e2e-setup
       # Swap and recovery tests run in dedicated parallel workflows (e2e-swaps, e2e-recovery).
       # Rotation tests run in e2e-rotation. Run everything else here.

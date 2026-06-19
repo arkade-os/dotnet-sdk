@@ -8,6 +8,10 @@ jobs:
     name: E2E Swap Tests
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
       - uses: ./.github/actions/e2e-setup
       - name: Run swap E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Swaps"

@@ -1,13 +1,9 @@
 name: E2E Setup
-description: Checkout, configure .NET + Node, start regtest infrastructure, build
+description: Configure .NET + Node, start regtest infrastructure, build. Requires checkout to have already run.
 
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
-        fetch-depth: 0
     - uses: actions/setup-dotnet@v4
       with:
         dotnet-version: 9.0.x
