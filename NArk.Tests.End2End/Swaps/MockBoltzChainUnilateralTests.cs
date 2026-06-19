@@ -32,6 +32,7 @@ namespace NArk.Tests.End2End.Swaps;
 /// ARK→BTC VHTLC refund-without-receiver Arkade batch path when Boltz
 /// permanently refuses the cooperative co-sign.
 /// </summary>
+[Category("Swaps")]
 [NonParallelizable]
 public class MockBoltzChainUnilateralTests
 {

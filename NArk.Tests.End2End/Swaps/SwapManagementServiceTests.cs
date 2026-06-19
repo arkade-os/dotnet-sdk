@@ -26,6 +26,7 @@ using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 
 namespace NArk.Tests.End2End.Swaps;
 
+[Category("Swaps")]
 public class SwapManagementServiceTests
 {
     [Test]

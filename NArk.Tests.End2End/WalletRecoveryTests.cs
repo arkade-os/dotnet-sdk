@@ -35,6 +35,7 @@ namespace NArk.Tests.End2End.Swaps;
 /// boltz/Fulmine round-trip is currently too flaky to assert here without
 /// turning the SDK CI red on infra wobble.
 /// </summary>
+[Category("Recovery")]
 public class WalletRecoveryTests
 {
     private static IHost BuildHost(string dbName) =>
@@ -77,7 +78,8 @@ public class WalletRecoveryTests
             .Build();
 
     [Test]
-    public async Task FullRecovery_RestoresContracts_Index_AndFunds()
+    [CancelAfter(360_000)] // 6 min: VTXO/batch wait (~90 s) + Boltz HD scan (GapLimit=3 → 4 probes) + overhead
+    public async Task FullRecovery_RestoresContracts_Index_AndFunds(CancellationToken token)
     {
         var mnemonic = new Mnemonic(Wordlist.English, WordCount.Twelve).ToString();
         string walletId;
@@ -118,7 +120,7 @@ public class WalletRecoveryTests
             };
             var note = await DockerHelper.CreateArkNote(100_000);
             await contractService.ImportContract(walletId, ArkNoteContract.Parse(note));
-            await batchTcs.Task.WaitAsync(TimeSpan.FromSeconds(90));
+            await batchTcs.Task.WaitAsync(TimeSpan.FromSeconds(90), token);
 
             // Sanity: the first host now holds contracts and an advanced index.
             var contracts1 = await host1.Services.GetRequiredService<IContractStorage>()
@@ -153,9 +155,8 @@ public class WalletRecoveryTests
         // under the workflow cap while still recovering the (low-index) funded
         // contract. The funded payment contract sits at the first derivation
         // index, so GapLimit 3 finds it comfortably.
-        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var report = await recovery.RecoverAsync(
-            walletId, new RecoveryOptions(GapLimit: 3), recoveryCts.Token);
+            walletId, new RecoveryOptions(GapLimit: 3), token);
 
         // Contracts + derivation index recovered.
         var recoveredContracts = await contractStorage2.GetContracts(walletIds: [walletId]);
@@ -175,7 +176,8 @@ public class WalletRecoveryTests
     /// 0…<c>targetIndex-1</c> as misses, then finds the funded script.
     /// </summary>
     [Test]
-    public async Task HdSeedRestore_GapLimitPositive_FindsVtxoBeyondGap()
+    [CancelAfter(660_000)] // 11 min: VTXO wait (90 s) + 16 Boltz probes at up to 30 s/probe on CI + overhead
+    public async Task HdSeedRestore_GapLimitPositive_FindsVtxoBeyondGap(CancellationToken token)
     {
         const int targetIndex = 5;
         const int gapLimit = 10; // > targetIndex — scan reaches and finds it
@@ -215,7 +217,7 @@ public class WalletRecoveryTests
             };
 
             await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSats);
-            await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90));
+            await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90), token);
 
             await host1.StopAsync();
         }
@@ -230,9 +232,11 @@ public class WalletRecoveryTests
         await walletStorage2.UpsertWallet(walletInfo2);
         Assert.That(walletInfo2.Id, Is.EqualTo(walletId), "re-import must yield the same wallet id");
 
-        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        // Recovery walks targetIndex leading misses then gapLimit trailing misses = 16 Boltz probes.
+        // On CI the boltzr sidecar makes /v2/swap/restore slow (~20 s/probe); the [CancelAfter]
+        // above is the hard deadline — pass the test token directly so the scan cancels cleanly.
         var report = await host2.Services.GetRequiredService<IWalletRecoveryService>()
-            .RecoverAsync(walletId, new RecoveryOptions(GapLimit: gapLimit), recoveryCts.Token);
+            .RecoverAsync(walletId, new RecoveryOptions(GapLimit: gapLimit), token);
 
         Assert.That(report.HdScan, Is.Not.Null, "HD scan must run for an HD wallet");
         Assert.That(report.HdScan!.HighestUsedIndex, Is.EqualTo(targetIndex),
@@ -248,7 +252,8 @@ public class WalletRecoveryTests
     /// <c>GapLimit</c> consecutive misses before reaching the funded index and stops.
     /// </summary>
     [Test]
-    public async Task HdSeedRestore_GapLimitNegative_MissesVtxoBeyondGapLimit()
+    [CancelAfter(240_000)] // 4 min: VTXO wait (90 s) + only 3 Boltz probes (stops at gap limit) + overhead
+    public async Task HdSeedRestore_GapLimitNegative_MissesVtxoBeyondGapLimit(CancellationToken token)
     {
         const int targetIndex = 5;
         const int gapLimit = 3; // < targetIndex — scan stops before reaching the funded index
@@ -286,7 +291,7 @@ public class WalletRecoveryTests
             };
 
             await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSats);
-            await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90));
+            await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90), token);
 
             await host1.StopAsync();
         }
@@ -301,9 +306,8 @@ public class WalletRecoveryTests
         await walletStorage2.UpsertWallet(walletInfo2);
         Assert.That(walletInfo2.Id, Is.EqualTo(walletId), "re-import must yield the same wallet id");
 
-        using var recoveryCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var report = await host2.Services.GetRequiredService<IWalletRecoveryService>()
-            .RecoverAsync(walletId, new RecoveryOptions(GapLimit: gapLimit), recoveryCts.Token);
+            .RecoverAsync(walletId, new RecoveryOptions(GapLimit: gapLimit), token);
 
         Assert.That(report.HdScan, Is.Not.Null, "HD scan must run for an HD wallet");
         Assert.That(report.HdScan!.HighestUsedIndex, Is.EqualTo(-1),

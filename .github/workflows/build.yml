@@ -46,12 +46,11 @@ jobs:
         timeout-minutes: 20
       - name: Restore and build
         run: dotnet build
-      # The live-rotation tests run in the isolated e2e-rotation job below: a real rotation recreates
-      # arkd-wallet + restarts arkd, cascade-failing every test sharing this stack. Run everything
-      # EXCEPT those (tagged RealRotation) here.
+      # Swap and recovery tests run in dedicated parallel jobs (e2e-swaps, e2e-recovery).
+      # Rotation tests run in e2e-rotation. Run everything else here.
       - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation"
-        timeout-minutes: 30
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&&TestCategory!=Swaps&&TestCategory!=Recovery"
+        timeout-minutes: 20
       - name: Collect docker logs on failure
         if: failure()
         run: |
@@ -66,6 +65,91 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
+
+  e2e-swaps:
+    name: E2E Swap Tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Start regtest infrastructure
+        run: node regtest/regtest.mjs start --profile boltz,delegate
+        timeout-minutes: 20
+      - name: Restore and build
+        run: dotnet build
+      - name: Run swap E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Swaps"
+        timeout-minutes: 20
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+          docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
+          docker logs boltz-lnd > /tmp/boltz-lnd-logs.txt 2>&1 || true
+          docker logs boltz-fulmine > /tmp/fulmine-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-swaps
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
+
+  e2e-recovery:
+    name: E2E Recovery Tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Start regtest infrastructure
+        run: node regtest/regtest.mjs start --profile boltz,delegate
+        timeout-minutes: 20
+      - name: Restore and build
+        run: dotnet build
+      - name: Run recovery E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Recovery"
+        timeout-minutes: 30
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-recovery
           path: /tmp/*-logs.txt
       - name: Stop infrastructure
         if: always()
@@ -123,7 +207,7 @@ jobs:
   publish:
     name: Publish NuGet Packages
     runs-on: ubuntu-latest
-    needs: [build, e2e, e2e-rotation]
+    needs: [build, e2e, e2e-swaps, e2e-recovery, e2e-rotation]
     if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write

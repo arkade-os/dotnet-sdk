@@ -38,6 +38,7 @@ file static class ChainSwapTestHelpers
         new(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(BoltzOptions()));
 }
 
+[Category("Swaps")]
 public class ChainSwapTests
 {
     [Test]

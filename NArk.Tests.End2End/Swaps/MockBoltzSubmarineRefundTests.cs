@@ -37,6 +37,7 @@ namespace NArk.Tests.End2End.Swaps;
 /// used for the ARK-side locking step so the SDK's full VTXO-spending
 /// path is exercised end-to-end.
 /// </summary>
+[Category("Swaps")]
 [NonParallelizable]
 public class MockBoltzSubmarineRefundTests
 {
