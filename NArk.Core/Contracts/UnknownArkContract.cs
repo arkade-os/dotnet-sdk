@@ -1,7 +1,6 @@
 ﻿using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
-using NArk.Core.Extensions;
 using NArk.Transport.GrpcClient.Extensions;
 using NBitcoin;
 using NBitcoin.Scripting;

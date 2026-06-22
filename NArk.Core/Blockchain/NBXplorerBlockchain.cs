@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Blockchain;
 using NBitcoin;
-using NBitcoin.RPC;
 using NBXplorer;
 using NBXplorer.Models;
 using Newtonsoft.Json;

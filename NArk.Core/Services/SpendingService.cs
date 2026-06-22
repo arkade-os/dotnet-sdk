@@ -100,7 +100,7 @@ public class SpendingService(
                 var inputContracts = inputs.Select(i => i.Contract).ToArray();
                 var swDerive = System.Diagnostics.Stopwatch.StartNew();
                 changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf,
-                    inputContracts, cancellationToken: cancellationToken, activityState:ContractActivityState.Inactive)).GetArkAddress();
+                    inputContracts, cancellationToken: cancellationToken, activityState: ContractActivityState.Inactive)).GetArkAddress();
                 logger?.LogTrace("[spend-probe] DeriveContract (change): {Ms}ms", swDerive.ElapsedMilliseconds);
             }
 

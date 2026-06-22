@@ -1,4 +1,3 @@
-
 using NArk.Abstractions;
 using NBitcoin;
 

@@ -189,12 +189,12 @@ public class BatchManagementService(
             case BatchFailedEvent or BatchFinalizedEvent or BatchFinalizationEvent
                 or TreeTxEvent or TreeSigningStartedEvent or TreeNoncesEvent
                 or TreeNoncesAggregatedEvent or TreeSignatureEvent:
-            {
-                var batchId = GetBatchId(eventResponse);
-                if (batchId is not null)
-                    await RouteToBatchSessionsAsync(batchId, eventResponse, cancellationToken);
-                break;
-            }
+                {
+                    var batchId = GetBatchId(eventResponse);
+                    if (batchId is not null)
+                        await RouteToBatchSessionsAsync(batchId, eventResponse, cancellationToken);
+                    break;
+                }
         }
     }
 

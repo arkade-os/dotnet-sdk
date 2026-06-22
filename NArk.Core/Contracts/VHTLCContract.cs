@@ -3,7 +3,6 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
-using NArk.Core.Extensions;
 using NArk.Core.Scripts;
 using NBitcoin;
 using NBitcoin.Crypto;

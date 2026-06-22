@@ -58,22 +58,22 @@ public class AssetInput
         switch (type)
         {
             case AssetInputType.Local:
-            {
-                var vin = reader.ReadUint16LE();
-                var amount = reader.ReadVarInt();
-                return new AssetInput(AssetInputType.Local, vin, amount, null);
-            }
+                {
+                    var vin = reader.ReadUint16LE();
+                    var amount = reader.ReadVarInt();
+                    return new AssetInput(AssetInputType.Local, vin, amount, null);
+                }
             case AssetInputType.Intent:
-            {
-                if (reader.Remaining < AssetConstants.TxHashSize)
-                    throw new ArgumentException("invalid input intent txid length");
-                var txid = reader.ReadSlice(AssetConstants.TxHashSize);
-                var vin = reader.ReadUint16LE();
-                var amount = reader.ReadVarInt();
-                var input = new AssetInput(AssetInputType.Intent, vin, amount, txid);
-                input.Validate();
-                return input;
-            }
+                {
+                    if (reader.Remaining < AssetConstants.TxHashSize)
+                        throw new ArgumentException("invalid input intent txid length");
+                    var txid = reader.ReadSlice(AssetConstants.TxHashSize);
+                    var vin = reader.ReadUint16LE();
+                    var amount = reader.ReadVarInt();
+                    var input = new AssetInput(AssetInputType.Intent, vin, amount, txid);
+                    input.Validate();
+                    return input;
+                }
             case AssetInputType.Unspecified:
                 throw new ArgumentException("asset input type unspecified");
             default:

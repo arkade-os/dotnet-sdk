@@ -46,7 +46,7 @@ public partial class RestClientTransport
         JsonElement intentFee = default;
         if (fees.ValueKind == JsonValueKind.Object)
             TryGetProp(fees, "intent_fee", "intentFee", out intentFee);
-        
+
         var digest = TryGetProp(json, "digest", "digest", out var digestEl) ? digestEl.GetString() ?? "" : "";
 
         var result = new ArkServerInfo(

@@ -137,13 +137,13 @@ public class IndexerVtxoDiscoveryProvider(
 
         var byScript = new Dictionary<string, ArkContract>(StringComparer.OrdinalIgnoreCase);
         foreach (var signer in signers)
-        foreach (var exitDelay in exitDelays)
-        {
-            AddCandidate(byScript, new ArkPaymentContract(signer, exitDelay, userDescriptor));
-            foreach (var delegateDescriptor in _delegates)
-                AddCandidate(byScript, new ArkDelegateContract(
-                    signer, exitDelay, userDescriptor, delegateDescriptor));
-        }
+            foreach (var exitDelay in exitDelays)
+            {
+                AddCandidate(byScript, new ArkPaymentContract(signer, exitDelay, userDescriptor));
+                foreach (var delegateDescriptor in _delegates)
+                    AddCandidate(byScript, new ArkDelegateContract(
+                        signer, exitDelay, userDescriptor, delegateDescriptor));
+            }
 
         return byScript;
     }
