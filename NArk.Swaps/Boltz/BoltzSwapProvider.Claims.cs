@@ -86,9 +86,8 @@ public partial class BoltzSwapProvider
             var outpoint = new OutPoint(lockupTx.GetHash(), vout);
             var prevOut = lockupTx.Outputs[vout];
 
-            // Build unsigned claim tx — see DefaultRefundClaimFeeSats for the
-            // flat-fee rationale + TODO to plumb in IFeeEstimator.
-            var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest, DefaultRefundClaimFeeSats);
+            var unsignedClaimTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, btcDest,
+                await EstimateClaimRefundFeeAsync(cancellationToken));
 
             Transaction signedTx;
             try

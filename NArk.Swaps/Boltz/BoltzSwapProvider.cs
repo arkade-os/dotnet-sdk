@@ -52,14 +52,15 @@ public partial class BoltzSwapProvider : ISwapProvider
     /// </summary>
     private CancellationTokenSource? _linkedStartCts;
 
-    /// <summary>
-    /// Flat fee in sats used for cooperative refund / claim BTC transactions.
-    /// 250 sats is ~1 sat/vB for a single-input single-output taproot key-path
-    /// spend, which is fine in low-fee regimes but becomes pessimistic when
-    /// the mempool is congested. TODO: plumb <c>IFeeEstimator</c> here so the
-    /// fee scales with the mempool rather than getting stuck.
-    /// </summary>
-    private const long DefaultRefundClaimFeeSats = 250L;
+    // 1-in 1-out P2TR key-path spend: 94 base vBytes + 67 witness / 4 ≈ 111 vBytes.
+    private const int ClaimRefundVBytes = 111;
+
+    private async Task<long> EstimateClaimRefundFeeAsync(CancellationToken ct)
+    {
+        var feeRate = await _chainTimeProvider.EstimateFeeRateAsync(confirmTarget: 2, ct);
+        return (long)feeRate.GetFee(ClaimRefundVBytes).Satoshi;
+    }
+
     private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
 
     /// <summary>

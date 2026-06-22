@@ -466,9 +466,8 @@ public partial class BoltzSwapProvider
             var outpoint = new OutPoint(lockupTx.GetHash(), vout);
             var prevOut = lockupTx.Outputs[vout];
 
-            // Same flat fee as TryClaimBtcForChainSwap — see DefaultRefundClaimFeeSats
-            // for the rationale + TODO to plumb in IFeeEstimator.
-            var unsignedRefundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, DefaultRefundClaimFeeSats);
+            var unsignedRefundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest,
+                await EstimateClaimRefundFeeAsync(ct));
 
             _logger?.LogInformation("Swap {SwapId}: requesting MuSig2 cooperative BTC refund", swap.SwapId);
             var signedTx = await _chainSwapMusig.CooperativeRefundAsync(
