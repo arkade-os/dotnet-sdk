@@ -60,8 +60,6 @@ public static class TransactionHelpers
             ArkServerInfo serverInfo,
             CancellationToken cancellationToken)
         {
-            var p2A = Script.FromHex("51024e73"); // Standard Ark protocol marker
-
             List<PSBT> checkpoints = [];
             List<ArkCoin> checkpointCoins = [];
             foreach (var coin in coins)
@@ -78,7 +76,7 @@ public static class TransactionHelpers
 
                 //checkpoints MUST have the p2a output at index '1' and NBitcoin tx builder does not assure it, so we hack our way there
                 var ctx = checkpointTx.GetGlobalTransaction();
-                ctx.Outputs.Add(new TxOut(Money.Zero, p2A));
+                ctx.Outputs.Add(new TxOut(Money.Zero, Constants.ArkP2A));
                 checkpointTx = PSBT.FromTransaction(ctx, serverInfo.Network, PSBTVersion.PSBTv0);
                 checkpoint.UpdatePSBT(checkpointTx);
 
@@ -161,7 +159,7 @@ public static class TransactionHelpers
 
             var tx = arkTx.BuildPSBT(false, PSBTVersion.PSBTv0);
             var gtx = tx.GetGlobalTransaction();
-            gtx.Outputs.Add(new TxOut(Money.Zero, p2A));
+            gtx.Outputs.Add(new TxOut(Money.Zero, Constants.ArkP2A));
 
             // NBitcoin's TransactionBuilder may reorder inputs (e.g. by amount) even
             // with ShuffleInputs=false. If asset packets are present, their input
@@ -230,7 +228,7 @@ public static class TransactionHelpers
 
             return (tx, new SortedSet<IndexedPSBT>(checkpoints.Select(psbt =>
             {
-                var output = psbt.Outputs.Single(output => output.ScriptPubKey != p2A);
+                var output = psbt.Outputs.Single(output => output.ScriptPubKey != Constants.ArkP2A);
                 var outpoint = new OutPoint(psbt.GetGlobalTransaction(), output.Index);
                 var index = tx.Inputs.FindIndexedInput(outpoint)!.Index;
                 return new IndexedPSBT(psbt, (int)index);
@@ -357,7 +355,7 @@ public static class TransactionHelpers
         public async Task<PSBT> ConstructForfeitTx(ArkServerInfo arkServerInfo, ArkCoin coin, Coin? connector,
             IDestination forfeitDestination, CancellationToken cancellationToken = default)
         {
-            var p2A = Script.FromHex("51024e73"); // Standard Ark protocol marker
+            var p2A = Constants.ArkP2A;
 
             // Determine sighash based on whether we have a connector
             // Without connector: ANYONECANPAY|ALL (allows adding connector later)

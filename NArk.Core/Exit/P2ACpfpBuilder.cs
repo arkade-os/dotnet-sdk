@@ -15,11 +15,6 @@ public static class P2ACpfpBuilder
     private static readonly Script Bip431P2A = new(OpcodeType.OP_1);
 
     /// <summary>
-    /// Ark protocol P2A marker (OP_1 PUSH2 "Ns").
-    /// </summary>
-    private static readonly Script ArkP2A = Script.FromHex("51024e73");
-
-    /// <summary>
     /// Find the P2A anchor output in a transaction.
     /// Checks for both BIP 431 standard P2A and Ark protocol marker.
     /// </summary>
@@ -30,7 +25,7 @@ public static class P2ACpfpBuilder
             var output = tx.Outputs[i];
             var script = output.ScriptPubKey;
 
-            if (script == Bip431P2A || script == ArkP2A)
+            if (script == Bip431P2A || script == Constants.ArkP2A)
                 return (new OutPoint(tx, i), output);
         }
         return null;
