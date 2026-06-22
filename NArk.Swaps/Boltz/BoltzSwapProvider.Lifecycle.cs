@@ -6,7 +6,7 @@ namespace NArk.Swaps.Boltz;
 
 public partial class BoltzSwapProvider
 {
-     public async Task StartAsync(CancellationToken ct)
+    public async Task StartAsync(CancellationToken ct)
     {
         _logger?.LogInformation("Starting Boltz swap provider");
         _linkedStartCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdownCts.Token);
@@ -93,8 +93,8 @@ public partial class BoltzSwapProvider
         _linkedStartCts?.Dispose();
         _linkedStartCts = null;
     }
-    
-        // ─── Disposal ──────────────────────────────────────────────────
+
+    // ─── Disposal ──────────────────────────────────────────────────
 
     public async ValueTask DisposeAsync()
     {

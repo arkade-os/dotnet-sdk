@@ -17,10 +17,10 @@ public static class BoltzRouteHelper
 
     public static bool SupportsRoute(SwapRoute route) => route switch
     {
-        { Source.Network: SwapNetwork.Ark,            Destination.Network: SwapNetwork.Lightning      } => true,
-        { Source.Network: SwapNetwork.Lightning,      Destination.Network: SwapNetwork.Ark            } => true,
-        { Source.Network: SwapNetwork.Ark,            Destination.Network: SwapNetwork.BitcoinOnchain } => true,
-        { Source.Network: SwapNetwork.BitcoinOnchain, Destination.Network: SwapNetwork.Ark            } => true,
+        { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.Lightning } => true,
+        { Source.Network: SwapNetwork.Lightning, Destination.Network: SwapNetwork.Ark } => true,
+        { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.BitcoinOnchain } => true,
+        { Source.Network: SwapNetwork.BitcoinOnchain, Destination.Network: SwapNetwork.Ark } => true,
         _ => false
     };
 

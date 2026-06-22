@@ -454,11 +454,11 @@ public partial class BoltzSwapProvider : ISwapProvider
                     case BoltzSwapAction.CanCoopRefundSubmarine:
                         await RequestSubmarineCoopRefund(swap, swapStatus, cancellationToken);
                         continue;
-                    
+
                     case BoltzSwapAction.CanCoopRefundArkToBtc:
                         await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
                         continue;
-                    
+
                     case BoltzSwapAction.CanCoopRefundBtcToArk:
                         await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
                         continue;
@@ -481,17 +481,17 @@ public partial class BoltzSwapProvider : ISwapProvider
                         await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
                         continue;
                     }
-                    
+
                     case BoltzSwapAction.CanClaimChain:
                         await TryClaimBtcForChainSwap(swap, cancellationToken);
                         break;
-                    
+
                     case BoltzSwapAction.ReadyToSignClaim:
                         await TrySignBoltzBtcClaim(swap, cancellationToken);
                         break;
                 }
 
-                
+
                 // Re-read swap — claim handlers may have updated status to terminal
                 var updatedSwaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
                 swap = updatedSwaps.FirstOrDefault() ?? swap;

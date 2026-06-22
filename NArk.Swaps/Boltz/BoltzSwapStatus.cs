@@ -92,8 +92,8 @@ public static class BoltzSwapStatus
     public static ArkSwapStatus? ToArkSwapStatus(string status) => status switch
     {
         InvoiceSettled or TransactionClaimed => ArkSwapStatus.Settled,
-        TransactionRefunded                  => ArkSwapStatus.Refunded,
-        InvoiceExpired or TransactionFailed  => ArkSwapStatus.Failed,
-        _                                    => null
+        TransactionRefunded => ArkSwapStatus.Refunded,
+        InvoiceExpired or TransactionFailed => ArkSwapStatus.Failed,
+        _ => null
     };
 }

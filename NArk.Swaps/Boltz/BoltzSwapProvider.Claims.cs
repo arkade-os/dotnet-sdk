@@ -9,7 +9,7 @@ namespace NArk.Swaps.Boltz;
 
 public partial class BoltzSwapProvider
 {
-     internal async Task TryClaimBtcForChainSwap(ArkSwap swap, CancellationToken cancellationToken)
+    internal async Task TryClaimBtcForChainSwap(ArkSwap swap, CancellationToken cancellationToken)
     {
         if (swap.SwapType != ArkSwapType.ChainArkToBtc)
             return;

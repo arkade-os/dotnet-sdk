@@ -38,7 +38,7 @@ public static class SwapExtensions
         var updated = swap with
         {
             Metadata = new Dictionary<string, string>(swap.Metadata ?? [])
-                { [SwapMetadata.RefundDestination] = addr.ToString(network == Network.Main) },
+            { [SwapMetadata.RefundDestination] = addr.ToString(network == Network.Main) },
             UpdatedAt = DateTimeOffset.UtcNow
         };
         await swapStorage.SaveSwap(swap.WalletId, updated, ct);

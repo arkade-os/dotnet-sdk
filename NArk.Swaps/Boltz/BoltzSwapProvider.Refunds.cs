@@ -17,8 +17,11 @@ namespace NArk.Swaps.Boltz;
 
 public partial class BoltzSwapProvider
 {
-   internal async Task RequestSubmarineCoopRefund(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken = default)
-   {
+    // The state transaction.lockupFailed is not final and changes to swap.expired after the swap expired;
+    // the failure reason will be kept and informs e.g. if the user sending too little or too much was the reason for the swap to fail. T
+    // he states invoice.failedToPay and swap.expired are final. Boltz is not monitoring user's refund transactions.
+    internal async Task RequestSubmarineCoopRefund(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken = default)
+    {
         if (swap.SwapType != ArkSwapType.Submarine)
         {
             throw new InvalidOperationException("Only submarine swaps can be refunded");
@@ -164,8 +167,8 @@ public partial class BoltzSwapProvider
             // Refund already succeeded — cancellation during disposal is benign.
         }
     }
-   
-   
+
+
     /// <summary>
     /// Asks Boltz for a new chain-swap quote based on the amount actually
     /// funded at the lockup, and accepts it. Returns <c>true</c> on success
@@ -255,9 +258,9 @@ public partial class BoltzSwapProvider
             return false;
         }
     }
-    
-    
-        /// <summary>
+
+
+    /// <summary>
     /// Cooperative refund of an ARK→BTC chain swap whose Ark VHTLC lockup
     /// can't be redeemed (Boltz didn't lock BTC in time, swap expired,
     /// etc.). Builds an Ark refund tx spending the user's VHTLC back to a
@@ -499,10 +502,10 @@ public partial class BoltzSwapProvider
         }
     }
 
-    
+
     /// <summary>
     /// Chain swap cooperative refund — only on swap.expired.
-    /// 
+    ///
     /// User locked ARK in a VHTLC; we cooperatively
     /// spend it back via POST /v2/swap/chain/{id}/refund/ark.
     /// </summary>
@@ -544,10 +547,10 @@ public partial class BoltzSwapProvider
         return false;
     }
 
-    
+
     /// <summary>
     /// Chain swap cooperative refund — only on swap.expired.
-    /// 
+    ///
     /// BTC→ARK (from=BTC): the BTC lockup is refunded on-chain by Boltz
     /// after the timelock elapses — there is no client-side action.
     /// Per arkade-os/boltz-swap TS SDK: "BTC-side lockup refunds are
@@ -559,7 +562,7 @@ public partial class BoltzSwapProvider
     /// </summary>
     public async Task<bool> TryRefundBtcToArk(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken)
     {
-        
+
         _logger?.LogInformation(
             "Swap {SwapId}: chain swap expired ({SwapType}), attempting cooperative refund",
             swap.SwapId, swap.SwapType);
@@ -584,16 +587,16 @@ public partial class BoltzSwapProvider
             var failedSwap = swap with
             {
                 Status = ArkSwapStatus.Failed,
-                    FailReason = "Swap expired before any funds were locked",
-                    UpdatedAt = DateTimeOffset.UtcNow
+                FailReason = "Swap expired before any funds were locked",
+                UpdatedAt = DateTimeOffset.UtcNow
             };
             await _swapsStorage.SaveSwap(swap.WalletId, failedSwap, cancellationToken);
             RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
         }
         return false;
     }
-    
-    
+
+
     /// <summary>
     /// Script-path unilateral CLTV refund for a BTC→ARK chain swap whose BTC
     /// lockup was never redeemed and cooperative refund was refused by Boltz.

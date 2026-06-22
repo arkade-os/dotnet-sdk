@@ -612,7 +612,9 @@ public class SwapsManagementService : IAsyncDisposable
             {
                 return new SwapRecoveryInfo
                 {
-                    SwapId = swapId, Swap = swap, Status = SwapRecoveryStatus.InspectionError,
+                    SwapId = swapId,
+                    Swap = swap,
+                    Status = SwapRecoveryStatus.InspectionError,
                     Error = $"Failed to refresh VTXOs: {ex.Message}",
                 };
             }

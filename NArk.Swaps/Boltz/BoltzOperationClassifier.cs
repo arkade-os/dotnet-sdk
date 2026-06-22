@@ -6,7 +6,7 @@ namespace NArk.Swaps.Boltz;
 
 public static class BoltzOperationClassifier
 {
-    
+
     public static BoltzSwapAction? Classify(ArkSwap swap, string boltzStatus)
     {
         if (CanRenegotiateChainSwap(swap, boltzStatus))
@@ -23,7 +23,7 @@ public static class BoltzOperationClassifier
         {
             return BoltzSwapAction.CanCoopRefundArkToBtc;
         }
-        
+
         if (CanCoopRefundBtcToArk(swap, boltzStatus))
         {
             return BoltzSwapAction.CanCoopRefundBtcToArk;
@@ -41,8 +41,8 @@ public static class BoltzOperationClassifier
 
         return null;
     }
-    
-    
+
+
     //Renegotiation allows Chain Swaps that failed due to an incorrect lockup amount
     //to be salvaged instead of requiring a refund.
     //It applies only to Chain Swaps, not Submarine or Reverse Swaps.
@@ -54,16 +54,16 @@ public static class BoltzOperationClassifier
         }
         return chainSwapStatus == BoltzSwapStatus.TransactionLockupFailed;
     }
-    
+
     public static bool CanCoopRefundSubmarine(ArkSwap swap, string boltzSwapStatus) =>
         ValidateTypeAndStatus(swap, ArkSwapType.Submarine) && IsRefundableStatus(boltzSwapStatus);
 
-    public static bool CanCoopRefundArkToBtc(ArkSwap swap, string boltzSwapStatus) => 
+    public static bool CanCoopRefundArkToBtc(ArkSwap swap, string boltzSwapStatus) =>
         ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToBtc) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
-    
+
     public static bool CanCoopRefundBtcToArk(ArkSwap swap, string boltzSwapStatus) =>
         ValidateTypeAndStatus(swap, ArkSwapType.ChainBtcToArk) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
-    
+
     public static bool CanClaimChainSwap(ArkSwap swap, string status)
     {
         if (!ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToBtc))
@@ -81,7 +81,7 @@ public static class BoltzOperationClassifier
         }
         return status is BoltzSwapStatus.TransactionClaimPending;
     }
-    
+
     private static bool IsRefundableStatus(string status)
     {
         return status switch
@@ -93,7 +93,7 @@ public static class BoltzOperationClassifier
             _ => false
         };
     }
-    
+
     private static bool ValidateTypeAndStatus(ArkSwap swap, ArkSwapType expectedType)
     {
         if (swap.SwapType != expectedType)
