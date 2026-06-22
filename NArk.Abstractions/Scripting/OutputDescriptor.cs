@@ -1,18 +1,6 @@
 #pragma warning disable CS1591 // vendored NBitcoin scripting code
-using System;
-using System.Collections;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
-using System.Linq;
-using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
-using System.Text;
-using NBitcoin.DataEncoders;
-using NBitcoin.Secp256k1;
-
-#nullable enable
 
 namespace NBitcoin.Scripting
 {
@@ -879,4 +867,3 @@ namespace NBitcoin.Scripting
 		#endregion
 	}
 }
-#nullable disable

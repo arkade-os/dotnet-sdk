@@ -1,11 +1,5 @@
-using System;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using NBitcoin.Secp256k1;
-
-#nullable enable
 
 namespace NBitcoin
 {
@@ -310,4 +304,3 @@ namespace NBitcoin
 		}
 	}
 }
-#nullable disable

@@ -1,5 +1,3 @@
-using System;
-
 namespace NBitcoin.Scripting.Parser
 {
 	/// <summary>

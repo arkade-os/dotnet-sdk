@@ -1,6 +1,3 @@
-#nullable enable
-using NBitcoin;
-
 namespace NBitcoin.Scripting
 {
     /// <summary>
@@ -11,6 +8,6 @@ namespace NBitcoin.Scripting
     internal static class NBitcoinCompat
     {
         public static TaprootPubKey GetTaprootPubKey(this PubKey pubkey)
-            => new TaprootPubKey(pubkey.TaprootInternalKey.ToBytes());
+            => new (pubkey.TaprootInternalKey.ToBytes());
     }
 }

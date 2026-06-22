@@ -1,14 +1,8 @@
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using NBitcoin.Scripting.Parser;
 using static NBitcoin.Scripting.PubKeyProvider;
 using static NBitcoin.Scripting.ParserUtil;
-using System.Linq;
 using NBitcoin.DataEncoders;
 using P = NBitcoin.Scripting.Parser.Parser<char, NBitcoin.Scripting.OutputDescriptor>;
-
-#nullable enable
 
 namespace NBitcoin.Scripting
 {
@@ -447,4 +441,3 @@ namespace NBitcoin.Scripting
 
 	}
 }
-#nullable disable
