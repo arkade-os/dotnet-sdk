@@ -2,8 +2,8 @@
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Wallets;
-using NArk.Core.Helpers;
 using NArk.Core.Extensions;
+using NArk.Core.Helpers;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
@@ -49,10 +49,7 @@ public class TreeSignerSession
         // which loses parity through tr() serialization roundtrip.
         // The cosigner keys in the PSBT were registered with the correct-parity key from
         // signer.GetPubKey() in IntentGenerationService, so we must match that here.
-        var signer = await _walletProvider.GetSignerAsync(_walletId, cancellationToken)
-                     ?? throw new InvalidOperationException(
-                         $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
-        var myPubKey = await signer.GetPubKey(_descriptor, cancellationToken);
+        var (_ , myPubKey) = await _walletProvider.GetSignerAndPubKeyAsync(_walletId, _descriptor, cancellationToken);
         var descriptorPubKey = _descriptor.ToPubKey();
 
         _logger?.LogInformation(
@@ -160,10 +157,7 @@ public class TreeSignerSession
         if (_myNonces != null)
             throw new InvalidOperationException("nonces already generated");
 
-        var walletIdentifier = _walletId;
-        var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken)
-                     ?? throw new InvalidOperationException(
-                         $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
+        var signer = await _walletProvider.GetSignerOrThrowAsync(_walletId, cancellationToken);
 
         var res = new Dictionary<uint256, MusigPubNonce>();
         foreach (var (txid, musigContext) in _musigContexts!)
@@ -195,10 +189,7 @@ public class TreeSignerSession
         if (musigContext.AggregateNonce is null)
             throw new InvalidOperationException("missing aggregate nonce");
 
-        var walletIdentifier = _walletId;
-        var signer = await _walletProvider.GetSignerAsync(walletIdentifier, cancellationToken)
-                     ?? throw new InvalidOperationException(
-                         $"Wallet '{_walletId}' has no signer; watch-only wallets cannot participate in batch signing.");
+        var signer = await _walletProvider.GetSignerOrThrowAsync(_walletId, cancellationToken);
 
         // Signer looks up the secret nonce by sessionId (the tree-node txid, same as we passed
         // to GenerateNonces) and consumes it.

@@ -166,7 +166,7 @@ public class BatchSession(
 
 
         // Create a signing session
-        var session = new TreeSignerSession(arkIntent.WalletId,walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value, logger);
+        var session = new TreeSignerSession(arkIntent.WalletId, walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value, logger);
 
         // Generate and submit nonces
         var nonces = await session.GetNoncesAsync(cancellationToken);
@@ -174,9 +174,7 @@ public class BatchSession(
         // Use the signer's actual pubkey (with correct parity) to identify ourselves to the server.
         // The server registered our cosigner key with the correct parity from IntentGenerationService,
         // so we must match that here. descriptor.Extract().PubKey would lose parity through tr() roundtrip.
-        var signer = await walletProvider.GetSignerAsync(arkIntent.WalletId, cancellationToken)
-                     ?? throw new InvalidOperationException("Signer not found for wallet");
-        var signerPubKey = await signer.GetPubKey(_outputDescriptor, cancellationToken);
+        var (_, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(arkIntent.WalletId, _outputDescriptor, cancellationToken);
 
         logger?.LogInformation(
             "SubmitTreeNonces: using signerPubKey={SignerPubKey} (descriptorPubKey would have been {DescriptorPubKey})",
@@ -209,9 +207,7 @@ public class BatchSession(
         var signatures = await session.SignAsync(cancellationToken);
 
         // Use the signer's actual pubkey (with correct parity) to identify ourselves to the server.
-        var signer = await walletProvider.GetSignerAsync(arkIntent.WalletId, cancellationToken)
-                     ?? throw new InvalidOperationException("Signer not found for wallet");
-        var signerPubKey = await signer.GetPubKey(_outputDescriptor, cancellationToken);
+        var (_, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(arkIntent.WalletId, _outputDescriptor, cancellationToken);
 
         logger?.LogInformation(
             "SubmitTreeSignatures: using signerPubKey={SignerPubKey}",
@@ -309,10 +305,7 @@ public class BatchSession(
                         $"Boarding input {boardingCoin.Outpoint} not found in commitment tx");
                 }
 
-                var signer = await walletProvider.GetSignerAsync(
-                    boardingCoin.WalletIdentifier, cancellationToken)
-                    ?? throw new InvalidOperationException(
-                        $"No signer for wallet {boardingCoin.WalletIdentifier}");
+                var signer = await walletProvider.GetSignerOrThrowAsync(boardingCoin.WalletIdentifier, cancellationToken);
 
                 var precomputedData = commitmentPsbt.GetGlobalTransaction()
                     .PrecomputeTransactionData(

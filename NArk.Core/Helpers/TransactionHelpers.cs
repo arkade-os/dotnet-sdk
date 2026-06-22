@@ -6,6 +6,7 @@ using NArk.Abstractions.Safety;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
+using NArk.Core.Extensions;
 using NArk.Core.Models;
 using NArk.Core.Scripts;
 using NArk.Core.Transport;
@@ -36,10 +37,8 @@ public static class TransactionHelpers
 
             receivedCheckpointTx.UpdateFrom(checkpointTx);
 
-            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
-                ?? throw new InvalidOperationException(
-                    $"Cannot sign checkpoint tx: wallet '{coin.WalletIdentifier}' has no signer " +
-                    "(watch-only wallet, or its remote signer transport is unavailable).");
+            var signer = await walletProvider.GetSignerOrThrowAsync(coin.WalletIdentifier, cancellationToken,
+                $"Cannot sign checkpoint tx: wallet '{coin.WalletIdentifier}' has no signer (watch-only or remote signer unavailable).");
 
             await PsbtHelpers.SignAndFillPsbt(signer, coin, receivedCheckpointTx, checkpointPrecomputedTransactionData,
                 cancellationToken: cancellationToken);
@@ -71,14 +70,8 @@ public static class TransactionHelpers
                 var checkpointContract = CreateCheckpointContract(coin, serverInfo.CheckpointTapScript);
 
                 // Build checkpoint transaction
-                var checkpoint = serverInfo.Network.CreateTransactionBuilder();
-                checkpoint.SetVersion(3);
-                checkpoint.SetFeeWeight(0);
-                checkpoint.AddCoin(coin, new CoinOptions()
-                {
-                    Sequence = coin.Sequence
-                });
-                checkpoint.DustPrevention = false;
+                var checkpoint = CreateArkTxBuilder(serverInfo.Network);
+                checkpoint.AddCoin(coin, new CoinOptions() { Sequence = coin.Sequence });
                 checkpoint.Send(checkpointContract.GetArkAddress(), coin.Amount);
                 checkpoint.SetLockTime(coin.LockTime ?? LockTime.Zero);
                 var checkpointTx = checkpoint.BuildPSBT(false, PSBTVersion.PSBTv0);
@@ -119,12 +112,7 @@ public static class TransactionHelpers
 
             // Build the Ark transaction that spends from all checkpoint outputs
 
-            var arkTx = serverInfo.Network.CreateTransactionBuilder();
-            arkTx.SetVersion(3);
-            arkTx.SetFeeWeight(0);
-            arkTx.DustPrevention = false;
-            arkTx.ShuffleInputs = false;
-            arkTx.ShuffleOutputs = false;
+            var arkTx = CreateArkTxBuilder(serverInfo.Network);
             // arkTx.Send(p2a, Money.Zero);
             arkTx.AddCoins(checkpointCoins);
 
@@ -233,10 +221,8 @@ public static class TransactionHelpers
 
             foreach (var (_, coin) in sortedCheckpointCoins)
             {
-                var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
-                    ?? throw new InvalidOperationException(
-                        $"Cannot sign Arkade tx checkpoint input: wallet '{coin.WalletIdentifier}' has no signer " +
-                        "(watch-only wallet, or its remote signer transport is unavailable).");
+                var signer = await walletProvider.GetSignerOrThrowAsync(coin.WalletIdentifier, cancellationToken,
+                    $"Cannot sign Arkade tx checkpoint input: wallet '{coin.WalletIdentifier}' has no signer (watch-only or remote signer unavailable).");
                 await PsbtHelpers.SignAndFillPsbt(signer, coin, tx, precomputedTransactionData, cancellationToken: cancellationToken);
             }
 
@@ -254,6 +240,17 @@ public static class TransactionHelpers
         /// <summary>
         /// Creates a checkpoint contract based on the input contract type
         /// </summary>
+        private static TransactionBuilder CreateArkTxBuilder(Network network)
+        {
+            var b = network.CreateTransactionBuilder();
+            b.SetVersion(3);
+            b.SetFeeWeight(0);
+            b.DustPrevention = false;
+            b.ShuffleInputs = false;
+            b.ShuffleOutputs = false;
+            return b;
+        }
+
         private ArkContract CreateCheckpointContract(ArkCoin coin, UnilateralPathArkTapScript serverUnrollScript)
         {
             if (coin.Contract.Server is null)
@@ -370,12 +367,7 @@ public static class TransactionHelpers
                 : TaprootSigHash.Default;
 
             // Build forfeit transaction
-            var txBuilder = arkServerInfo.Network.CreateTransactionBuilder();
-            txBuilder.SetVersion(3);
-            txBuilder.SetFeeWeight(0);
-            txBuilder.DustPrevention = false;
-            txBuilder.ShuffleInputs = false;
-            txBuilder.ShuffleOutputs = false;
+            var txBuilder = CreateArkTxBuilder(arkServerInfo.Network);
             txBuilder.SetLockTime(coin.LockTime ?? LockTime.Zero);
 
             // Sequences must match arkd's tree.BuildForfeitTx exactly, or the txid
@@ -431,11 +423,8 @@ public static class TransactionHelpers
             var precomputedTransactionData =
                 gtx.PrecomputeTransactionData(sortedCheckpointCoins.OrderBy(x => x.Key).Select(x => x.Value).ToArray());
 
-            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
-                ?? throw new InvalidOperationException(
-                    $"Cannot sign forfeit tx: wallet '{coin.WalletIdentifier}' has no signer " +
-                    "(watch-only wallet, or its remote signer transport is unavailable). " +
-                    "Watch-only wallets cannot participate in batches that demand a forfeit.");
+            var signer = await walletProvider.GetSignerOrThrowAsync(coin.WalletIdentifier, cancellationToken,
+                $"Cannot sign forfeit tx: wallet '{coin.WalletIdentifier}' has no signer. Watch-only wallets cannot participate in batches that demand a forfeit.");
 
             await PsbtHelpers.SignAndFillPsbt(signer, coin, forfeitTx, precomputedTransactionData, sighash, cancellationToken);
 

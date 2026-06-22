@@ -3,13 +3,13 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
+using NArk.Core.Extensions;
 using NArk.Core.Helpers;
 using NArk.Core.Assets;
 using NArk.Core.Transformers;
@@ -126,17 +126,14 @@ public class DelegationMonitorService(
         ScriptBuilder forfeitScriptBuilder,
         ArkServerInfo serverInfo)
     {
-        var signer = await walletProvider.GetSignerAsync(walletId)
-            ?? throw new InvalidOperationException($"No signer for wallet {walletId}");
-
         // Get signing descriptor from the contract's user key
         var signerDescriptor = contract switch
         {
-            Core.Contracts.ArkDelegateContract dc => dc.User,
+            ArkDelegateContract dc => dc.User,
             _ => throw new InvalidOperationException($"Unsupported contract type for delegation: {contract.Type}")
         };
 
-        var signerPubKey = await signer.GetPubKey(signerDescriptor);
+        var (signer, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(walletId, signerDescriptor);
 
         // Build the intent message
         var intentMessage = JsonSerializer.Serialize(new

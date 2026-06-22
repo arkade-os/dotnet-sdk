@@ -11,7 +11,6 @@ using NArk.Abstractions.Safety;
 
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
-using NArk.Core.Contracts;
 using NArk.Core.Helpers;
 using NArk.Core.Models;
 using NArk.Core.Models.Options;
@@ -256,7 +255,7 @@ public class IntentGenerationService(
             }
 
             // If the intent has been submitted to arkd, delete it from the server first
-            if ( intentAfterLock.IntentId is not null)
+            if (intentAfterLock.IntentId is not null)
             {
                 try
                 {
@@ -295,7 +294,7 @@ public class IntentGenerationService(
         var inputsSum = intentSpec.Coins.Sum(c => c.Amount);
         var fee = await feeEstimator.EstimateFeeAsync(intentSpec, token);
 
-        if (inputsSum -outputsSum < fee)
+        if (inputsSum - outputsSum < fee)
         {
             logger?.LogWarning("Intent generation failed for wallet {WalletId}: fees not properly considered, missing {MissingAmount} sats", walletId, inputsSum + fee - outputsSum);
             throw new InvalidOperationException(
@@ -326,9 +325,7 @@ public class IntentGenerationService(
 
         // Get the signer's actual compressed pubkey (with correct parity) rather than
         // deriving it from the descriptor, which loses parity through tr() serialization.
-        var signer = await walletProvider.GetSignerAsync(walletId, token)
-                     ?? throw new InvalidOperationException("Signer not found for wallet");
-        var signerPubKey = await signer.GetPubKey(singingDescriptor, token);
+        var (_, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(walletId, singingDescriptor, token);
         var descriptorPubKey = singingDescriptor.ToPubKey();
 
         logger?.LogInformation(
@@ -484,15 +481,15 @@ public class IntentGenerationService(
         {
             Type = "register",
             OnchainOutputsIndexes = outs?.Select((x, i) => (x, i)).Where(o => o.x.Type == ArkTxOutType.Onchain).Select((_, i) => i).ToArray() ?? [],
-            ValidAt = validAt?.ToUnixTimeSeconds()??0,
-            ExpireAt = expireAt?.ToUnixTimeSeconds()??0,
+            ValidAt = validAt?.ToUnixTimeSeconds() ?? 0,
+            ExpireAt = expireAt?.ToUnixTimeSeconds() ?? 0,
             CosignersPublicKeys = cosigners.Select(c => c.ToBytes().ToHexStringLower()).ToArray()
         };
 
         var deleteMsg = new Messages.DeleteIntentMessage()
         {
             Type = "delete",
-            ExpireAt = expireAt?.ToUnixTimeSeconds()??0
+            ExpireAt = expireAt?.ToUnixTimeSeconds() ?? 0
         };
         var message = JsonSerializer.Serialize(msg);
         var deleteMessage = JsonSerializer.Serialize(deleteMsg);
