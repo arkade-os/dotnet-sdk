@@ -1,5 +1,6 @@
 namespace NArk.Abstractions.Contracts;
 
+/// <summary>Persisted representation of an Arkade contract, keyed by its scriptPubKey hex.</summary>
 public record ArkContractEntity(
     string Script,
     ContractActivityState ActivityState,

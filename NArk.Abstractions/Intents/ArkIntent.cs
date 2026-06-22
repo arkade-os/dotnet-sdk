@@ -2,6 +2,10 @@ using NBitcoin;
 
 namespace NArk.Abstractions.Intents;
 
+/// <summary>
+/// A submitted Arkade intent: a signed commitment to spend specific VTXOs to given outputs,
+/// tracked through the batch lifecycle until it succeeds, fails, or is cancelled.
+/// </summary>
 public record ArkIntent(
     string IntentTxId,
     string? IntentId,
@@ -22,6 +26,7 @@ public record ArkIntent(
     string SignerDescriptor
 )
 {
+#pragma warning disable CS1591
     private sealed class IntentTxIdEqualityComparer : IEqualityComparer<ArkIntent>
     {
         public bool Equals(ArkIntent? x, ArkIntent? y)
@@ -38,6 +43,8 @@ public record ArkIntent(
             return obj.IntentTxId.GetHashCode();
         }
     }
+#pragma warning restore CS1591
 
+    /// <summary>Compares intents by <see cref="IntentTxId"/> for use in collections and dictionaries.</summary>
     public static IEqualityComparer<ArkIntent> IntentTxIdComparer { get; } = new IntentTxIdEqualityComparer();
 }

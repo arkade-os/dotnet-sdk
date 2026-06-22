@@ -48,6 +48,7 @@ public interface IFeeWallet
     /// </param>
     /// <param name="sighash">Precomputed taproot sighash.</param>
     /// <param name="sighashType">Sighash type (typically <see cref="TaprootSigHash.Default"/>).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     Task<SecpSchnorrSignature> SignFeeUtxoAsync(
         OutPoint feeOutpoint,
         uint256 sighash,
@@ -59,4 +60,3 @@ public interface IFeeWallet
     /// </summary>
     Task<Script> GetChangeScriptAsync(CancellationToken cancellationToken = default);
 }
-

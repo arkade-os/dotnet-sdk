@@ -1,4 +1,4 @@
-using NArk.Abstractions.Helpers;
+#pragma warning disable CS1591
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using NBitcoin.Scripting;
@@ -61,11 +61,11 @@ public static class KeyExtensions
     // GetCoin latencies. Parsed OutputDescriptors are immutable, so caching
     // by (string, network) is safe. Bounded by the number of unique
     // descriptors the wallet ever sees (small).
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), OutputDescriptor> _descriptorCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), OutputDescriptor> DescriptorCache = new();
 
     private static OutputDescriptor ParseCached(string str, Network network)
     {
         var key = (str, network.NetworkSet.CryptoCode + ":" + network.ChainName);
-        return _descriptorCache.GetOrAdd(key, _ => OutputDescriptor.Parse(str, network));
+        return DescriptorCache.GetOrAdd(key, _ => OutputDescriptor.Parse(str, network));
     }
 }

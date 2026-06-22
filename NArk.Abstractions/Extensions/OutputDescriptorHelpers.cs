@@ -1,3 +1,4 @@
+#pragma warning disable CS1591
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
@@ -13,10 +14,8 @@ public static class OutputDescriptorHelpers
         KeyPath? FullPath,
         ECPubKey? PubKey,
         ECXOnlyPubKey XOnlyPubKey
-    )
-    {
-    };
-
+    );
+    
     public static OutputDescriptorMetadata Extract(this OutputDescriptor descriptor)
     {
         if (descriptor is not OutputDescriptor.Tr trOutputDescriptor)

@@ -63,8 +63,11 @@ public enum ArkPaymentMethod
 /// </summary>
 public enum ArkPaymentStatus
 {
+    /// <summary>Payment is in progress.</summary>
     Pending,
+    /// <summary>Payment settled successfully.</summary>
     Completed,
+    /// <summary>Payment failed; see <see cref="ArkPayment.FailReason"/>.</summary>
     Failed,
     /// <summary>Payment was explicitly cancelled by the user or application.</summary>
     Cancelled

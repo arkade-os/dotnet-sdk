@@ -3,6 +3,7 @@ namespace NArk.Abstractions.Wallets;
 /// <summary>Raised when a wallet's sweep destination is auto-disabled because an Arkade signer rotation made it stale.</summary>
 public sealed class DestinationDisabledEventArgs : EventArgs
 {
+    /// <summary>Wallet whose sweep destination was disabled.</summary>
     public required string WalletId { get; init; }
     /// <summary>The (now stale) destination address string that was disabled.</summary>
     public required string Destination { get; init; }
@@ -16,5 +17,6 @@ public sealed class DestinationDisabledEventArgs : EventArgs
 /// </summary>
 public interface IDestinationSafetyNotifier
 {
+    /// <summary>Raised when a wallet's sweep destination is auto-disabled due to an Arkade signer rotation.</summary>
     event EventHandler<DestinationDisabledEventArgs>? DestinationDisabled;
 }

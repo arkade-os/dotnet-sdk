@@ -2,10 +2,13 @@ using NBitcoin;
 
 namespace NArk.Abstractions.Intents;
 
+/// <summary>Persistence for Arkade intents.</summary>
 public interface IIntentStorage
 {
+    /// <summary>Raised when an intent is saved or its state changes.</summary>
     public event EventHandler<ArkIntent>? IntentChanged;
 
+    /// <summary>Inserts or updates an intent record.</summary>
     public Task SaveIntent(string walletId, ArkIntent intent, CancellationToken cancellationToken = default);
 
     /// <summary>

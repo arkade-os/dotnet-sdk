@@ -2,8 +2,10 @@ using NArk.Abstractions.Scripts;
 
 namespace NArk.Abstractions.Contracts;
 
+/// <summary>Persistence for Arkade contracts; also drives active-script subscription via <see cref="IActiveScriptsProvider"/>.</summary>
 public interface IContractStorage : IActiveScriptsProvider
 {
+    /// <summary>Raised when a contract is saved or its activity state changes.</summary>
     event EventHandler<ArkContractEntity>? ContractsChanged;
 
     /// <summary>
@@ -28,6 +30,7 @@ public interface IContractStorage : IActiveScriptsProvider
         int? take = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Inserts or updates a contract record.</summary>
     Task SaveContract(ArkContractEntity walletEntity, CancellationToken cancellationToken = default);
 
     /// <summary>

@@ -1,3 +1,4 @@
+#pragma warning disable CS1591
 using NBitcoin;
 
 namespace NArk.Abstractions.Extensions;

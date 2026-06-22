@@ -3,6 +3,9 @@ using NBitcoin;
 
 namespace NArk.Abstractions.VTXOs;
 
+/// <summary>
+/// A VTXO stored by the SDK: an off-chain tree output, a boarding UTXO, or an unrolled on-chain output.
+/// </summary>
 public record ArkVtxo(
     string Script,
     string TransactionId,
@@ -29,10 +32,13 @@ public record ArkVtxo(
     /// </summary>
     public const string ConfirmedMetadataKey = "Confirmed";
 
+    /// <summary>Outpoint identifying this VTXO (txid + vout).</summary>
     public OutPoint OutPoint => new(new uint256(TransactionId), TransactionOutputIndex);
+    /// <summary>The transaction output (amount + scriptPubKey) for PSBT construction.</summary>
     public TxOut TxOut => new(Money.Satoshis(Amount), NBitcoin.Script.FromHex(Script));
 
 
+    /// <summary>Wraps this VTXO as an NBitcoin <see cref="ICoinable"/> for use in PSBT construction.</summary>
     public ICoinable ToCoin()
     {
         var outpoint = new OutPoint(new uint256(TransactionId), TransactionOutputIndex);
@@ -40,6 +46,7 @@ public record ArkVtxo(
         return new Coin(outpoint, txOut);
     }
 
+    /// <summary>True if this VTXO has been spent offchain or settled on-chain.</summary>
     public bool IsSpent()
     {
         return !string.IsNullOrEmpty(SpentByTransactionId) || !string.IsNullOrEmpty(SettledByTransactionId);
@@ -54,6 +61,7 @@ public record ArkVtxo(
         return false;
     }
 
+    /// <summary>True when the VTXO is unspent and not yet recoverable (can participate in an offchain intent).</summary>
     public bool CanSpendOffchain(TimeHeight current)
     {
         // VTXOs can be spent offchain (in Ark protocol) if they are NOT spent and NOT recoverable.
@@ -61,6 +69,7 @@ public record ArkVtxo(
         return !IsSpent() && !IsRecoverable(current);
     }
 
+    /// <summary>True when the VTXO can be redeemed on-chain (swept or past expiry).</summary>
     public bool IsRecoverable(TimeHeight current)
     {
         return Swept || IsExpired(current) ;

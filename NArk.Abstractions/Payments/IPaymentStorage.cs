@@ -5,7 +5,9 @@ namespace NArk.Abstractions.Payments;
 /// </summary>
 public interface IPaymentStorage
 {
+#pragma warning disable CS1591
     event EventHandler<ArkPayment>? PaymentChanged;
+#pragma warning restore CS1591
 
     /// <summary>
     /// Save or update a payment.

@@ -1,3 +1,4 @@
+#pragma warning disable CS1591
 using System.Text;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Wallets;
@@ -57,11 +58,8 @@ public static class PsbtHelpers
             EncodeTaprootTree(leaves);
 
 
-    /// <summary>
-    /// Encodes a collection of taproot script leaves into a byte array following PSBT spec
-    /// Format: {<depth> <version> <script_length> <script>}* (no leaf count prefix)
-    /// </summary>
-    /// <param name="leaves">Array of tapscript byte arrays</param>
+    // Encodes taproot script leaves per PSBT spec: {depth version script_length script}* (no leaf count prefix).
+    // Param: leaves — array of tapscript byte arrays.
     /// <returns>Encoded taproot tree as byte array</returns>
     private static byte[] EncodeTaprootTree(TapScript[] leaves)
     {
@@ -108,7 +106,4 @@ public static class PsbtHelpers
 
         psbtInput.SetTaprootScriptSpendSignature(pubKey, coin.SpendingScript.LeafHash, sig);
     }
-
-
-
 }

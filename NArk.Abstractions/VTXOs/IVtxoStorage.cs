@@ -3,10 +3,13 @@ using NBitcoin;
 
 namespace NArk.Abstractions.VTXOs;
 
+/// <summary>Persistence for VTXOs; also drives the active-script subscription via <see cref="IActiveScriptsProvider"/>.</summary>
 public interface IVtxoStorage : IActiveScriptsProvider
 {
+    /// <summary>Raised when a VTXO is inserted or updated.</summary>
     public event EventHandler<ArkVtxo>? VtxosChanged;
 
+    /// <summary>Inserts or updates a VTXO. Returns true when a new record was created.</summary>
     Task<bool> UpsertVtxo(ArkVtxo vtxo, CancellationToken cancellationToken = default);
 
     /// <summary>

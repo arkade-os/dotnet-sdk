@@ -1,8 +1,10 @@
 namespace NArk.Abstractions.Safety;
 
+/// <summary>Disposes a group of sync and async disposables; exceptions from individual items are suppressed.</summary>
 public class CompositeDisposable(IReadOnlyCollection<IDisposable> syncDisposables, IReadOnlyCollection<IAsyncDisposable> asyncDisposables)
 : IDisposable, IAsyncDisposable
 {
+#pragma warning disable CS1591
     public void Dispose()
     {
         foreach (var disposable in syncDisposables)
@@ -56,4 +58,5 @@ public class CompositeDisposable(IReadOnlyCollection<IDisposable> syncDisposable
             }
         }
     }
+#pragma warning restore CS1591
 }
