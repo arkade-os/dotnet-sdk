@@ -427,7 +427,7 @@ public static class DockerHelper
 
         throw new InvalidOperationException("Boltz did not become healthy within 120 s after restart");
     }
-    
+
     /// <summary>Docker container names used by the denigiri regtest stack.</summary>
     internal static class Container
     {

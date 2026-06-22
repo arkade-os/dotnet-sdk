@@ -15,7 +15,7 @@ public static class OutputDescriptorHelpers
         ECPubKey? PubKey,
         ECXOnlyPubKey XOnlyPubKey
     );
-    
+
     public static OutputDescriptorMetadata Extract(this OutputDescriptor descriptor)
     {
         if (descriptor is not OutputDescriptor.Tr trOutputDescriptor)

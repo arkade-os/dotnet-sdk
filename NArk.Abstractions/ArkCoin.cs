@@ -111,7 +111,7 @@ public class ArkCoin : Coin
     /// <summary>True when the coin must be redeemed on-chain (swept or past expiry).</summary>
     public bool IsRecoverable(TimeHeight current)
     {
-        return Swept || IsExpired(current) ;
+        return Swept || IsExpired(current);
     }
 
     /// <summary>

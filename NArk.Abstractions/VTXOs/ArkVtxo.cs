@@ -72,7 +72,7 @@ public record ArkVtxo(
     /// <summary>True when the VTXO can be redeemed on-chain (swept or past expiry).</summary>
     public bool IsRecoverable(TimeHeight current)
     {
-        return Swept || IsExpired(current) ;
+        return Swept || IsExpired(current);
     }
 
     /// <summary>

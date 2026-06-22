@@ -49,7 +49,7 @@ public class TreeSignerSession
         // which loses parity through tr() serialization roundtrip.
         // The cosigner keys in the PSBT were registered with the correct-parity key from
         // signer.GetPubKey() in IntentGenerationService, so we must match that here.
-        var (_ , myPubKey) = await _walletProvider.GetSignerAndPubKeyAsync(_walletId, _descriptor, cancellationToken);
+        var (_, myPubKey) = await _walletProvider.GetSignerAndPubKeyAsync(_walletId, _descriptor, cancellationToken);
         var descriptorPubKey = _descriptor.ToPubKey();
 
         _logger?.LogInformation(

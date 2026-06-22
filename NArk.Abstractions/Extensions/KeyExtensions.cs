@@ -29,8 +29,8 @@ public static class KeyExtensions
     {
         return descriptor.Extract().XOnlyPubKey ?? throw new ArgumentException("the output descriptor does not contain an xonly pubkey", nameof(descriptor));
     }
-    
-    
+
+
     public static OutputDescriptor ParseOutputDescriptor(string str, Network network)
     {
         if (!HexEncoder.IsWellFormed(str))
