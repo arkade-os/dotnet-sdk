@@ -10,9 +10,7 @@ using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Text;
 using NBitcoin.DataEncoders;
-#if HAS_SPAN
 using NBitcoin.Secp256k1;
-#endif
 
 #nullable enable
 
@@ -141,7 +139,6 @@ namespace NBitcoin.Scripting
 			}
 		}
 
-#if HAS_SPAN
 		/// <summary>
 		/// binary tree to represent MAST in Taproot script for descriptor.
 		/// </summary>
@@ -290,7 +287,6 @@ namespace NBitcoin.Scripting
 				OutputPubKeyProvider = outputPubKeyProvider ?? throw new ArgumentNullException(nameof(outputPubKeyProvider));
 			}
 		}
-#endif
 
 		public static OutputDescriptor NewAddr(IDestination dest, Network network) => new Addr(dest, network);
 		public static OutputDescriptor NewRaw(Script sc, Network network) => new Raw(sc, network);
@@ -302,12 +298,10 @@ namespace NBitcoin.Scripting
 			=> new Multi(m, pks, isSorted, network, isTapScript);
 		public static OutputDescriptor NewSH(OutputDescriptor inner, Network network) => new SH(inner, network);
 		public static OutputDescriptor NewWSH(OutputDescriptor inner, Network network) => new WSH(inner, network);
-#if HAS_SPAN
 		public static OutputDescriptor NewTr(PubKeyProvider innerPubKey, Network network, TapTree? tapTree = null) =>
 			new Tr(innerPubKey, network, tapTree);
 		public static OutputDescriptor NewRawTr(PubKeyProvider outputPubkeyProvider, Network network) =>
 			new RawTr(outputPubkeyProvider, network);
-#endif
 
 		public bool IsTopLevelOnly() => this switch
 		{
@@ -315,10 +309,8 @@ namespace NBitcoin.Scripting
 			Raw _ => true,
 			Combo _ => true,
 			SH _ => true,
-#if HAS_SPAN
 			Tr _ => true,
 			RawTr _ => true,
-#endif
 			_ => false
 		};
 
@@ -383,9 +375,7 @@ namespace NBitcoin.Scripting
 			if (keyOrigin1 != null)
 			{
 				repo.SetKeyOrigin(pubkey1.Hash, keyOrigin1);
-#if HAS_SPAN
 				repo.SetKeyOrigin(pubkey1.GetTaprootPubKey(), keyOrigin1);
-#endif
 			}
 
 			repo.SetPubKey(pubkey1.Hash, pubkey1);
@@ -462,7 +452,6 @@ namespace NBitcoin.Scripting
 						outputScripts.Add(inner.WitHash.ScriptPubKey);
 					}
 					return true;
-#if HAS_SPAN
 				case Tr self:
 					if (!self.InnerPubkey.TryGetPubKey(pos, privateKeyProvider, out var keyOrigin2, out var pubkey2))
 						return false;
@@ -487,7 +476,6 @@ namespace NBitcoin.Scripting
 					return true;
 				case RawTr self:
 					return ExpandPkHelper(self.OutputPubKeyProvider, privateKeyProvider, pos, repo, outputScripts, true);
-#endif
 			}
 			throw new Exception("Unreachable");
 		}
@@ -509,7 +497,6 @@ namespace NBitcoin.Scripting
 					return new List<Script> { self.Script };
 				case PK _:
 					return
-#if HAS_SPAN
 						isTaproot ?
 						new List<Script>
 						{
@@ -518,7 +505,6 @@ namespace NBitcoin.Scripting
 								OpcodeType.OP_CHECKSIG
 							)
 						} :
-#endif
 						new List<Script> { key.ScriptPubKey };
 				case PKH _:
 					return new List<Script> { key.Hash.ScriptPubKey };
@@ -537,10 +523,8 @@ namespace NBitcoin.Scripting
 						repo.SetScript(key.WitHash.ScriptPubKey.Hash, key.WitHash.ScriptPubKey);
 					}
 					return res;
-#if HAS_SPAN
 				case RawTr _:
 					return new List<Script> { key.GetTaprootPubKey().ScriptPubKey };
-#endif
 				// Other cases never calls this function. Because this method is just a helper for expanding above cases
 			}
 
@@ -588,13 +572,11 @@ namespace NBitcoin.Scripting
 				self.Inner.IsRange(),
 			WSH self =>
 				self.Inner.IsRange(),
-#if HAS_SPAN
 			Tr self =>
 				self.InnerPubkey.IsRange() ||
 				(self.TapLeafs is not null && self.TapLeafs.IterateScripts().Any(leaf => leaf.Item1.IsRange())),
 			RawTr self =>
 				self.OutputPubKeyProvider.IsRange(),
-#endif
 			_ =>
 				throw new Exception("Unreachable"),
 		};
@@ -604,9 +586,7 @@ namespace NBitcoin.Scripting
 			TOP,
 			P2SH,
 			P2WSH,
-#if HAS_SPAN
 			P2TR,
-#endif
 		}
 
 		private static PubKeyProvider InferPubKey(PubKey pk, ISigningRepository repo)
@@ -650,12 +630,10 @@ namespace NBitcoin.Scripting
 					_ => ScriptPubKeyType.Legacy,
 				},
 			WSH _ => ScriptPubKeyType.Segwit,
-#if HAS_SPAN
 			Tr self =>
 				self.TapLeafs is null ?
 				ScriptPubKeyType.TaprootBIP86 :
 				null,
-#endif
 			_ => null
 		};
 
@@ -680,14 +658,12 @@ namespace NBitcoin.Scripting
 				$"sh({self.Inner.ToStringHelper()})",
 			WSH self =>
 				$"wsh({self.Inner.ToStringHelper()})",
-#if HAS_SPAN
 			Tr self =>
 				self.IsKeyPathSpendOnly ?
 				$"tr({self.InnerPubkey})" :
 				$"tr({self.InnerPubkey},{self.TapLeafs})",
 			RawTr self =>
 				$"rawtr({self.OutputPubKeyProvider})",
-#endif
 			_ =>
 				throw new Exception("unreachable")
 		};
@@ -758,13 +734,11 @@ namespace NBitcoin.Scripting
 				other is SH o && self.Inner.Equals(o.Inner),
 			WSH self =>
 				other is WSH o && self.Inner.Equals(o.Inner),
-#if HAS_SPAN
 			Tr self =>
 				other is Tr o && self.InnerPubkey.Equals(o.InnerPubkey) &&
 					((self.TapLeafs is null && o.TapLeafs is null) || self.TapLeafs?.ToString().Equals(o.TapLeafs?.ToString()) == true),
 			RawTr self =>
 				other is RawTr o && self.OutputPubKeyProvider.Equals(o.OutputPubKeyProvider),
-#endif
 			_ =>
 				throw new Exception("Unreachable!"),
 		};
@@ -825,7 +799,6 @@ namespace NBitcoin.Scripting
 						num = 8;
 						return -1640531527 + self.Inner.GetHashCode() + ((num << 6) + (num >> 2));
 					}
-#if HAS_SPAN
 				case Tr self:
 					{
 						num = 9;
@@ -842,7 +815,6 @@ namespace NBitcoin.Scripting
 						num = 10;
 						return -1640531527 + self.OutputPubKeyProvider.GetHashCode() + ((num << 6) + (num >> 2));
 					}
-#endif
 			default:
 					throw new Exception("Unreachable!");
 			}

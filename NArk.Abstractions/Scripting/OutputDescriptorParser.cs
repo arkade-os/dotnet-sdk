@@ -53,7 +53,6 @@ namespace NBitcoin.Scripting
 							repo.SetKeyOrigin(constPkPV.Pk.Hash, pkpV.KeyOriginInfo);
 						}
 					}
-#if HAS_SPAN
 					if (r.Value is BitcoinSecret sc)
 					{
 						repo.SetSecret(sc.PubKey.GetTaprootPubKey(), sc);
@@ -70,7 +69,6 @@ namespace NBitcoin.Scripting
 							repo.SetKeyOrigin(constPkPV.Pk.GetTaprootPubKey(), origin.KeyOriginInfo);
 						}
 					}
-#endif
 				}
 				return r;
 			};
@@ -98,7 +96,6 @@ namespace NBitcoin.Scripting
 			TapScript,
 		}
 
-#if HAS_SPAN
 		private static Parser<char, TaprootPubKey> PPubkeyXOnly(ISigningRepository? repo) =>
 			(
 				from x in Parse.Hex.Repeat(64).Text().Then<char, string, TaprootPubKey>(s =>
@@ -114,7 +111,6 @@ namespace NBitcoin.Scripting
 				})
 				select x
 			).InjectRepository(repo);
-#endif
 
 		private static readonly Parser<char, PubKey> PPubKeyUncompressed =
 			from x in Parse.Hex.Repeat(130).Text().Then(s => Parse.TryConvert(s, c => new PubKey(c)))
@@ -169,12 +165,8 @@ namespace NBitcoin.Scripting
 				from pk in PPubKeyCompressed(repo).Or(PWIF(repo, n, onlyCompressed))
 				select PubKeyProvider.NewConst(pk, xOnly);
 			Parser<char, PubKeyProvider>? xonlyParser =
-#if HAS_SPAN
 				from pk in PPubkeyXOnly(repo)
 				select PubKeyProvider.NewConst(pk);
-#else
-				null;
-#endif
 
 			return ctx switch
 			{
@@ -293,7 +285,6 @@ namespace NBitcoin.Scripting
 			where !maxMultisigN.HasValue ||  pkProviders.Count() <= maxMultisigN.Value
 			select OutputDescriptor.NewMulti(m, pkProviders, isSorted, n);
 
-#if HAS_SPAN
 
 		// uncompressed public key is not allowed in Taproot context, thus we use different pubkey provider parser here.
 		private static Parser<char, PubKeyProvider> PPubKeyProviderForTaproot(ISigningRepository? repo, Network n, PubKeyContext ctx) =>
@@ -346,7 +337,6 @@ namespace NBitcoin.Scripting
 
 		private static P PRawTr(ISigningRepository? repo, Network n)
 			=> PExprHelper(Parse.String("rawtr").Text(), PPubKeyProviderForTaproot(repo, n, PubKeyContext.TaprootInternalKey), OutputDescriptor.NewRawTr, n);
-#endif
 
 		private static P PWSHInner(ISigningRepository? repo, Network n, PubKeyContext ctx, uint? maxMultisigN = null) =>
 			PPK(repo, n, ctx)
@@ -367,14 +357,12 @@ namespace NBitcoin.Scripting
 				OutputDescriptor.NewSH,
 				n);
 
-#if HAS_SPAN
 		internal static P PTR(ISigningRepository? repo, Network n) =>
 			from _n in Parse.String("tr")
 			from _l in Parse.Char('(')
 			from item in PTRInner(repo, n).Or(PTapRootNoScriptInner(repo, n))
 			from _r in Parse.Char(')')
 			select item;
-#endif
 		private static P POutputDescriptor(ISigningRepository? repo, Network n) =>
 			PAddr(n)
 				.Or(PRaw(repo, n))
@@ -382,10 +370,8 @@ namespace NBitcoin.Scripting
 				.Or(PInner(repo, n, PubKeyContext.NonSegwit))
 				.Or(PWSH(repo, n))
 				.Or(PSH(repo, n))
-#if HAS_SPAN
 				.Or(PTR(repo, n))
 				.Or(PRawTr(repo, n))
-#endif
 				.End();
 
 		internal static bool TryParseOD(string str, Network network, out OutputDescriptor? result, bool requireCheckSum = false, ISigningRepository? repo = null)
@@ -438,7 +424,6 @@ namespace NBitcoin.Scripting
 				return false;
 			}
 
-#if HAS_SPAN
 		if (result is OutputDescriptor.Tr tr)
 			{
 				//if (!tr.IsKeyPathSpendOnly)
@@ -451,7 +436,6 @@ namespace NBitcoin.Scripting
 					}
 				}
 			}
-#endif
 			return true;
 		}
 		internal static OutputDescriptor ParseOD(string str, Network network, bool requireCheckSum = false, ISigningRepository? repo = null)

@@ -3,9 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.CompilerServices;
-#if HAS_SPAN
 using NBitcoin.Secp256k1;
-#endif
 
 #nullable enable
 
@@ -50,14 +48,12 @@ namespace NBitcoin
 		void SetSecret(KeyId keyId, ISecret secret);
 		void SetKeyOrigin(KeyId keyId, RootedKeyPath keyOrigin);
 
-#if HAS_SPAN
 		bool TryGetKeyOrigin(TaprootPubKey taprootPubKey, [MaybeNullWhen(false)] out RootedKeyPath keyorigin);
 		bool TryGetTaprootSpendInfo(TaprootPubKey taprootOutput,  [MaybeNullWhen(false)] out TaprootSpendInfo spendInfo);
 		bool TryGetSecret(TaprootPubKey key, [MaybeNullWhen(false)] out ISecret secret);
 		void SetTaprootSpendInfo(TaprootPubKey key, TaprootSpendInfo value);
 		void SetSecret(TaprootPubKey key, BitcoinSecret secret);
 		void SetKeyOrigin(TaprootPubKey taprootPubKey, RootedKeyPath keyOrigin);
-#endif
 
 		/// <summary>
 		/// Consume the argument and take everything it holds.
@@ -75,7 +71,6 @@ namespace NBitcoin
 		{
 			var temp = scriptPubKey.FindTemplate();
 
-#if HAS_SPAN
 			if (temp is PayToTaprootTemplate p2trT)
 			{
 				if (p2trT.ExtractScriptPubKeyParameters(scriptPubKey) is TaprootPubKey pk)
@@ -87,7 +82,6 @@ namespace NBitcoin
 					}
 				}
 			}
-#endif
 
 			if (temp is PayToPubkeyTemplate p2pkT)
 			{
@@ -163,17 +157,13 @@ namespace NBitcoin
 		public ConcurrentDictionary<KeyId, PubKey> Pubkeys { get; }
 		public ConcurrentDictionary<KeyId, RootedKeyPath> KeyIdToKeyOrigins { get; }
 		public ConcurrentDictionary<ScriptId, Script> Scripts { get; }
-#if HAS_SPAN
 		public ConcurrentDictionary<TaprootPubKey, TaprootSpendInfo> SpendInfos { get; }
 		public ConcurrentDictionary<TaprootPubKey, RootedKeyPath> TaprootKeyOrigins { get; }
 		public ConcurrentDictionary<TaprootPubKey, ISecret> TaprootKeysToSecret { get;  }
-#endif
 
 		public RootedKeyPath [] KeyOrigins =>
 			KeyIdToKeyOrigins.Values.ToArray()
-#if HAS_SPAN
 				.Concat(this.TaprootKeyOrigins.Values.ToArray()).ToArray()
-#endif
 			;
 
 		public FlatSigningRepository()
@@ -182,11 +172,9 @@ namespace NBitcoin
 			Pubkeys = new ConcurrentDictionary<KeyId, PubKey>();
 			KeyIdToKeyOrigins = new ConcurrentDictionary<KeyId, RootedKeyPath>();
 			Scripts = new ConcurrentDictionary<ScriptId, Script>();
-#if HAS_SPAN
 			SpendInfos = new ConcurrentDictionary<TaprootPubKey, TaprootSpendInfo>();
 			TaprootKeyOrigins = new ConcurrentDictionary<TaprootPubKey, RootedKeyPath>();
 			TaprootKeysToSecret = new ConcurrentDictionary<TaprootPubKey, ISecret>();
-#endif
 		}
 
 		public bool TryGetScript(ScriptId scriptId, [MaybeNullWhen(false)] out Script script)
@@ -264,7 +252,6 @@ namespace NBitcoin
 		}
 
 
-#if HAS_SPAN
 		public bool TryGetKeyOrigin(TaprootPubKey taprootPubKey, [MaybeNullWhen(false)]out RootedKeyPath keyorigin)
 			=> TaprootKeyOrigins.TryGetValue(taprootPubKey, out keyorigin);
 
@@ -296,7 +283,6 @@ namespace NBitcoin
 			if (keyOrigin == null) throw new ArgumentNullException(nameof(keyOrigin));
 			TaprootKeyOrigins.AddOrReplace(taprootPubKey, keyOrigin);
 		}
-#endif
 
 		public void Merge(ISigningRepository other)
 		{
@@ -310,11 +296,9 @@ namespace NBitcoin
 			MergeDict(Pubkeys, otherRepo.Pubkeys);
 			MergeDict(Scripts, otherRepo.Scripts);
 			MergeDict(KeyIdToKeyOrigins, otherRepo.KeyIdToKeyOrigins);
-#if HAS_SPAN
 			MergeDict(SpendInfos, otherRepo.SpendInfos);
 			MergeDict(TaprootKeyOrigins, otherRepo.TaprootKeyOrigins);
 			MergeDict(TaprootKeysToSecret, otherRepo.TaprootKeysToSecret);
-#endif
 		}
 
 		private void MergeDict<U, T>(ConcurrentDictionary<U, T> a, ConcurrentDictionary<U, T> b) where U : notnull
