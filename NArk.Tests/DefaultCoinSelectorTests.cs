@@ -1,16 +1,21 @@
 using NArk.Abstractions;
-using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.CoinSelector;
+using NArk.Core.Contracts;
 using NBitcoin;
-using NBitcoin.Scripting;
-using NSubstitute;
 
 namespace NArk.Tests;
 
 [TestFixture]
 public class DefaultCoinSelectorTests
 {
+    private const string ServerHex = "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88";
+    private const string UserHex   = "030192e796452d6df9697c280542e1560557bcf79a347d925895043136225c7cb4";
+
+    // Collaborative-path ArkPaymentContract: 430 WU per input.
+    private const int CoinWu = 430;
+
     private NArk.Core.CoinSelector.DefaultCoinSelector _selector;
 
     [SetUp]
@@ -83,11 +88,7 @@ public class DefaultCoinSelectorTests
     {
         // Scenario: greedy picks 5000, change = 5000 - 4800 = 200 (subdust, below 546).
         // With currentSubDustOutputs at the max, we can't add another OP_RETURN.
-        // The selector should find a better combination:
-        // - Pair (3000, 2000) = 5000, change = 200 (still subdust)
-        // - Pair (5000, 3000) = 8000, change = 3200 (above dust) -- good!
-        // - Or triplet (3000, 2000, ...) that gives change >= 546
-        // Actually, let's set up coins so the greedy picks a bad combo but pairs work.
+        // Strategy 2: add next coin (3000): change = 200 + 3000 = 3200 >= 546.
         var coins = new List<ArkCoin>
         {
             CreateCoin(5000), // greedy picks this first, change = 200 (subdust)
@@ -97,9 +98,6 @@ public class DefaultCoinSelectorTests
         var target = Money.Satoshis(4800);
         var dust = Money.Satoshis(546);
 
-        // With currentSubDustOutputs at max (MaxOpReturnOutputs), subdust change is not allowed.
-        // Greedy picks 5000 first: change = 200 < 546, can't add OP_RETURN.
-        // Strategy 2: add next coin (3000): change = 200 + 3000 = 3200 >= 546.
         var maxOpReturn = NArk.Core.Helpers.TransactionHelpers.MaxOpReturnOutputs;
         var result = _selector.SelectCoins(coins, target, dust, currentSubDustOutputs: maxOpReturn);
 
@@ -207,7 +205,7 @@ public class DefaultCoinSelectorTests
     }
 
     [Test]
-    public void RespectsMaxInputs_WhenTargetReachableWithinCap()
+    public void RespectsWeightBudget_WhenTargetReachableWithinBudget()
     {
         var coins = new List<ArkCoin>
         {
@@ -216,40 +214,41 @@ public class DefaultCoinSelectorTests
             CreateCoin(2000),
         };
 
+        // Budget for 2 inputs; 3rd would exceed it.
         var result = _selector.SelectCoins(coins, Money.Satoshis(7000), Money.Satoshis(546),
-            currentSubDustOutputs: 0, maxInputs: 2);
+            currentSubDustOutputs: 0, maxInputWeightWu: 2 * CoinWu);
 
         Assert.That(result, Has.Count.LessThanOrEqualTo(2));
         Assert.That(result.Sum(c => c.Amount.Satoshi), Is.GreaterThanOrEqualTo(7000L));
     }
 
     [Test]
-    public void ThrowsTooManyInputs_WhenTargetNeedsMoreInputsThanCap()
+    public void ThrowsTooManyInputs_WhenTargetNeedsMoreWeightThanBudget()
     {
-        // 10 x 1000 sats; covering 5000 needs 5 inputs but the cap is 4.
+        // 10 x 1000 sats; covering 5000 needs 5 inputs (5 × 430 = 2150 WU) but budget is 4 × 430 = 1720 WU.
         var coins = Enumerable.Range(0, 10).Select(_ => CreateCoin(1000)).ToList();
 
         Assert.Throws<TooManyInputsException>(() =>
             _selector.SelectCoins(coins, Money.Satoshis(5000), Money.Satoshis(546),
-                currentSubDustOutputs: 0, maxInputs: 4));
+                currentSubDustOutputs: 0, maxInputWeightWu: 4 * CoinWu));
     }
 
     [Test]
     public void ThrowsNotEnoughFunds_NotTooManyInputs_WhenBalanceInsufficient()
     {
-        // A genuinely insufficient balance reports NotEnoughFunds even when a cap applies.
+        // A genuinely insufficient balance reports NotEnoughFunds even when a budget applies.
         var coins = new List<ArkCoin> { CreateCoin(1000), CreateCoin(1000) };
 
         Assert.Throws<NotEnoughFundsException>(() =>
             _selector.SelectCoins(coins, Money.Satoshis(5000), Money.Satoshis(546),
-                currentSubDustOutputs: 0, maxInputs: 1));
+                currentSubDustOutputs: 0, maxInputWeightWu: 1 * CoinWu));
     }
 
     [Test]
-    public void AssetSelection_RespectsMaxInputs_AcrossAssetAndBtcCoins()
+    public void AssetSelection_RespectsWeightBudget_AcrossAssetAndBtcCoins()
     {
-        // The asset requirement consumes the only allowed input; filling the
-        // remaining BTC target would need a second input → throws.
+        // Budget for exactly 1 input (430 WU). The asset coin consumes the budget;
+        // filling the remaining BTC target would need a second input → throws.
         var coins = new List<ArkCoin>
         {
             CreateCoinWithAssets(500, [new VtxoAsset("asset_x", 100)]),
@@ -259,24 +258,20 @@ public class DefaultCoinSelectorTests
 
         Assert.Throws<TooManyInputsException>(() =>
             _selector.SelectCoins(coins, Money.Satoshis(2000), requirements, Money.Satoshis(546),
-                currentSubDustOutputs: 0, maxInputs: 1));
+                currentSubDustOutputs: 0, maxInputWeightWu: 1 * CoinWu));
     }
+
+    private static ArkPaymentContract MakeContract() =>
+        new(
+            KeyExtensions.ParseOutputDescriptor(ServerHex, Network.RegTest),
+            new Sequence(144),
+            KeyExtensions.ParseOutputDescriptor(UserHex, Network.RegTest));
 
     private static ArkCoin CreateCoinWithAssets(long satoshis, IReadOnlyList<VtxoAsset> assets)
     {
-        var key = new Key();
-        var script = key.PubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
+        var contract = MakeContract();
         var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
-        var txOut = new TxOut(Money.Satoshis(satoshis), script);
-
-        var scriptBuilder = Substitute.For<NArk.Abstractions.Scripts.ScriptBuilder>();
-        scriptBuilder.BuildScript().Returns(Enumerable.Empty<Op>());
-        scriptBuilder.Build().Returns(new TapScript(Script.Empty, TapLeafVersion.C0));
-
-        var contract = Substitute.For<ArkContract>(
-            NArk.Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(
-                "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
-                Network.RegTest));
+        var txOut = new TxOut(Money.Satoshis(satoshis), contract.GetScriptPubKey());
 
         return new ArkCoin(
             walletIdentifier: "test-wallet",
@@ -287,7 +282,7 @@ public class DefaultCoinSelectorTests
             outPoint: outpoint,
             txOut: txOut,
             signerDescriptor: null,
-            spendingScriptBuilder: scriptBuilder,
+            spendingScriptBuilder: contract.CollaborativePath(),
             spendingConditionWitness: null,
             lockTime: null,
             sequence: new Sequence(1),
@@ -298,19 +293,9 @@ public class DefaultCoinSelectorTests
 
     private static ArkCoin CreateCoin(long satoshis)
     {
-        var key = new Key();
-        var script = key.PubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
+        var contract = MakeContract();
         var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
-        var txOut = new TxOut(Money.Satoshis(satoshis), script);
-
-        var scriptBuilder = Substitute.For<NArk.Abstractions.Scripts.ScriptBuilder>();
-        scriptBuilder.BuildScript().Returns(Enumerable.Empty<Op>());
-        scriptBuilder.Build().Returns(new TapScript(Script.Empty, TapLeafVersion.C0));
-
-        var contract = Substitute.For<ArkContract>(
-            NArk.Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(
-                "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
-                Network.RegTest));
+        var txOut = new TxOut(Money.Satoshis(satoshis), contract.GetScriptPubKey());
 
         return new ArkCoin(
             walletIdentifier: "test-wallet",
@@ -321,7 +306,7 @@ public class DefaultCoinSelectorTests
             outPoint: outpoint,
             txOut: txOut,
             signerDescriptor: null,
-            spendingScriptBuilder: scriptBuilder,
+            spendingScriptBuilder: contract.CollaborativePath(),
             spendingConditionWitness: null,
             lockTime: null,
             sequence: new Sequence(1),

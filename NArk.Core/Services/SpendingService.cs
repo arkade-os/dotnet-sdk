@@ -10,6 +10,7 @@ using NArk.Core.CoinSelector;
 using NArk.Core.Enums;
 using NArk.Core.Events;
 using NArk.Core.Helpers;
+using NArk.Core.Fees;
 using NArk.Core.Transport;
 using NArk.Core.Extensions;
 using NBitcoin;
@@ -245,14 +246,15 @@ public class SpendingService(
         Money btcTarget = assetRequirements.Count > 0
             ? Money.Satoshis(outputsSumInSatoshis) + serverInfo.Dust  // extra dust for potential asset change output
             : Money.Satoshis(outputsSumInSatoshis);
-        // Bound the input count so the resulting Arkade transaction stays under the
-        // server's max_tx_weight — arkd rejects oversized offchain transactions with
-        // TX_TOO_LARGE, same as it does for oversized intent proofs.
+        // Input weight budget: maxTxWeight − baseTx − outputs (user outputs + 1 potential change output).
+        // Arkd rejects TX_TOO_LARGE for offchain spends the same way it does for intent proofs.
+        var outputsWu = (outputs.Count() + 1) * ArkTxWeightEstimator.P2TrOutputWu;
+        var inputWeightBudget = serverInfo.MaxTxWeight - ArkTxWeightEstimator.BaseTxWu - outputsWu;
         var selectedCoins = assetRequirements.Count > 0
             ? coinSelector.SelectCoins([.. coins], btcTarget, assetRequirements, serverInfo.Dust,
-                hasExplicitSubdustOutput, maxOpReturn, ArkTransactionLimits.MaxVtxosPerArkTransaction)
+                hasExplicitSubdustOutput, maxOpReturn, inputWeightBudget)
             : coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
-                hasExplicitSubdustOutput, maxOpReturn, ArkTransactionLimits.MaxVtxosPerArkTransaction);
+                hasExplicitSubdustOutput, maxOpReturn, inputWeightBudget);
         logger?.LogDebug("Selected {SelectedCount} coins for spending", selectedCoins.Count);
 
         try
