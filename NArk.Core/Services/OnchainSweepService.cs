@@ -1,11 +1,14 @@
 using Microsoft.Extensions.Logging;
-using NArk.Abstractions;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
+using NArk.Core.Scripts;
+using NArk.Core.Transport;
+using NBitcoin;
 
 namespace NArk.Core.Services;
 
@@ -17,9 +20,10 @@ namespace NArk.Core.Services;
 public class OnchainSweepService(
     IVtxoStorage vtxoStorage,
     IContractStorage contractStorage,
-    IBitcoinBlockchain chainTimeProvider,
+    IBitcoinBlockchain blockchain,
     IContractService contractService,
     IWalletProvider walletProvider,
+    IClientTransport transport,
     IOnchainSweepHandler? sweepHandler = null,
     ILogger<OnchainSweepService>? logger = null)
 {
@@ -29,7 +33,7 @@ public class OnchainSweepService(
     /// </summary>
     public async Task SweepExpiredUtxosAsync(CancellationToken cancellationToken)
     {
-        var chainTime = await chainTimeProvider.GetChainTime(cancellationToken);
+        var chainTime = await blockchain.GetChainTime(cancellationToken);
         logger?.LogDebug("Checking for expired unrolled UTXOs at height {Height}, time {Time}",
             chainTime.Height, chainTime.Timestamp);
 
@@ -100,25 +104,69 @@ public class OnchainSweepService(
             }
         }
 
-        // Default behavior: sweep to a fresh boarding address
         logger?.LogInformation(
             "Sweeping expired UTXO {Outpoint} ({Amount} sats) to fresh boarding address",
             vtxo.OutPoint, vtxo.Amount);
 
-        // Derive a fresh boarding contract for the destination
+        var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+
+        var contract = ArkContractParser.Parse(contractEntity.Type, contractEntity.AdditionalData, serverInfo.Network)
+            ?? throw new InvalidOperationException(
+                $"Failed to parse contract for VTXO {vtxo.OutPoint}");
+
+        if (contract is not ArkBoardingContract boardingContract)
+            throw new InvalidOperationException(
+                $"VTXO {vtxo.OutPoint} has contract type '{contractEntity.Type}'; only boarding contracts are swept via {nameof(OnchainSweepService)}");
+
+        var unilateralTapScript = (UnilateralPathArkTapScript)boardingContract.UnilateralPath();
+        var tapScript = unilateralTapScript.Build();
+        var spendInfo = boardingContract.GetTaprootSpendInfo();
+        var controlBlock = spendInfo.GetControlBlock(tapScript);
+
+        var vtxoTxOut = new TxOut(Money.Satoshis(vtxo.Amount), Script.FromHex(vtxo.Script));
+
         var freshContract = await contractService.DeriveContract(
             contractEntity.WalletIdentifier,
             NextContractPurpose.Boarding,
             cancellationToken: cancellationToken);
 
-        _ = freshContract; // Will be used as the output address once tx building is implemented
+        if (freshContract is not ArkBoardingContract freshBoarding)
+            throw new InvalidOperationException(
+                $"DeriveContract returned a non-boarding contract for wallet {contractEntity.WalletIdentifier}");
 
-        // TODO: Build sweep transaction
-        // 1. Create tx spending via UnilateralPath() of the contract
-        // 2. Set sequence to the CSV value
-        // 3. Output to fresh boarding address
-        // 4. Sign with wallet signer
-        // 5. Broadcast via Esplora POST /tx
-        throw new NotImplementedException("Sweep transaction building not yet implemented");
+        var destinationAddress = freshBoarding.GetOnchainAddress(serverInfo.Network);
+
+        var signer = await walletProvider.GetSignerAsync(contractEntity.WalletIdentifier, cancellationToken)
+            ?? throw new InvalidOperationException(
+                $"No signer for wallet {contractEntity.WalletIdentifier}; cannot sweep VTXO {vtxo.OutPoint}");
+
+        if (!contractEntity.AdditionalData.TryGetValue("user", out var userDesc))
+            throw new InvalidOperationException(
+                $"User descriptor missing from contract data for VTXO {vtxo.OutPoint}");
+        var descriptor = KeyExtensions.ParseOutputDescriptor(userDesc, serverInfo.Network);
+
+        var feeRate = await blockchain.EstimateFeeRateAsync(6, cancellationToken);
+        var sweepTx = Helpers.TransactionHelpers.BuildCsvSpendTransaction(
+            vtxo.OutPoint, vtxoTxOut, destinationAddress,
+            unilateralTapScript.Timeout, tapScript, controlBlock,
+            feeRate, serverInfo.Network);
+
+        var precomputed = sweepTx.PrecomputeTransactionData([vtxoTxOut]);
+        var sighash = sweepTx.GetSignatureHashTaproot(
+            precomputed,
+            new TaprootExecutionData(0, tapScript.LeafHash) { SigHash = TaprootSigHash.Default });
+
+        var (_, sig) = await signer.Sign(descriptor, sighash, cancellationToken);
+        sweepTx.Inputs[0].WitScript = new WitScript(
+            [sig.ToBytes(), tapScript.Script.ToBytes(), controlBlock.ToBytes()], true);
+
+        var success = await blockchain.BroadcastAsync(sweepTx, cancellationToken);
+        if (!success)
+            throw new InvalidOperationException(
+                $"Failed to broadcast sweep tx for VTXO {vtxo.OutPoint}");
+
+        logger?.LogInformation(
+            "Swept expired VTXO {Outpoint} ({Amount} sats) → {Address}, txid {SweepTxid}",
+            vtxo.OutPoint, vtxo.Amount, destinationAddress, sweepTx.GetHash());
     }
 }

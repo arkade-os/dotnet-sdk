@@ -4,10 +4,14 @@ using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core;
 using NArk.Core.Contracts;
+using NArk.Core.Scripts;
 using NArk.Core.Services;
+using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
+using NBitcoin.Secp256k1;
 using NSubstitute;
 
 namespace NArk.Tests;
@@ -17,9 +21,11 @@ public class OnchainSweepServiceTests
 {
     private IVtxoStorage _vtxoStorage = null!;
     private IContractStorage _contractStorage = null!;
-    private IBitcoinBlockchain _chainTimeProvider = null!;
+    private IBitcoinBlockchain _blockchain = null!;
     private IContractService _contractService = null!;
     private IWalletProvider _walletProvider = null!;
+    private IClientTransport _transport = null!;
+    private IArkadeWalletSigner _signer = null!;
     private IOnchainSweepHandler _sweepHandler = null!;
 
     private static readonly TimeHeight CurrentTime = new(
@@ -44,13 +50,37 @@ public class OnchainSweepServiceTests
     {
         _vtxoStorage = Substitute.For<IVtxoStorage>();
         _contractStorage = Substitute.For<IContractStorage>();
-        _chainTimeProvider = Substitute.For<IBitcoinBlockchain>();
+        _blockchain = Substitute.For<IBitcoinBlockchain>();
         _contractService = Substitute.For<IContractService>();
         _walletProvider = Substitute.For<IWalletProvider>();
+        _transport = Substitute.For<IClientTransport>();
+        _signer = Substitute.For<IArkadeWalletSigner>();
         _sweepHandler = Substitute.For<IOnchainSweepHandler>();
 
-        _chainTimeProvider.GetChainTime(Arg.Any<CancellationToken>())
+        _blockchain.GetChainTime(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(CurrentTime));
+        _blockchain.EstimateFeeRateAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new FeeRate(Money.Satoshis(10), 1)));
+        _blockchain.BroadcastAsync(Arg.Any<Transaction>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(true));
+
+        _transport.GetServerInfoAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(CreateServerInfo()));
+
+        _walletProvider.GetSignerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IArkadeWalletSigner?>(_signer));
+
+        // Sign with a real key so the witness bytes are non-null
+        var signingKey = new Key();
+        _signer.Sign(Arg.Any<OutputDescriptor>(), Arg.Any<uint256>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var hash = callInfo.Arg<uint256>();
+                var taprootSig = signingKey.SignTaprootKeySpend(hash, TaprootSigHash.Default);
+                if (!SecpSchnorrSignature.TryCreate(taprootSig.SchnorrSignature.ToBytes(), out var schnorr))
+                    throw new InvalidOperationException("Failed to create test schnorr signature");
+                return Task.FromResult((ECXOnlyPubKey.Create(signingKey.PubKey.TaprootInternalKey.ToBytes()), schnorr!));
+            });
 
         // Default: no VTXOs
         SetupVtxoStorage();
@@ -64,10 +94,28 @@ public class OnchainSweepServiceTests
         return new OnchainSweepService(
             _vtxoStorage,
             _contractStorage,
-            _chainTimeProvider,
+            _blockchain,
             _contractService,
             _walletProvider,
+            _transport,
             handler);
+    }
+
+    private static ArkServerInfo CreateServerInfo()
+    {
+        var emptyMultisig = new NofNMultisigTapScript(Array.Empty<ECXOnlyPubKey>());
+        return new ArkServerInfo(
+            Dust: Money.Satoshis(546),
+            SignerKey: TestServerKey,
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+            Network: Network.RegTest,
+            UnilateralExit: BoardingExitDelay,
+            BoardingExit: BoardingExitDelay,
+            ForfeitAddress: BitcoinAddress.Create("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", Network.RegTest),
+            ForfeitPubKey: ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes()),
+            CheckpointTapScript: new UnilateralPathArkTapScript(BoardingExitDelay, emptyMultisig),
+            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "");
     }
 
     private void SetupVtxoStorage(params ArkVtxo[] vtxos)
@@ -130,13 +178,12 @@ public class OnchainSweepServiceTests
     }
 
     [Test]
-    public async Task SweepExpiredUtxosAsync_DetectsExpiredUnrolledVtxos()
+    public async Task SweepExpiredUtxosAsync_SweepsExpiredUnrolledVtxo()
     {
         // Arrange
         var contract = CreateBoardingContract();
         var contractEntity = CreateContractEntity(contract);
 
-        // Expired: ExpiresAt is in the past
         var expiredVtxo = CreateVtxo(
             contractEntity.Script,
             expiresAt: CurrentTime.Timestamp.AddHours(-1),
@@ -156,15 +203,20 @@ public class OnchainSweepServiceTests
 
         var service = CreateService();
 
-        // Act — completes without throwing (NotImplementedException is caught per-UTXO)
+        // Act
         await service.SweepExpiredUtxosAsync(CancellationToken.None);
 
-        // Assert — detection occurred: it derived a fresh boarding contract for the sweep destination
+        // Assert — derived a fresh boarding contract for the sweep destination
         await _contractService.Received(1).DeriveContract(
             TestWalletId,
             NextContractPurpose.Boarding,
             Arg.Any<ContractActivityState>(),
             Arg.Any<Dictionary<string, string>?>(),
+            Arg.Any<CancellationToken>());
+
+        // Assert — broadcast the sweep transaction
+        await _blockchain.Received(1).BroadcastAsync(
+            Arg.Any<Transaction>(),
             Arg.Any<CancellationToken>());
     }
 
