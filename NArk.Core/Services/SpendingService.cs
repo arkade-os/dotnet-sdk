@@ -246,9 +246,13 @@ public class SpendingService(
         Money btcTarget = assetRequirements.Count > 0
             ? Money.Satoshis(outputsSumInSatoshis) + serverInfo.Dust  // extra dust for potential asset change output
             : Money.Satoshis(outputsSumInSatoshis);
-        // Input weight budget: maxTxWeight − baseTx − outputs (user outputs + 1 potential change output).
-        // Arkd rejects TX_TOO_LARGE for offchain spends the same way it does for intent proofs.
-        var outputsWu = (outputs.Count() + 1) * ArkTxWeightEstimator.P2TrOutputWu;
+        // Input weight budget: maxTxWeight − baseTx − outputs. Outputs comprise the user outputs,
+        // one potential BTC change output, the always-present P2A anchor, and — when assets are
+        // involved — the asset packet OP_RETURN that ConstructAndSubmitArkTransaction appends.
+        // Omitting the latter two over-budgets the inputs and risks arkd rejecting TX_TOO_LARGE.
+        var outputsWu = (outputs.Count() + 1) * ArkTxWeightEstimator.P2TrOutputWu
+                        + ArkTxWeightEstimator.P2AOutputWu
+                        + EstimateAssetPacketWu(assetRequirements, outputs);
         var inputWeightBudget = serverInfo.MaxTxWeight - ArkTxWeightEstimator.BaseTxWu - outputsWu;
         var selectedCoins = assetRequirements.Count > 0
             ? coinSelector.SelectCoins([.. coins], btcTarget, assetRequirements, serverInfo.Dust,
@@ -393,6 +397,43 @@ public class SpendingService(
             assetInputTuples,
             assetOutputTuples.Count > 0 ? assetOutputTuples : null,
             changeOutputIndex);
+    }
+
+    /// <summary>
+    /// Estimates the weight units of the asset packet OP_RETURN output that
+    /// <see cref="BuildAssetPacket"/> appends when assets are involved, so the input-weight
+    /// budget reserves room for it before coin selection runs.
+    /// </summary>
+    /// <remarks>
+    /// The exact packet size depends on which inputs are ultimately selected (it grows per
+    /// asset-bearing input), which is unknown at budgeting time. The estimate models one input
+    /// per required asset plus the explicit output asset entries, capturing the dominant
+    /// per-group asset-id cost. Returns 0 when no assets are involved.
+    /// </remarks>
+    internal static int EstimateAssetPacketWu(
+        IReadOnlyList<AssetRequirement> assetRequirements, ArkTxOut[] outputs)
+    {
+        if (assetRequirements.Count == 0)
+            return 0;
+
+        var inputTuples = assetRequirements
+            .Select(r => (r.AssetId, (ushort)0, r.Amount))
+            .ToList();
+
+        var outputTuples = new List<(string assetId, ushort vout, ulong amount)>();
+        for (var i = 0; i < outputs.Length; i++)
+        {
+            if (outputs[i].Assets is not { Count: > 0 } assets) continue;
+            foreach (var asset in assets)
+                outputTuples.Add((asset.AssetId, (ushort)i, asset.Amount));
+        }
+
+        var packet = AssetPacketBuilder.Build(
+            inputTuples,
+            outputTuples.Count > 0 ? outputTuples : null,
+            changeVout: (ushort)Math.Max(0, outputs.Length - 1));
+
+        return packet is null ? 0 : ArkTxWeightEstimator.GetOutputWeightUnits(packet);
     }
 
     /// <summary>

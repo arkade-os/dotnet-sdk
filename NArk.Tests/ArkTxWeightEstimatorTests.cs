@@ -116,6 +116,41 @@ public class ArkTxWeightEstimatorTests
         Assert.That(ArkTxWeightEstimator.GetOutputWeightUnits(output), Is.EqualTo(expected));
     }
 
+    [Test]
+    public void GetOutputWeightUnits_P2AAnchor_MatchesConstant()
+    {
+        // The P2A (pay-to-anchor) output every Arkade tx appends for fee-bumping.
+        // script = 51024e73 (4 bytes): OP_1(1) + PUSH2(1) + 0x4e73(2)
+        // (8 + 1 + 4) × 4 = 52 WU
+        var p2A = Script.FromHex("51024e73");
+        Assert.That(p2A.ToBytes().Length, Is.EqualTo(4), "P2A script must be 4 bytes");
+        var output = new TxOut(Money.Zero, p2A);
+        Assert.That(ArkTxWeightEstimator.GetOutputWeightUnits(output), Is.EqualTo(ArkTxWeightEstimator.P2AOutputWu));
+        Assert.That(ArkTxWeightEstimator.GetOutputWeightUnits(output), Is.EqualTo(52));
+    }
+
+    [Test]
+    public void GetOutputWeightUnits_SubdustTaprootBecomesOpReturn_SameWeightAsP2Tr()
+    {
+        // A subdust P2TR output is rewritten to OP_RETURN <32-byte taproot key> at construction
+        // time (TransactionHelpers.ConstructArkTransaction). Both scripts are 34 bytes, so the
+        // conversion is weight-neutral and budgeting it as a P2TR output is exact — no special
+        // handling needed in the estimator.
+        var p2trScript = new Key().PubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86);
+        var p2trOutput = new TxOut(Money.Satoshis(1), p2trScript);
+
+        // Mirror TransactionHelpers.ConstructArkTransaction exactly.
+        var taprootKey = PayToTaprootTemplate.Instance.ExtractScriptPubKeyParameters(p2trScript)!;
+        var opReturnScript = new Script(OpcodeType.OP_RETURN, Op.GetPushOp(taprootKey.ToBytes()));
+        var opReturnOutput = new TxOut(Money.Zero, opReturnScript);
+
+        Assert.That(opReturnScript.ToBytes().Length, Is.EqualTo(34), "OP_RETURN+key script must be 34 bytes");
+        Assert.That(ArkTxWeightEstimator.GetOutputWeightUnits(opReturnOutput),
+            Is.EqualTo(ArkTxWeightEstimator.GetOutputWeightUnits(p2trOutput)));
+        Assert.That(ArkTxWeightEstimator.GetOutputWeightUnits(opReturnOutput),
+            Is.EqualTo(ArkTxWeightEstimator.P2TrOutputWu));
+    }
+
     // ── GetInputWeightUnits — ArkPaymentContract ──────────────────────────────
 
     /// <summary>
