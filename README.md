@@ -963,6 +963,37 @@ var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
 // quote.SourceAmount, quote.DestinationAmount, quote.TotalFees, quote.ExchangeRate
 ```
 
+### Executing a Reverse Swap (receive Lightning into Arkade)
+
+`InitiateReverseSwap` creates the Boltz reverse swap and returns the BOLT11 invoice to hand to the payer. The SDK watches the swap and materializes the VTXO automatically.
+
+```csharp
+var invoice = await swaps.InitiateReverseSwap(
+    walletId,
+    new CreateInvoiceParams(LightMoney.Satoshis(50_000), "Order #1234", TimeSpan.FromHours(1)),
+    cancellationToken: ct);
+```
+
+#### Who pays the swap fee
+
+An optional `ReverseSwapFeePayer` decides who absorbs the Boltz reverse-swap fee:
+
+| Mode | Invoice amount | Receiver nets | Use when |
+|------|----------------|---------------|----------|
+| `Recipient` (default) | `requested` | `requested − fee` | The payer's wallet verifies the invoice equals the amount it chose to pay (LNURL-pay / LUD-06). The **only** compliant option for lightning-address / checkout flows. |
+| `Sender` | `requested + fee` | `requested` | The payer is shown the invoice directly (e.g. a manual BOLT11 scan) and you want to receive an exact amount. **Not LUD-06-compliant** — the invoice no longer matches the requested amount, so LNURL/checkout wallets reject it. |
+
+```csharp
+// Merchant receives the exact amount; the payer covers the fee.
+var invoice = await swaps.InitiateReverseSwap(
+    walletId,
+    new CreateInvoiceParams(LightMoney.Satoshis(50_000), "Top up", TimeSpan.FromHours(1)),
+    ReverseSwapFeePayer.Sender,
+    ct);
+```
+
+Either way the SDK stores the actual on-chain amount Boltz delivers as `ArkSwap.ExpectedAmount`, so claim, refund, and payment tracking match the VTXO that arrives.
+
 ### Providers
 
 | Provider | Routes | Features |

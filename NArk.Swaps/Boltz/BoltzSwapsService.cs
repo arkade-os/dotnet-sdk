@@ -8,6 +8,7 @@ using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
+using NArk.Swaps.Models;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Crypto;
@@ -17,7 +18,7 @@ using KeyExtensions = NArk.Swaps.Extensions.KeyExtensions;
 
 namespace NArk.Swaps.Boltz;
 
-internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport clientTransport)
+internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport clientTransport, BoltzLimitsValidator limitsValidator)
 {
     private static Sequence ParseSequence(long val)
     {
@@ -74,6 +75,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     public async Task<ReverseSwapResult> CreateReverseSwap(CreateInvoiceParams createInvoiceRequest,
         OutputDescriptor receiver,
         byte[]? preimage = null,
+        ReverseSwapFeePayer feePayer = ReverseSwapFeePayer.Recipient,
         CancellationToken cancellationToken = default)
     {
         var extractedReceiver = receiver.Extract();
@@ -87,14 +89,18 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
 
-        // First make the Boltz request to get the swap details including timeout block heights
-        // Use InvoiceAmount so the Lightning invoice is for exactly the requested amount
-        // The receiver absorbs the Boltz reverse-swap fee, netting OnchainAmount = InvoiceAmount - fee
+        var requestedAmountSats = (long)createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi);
+
+        // The fee payer decides which amount we pin: Recipient pins InvoiceAmount (invoice == requested,
+        // receiver nets requested − fee); Sender pins OnchainAmount (receiver gets
+        // exactly requested, invoice == requested + fee).
+        var (invoiceAmount, onchainAmount) = BuildReverseAmounts(feePayer, requestedAmountSats);
         var request = new ReverseRequest
         {
             From = "BTC",
             To = "ARK",
-            InvoiceAmount = (long)createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi),
+            InvoiceAmount = invoiceAmount,
+            OnchainAmount = onchainAmount,
             ClaimPublicKey =
                 (extractedReceiver.PubKey?.ToBytes() ??
                                          extractedReceiver.XOnlyPubKey.ToBytes()).ToHexStringLower(), // Receiver will claim the VTXO
@@ -125,21 +131,14 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new InvalidOperationException("Boltz did not provide the correct preimage hash");
         }
 
-        // Verify the invoice amount equals exactly the requested amount
-        var invoiceAmountSats = bolt11.MinimumAmount.ToUnit(LightMoneyUnit.Satoshi);
-        var requestedAmountSats = createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi);
-        if (invoiceAmountSats != requestedAmountSats)
-        {
-            throw new InvalidOperationException(
-                $"Invoice amount ({invoiceAmountSats} sats) does not match the requested amount ({requestedAmountSats} sats)");
-        }
+        var invoiceAmountSats = (long)bolt11.MinimumAmount.ToUnit(LightMoneyUnit.Satoshi);
+        ValidateReverseAmounts(feePayer, requestedAmountSats, invoiceAmountSats, response.OnchainAmount);
 
-        // The receiver claims OnchainAmount (invoice minus the Boltz fee).
-        if (response.OnchainAmount <= 0 || response.OnchainAmount > invoiceAmountSats)
-        {
-            throw new InvalidOperationException(
-                $"Onchain amount ({response.OnchainAmount} sats) must be greater than zero and not exceed invoice amount ({invoiceAmountSats} sats)");
-        }
+        var receiverOnchainSats = ResolveExpectedOnchainAmount(feePayer, requestedAmountSats, response.OnchainAmount);
+        var (feesValid, feeError) = await limitsValidator.ValidateFeesAsync(
+            invoiceAmountSats, receiverOnchainSats, isReverse: true, cancellationToken);
+        if (!feesValid)
+            throw new InvalidOperationException(feeError);
 
         var vhtlcContract = new VHTLCContract(
             server: operatorTerms.SignerKey,
@@ -167,6 +166,58 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
 
         return new ReverseSwapResult(vhtlcContract, response, preimageHash);
     }
+
+    // Maps the fee payer to the single Boltz amount field we pin
+    internal static (long? InvoiceAmount, long? OnchainAmount) BuildReverseAmounts(
+        ReverseSwapFeePayer feePayer, long requestedAmountSats) => feePayer switch
+    {
+        ReverseSwapFeePayer.Recipient => (requestedAmountSats, (long?)null),
+        ReverseSwapFeePayer.Sender => ((long?)null, requestedAmountSats),
+        _ => throw new ArgumentOutOfRangeException(nameof(feePayer), feePayer, "Unknown reverse-swap fee payer")
+    };
+
+    // Validates the amounts Boltz returned against what the fee payer requires
+    internal static void ValidateReverseAmounts(
+        ReverseSwapFeePayer feePayer, long requestedAmountSats, long invoiceAmountSats, long? responseOnchainSats)
+    {
+        switch (feePayer)
+        {
+            case ReverseSwapFeePayer.Recipient:
+                if (invoiceAmountSats != requestedAmountSats)
+                    throw new InvalidOperationException(
+                        $"Invoice amount ({invoiceAmountSats} sats) does not match the requested amount ({requestedAmountSats} sats)");
+                if (responseOnchainSats is not { } onchain)
+                    throw new InvalidOperationException(
+                        "Boltz did not return an onchain amount for a recipient-pays reverse swap");
+                if (onchain <= 0 || onchain > invoiceAmountSats)
+                    throw new InvalidOperationException(
+                        $"Onchain amount ({onchain} sats) must be greater than zero and not exceed invoice amount ({invoiceAmountSats} sats)");
+                break;
+
+            case ReverseSwapFeePayer.Sender:
+                if (invoiceAmountSats < requestedAmountSats)
+                    throw new InvalidOperationException(
+                        $"Invoice amount ({invoiceAmountSats} sats) must be greater than or equal to the requested amount ({requestedAmountSats} sats) to cover swap fees");
+                
+                if (responseOnchainSats is { } senderOnchain && senderOnchain != requestedAmountSats)
+                    throw new InvalidOperationException(
+                        $"Onchain amount ({senderOnchain} sats) returned by Boltz does not match the pinned requested amount ({requestedAmountSats} sats)");
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(feePayer), feePayer, "Unknown reverse-swap fee payer");
+        }
+    }
+
+    // The on-chain amount receiver will actually claim, stored as ArkSwap.ExpectedAmount
+    internal static long ResolveExpectedOnchainAmount(
+        ReverseSwapFeePayer feePayer, long requestedAmountSats, long? responseOnchainSats) => feePayer switch
+    {
+        ReverseSwapFeePayer.Recipient => responseOnchainSats
+            ?? throw new InvalidOperationException("Boltz did not return an onchain amount for a recipient-pays reverse swap"),
+        ReverseSwapFeePayer.Sender => requestedAmountSats,
+        _ => throw new ArgumentOutOfRangeException(nameof(feePayer), feePayer, "Unknown reverse-swap fee payer")
+    };
 
     // Chain Swaps
 
