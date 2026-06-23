@@ -68,7 +68,7 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
         Money? bestWaste = null;
         var included = new bool[coins.Count];
 
-        void Dfs(int idx, Money sum, int depth)
+        void Dfs(int idx, Money sum, int depth, long usedWu)
         {
             if (sum >= context.TargetAmount)
             {
@@ -108,15 +108,19 @@ public sealed class BranchAndBoundStrategy : ICoinSelectionStrategy
             if (depth >= context.MaxInputs)
                 return;
 
-            included[idx] = true;
-            Dfs(idx + 1, sum + coins[idx].Value, depth + 1);
-            included[idx] = false;
+            // Try including this coin only if it fits within the weight budget.
+            if (context.MaxInputWeightWu is null || usedWu + coins[idx].Weight <= context.MaxInputWeightWu)
+            {
+                included[idx] = true;
+                Dfs(idx + 1, sum + coins[idx].Value, depth + 1, usedWu + coins[idx].Weight);
+                included[idx] = false;
+            }
 
             if (sum + suffix[idx + 1] >= context.TargetAmount)
-                Dfs(idx + 1, sum, depth);
+                Dfs(idx + 1, sum, depth, usedWu);
         }
 
-        Dfs(0, Money.Zero, 0);
+        Dfs(0, Money.Zero, 0, 0L);
         return best;
     }
 

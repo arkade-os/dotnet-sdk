@@ -10,4 +10,5 @@ public sealed record SelectionContext(
     int MaxInputs,
     int CurrentSubDustOutputs,
     int MaxSubDustOutputs,
-    IReadOnlyList<AssetRequirement> AssetRequirements);
+    IReadOnlyList<AssetRequirement> AssetRequirements,
+    long? MaxInputWeightWu = null);
