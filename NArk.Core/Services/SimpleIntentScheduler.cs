@@ -78,9 +78,6 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
         {
             foreach (var chunk in chunks)
             {
-                //TODO: we are reserving many addresses this way needlessly, prob need use a last address here or unreserve somehow?
-                // var outputContract = await contractService.DeriveContract(walletId, NextContractPurpose.SendToSelf, cancellationToken);
-
                 var inputsSumAfterBeforeFees = chunk.Sum(c => c.Amount);
                 if (inputsSumAfterBeforeFees < serverInfo.Dust)
                 {
