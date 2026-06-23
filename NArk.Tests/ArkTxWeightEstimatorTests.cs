@@ -47,7 +47,7 @@ public class ArkTxWeightEstimatorTests
     {
         var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
         var txOut = new TxOut(Money.Satoshis(10_000), contract.GetScriptPubKey());
-        var needsSequence = spendingScript.BuildScript().Contains(OpcodeType.OP_CHECKSEQUENCEVERIFY);
+        var needsSequence = spendingScript.BuildScript().Any(op => op.Code == OpcodeType.OP_CHECKSEQUENCEVERIFY);
         return new ArkCoin(
             "wallet", contract,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(1), null,
