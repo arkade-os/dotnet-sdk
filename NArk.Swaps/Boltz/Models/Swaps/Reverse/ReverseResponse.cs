@@ -20,5 +20,5 @@ public class ReverseResponse
     public required string Invoice { get; set; }
 
     [JsonPropertyName("onchainAmount")]
-    public long OnchainAmount { get; set; }
+    public long? OnchainAmount { get; set; }
 }
