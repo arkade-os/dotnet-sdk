@@ -62,7 +62,7 @@ public class DefaultFeeEstimator(IClientTransport clientTransport, IBitcoinBlock
             { "expiry", arkCoin.GetRawExpiry() },
             { "birth", arkCoin.Birth.ToUnixTimeSeconds() },
             { "type", arkCoin.IsRecoverable(currentTime) ? "recoverable" : arkCoin.Contract.Type == "arknote" ? "note" : "vtxo" },
-            { "weight", 0 }
+            { "weight", ArkTxWeightEstimator.GetInputWeightUnits(arkCoin) }
         };
 
         return Convert.ToDouble(offchainInputFeeFunc.Invoke(vars)!);

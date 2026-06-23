@@ -29,6 +29,14 @@ public class ArkTxWeightEstimatorTests
 
     private static readonly Network Net = Network.RegTest;
 
+    // Bitcoin protocol constants for manually verifying the witness weight formula.
+    // Witness structure for a tapscript-path spend:
+    //   [stack_item_count(1)] [sig_len(1)+sig(64)]×N [script_len(1)+script] [cb_len(1)+cb]
+    private const int InputNonWitnessWu = (36 + 1 + 4) * 4; // outpoint(36) + scriptSig_len(1) + nSequence(4), ×4
+    private const int SchnorrSigWu      = 1 + 64;            // witness item: len_prefix + 64-byte Schnorr sig
+    private const int WitnessStackCountWu = 1;               // varint item count at the start of the witness field
+    private const int WitnessItemLenPrefixWu = 1;            // per-item length prefix (script and control block)
+
     private static ArkPaymentContract MakePaymentContract(string userHex = UserHex) =>
         new(
             KeyExtensions.ParseOutputDescriptor(ServerHex, Net),
@@ -136,8 +144,10 @@ public class ArkTxWeightEstimatorTests
         // Collaborative path: [user] OP_CHECKSIGVERIFY [server] OP_CHECKSIG → 2 sigs
         var sigCount = 2;
 
-        var expectedWitnessWu = 1 + sigCount * (1 + 64) + 1 + scriptLen + 1 + cbLen;
-        var expected = 41 * 4 + expectedWitnessWu;
+        var expectedWitnessWu = WitnessStackCountWu + sigCount * SchnorrSigWu
+            + WitnessItemLenPrefixWu + scriptLen
+            + WitnessItemLenPrefixWu + cbLen;
+        var expected = InputNonWitnessWu + expectedWitnessWu;
         Assert.That(ArkTxWeightEstimator.GetInputWeightUnits(coin), Is.EqualTo(expected));
     }
 
@@ -171,8 +181,10 @@ public class ArkTxWeightEstimatorTests
         var scriptLen = coin.SpendingScript.Script.ToBytes().Length;
         var sigCount = 1;
 
-        var expectedWitnessWu = 1 + sigCount * (1 + 64) + 1 + scriptLen + 1 + cbLen;
-        var expected = 41 * 4 + expectedWitnessWu;
+        var expectedWitnessWu = WitnessStackCountWu + sigCount * SchnorrSigWu
+            + WitnessItemLenPrefixWu + scriptLen
+            + WitnessItemLenPrefixWu + cbLen;
+        var expected = InputNonWitnessWu + expectedWitnessWu;
         Assert.That(ArkTxWeightEstimator.GetInputWeightUnits(coin), Is.EqualTo(expected));
     }
 
@@ -243,11 +255,15 @@ public class ArkTxWeightEstimatorTests
         var spendInfo = contract.GetTaprootSpendInfo();
         var cbLen    = spendInfo.GetControlBlock(coin.SpendingScript).ToBytes().Length;
         var scriptLen = coin.SpendingScript.Script.ToBytes().Length;
-        var condWitnessBytes = coin.SpendingConditionWitness!.ToBytes().Length - 1; // 33
+        // WitScript.ToBytes() = [count(1)][len(1)][data...]; subtract count byte — it folds into WitnessStackCountWu
+        var condWitnessBytes = coin.SpendingConditionWitness!.ToBytes().Length - 1; // 33 for 32-byte preimage
         var sigCount = 2; // CHECKSIGVERIFY + CHECKSIG
 
-        var expectedWitnessWu = 1 + sigCount * (1 + 64) + 1 + scriptLen + 1 + cbLen + condWitnessBytes;
-        var expected = 41 * 4 + expectedWitnessWu;
+        var expectedWitnessWu = WitnessStackCountWu + sigCount * SchnorrSigWu
+            + WitnessItemLenPrefixWu + scriptLen
+            + WitnessItemLenPrefixWu + cbLen
+            + condWitnessBytes;
+        var expected = InputNonWitnessWu + expectedWitnessWu;
         Assert.That(ArkTxWeightEstimator.GetInputWeightUnits(coin), Is.EqualTo(expected));
     }
 
@@ -282,8 +298,10 @@ public class ArkTxWeightEstimatorTests
         var scriptLen = coin.SpendingScript.Script.ToBytes().Length;
         var sigCount = 3; // sender CHECKSIGVERIFY + receiver CHECKSIGVERIFY + server CHECKSIG
 
-        var expectedWitnessWu = 1 + sigCount * (1 + 64) + 1 + scriptLen + 1 + cbLen;
-        var expected = 41 * 4 + expectedWitnessWu;
+        var expectedWitnessWu = WitnessStackCountWu + sigCount * SchnorrSigWu
+            + WitnessItemLenPrefixWu + scriptLen
+            + WitnessItemLenPrefixWu + cbLen;
+        var expected = InputNonWitnessWu + expectedWitnessWu;
         Assert.That(ArkTxWeightEstimator.GetInputWeightUnits(coin), Is.EqualTo(expected));
     }
 
