@@ -672,7 +672,7 @@ public partial class BoltzSwapProvider
 
             var outpoint = new OutPoint(lockupTx.GetHash(), vout);
             var prevOut = lockupTx.Outputs[vout];
-            var refundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, DefaultRefundClaimFeeSats);
+            var refundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, await EstimateClaimRefundFeeAsync(ct));
             BtcTransactionBuilder.SignScriptPathRefund(refundTx, 0, prevOut, spendInfo, refundLeaf, cltvTimeout, ephemeralKey);
 
             _logger?.LogInformation(
