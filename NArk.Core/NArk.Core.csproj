@@ -30,7 +30,10 @@
     </ItemGroup>
 
     <ItemGroup>
-        <Protobuf Include="Transport\GrpcClient\Protos\**\*.proto" GrpcServices="Client" ProtoRoot="Transport\GrpcClient\Protos" AdditionalImportDirs="$(PkgGoogle_Api_CommonProtos)/content/protos" />
+        <!-- Client stubs for every proto EXCEPT the fulmine delegator service, which we also implement server-side. -->
+        <Protobuf Include="Transport\GrpcClient\Protos\**\*.proto" Exclude="Transport\GrpcClient\Protos\fulmine\v1\delegator.proto" GrpcServices="Client" ProtoRoot="Transport\GrpcClient\Protos" AdditionalImportDirs="$(PkgGoogle_Api_CommonProtos)/content/protos" />
+        <!-- Delegator service: generate BOTH client and server so NArk.Delegator can implement the server base. -->
+        <Protobuf Include="Transport\GrpcClient\Protos\fulmine\v1\delegator.proto" GrpcServices="Both" ProtoRoot="Transport\GrpcClient\Protos" AdditionalImportDirs="$(PkgGoogle_Api_CommonProtos)/content/protos" />
     </ItemGroup>
 
     <ItemGroup>

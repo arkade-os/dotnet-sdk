@@ -332,7 +332,7 @@ var details = await transport.GetAssetDetailsAsync(assetId);
 
 ## Delegation
 
-Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batch rounds on your behalf, rolling VTXOs over before expiry.
+Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine), or an SDK-hosted delegator — see [Running an Arkade Delegator](#running-an-arkade-delegator-server)) participates in batches on your behalf, rolling VTXOs over before expiry.
 
 ### Automated Delegation
 
@@ -401,6 +401,32 @@ services.AddTransient<IDelegationTransformer, MyCustomDelegationTransformer>();
 Each transformer implements:
 - `CanDelegate(walletId, contract, delegatePubkey)` — check eligibility
 - `GetDelegationScriptBuilders(contract)` — return (intentScript, forfeitScript) for building delegation artifacts
+
+### Running an Arkade Delegator (server)
+
+The SDK can also *be* the delegator — the server side of the `fulmine.v1.DelegatorService` (`GetDelegatorInfo` + `Delegate`). The `NArk.Delegator` library hosts the service over gRPC and REST (JSON transcoding) in any ASP.NET Core app:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// The host must also register a funded delegator wallet (IWalletProvider), the Arkade transport
+// (IClientTransport), and intent/contract/VTXO storage — see AddArkCoreServices / AddArkEfCoreStorage.
+builder.Services.AddNArkDelegator(o =>
+{
+    o.WalletId = "delegator";                  // wallet whose signer co-signs delegations
+    o.DelegateDescriptor = delegateDescriptor; // its key, embedded in clients' delegate contracts
+    o.Fee = "0";                               // flat service fee (sats), advertised via GetDelegatorInfo
+    o.DelegatorAddress = "";                   // Arkade address the fee is paid to (when Fee > 0)
+});
+
+var app = builder.Build();
+app.MapNArkDelegator();   // GET /v1/delegator/info, POST /v1/delegate (gRPC + REST)
+app.Run();
+```
+
+On `Delegate`, the service validates the request, reconstructs the client's delegate contract (verified against the VTXO scriptPubKey), **co-signs the forfeit's delegate path** with the delegator's signer, and persists the delegation as a `WaitingToSubmit` intent with `ValidFrom = expiry − threshold`. `GetDelegatorInfo` returns the delegator's pubkey, fee, and Arkade address; clients embed the pubkey in their `ArkDelegateContract`.
+
+> **Status:** the delegation *intake* (accept → validate → co-sign → persist) is implemented and end-to-end tested against regtest arkd. The automated batch *refresh* (registering the held intent and joining a batch to roll the VTXO over before expiry) is the tracked next step. See [Delegator Server](docs/articles/delegator-server.md) for the design and the forfeit protocol.
 
 ## Collaborative Exits (On-chain)
 
