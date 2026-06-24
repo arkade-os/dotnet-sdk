@@ -365,7 +365,7 @@ public class UnilateralExitService(
         // 5. Build, sign, broadcast claim.
         var claimAddress = BitcoinAddress.Create(plan.ClaimAddress, serverInfo.Network);
         var feeRate = await blockchain.EstimateFeeRateAsync(6, cancellationToken);
-        var claimTx = BuildClaimTransaction(
+        var claimTx = Helpers.TransactionHelpers.BuildCsvSpendTransaction(
             vtxoOutpoint, vtxoTxOut.TxOut, claimAddress, serverInfo.UnilateralExit,
             tapScript, controlBlock, feeRate, serverInfo.Network);
 
@@ -701,7 +701,7 @@ public class UnilateralExitService(
             var claimAddress = BitcoinAddress.Create(session.ClaimAddress, serverInfo.Network);
             var feeRate = await blockchain.EstimateFeeRateAsync(6, ct);
 
-            var claimTx = BuildClaimTransaction(
+            var claimTx = Helpers.TransactionHelpers.BuildCsvSpendTransaction(
                 vtxoOutpoint,
                 vtxoTxOut.TxOut,
                 claimAddress,
@@ -807,40 +807,6 @@ public class UnilateralExitService(
         {
             logger?.LogError(ex, "Error checking claim tx for session {SessionId}", session.Id);
         }
-    }
-
-    private static Transaction BuildClaimTransaction(
-        OutPoint vtxoOutpoint,
-        TxOut vtxoTxOut,
-        BitcoinAddress claimAddress,
-        Sequence csvDelay,
-        TapScript tapScript,
-        ControlBlock controlBlock,
-        FeeRate feeRate,
-        Network network)
-    {
-        var claimTx = Transaction.Create(network);
-        claimTx.Version = 2;
-
-        // Input: VTXO output with CSV sequence
-        var input = claimTx.Inputs.Add(vtxoOutpoint);
-        input.Sequence = csvDelay;
-
-        // Estimate size for fee calculation
-        // P2TR script-path spend: ~64 sig + script + control block ≈ 150-200 wu
-        var witnessSize = 64 + tapScript.Script.Length + controlBlock.ToBytes().Length + 10;
-        var txBaseSize = 10 + 41 + 43; // version + input + output overhead
-        var vsize = txBaseSize + (witnessSize + 3) / 4;
-        var fee = feeRate.GetFee(vsize);
-
-        var claimAmount = vtxoTxOut.Value - fee;
-        if (claimAmount <= Money.Zero)
-            throw new InvalidOperationException(
-                $"VTXO amount ({vtxoTxOut.Value}) is too small to cover fees ({fee})");
-
-        claimTx.Outputs.Add(new TxOut(claimAmount, claimAddress));
-
-        return claimTx;
     }
 
     /// <summary>

@@ -442,4 +442,39 @@ public static class TransactionHelpers
             return forfeitTx;
         }
     }
+    
+    /// <summary>
+    /// Builds a version-2 transaction that spends a single P2TR output via a script-path
+    /// unilateral exit (CSV timelock). Fee is deducted from the output amount.
+    /// </summary>
+    public static Transaction BuildCsvSpendTransaction(
+        OutPoint vtxoOutpoint,
+        TxOut vtxoTxOut,
+        BitcoinAddress destinationAddress,
+        Sequence csvDelay,
+        TapScript tapScript,
+        ControlBlock controlBlock,
+        FeeRate feeRate,
+        Network network)
+    {
+        var tx = Transaction.Create(network);
+        tx.Version = 2;
+
+        var input = tx.Inputs.Add(vtxoOutpoint);
+        input.Sequence = csvDelay;
+
+        // P2TR script-path spend: ~64 sig + script + control block ≈ 150-200 wu
+        var witnessSize = 64 + tapScript.Script.Length + controlBlock.ToBytes().Length + 10;
+        var txBaseSize = 10 + 41 + 43; // version + input + output overhead
+        var vsize = txBaseSize + (witnessSize + 3) / 4;
+        var fee = feeRate.GetFee(vsize);
+
+        var outputAmount = vtxoTxOut.Value - fee;
+        if (outputAmount <= Money.Zero)
+            throw new InvalidOperationException(
+                $"VTXO amount ({vtxoTxOut.Value}) is too small to cover fees ({fee})");
+
+        tx.Outputs.Add(new TxOut(outputAmount, destinationAddress));
+        return tx;
+    }
 }
