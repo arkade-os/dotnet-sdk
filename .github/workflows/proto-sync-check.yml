@@ -15,9 +15,9 @@ jobs:
         run: |
           mkdir -p /tmp/arkd-protos
           for f in indexer.proto service.proto types.proto; do
-            curl -fsSL \
+            wget -q \
               "https://raw.githubusercontent.com/arkade-os/arkd/master/api-spec/protobuf/ark/v1/${f}" \
-              -o "/tmp/arkd-protos/${f}"
+              -O "/tmp/arkd-protos/${f}"
           done
 
       - name: Diff against SDK proto files
