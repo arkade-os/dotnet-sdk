@@ -93,7 +93,9 @@ service ArkService {
   // Clients should use this stream as soon as they are ready to join a batch and can listen for
   // various events such as batch start, batch finalization, and other related activities.
   // The server pushes these events to the client in real-time as soon as its ready to move to the
-  // next phase of the batch processing.
+  // next phase of the batch processing. Upon creation of the stream, the event StreamStartedEvent
+  // is immediately sent, which passes along the stream id, to be used by the client for future
+  // calls to UpdateStreamTopics.
   rpc GetEventStream(GetEventStreamRequest) returns (stream GetEventStreamResponse) {
     option (meshapi.gateway.http) = {
       get: "/v1/batch/events"
@@ -103,6 +105,16 @@ service ArkService {
       }
     };
   };
+
+  // UpdateStreamTopics allows a client to modify the topics of their event stream. They can add,
+  // remove, or specify a list of topics, providing them control over the events received on the
+  // event stream. 
+  rpc UpdateStreamTopics(UpdateStreamTopicsRequest) returns (UpdateStreamTopicsResponse) {
+    option (meshapi.gateway.http) = {
+      post: "/v1/batch/updateTopics"
+      body: "*"
+    };
+  }
 
   // SubmitTx is the first leg of the process of spending vtxos offchain and allows a client to
   // submit a signed Ark transaction and the unsigned checkpoint transactions.
@@ -150,16 +162,13 @@ service ArkService {
     };
   }
 
-  rpc UpdateStreamTopics(UpdateStreamTopicsRequest) returns (UpdateStreamTopicsResponse) {
-    option (meshapi.gateway.http) = {
-      post: "/v1/batch/updateTopics"
-      body: "*"
-    };
-  }
-
   rpc GetIntent(GetIntentRequest) returns (GetIntentResponse) {
     option (meshapi.gateway.http) = {
       get: "/v1/intent"
+      additional_bindings {
+        post: "/v1/intent"
+        body: "*"
+      }
     };
   }
 }
@@ -258,6 +267,34 @@ message GetEventStreamResponse {
   }
 }
 
+message ModifyTopics {
+  repeated string add_topics = 1;
+  repeated string remove_topics = 2;
+}
+
+message OverwriteTopics {
+  repeated string topics = 1;
+}
+
+// Adding and removing topics can both be supplied in the same request,
+// allowing for simultaneous changes.
+// overwrite_topics will take precedence, and if set, then the add/remove
+// topics are ignored. The stream_id is required.
+message UpdateStreamTopicsRequest {
+  string stream_id = 1;
+
+  oneof topics_change {
+    ModifyTopics modify = 2;
+    OverwriteTopics overwrite = 3;
+  }
+}
+
+message UpdateStreamTopicsResponse {
+  repeated string topics_added = 1;
+  repeated string topics_removed = 2;
+  repeated string all_topics = 3;
+}
+
 message SubmitTxRequest {
   string signed_ark_tx = 1;
   repeated string checkpoint_txs = 2;
@@ -283,45 +320,26 @@ message GetPendingTxResponse {
   repeated PendingTx pending_txs = 1;
 }
 
-message ModifyTopics {
-  repeated string add_topics = 1;
-  repeated string remove_topics = 2;
-}
-
-message OverwriteTopics {
-  repeated string topics = 1;
-}
-
-message UpdateStreamTopicsRequest {
-  string stream_id = 1;
-  oneof topics_change {
-    ModifyTopics modify = 2;
-    OverwriteTopics overwrite = 3;
-  }
-}
-
-message UpdateStreamTopicsResponse {
-  repeated string topics_added = 1;
-  repeated string topics_removed = 2;
-  repeated string all_topics = 3;
-}
-
 message GetTransactionsStreamRequest {}
 message GetTransactionsStreamResponse {
   oneof data {
     TxNotification commitment_tx = 1;
     TxNotification ark_tx = 2;
     Heartbeat heartbeat = 3;
+    TxNotification sweep_tx = 4;
   }
 }
 
 message GetIntentRequest {
   oneof filter {
-      string txid = 1;
-      Intent intent = 2;
-    }
+    string txid = 1;
+    Intent intent = 2;
+  }
 }
 
+// The repeated intents field is always populated with the matching results.
+// The singular intent field is only set for backward compatibility when the
+// request uses the txid filter, in which case it mirrors intents[0].
 message GetIntentResponse {
   Intent intent = 1;
   repeated Intent intents = 2;
