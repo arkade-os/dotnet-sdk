@@ -1,0 +1,39 @@
+name: Proto Sync Check
+
+on:
+  pull_request:
+
+jobs:
+  proto-sync:
+    name: Check proto files match arkd master
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch arkd proto files from master
+        run: |
+          mkdir -p /tmp/arkd-protos
+          for f in indexer.proto service.proto types.proto; do
+            curl -fsSL \
+              "https://raw.githubusercontent.com/arkade-os/arkd/master/api-spec/protobuf/ark/v1/${f}" \
+              -o "/tmp/arkd-protos/${f}"
+          done
+
+      - name: Diff against SDK proto files
+        run: |
+          PROTO_DIR="NArk.Core/Transport/GrpcClient/Protos/ark/v1"
+          failed=0
+          for f in indexer.proto service.proto types.proto; do
+            if ! diff -u "/tmp/arkd-protos/${f}" "${PROTO_DIR}/${f}"; then
+              echo "::error file=${PROTO_DIR}/${f}::${f} is out of sync with arkd master"
+              failed=1
+            fi
+          done
+          if [ $failed -ne 0 ]; then
+            echo ""
+            echo "Proto files are out of sync with arkade-os/arkd master."
+            echo "Copy the updated files from ~/sdks/arkd/api-spec/protobuf/ark/v1/ and commit them."
+            exit 1
+          fi
+          echo "All proto files are in sync with arkd master."
