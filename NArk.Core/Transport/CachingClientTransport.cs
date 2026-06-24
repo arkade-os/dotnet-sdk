@@ -155,15 +155,13 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
     public bool HasValidServerInfoCache => _cachedServerInfo != null && DateTimeOffset.UtcNow < _serverInfoExpiresAt;
 
     // Pass-through methods — digest mismatch invalidates the server info cache before propagating.
+    
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
+    public IAsyncEnumerable<VtxoSubscriptionEvent> OpenSubscriptionStreamAsync(IReadOnlySet<string>? initialScripts, string? existingSubscriptionId, CancellationToken cancellationToken = default)
+        => GuardStream(_inner.OpenSubscriptionStreamAsync(initialScripts, existingSubscriptionId, cancellationToken));
 
-    public Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts, string? subscriptionId, CancellationToken cancellationToken = default)
-        => Guard(() => _inner.SubscribeForScriptsAsync(scripts, subscriptionId, cancellationToken));
-
-    public Task UnsubscribeForScriptsAsync(string subscriptionId, IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
-        => Guard(() => _inner.UnsubscribeForScriptsAsync(subscriptionId, scripts, cancellationToken));
-
-    public IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId, CancellationToken cancellationToken = default)
-        => GuardStream(_inner.GetVtxoSubscriptionStreamAsync(subscriptionId, cancellationToken));
+    public Task UpdateSubscriptionScriptsAsync(string subscriptionId, IReadOnlySet<string>? add, IReadOnlySet<string>? remove, CancellationToken cancellationToken = default)
+        => Guard(() => _inner.UpdateSubscriptionScriptsAsync(subscriptionId, add, remove, cancellationToken));
 
     public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
         => GuardStream(_inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken));
@@ -211,7 +209,7 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
     public Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default)
         => Guard(() => _inner.GetIntentsByProofAsync(proof, message, cancellationToken));
 
-    public Task<Models.PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
+    public Task<PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
         CancellationToken cancellationToken = default)
         => Guard(() => _inner.GetPendingTxAsync(proof, message, cancellationToken));
 
@@ -223,6 +221,7 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
 
     public Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default)
         => Guard(() => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken));
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
 
     private static readonly ServerInfoChangedEventArgs DigestMismatchArgs =
         new() { Reason = ServerInfoChangedReason.DigestMismatch };

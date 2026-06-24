@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Web;
 using NArk.Abstractions.VTXOs;
+using NArk.Core.Transport;
 using NBitcoin;
 
 namespace NArk.Transport.RestClient;
@@ -79,57 +80,48 @@ public partial class RestClientTransport
         }
     }
 
-    public async Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts,
-        string? subscriptionId, CancellationToken cancellationToken = default)
-    {
-        var subReq = new { scripts = scripts.ToArray(), subscription_id = subscriptionId ?? "" };
-        var subResponse = await _http.PostAsJsonAsync("/v1/indexer/script/subscribe", subReq, JsonOpts, cancellationToken);
-        await EnsureSuccessWithBodyAsync(subResponse, "SubscribeForScripts", cancellationToken);
-        var subJson = await subResponse.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, cancellationToken);
-        return subJson.GetProperty("subscription_id").GetString()!;
-    }
-
-    public async Task UnsubscribeForScriptsAsync(string subscriptionId,
-        IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
-    {
-        // Empty scripts ⇒ arkd removes all topics and tears the subscription down.
-        var req = new { subscription_id = subscriptionId, scripts = scripts?.ToArray() ?? [] };
-        var response = await _http.PostAsJsonAsync("/v1/indexer/script/unsubscribe", req, JsonOpts, cancellationToken);
-        await EnsureSuccessWithBodyAsync(response, "UnsubscribeForScripts", cancellationToken);
-    }
-
-    // Surfaces the server error body in the exception message so callers can detect arkd's
-    // "subscription <id> not found" (the trigger for recreating a GC'd subscription).
-    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, string op, CancellationToken cancellationToken)
-    {
-        if (response.IsSuccessStatusCode)
-            return;
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        throw new HttpRequestException($"{op} failed ({(int)response.StatusCode}): {body}");
-    }
-
-    public async IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId,
+    public async IAsyncEnumerable<VtxoSubscriptionEvent> OpenSubscriptionStreamAsync(
+        IReadOnlySet<string>? initialScripts,
+        string? existingSubscriptionId,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        // Stream subscription events via SSE (gRPC-gateway server streaming → newline-delimited JSON)
-        using var stream = await _http.GetStreamAsync(
-            $"/v1/indexer/script/subscription/{subscriptionId}", cancellationToken);
+        string url;
+        if (existingSubscriptionId is not null)
+        {
+            url = $"/v1/indexer/script/subscription/{existingSubscriptionId}";
+        }
+        else
+        {
+            var query = HttpUtility.ParseQueryString(string.Empty);
+            if (initialScripts?.Count > 0)
+                foreach (var s in initialScripts)
+                    query.Add("filter.scripts.add", s);
+            url = query.Count > 0 ? $"/v1/indexer/subscription?{query}" : "/v1/indexer/subscription";
+        }
+
+        using var stream = await _http.GetStreamAsync(url, cancellationToken);
         using var reader = new StreamReader(stream);
 
         while (!cancellationToken.IsCancellationRequested)
         {
             var line = await reader.ReadLineAsync(cancellationToken);
-            if (line is null) break; // Stream closed
+            if (line is null) break;
             if (string.IsNullOrWhiteSpace(line)) continue;
 
             JsonElement evt;
             try { evt = JsonSerializer.Deserialize<JsonElement>(line, JsonOpts); }
             catch { continue; }
 
-            // Heartbeat — skip
             if (evt.TryGetProperty("heartbeat", out _)) continue;
 
-            // Subscription event — extract scripts
+            if (evt.TryGetProperty("subscriptionStarted", out var started) &&
+                started.TryGetProperty("subscriptionId", out var idProp))
+            {
+                var id = idProp.GetString();
+                if (id is not null) yield return new VtxoSubscriptionStarted(id);
+                continue;
+            }
+
             if (evt.TryGetProperty("event", out var eventData) &&
                 eventData.TryGetProperty("scripts", out var scriptsArr))
             {
@@ -140,9 +132,44 @@ public partial class RestClientTransport
                     if (val is not null) changedScripts.Add(val);
                 }
                 if (changedScripts.Count > 0)
-                    yield return changedScripts;
+                    yield return new VtxoScriptsChanged(changedScripts);
             }
         }
+    }
+
+    public async Task UpdateSubscriptionScriptsAsync(
+        string subscriptionId,
+        IReadOnlySet<string>? add,
+        IReadOnlySet<string>? remove,
+        CancellationToken cancellationToken = default)
+    {
+        if ((add is null || add.Count == 0) && (remove is null || remove.Count == 0))
+            return;
+
+        var req = new
+        {
+            subscription_id = subscriptionId,
+            filter = new
+            {
+                scripts = new
+                {
+                    add = add?.ToArray() ?? [],
+                    remove = remove?.ToArray() ?? [],
+                }
+            }
+        };
+        var response = await _http.PostAsJsonAsync("/v1/indexer/subscription/update", req, JsonOpts, cancellationToken);
+        await EnsureSuccessWithBodyAsync(response, "UpdateSubscription", cancellationToken);
+    }
+
+    // Surfaces the server error body in the exception message so callers can detect arkd's
+    // "subscription <id> not found" (the trigger for recreating a GC'd subscription).
+    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, string op, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        throw new HttpRequestException($"{op} failed ({(int)response.StatusCode}): {body}");
     }
 
     public async IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(
