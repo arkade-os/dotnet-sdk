@@ -34,7 +34,7 @@ public partial class GrpcClientTransport
             Dust: Money.Satoshis(response.Dust),
             SignerKey: KeyExtensions.ParseOutputDescriptor(response.SignerPubkey, network),
             DeprecatedSigners: response.DeprecatedSigners.ToDictionary(signer => signer.Pubkey.ToECXOnlyPubKey(),
-                signer => signer.CutoffDate, ECXOnlyPubKeyComparer.Instance),
+                signer => signer.CutoffDate),
             Network: network,
             UnilateralExit: ParseSequence(response.UnilateralExitDelay),
             BoardingExit: ParseSequence(response.BoardingExitDelay),

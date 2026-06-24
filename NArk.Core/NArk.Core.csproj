@@ -11,7 +11,7 @@
     <ItemGroup>
       <PackageReference Include="Cel" Version="0.3.2" />
       <PackageReference Include="NBitcoin" Version="10.0.1" />
-      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.0" />
+      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.1" />
       <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.0" />
       <!-- From NArk.Blockchain.NBXplorer -->
       <PackageReference Include="NBXplorer.Client" Version="5.0.6" />

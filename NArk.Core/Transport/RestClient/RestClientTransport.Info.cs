@@ -29,7 +29,7 @@ public partial class RestClientTransport
         var forfeitPubkey = GetString(json, "forfeit_pubkey", "forfeitPubkey");
         var fPubKey = forfeitPubkey.ToECXOnlyPubKey();
 
-        var deprecatedSigners = new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance);
+        var deprecatedSigners = new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>();
         if (TryGetProp(json, "deprecated_signers", "deprecatedSigners", out var ds) && ds.ValueKind == JsonValueKind.Array)
         {
             foreach (var signer in ds.EnumerateArray())

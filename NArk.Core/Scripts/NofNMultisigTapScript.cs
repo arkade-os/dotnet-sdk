@@ -21,7 +21,7 @@ public class NofNMultisigTapScript(ECXOnlyPubKey[] owners) : ScriptBuilder
 
     public static NofNMultisigTapScript Parse(ScriptReader scriptReader)
     {
-        HashSet<ECXOnlyPubKey> owners = new(ECXOnlyPubKeyComparer.Instance);
+        HashSet<ECXOnlyPubKey> owners = new();
         Op lastOp = Op.GetPushOp(0);
         while (lastOp.Code != OpcodeType.OP_CHECKSIG)
         {
