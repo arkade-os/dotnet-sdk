@@ -32,6 +32,13 @@ public static class ArkTxWeightEstimator
     /// <summary>Weight units for a single P2TR (taproot) output.</summary>
     public const int P2TrOutputWu = 43 * 4;
 
+    // Non-witness per P2A anchor output: value(8) + spk_len(1) + spk(4) = 13 bytes × 4
+    /// <summary>
+    /// Weight units for the P2A (pay-to-anchor) output (script <c>51024e73</c>) that every
+    /// Arkade transaction appends for fee-bumping.
+    /// </summary>
+    public const int P2AOutputWu = 13 * 4;
+
     /// <summary>
     /// Returns the weight units contributed by a single Arkade VTXO input when
     /// spent via its tapscript (script-path) spending path.

@@ -1,4 +1,5 @@
 using NArk.Abstractions;
+using NArk.Core.Fees;
 using NBitcoin;
 
 namespace NArk.Core.CoinSelector.EARCoinSelector;
@@ -29,11 +30,20 @@ public sealed class EARSCoinSelector : ICoinSelector
         Money targetAmount,
         Money dustThreshold,
         int currentSubDustOutputs,
-        int maxOpReturnOutputs = 1)
+        int maxOpReturnOutputs = 1,
+        long? maxInputWeightWu = null)
     {
-        var context = BuildContext(targetAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs);
         var candidates = BuildCandidates(availableCoins, dustThreshold);
-        return _engine.Select(candidates, context, _policy).SelectedCoins;
+        var context = BuildContext(targetAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs, null, maxInputWeightWu);
+        try
+        {
+            return _engine.Select(candidates, context, _policy).SelectedCoins;
+        }
+        catch (NotEnoughFundsException) when (maxInputWeightWu is { } cap
+            && candidates.Sum(c => c.Value) >= targetAmount)
+        {
+            throw new TooManyInputsException(cap);
+        }
     }
 
     /// <inheritdoc/>
@@ -43,11 +53,20 @@ public sealed class EARSCoinSelector : ICoinSelector
         IReadOnlyList<AssetRequirement> assetRequirements,
         Money dustThreshold,
         int currentSubDustOutputs,
-        int maxOpReturnOutputs = 1)
+        int maxOpReturnOutputs = 1,
+        long? maxInputWeightWu = null)
     {
-        var context = BuildContext(targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs, assetRequirements);
         var candidates = BuildCandidates(availableCoins, dustThreshold);
-        return _engine.Select(candidates, context, _policy).SelectedCoins;
+        var context = BuildContext(targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs, assetRequirements, maxInputWeightWu);
+        try
+        {
+            return _engine.Select(candidates, context, _policy).SelectedCoins;
+        }
+        catch (NotEnoughFundsException) when (maxInputWeightWu is { } cap
+            && candidates.Sum(c => c.Value) >= targetBtcAmount)
+        {
+            throw new TooManyInputsException(cap);
+        }
     }
 
     private static IReadOnlyList<CoinCandidate> BuildCandidates(List<ArkCoin> coins, Money dustThreshold) =>
@@ -57,7 +76,7 @@ public sealed class EARSCoinSelector : ICoinSelector
             ExpiryGroup: c.ExpiresAtHeight ?? 0u,
             IsDustProne: c.TxOut.Value < dustThreshold,
             Assets: c.Assets ?? [],
-            Weight: c.TxOut.ScriptPubKey.Length))
+            Weight: ArkTxWeightEstimator.GetInputWeightUnits(c)))
         .ToList();
 
     private static SelectionContext BuildContext(
@@ -66,6 +85,7 @@ public sealed class EARSCoinSelector : ICoinSelector
         int currentSubDust,
         int maxSubDust,
         IReadOnlyList<AssetRequirement>? assetRequirements = null,
+        long? maxInputWeightWu = null,
         bool allowDustInputs = true) =>
         new(TargetAmount: target,
             DustThreshold: dust,
@@ -74,5 +94,6 @@ public sealed class EARSCoinSelector : ICoinSelector
             MaxInputs: 100,
             CurrentSubDustOutputs: currentSubDust,
             MaxSubDustOutputs: maxSubDust,
-            AssetRequirements: assetRequirements ?? []);
+            AssetRequirements: assetRequirements ?? [],
+            MaxInputWeightWu: maxInputWeightWu);
 }

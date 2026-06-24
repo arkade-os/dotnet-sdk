@@ -35,10 +35,13 @@ public sealed class ExpiryFirstStrategy : ICoinSelectionStrategy
     {
         var selected = new List<ArkCoin>();
         var total = Money.Zero;
+        var usedWu = 0L;
 
         foreach (var coin in coins)
         {
             if (selected.Count >= context.MaxInputs)
+                break;
+            if (context.MaxInputWeightWu is { } cap && usedWu + coin.Weight > cap)
                 break;
 
             if (coin.IsDustProne && !context.AllowDustInputs)
@@ -46,6 +49,7 @@ public sealed class ExpiryFirstStrategy : ICoinSelectionStrategy
 
             selected.Add(coin.Coin);
             total += coin.Value;
+            usedWu += coin.Weight;
 
             if (total < context.TargetAmount)
                 continue;
