@@ -117,6 +117,27 @@ public class VHTLCContract : ArkContract
             CreateCooperativeScript(), null, null, null, vtxo.Swept, vtxo.Unrolled);
     }
 
+    /// <summary>
+    /// Creates a VHTLC contract from raw parameters, validating hash byte length and seconds timelocks
+    /// before encoding them into NBitcoin types (which lose the original value on rounding).
+    /// </summary>
+    public static VHTLCContract Create(
+        OutputDescriptor server, OutputDescriptor sender, OutputDescriptor receiver,
+        byte[] preimageHashBytes, LockTime refundLocktime,
+        VHtlcDelay unilateralClaimDelay, VHtlcDelay unilateralRefundDelay, VHtlcDelay unilateralRefundWithoutReceiverDelay)
+    {
+        if (preimageHashBytes.Length != 20)
+            throw new ArgumentException("preimage hash must be 20 bytes", nameof(preimageHashBytes));
+        if (refundLocktime.Value == 0)
+            throw new ArgumentException("refund locktime must be greater than 0", nameof(refundLocktime));
+
+        return new VHTLCContract(server, sender, receiver,
+            new uint160(preimageHashBytes, false), refundLocktime,
+            unilateralClaimDelay.ToSequence(nameof(unilateralClaimDelay)),
+            unilateralRefundDelay.ToSequence(nameof(unilateralRefundDelay)),
+            unilateralRefundWithoutReceiverDelay.ToSequence(nameof(unilateralRefundWithoutReceiverDelay)));
+    }
+
     public static ArkContract? Parse(Dictionary<string, string> contractData, Network network)
     {
         var server = KeyExtensions.ParseOutputDescriptor(contractData["server"], network);
@@ -188,5 +209,27 @@ public class VHTLCContract : ArkContract
         // unilateralRefundWithoutReceiver (sender after unilateralRefundWithoutReceiverDelay)
         return new UnilateralPathArkTapScript(UnilateralRefundWithoutReceiverDelay,
             new NofNMultisigTapScript([Sender.ToXOnlyPubKey()]));
+    }
+}
+
+/// <summary>A CSV timelock delay for a VHTLC contract, expressed in blocks or seconds.</summary>
+public readonly record struct VHtlcDelay(bool IsSeconds, uint Value)
+{
+    public static VHtlcDelay Blocks(uint blocks) => new(false, blocks);
+    public static VHtlcDelay Seconds(uint seconds) => new(true, seconds);
+
+    internal Sequence ToSequence(string fieldName)
+    {
+        if (Value == 0)
+            throw new ArgumentException($"{fieldName} must be greater than 0");
+        if (IsSeconds)
+        {
+            if (Value < 512)
+                throw new ArgumentException("seconds timelock must be greater or equal to 512");
+            if (Value % 512 != 0)
+                throw new ArgumentException("seconds timelock must be a multiple of 512");
+            return new Sequence(TimeSpan.FromSeconds(Value));
+        }
+        return new Sequence(Value);
     }
 }
