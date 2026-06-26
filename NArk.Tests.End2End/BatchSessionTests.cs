@@ -281,12 +281,10 @@ public class BatchSessionTests
             => inner.FinalizeTx(arkTxId, finalCheckpointTxs, cancellationToken);
         public Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
             => inner.GetServerInfoAsync(cancellationToken);
-        public Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts, string? subscriptionId, CancellationToken cancellationToken = default)
-            => inner.SubscribeForScriptsAsync(scripts, subscriptionId, cancellationToken);
-        public Task UnsubscribeForScriptsAsync(string subscriptionId, IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
-            => inner.UnsubscribeForScriptsAsync(subscriptionId, scripts, cancellationToken);
-        public IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId, CancellationToken cancellationToken = default)
-            => inner.GetVtxoSubscriptionStreamAsync(subscriptionId, cancellationToken);
+        public IAsyncEnumerable<VtxoSubscriptionEvent> OpenSubscriptionStreamAsync(IReadOnlySet<string>? initialScripts, string? existingSubscriptionId, CancellationToken cancellationToken = default)
+            => inner.OpenSubscriptionStreamAsync(initialScripts, existingSubscriptionId, cancellationToken);
+        public Task UpdateSubscriptionScriptsAsync(string subscriptionId, IReadOnlySet<string>? add, IReadOnlySet<string>? remove, CancellationToken cancellationToken = default)
+            => inner.UpdateSubscriptionScriptsAsync(subscriptionId, add, remove, cancellationToken);
         public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
             => inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);
         public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, DateTimeOffset? after, DateTimeOffset? before, CancellationToken cancellationToken = default)
