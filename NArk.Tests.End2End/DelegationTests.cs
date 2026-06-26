@@ -14,6 +14,7 @@ using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
+using NArk.Tests.Common;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;

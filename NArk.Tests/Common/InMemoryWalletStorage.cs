@@ -1,9 +1,8 @@
 using System.Collections.Concurrent;
 using NArk.Abstractions.Wallets;
-using NArk.Tests.End2End.Wallets;
 using NArk.Core.Transport;
 
-namespace NArk.Tests.End2End.TestPersistance;
+namespace NArk.Tests.Common;
 
 public class InMemoryWalletProvider(IClientTransport transport) : IWalletProvider
 {

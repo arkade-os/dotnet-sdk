@@ -8,6 +8,7 @@ using NArk.Core.CoinSelector;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
+using NArk.Tests.Common;
 using NArk.Tests.End2End.TestPersistance;
 
 namespace NArk.Tests.End2End.Common;

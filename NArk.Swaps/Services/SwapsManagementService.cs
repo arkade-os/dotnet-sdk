@@ -144,7 +144,7 @@ public class SwapsManagementService : IAsyncDisposable
         return message;
     }
 
-    private async Task<byte[]> DerivePreimageAsync(
+    internal async Task<byte[]> DerivePreimageAsync(
         string walletId, OutputDescriptor descriptor, uint index, CancellationToken cancellationToken)
     {
         var signer = await _walletProvider.GetSignerAsync(walletId, cancellationToken);

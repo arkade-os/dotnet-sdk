@@ -20,6 +20,7 @@ using NArk.Abstractions.Safety;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Abstractions.VTXOs;
+using NArk.Tests.Common;
 using NBitcoin;
 
 namespace NArk.Tests.End2End.Core;

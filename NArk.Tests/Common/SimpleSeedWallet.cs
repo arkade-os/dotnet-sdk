@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
-using NArk.Abstractions.Extensions;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
@@ -10,7 +10,7 @@ using NBitcoin.Secp256k1;
 using NBitcoin.Secp256k1.Musig;
 using OutputDescriptorHelpers = NArk.Abstractions.Extensions.OutputDescriptorHelpers;
 
-namespace NArk.Tests.End2End.Wallets;
+namespace NArk.Tests.Common;
 
 public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
 {
@@ -48,7 +48,7 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
 
         return new SimpleSeedWallet(fingerprint.ToString(), descriptor, mnemonic.ToString(), 0, clientTransport);
     }
-
+    
     public async Task<string> GetWalletFingerprint(CancellationToken cancellationToken = default)
     {
         return _identifier;

@@ -11,6 +11,7 @@ using NArk.Core.Services;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
 using NArk.Storage.EfCore.Hosting;
+using NArk.Tests.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 

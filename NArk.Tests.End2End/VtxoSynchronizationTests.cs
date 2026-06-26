@@ -9,6 +9,7 @@ using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
+using NArk.Tests.Common;
 using NArk.Transport.GrpcClient;
 using NBitcoin;
 using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;

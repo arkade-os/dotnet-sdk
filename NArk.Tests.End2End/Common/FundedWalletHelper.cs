@@ -10,6 +10,7 @@ using NArk.Core.Services;
 using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transport;
+using NArk.Tests.Common;
 using NArk.Transport.GrpcClient;
 
 namespace NArk.Tests.End2End.Common;
