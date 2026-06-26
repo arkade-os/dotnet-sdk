@@ -79,14 +79,20 @@ public interface IRemoteSignerTransport
     /// signature.
     /// </summary>
     /// <remarks>
-    /// Implementations <b>SHOULD</b> sign with <c>aux_rand</c> set to null (or all-zero) so the
+    /// Implementations <b>MUST</b> sign with <c>aux_rand</c> set to 32 zero bytes so the
     /// signature is deterministic per <c>(key, hash)</c>. The SDK relies on this for the
     /// swap-preimage recovery scheme in <c>SwapsManagementService.DerivePreimageAsync</c>:
     /// same descriptor + same wallet must produce the same signature, otherwise a restored
     /// wallet that rediscovers an outstanding swap will re-derive a different preimage and
-    /// fail to claim the VHTLC. Implementations that randomise <c>aux_rand</c> (e.g. for
-    /// side-channel resistance on a hardware signer) break that contract, and remote-signed
-    /// wallets on such transports will not recover outstanding swap preimages from seed.
+    /// fail to claim the VHTLC.
+    /// <para>
+    /// In NBitcoin.Secp256k1, use <c>ECPrivKey.SignBIP340(msg, new byte[32])</c> — the
+    /// no-auxData overload <c>SignBIP340(msg)</c> draws from the system RNG on every call
+    /// and is therefore non-deterministic.
+    /// </para>
+    /// Implementations that randomise <c>aux_rand</c> (e.g. for side-channel resistance on a
+    /// hardware signer) break that contract, and remote-signed wallets on such transports will
+    /// not recover outstanding swap preimages from seed.
     /// </remarks>
     /// <param name="walletId">The wallet whose key signs.</param>
     /// <param name="descriptor">The descriptor identifying the signing key.</param>

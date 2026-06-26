@@ -100,7 +100,7 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
     {
         var privKey = await DerivePrivateKey(descriptor, cancellationToken);
 
-        return (privKey.CreateXOnlyPubKey(), privKey.SignBIP340(hash.ToBytes()));
+        return (privKey.CreateXOnlyPubKey(), privKey.SignBIP340(hash.ToBytes(), new byte[32]));
     }
 
     public async Task<MusigPubNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context,

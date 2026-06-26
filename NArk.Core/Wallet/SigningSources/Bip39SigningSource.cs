@@ -53,7 +53,7 @@ public class Bip39SigningSource : IDescriptorSigningSource
     public Task<(ECXOnlyPubKey, SecpSchnorrSignature)> SignAsync(OutputDescriptor descriptor, uint256 hash, CancellationToken cancellationToken = default)
     {
         var privKey = DerivePrivateKey(descriptor);
-        return Task.FromResult((privKey.CreateXOnlyPubKey(), privKey.SignBIP340(hash.ToBytes())));
+        return Task.FromResult((privKey.CreateXOnlyPubKey(), privKey.SignBIP340(hash.ToBytes(), new byte[32])));
     }
 
     public Task<MusigPubNonce> GenerateNoncesAsync(OutputDescriptor descriptor, MusigContext context,
