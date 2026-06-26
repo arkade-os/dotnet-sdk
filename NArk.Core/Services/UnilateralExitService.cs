@@ -458,7 +458,30 @@ public class UnilateralExitService(
                 // tree txs as PSBT-encoded strings (the same format that
                 // BatchSession parses across the rest of the codebase) —
                 // not raw consensus-encoded transactions. Parse + extract.
-                var tx = ParseVirtualTx(vtx.Hex, network, vtx.Type);
+                Transaction tx;
+                try
+                {
+                    tx = ParseVirtualTx(vtx.Hex, network, vtx.Type);
+                }
+                catch (TreeTxNotSignedException ex)
+                {
+                    // Preconfirmed VTXO: arkd hasn't co-signed the tree yet (the batch round
+                    // hasn't fired). Re-fetch the branch — the stored copy may have been cached
+                    // while the VTXO was preconfirmed and is therefore unsigned — then leave the
+                    // session in Broadcasting and retry on the next poll, instead of failing.
+                    // Mirrors go-sdk's ErrWaitingForConfirmation retry loop.
+                    logger?.LogInformation(
+                        "Tree tx {Txid} not yet co-signed for session {SessionId}; refreshing branch and waiting for the batch round ({Reason})",
+                        vtx.Txid, session.Id, ex.Message);
+                    await virtualTxService.FetchAndStoreBranchAsync(
+                        vtxoOutpoint, VirtualTxMode.Full, forceRefresh: true, ct);
+                    await UpdateSession(session with
+                    {
+                        NextTxIndex = i,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    }, ct);
+                    return;
+                }
                 var success = await BroadcastWithCpfpAsync(tx, ct);
 
                 if (!success)
@@ -841,10 +864,14 @@ public class UnilateralExitService(
                 var sig = psbt.Inputs[i].TaprootKeySignature;
                 if (sig is null)
                 {
-                    throw new InvalidOperationException(
+                    // Expected for a preconfirmed VTXO: arkd co-signs the tree only during a
+                    // batch round, so the signature is absent until the batch fires. Surface a
+                    // typed, transient signal so ProgressBroadcastingAsync can re-fetch and wait
+                    // instead of failing the exit. See TreeTxNotSignedException.
+                    throw new TreeTxNotSignedException(
                         $"Tree tx {tx.GetHash()} input {i} is missing the MuSig2 " +
-                        "taproot key-path signature (PSBT_IN_TAP_KEY_SIG); arkd should " +
-                        "have populated it during the batch round.");
+                        "taproot key-path signature (PSBT_IN_TAP_KEY_SIG); arkd populates it " +
+                        "during the batch round, so the VTXO is likely still preconfirmed.");
                 }
                 // The `true` flag tells NBitcoin these bytes are stack
                 // pushes, not a pre-serialized witness — same idiom as

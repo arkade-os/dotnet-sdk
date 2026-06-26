@@ -19,13 +19,23 @@ public class VirtualTxService(
     /// Fetch and store the virtual tx branch for a VTXO.
     /// In Lite mode, stores only txids and expiry. In Full mode, also fetches and stores raw tx hex.
     /// </summary>
+    /// <param name="vtxoOutpoint">The VTXO whose virtual-tx chain to fetch.</param>
+    /// <param name="mode">Lite stores txids + expiry only; Full also fetches raw tx hex.</param>
+    /// <param name="forceRefresh">
+    /// When <c>true</c>, re-fetch from the indexer even if a branch is already stored, overwriting it.
+    /// Needed when a previously stored branch is stale — e.g. it was fetched while the VTXO was still
+    /// preconfirmed, so the tree-tx PSBTs lacked arkd's MuSig2 co-signature; once the batch round
+    /// commits the VTXO, a forced re-fetch picks up the signed versions.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task FetchAndStoreBranchAsync(
         OutPoint vtxoOutpoint,
         VirtualTxMode mode = VirtualTxMode.Full,
+        bool forceRefresh = false,
         CancellationToken cancellationToken = default)
     {
-        // Skip if we already have a branch for this VTXO
-        if (await storage.HasBranchAsync(vtxoOutpoint, cancellationToken))
+        // Skip if we already have a branch for this VTXO, unless a refresh is forced.
+        if (!forceRefresh && await storage.HasBranchAsync(vtxoOutpoint, cancellationToken))
         {
             logger?.LogDebug("Branch already exists for VTXO {Outpoint}, skipping fetch", vtxoOutpoint);
             return;
@@ -119,7 +129,7 @@ public class VirtualTxService(
         if (branch.Count == 0)
         {
             // No branch stored — fetch everything in Full mode
-            await FetchAndStoreBranchAsync(vtxoOutpoint, VirtualTxMode.Full, cancellationToken);
+            await FetchAndStoreBranchAsync(vtxoOutpoint, VirtualTxMode.Full, cancellationToken: cancellationToken);
             return;
         }
 

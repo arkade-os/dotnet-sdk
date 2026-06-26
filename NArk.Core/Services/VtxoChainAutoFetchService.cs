@@ -79,9 +79,12 @@ public class VtxoChainAutoFetchService(
                 {
                     // FetchAndStoreBranchAsync is idempotent: it short-
                     // circuits on the storage's HasBranchAsync check, so
-                    // duplicate events for the same VTXO are cheap.
+                    // duplicate events for the same VTXO are cheap. A branch
+                    // cached here while the VTXO is still preconfirmed carries
+                    // unsigned tree-tx PSBTs; UnilateralExitService force-
+                    // refreshes it once the batch round co-signs the tree.
                     await virtualTxService.FetchAndStoreBranchAsync(
-                        vtxo.OutPoint, options.Value.DefaultMode, cancellationToken);
+                        vtxo.OutPoint, options.Value.DefaultMode, cancellationToken: cancellationToken);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

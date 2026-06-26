@@ -307,11 +307,11 @@ public class UnilateralExitTests
         await using var setup = await FundWalletOffchainForExitAsync();
 
         var vtxos = await setup.VtxoStorage.GetVtxos();
-        var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Unrolled);
+        var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Unrolled && !v.Preconfirmed);
         Assert.That(vtxo, Is.Not.Null,
-            "Expected an unspent non-boarding VTXO after offchain fund; got: " +
+            "Expected an unspent, committed non-boarding VTXO after offchain fund; got: " +
             string.Join(", ", vtxos.Select(v =>
-                $"{v.TransactionId[..8]}.. spent={v.IsSpent()} unrolled={v.Unrolled}")));
+                $"{v.TransactionId[..8]}.. spent={v.IsSpent()} unrolled={v.Unrolled} preconfirmed={v.Preconfirmed}")));
 
         var claimAddress = await GetFreshOnchainAddress();
         var sessions = await setup.ExitService.StartExitAsync(
@@ -426,22 +426,14 @@ public class UnilateralExitTests
     /// batch commits it on-chain.
     /// </summary>
     /// <remarks>
-    /// Currently blocked: arkd does not populate <c>PSBT_IN_TAP_KEY_SIG</c> in the
-    /// tree-tx PSBTs for preconfirmed VTXOs because the MuSig2 co-signature is only
-    /// produced during the batch round. <c>ParseVirtualTx</c> therefore throws
-    /// "missing MuSig2 taproot key-path signature" and the exit fails.
-    ///
-    /// go-sdk handles this via an <c>ErrWaitingForConfirmation</c> retry loop that
-    /// waits for the batch to fire before broadcasting the tree. NArk would need an
-    /// equivalent: retry <c>ProgressExitsAsync</c> silently when signatures are
-    /// absent instead of failing the session immediately.
-    ///
-    /// Re-enable once <c>ProgressExitsAsync</c> handles unsigned tree PSBTs by
-    /// waiting for the next batch round rather than failing.
+    /// A preconfirmed VTXO's tree-tx PSBTs lack <c>PSBT_IN_TAP_KEY_SIG</c> until the MuSig2
+    /// co-signature is produced during the batch round. <see cref="UnilateralExitService"/> now
+    /// handles this the way go-sdk does (<c>ErrWaitingForConfirmation</c>): when the tree isn't
+    /// co-signed yet it re-fetches the branch and keeps the session in <c>Broadcasting</c>,
+    /// retrying on the next <c>ProgressExitsAsync</c> until the batch fires — rather than failing.
     /// </remarks>
     [Test]
-    [Ignore("Blocked: preconfirmed VTXOs lack PSBT_IN_TAP_KEY_SIG until batch fires — " +
-            "ProgressExitsAsync needs ErrWaitingForConfirmation-style retry")]
+    [Retry(3)]
     [CancelAfter(300_000)]
     public async Task ProgressExits_WorksForPreconfirmedVtxo(CancellationToken token)
     {
@@ -680,11 +672,21 @@ public class UnilateralExitTests
         await DockerHelper.SendArkdNoteTo(receiveAddress, BoardingAmountSats);
         await receivedVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
+        // The offchain send lands a preconfirmed VTXO; its tree-tx is only MuSig2-co-signed
+        // once a batch round commits it (ARKD_SESSION_DURATION ~30s). Wait for the VTXO to be
+        // committed (Preconfirmed=false) so this test exercises the settled-VTXO exit path; the
+        // preconfirmed-before-commit path is covered by ProgressExits_WorksForPreconfirmedVtxo.
+        await TestWaiter.WaitFor(async () =>
+        {
+            var vtxos = await vtxoStorage.GetVtxos();
+            return vtxos.Any(v => !v.IsSpent() && !v.Unrolled && !v.Preconfirmed);
+        }, timeout: TimeSpan.FromSeconds(90));
+
         // Wait until VtxoChainAutoFetchService has populated the virtual tx branch.
         await TestWaiter.WaitFor(async () =>
         {
             var vtxos = await vtxoStorage.GetVtxos();
-            var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Unrolled);
+            var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Unrolled && !v.Preconfirmed);
             if (vtxo is null) return false;
             var branch = await virtualTxStorage.GetBranchAsync(vtxo.OutPoint);
             return branch.Count > 0;
