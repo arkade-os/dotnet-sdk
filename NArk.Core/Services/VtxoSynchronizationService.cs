@@ -340,43 +340,29 @@ public class VtxoSynchronizationService : IAsyncDisposable
         {
             var newView = await GatherActiveScriptsAsync(token);
 
-            // Empty active set → tear the subscription down (no point holding an empty
-            // subscription open). The supervisor goes idle until scripts return.
+            // Empty active set → disconnect stream and go idle.
             if (newView.Count == 0)
             {
-                if (_subscriptionId is not null)
+                if (_subscribedScripts.Count > 0)
                 {
-                    var torndown = _subscriptionId;
-                    _logger?.LogInformation("UpdateScriptsView: active set empty — tearing down subscription {Id}", torndown);
+                    _logger?.LogInformation("UpdateScriptsView: active set empty — disconnecting stream");
                     _subscriptionId = null;
                     SignalStreamGenerationChange();
-                    try
-                    {
-                        await _arkClientTransport.UnsubscribeForScriptsAsync(torndown, scripts: null, token);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger?.LogDebug(0, ex, "UpdateScriptsView: unsubscribe-all during teardown failed (subscription may already be gone)");
-                    }
                 }
                 _subscribedScripts = [];
                 return;
             }
 
-            // No live subscription (cold start, or returning from empty) → create one,
-            // wake the supervisor to stream it, and full-history catch-up the whole set.
-            if (_subscriptionId is null)
+            // Transitioning from empty → first scripts: supervisor is idle, wake it.
+            if (_subscribedScripts.Count == 0)
             {
-                _subscriptionId = await _arkClientTransport.SubscribeForScriptsAsync(newView, subscriptionId: null, token);
                 _subscribedScripts = newView;
-                _logger?.LogInformation("UpdateScriptsView: created subscription {Id} for {Count} script(s)", _subscriptionId, newView.Count);
+                _logger?.LogInformation("UpdateScriptsView: first {Count} script(s) — waking supervisor", newView.Count);
                 await EnqueueCatchupPollAsync(newView, token);
                 SignalStreamWakeup();
                 return;
             }
 
-            // Live subscription → update the watched set IN PLACE. No stream restart:
-            // arkd routes the added/removed scripts onto the already-open stream.
             var added = newView.Except(_subscribedScripts).ToHashSet();
             var removed = _subscribedScripts.Except(newView).ToHashSet();
             if (added.Count == 0 && removed.Count == 0)
@@ -385,31 +371,44 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 return;
             }
 
-            _logger?.LogInformation(
-                "UpdateScriptsView: in-place update +{Added}/-{Removed} (now {Count}) on subscription {Id}",
-                added.Count, removed.Count, newView.Count, _subscriptionId);
-            try
+            // Live subscription → update in place via UpdateSubscription (no stream restart).
+            if (_subscriptionId is not null)
             {
-                if (added.Count > 0)
-                    await _arkClientTransport.SubscribeForScriptsAsync(added, _subscriptionId, token);
-                if (removed.Count > 0)
-                    await _arkClientTransport.UnsubscribeForScriptsAsync(_subscriptionId, removed, token);
-            }
-            catch (Exception ex) when (IsSubscriptionNotFound(ex))
-            {
-                // arkd GC'd the subscription (TTL after a disconnect). Recreate it and make
-                // the supervisor re-read the new id; full-history catch-up the whole set.
-                _logger?.LogInformation("UpdateScriptsView: subscription {Id} not found — recreating", _subscriptionId);
-                _subscriptionId = await _arkClientTransport.SubscribeForScriptsAsync(newView, subscriptionId: null, token);
-                _subscribedScripts = newView;
-                await EnqueueCatchupPollAsync(newView, token);
-                SignalStreamGenerationChange();
-                return;
+                _logger?.LogInformation(
+                    "UpdateScriptsView: in-place update +{Added}/-{Removed} (now {Count}) on subscription {Id}",
+                    added.Count, removed.Count, newView.Count, _subscriptionId);
+                try
+                {
+                    await _arkClientTransport.UpdateSubscriptionScriptsAsync(
+                        _subscriptionId,
+                        added.Count > 0 ? added : null,
+                        removed.Count > 0 ? removed : null,
+                        token);
+                    if (added.Count > 0)
+                        await EnqueueCatchupPollAsync(added, token);
+                    _subscribedScripts = newView;
+                    return;
+                }
+                catch (Exception ex) when (IsSubscriptionNotFound(ex))
+                {
+                    // arkd GC'd the subscription. Clear the ID and let the supervisor reopen fresh.
+                    _logger?.LogInformation("UpdateScriptsView: subscription {Id} GC'd — supervisor will reopen", _subscriptionId);
+                    _subscriptionId = null;
+                    _subscribedScripts = newView;
+                    if (added.Count > 0)
+                        await EnqueueCatchupPollAsync(added, token);
+                    SignalStreamGenerationChange();
+                    return;
+                }
             }
 
-            if (added.Count > 0)
-                await EnqueueCatchupPollAsync(added, token);
+            // No subscription ID yet (supervisor is connecting). Update the target script set
+            // and interrupt it so it reconnects with the new set as initial filter.
+            _logger?.LogInformation(
+                "UpdateScriptsView: script set changed while supervisor is connecting — restarting with {Count} scripts",
+                newView.Count);
             _subscribedScripts = newView;
+            SignalStreamGenerationChange();
         }
         finally
         {
@@ -462,29 +461,32 @@ public class VtxoSynchronizationService : IAsyncDisposable
     }
 
     /// <summary>
-    /// The long-lived stream supervisor. Keeps one GetSubscription stream open for the
-    /// current subscription, enqueuing a poll for every pushed script. The watched set is
-    /// mutated in place by <see cref="UpdateScriptsView"/> (Subscribe/Unsubscribe) without
-    /// touching this loop. The loop only re-reads state when signalled: a generation change
-    /// (recreate/teardown) cancels the current stream token, and a wakeup ends the idle wait
-    /// after a subscription is created. On a stream drop it re-asserts the subscription
-    /// (recreating if arkd GC'd it) and reconnects.
+    /// The long-lived stream supervisor. On each loop iteration it opens a <c>GetSubscription</c>
+    /// stream — fresh (no ID, initial scripts in filter) when starting or after a GC, or as a
+    /// reconnect (existing ID) after a transient drop. The server sends
+    /// <see cref="VtxoSubscriptionStarted"/> as the first event on a new subscription, which
+    /// is stored so <see cref="UpdateScriptsView"/> can call <c>UpdateSubscription</c> in place.
     /// </summary>
     private async Task RunStreamSupervisorAsync(CancellationToken shutdownToken)
     {
         while (!shutdownToken.IsCancellationRequested)
         {
-            string? subscriptionId;
+            HashSet<string>? initialScripts = null;
+            string? reconnectId = null;
             var streamToken = CancellationToken.None;
+
             await _viewSyncLock.WaitAsync(shutdownToken);
             try
             {
-                subscriptionId = _subscriptionId;
-                if (subscriptionId is not null)
+                if (_subscribedScripts.Count > 0)
                 {
                     _streamGenerationCts?.Dispose();
                     _streamGenerationCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken);
                     streamToken = _streamGenerationCts.Token;
+                    reconnectId = _subscriptionId;
+                    // Pass initial scripts only when opening fresh (no reconnect ID).
+                    if (reconnectId is null)
+                        initialScripts = [.._subscribedScripts];
                 }
             }
             finally
@@ -492,9 +494,9 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 _viewSyncLock.Release();
             }
 
-            if (subscriptionId is null)
+            if (initialScripts is null && reconnectId is null)
             {
-                // Idle: nothing to watch. Wait until a subscription is created.
+                // Idle: no scripts to watch. Wait until scripts are added.
                 try { await _streamWakeup.WaitAsync(shutdownToken); }
                 catch (OperationCanceledException) { return; }
                 continue;
@@ -503,23 +505,35 @@ public class VtxoSynchronizationService : IAsyncDisposable
             var endedGracefully = false;
             try
             {
-                _logger?.LogInformation("VTXO subscription stream starting (subscription {Id})", subscriptionId);
-                await foreach (var changed in _arkClientTransport.GetVtxoSubscriptionStreamAsync(subscriptionId, streamToken))
+                _logger?.LogInformation("VTXO subscription stream opening (id={Id})", reconnectId ?? "new");
+
+                await foreach (var ev in _arkClientTransport.OpenSubscriptionStreamAsync(
+                    initialScripts, reconnectId, streamToken))
                 {
-                    _logger?.LogInformation(
-                        "VTXO subscription stream: arkd pushed update for {Count} script(s): [{Scripts}]",
-                        changed.Count, string.Join(", ", changed));
-                    // Single immediate poll for the pushed scripts; the 5s safety-net poll
-                    // is the backstop if this loses the race against arkd's indexer.
-                    try
+                    switch (ev)
                     {
-                        var after = DateTimeOffset.UtcNow - StreamPollLookback;
-                        await _readyToPoll.Writer.WriteAsync(new PollRequest(changed, after), streamToken);
-                    }
-                    catch (OperationCanceledException) { }
-                    catch (Exception ex)
-                    {
-                        _logger?.LogWarning(ex, "Stream push: failed to enqueue immediate poll");
+                        case VtxoSubscriptionStarted started:
+                            await _viewSyncLock.WaitAsync(shutdownToken);
+                            try { _subscriptionId = started.SubscriptionId; }
+                            finally { _viewSyncLock.Release(); }
+                            _logger?.LogInformation("VTXO subscription started (id={Id})", started.SubscriptionId);
+                            break;
+
+                        case VtxoScriptsChanged changed:
+                            _logger?.LogInformation(
+                                "VTXO subscription stream: arkd pushed update for {Count} script(s): [{Scripts}]",
+                                changed.Scripts.Count, string.Join(", ", changed.Scripts));
+                            try
+                            {
+                                var after = DateTimeOffset.UtcNow - StreamPollLookback;
+                                await _readyToPoll.Writer.WriteAsync(new PollRequest(changed.Scripts, after), streamToken);
+                            }
+                            catch (OperationCanceledException) { }
+                            catch (Exception ex)
+                            {
+                                _logger?.LogWarning(ex, "Stream push: failed to enqueue immediate poll");
+                            }
+                            break;
                     }
                 }
                 endedGracefully = true;
@@ -530,8 +544,16 @@ public class VtxoSynchronizationService : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
-                // Generation change (recreate/teardown) — re-read state on the next loop.
+                // Generation change (script set update or teardown) — re-read state on next loop.
                 continue;
+            }
+            catch (Exception ex) when (IsSubscriptionNotFound(ex))
+            {
+                // Subscription was GC'd by arkd. Clear the ID so next loop opens fresh.
+                _logger?.LogInformation("VTXO subscription {Id} GC'd — reopening fresh", reconnectId);
+                await _viewSyncLock.WaitAsync(shutdownToken);
+                try { _subscriptionId = null; }
+                finally { _viewSyncLock.Release(); }
             }
             catch (Exception ex)
             {
@@ -542,54 +564,6 @@ public class VtxoSynchronizationService : IAsyncDisposable
 
             if (endedGracefully)
                 _logger?.LogWarning("VTXO subscription stream ended (arkd closed it) — reconnecting");
-
-            // Re-assert the subscription so a TTL-GC'd listener is recreated, then loop to reconnect.
-            await ReassertSubscriptionAsync(subscriptionId, shutdownToken);
-        }
-    }
-
-    /// <summary>
-    /// After the supervisor's stream dropped, re-asserts the subscription's topics on the
-    /// same id (a no-op while the listener is alive within its TTL). If arkd GC'd the
-    /// listener, recreates it and full-history catch-up the set. The fresh-derive safety-net
-    /// poll covers detection regardless, so a transient failure here is non-fatal.
-    /// </summary>
-    private async Task ReassertSubscriptionAsync(string staleSubscriptionId, CancellationToken shutdownToken)
-    {
-        await _viewSyncLock.WaitAsync(shutdownToken);
-        try
-        {
-            // A concurrent UpdateScriptsView already recreated/tore down — let the supervisor
-            // re-read on the next loop instead of fighting it.
-            if (_subscriptionId != staleSubscriptionId)
-                return;
-            if (_subscribedScripts.Count == 0)
-            {
-                _subscriptionId = null;
-                return;
-            }
-
-            try
-            {
-                await _arkClientTransport.SubscribeForScriptsAsync(_subscribedScripts, staleSubscriptionId, shutdownToken);
-            }
-            catch (Exception ex) when (IsSubscriptionNotFound(ex))
-            {
-                _logger?.LogInformation("Reconnect: subscription {Id} was GC'd — recreating", staleSubscriptionId);
-                _subscriptionId = await _arkClientTransport.SubscribeForScriptsAsync(_subscribedScripts, subscriptionId: null, shutdownToken);
-                await EnqueueCatchupPollAsync(_subscribedScripts, shutdownToken);
-            }
-        }
-        catch (OperationCanceledException) when (shutdownToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "Failed to re-assert VTXO subscription on reconnect; safety-net poll still covers detection");
-        }
-        finally
-        {
-            _viewSyncLock.Release();
         }
     }
 

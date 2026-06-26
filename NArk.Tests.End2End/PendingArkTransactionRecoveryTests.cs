@@ -1,13 +1,10 @@
-using CliWrap;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
-using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core;
-using NArk.Core.Contracts;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
@@ -143,14 +140,20 @@ public class PendingArkTransactionRecoveryTests
         public Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
             => _inner.GetServerInfoAsync(cancellationToken);
 
-        public Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts, string? subscriptionId, CancellationToken cancellationToken = default)
-            => _inner.SubscribeForScriptsAsync(scripts, subscriptionId, cancellationToken);
+        public IAsyncEnumerable<VtxoSubscriptionEvent> OpenSubscriptionStreamAsync(
+            IReadOnlySet<string>? initialScripts, 
+            string? existingSubscriptionId,
+            CancellationToken cancellationToken = default) =>
+                _inner.OpenSubscriptionStreamAsync(initialScripts, existingSubscriptionId, cancellationToken);
 
-        public Task UnsubscribeForScriptsAsync(string subscriptionId, IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
-            => _inner.UnsubscribeForScriptsAsync(subscriptionId, scripts, cancellationToken);
+        public Task UpdateSubscriptionScriptsAsync(
+            string subscriptionId, 
+            IReadOnlySet<string>? add, 
+            IReadOnlySet<string>? remove,
+            CancellationToken cancellationToken = default) =>
+                 _inner.UpdateSubscriptionScriptsAsync(subscriptionId, add, remove, cancellationToken);
+        
 
-        public IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId, CancellationToken cancellationToken = default)
-            => _inner.GetVtxoSubscriptionStreamAsync(subscriptionId, cancellationToken);
 
         public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
             => _inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);

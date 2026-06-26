@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using Ark.V1;
 using Grpc.Core;
 using NArk.Abstractions.VTXOs;
+using NArk.Core.Transport;
 using NBitcoin;
 
 namespace NArk.Transport.GrpcClient;
@@ -93,45 +94,62 @@ public partial class GrpcClientTransport
         }
     }
 
-    public async Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts,
-        string? subscriptionId, CancellationToken cancellationToken = default)
-    {
-        var req = new SubscribeForScriptsRequest { SubscriptionId = subscriptionId ?? string.Empty };
-        req.Scripts.AddRange(scripts);
-        var res = await _indexerServiceClient.SubscribeForScriptsAsync(req, cancellationToken: cancellationToken);
-        return res.SubscriptionId;
-    }
-
-    public async Task UnsubscribeForScriptsAsync(string subscriptionId,
-        IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
-    {
-        var req = new UnsubscribeForScriptsRequest { SubscriptionId = subscriptionId };
-        if (scripts is not null)
-            req.Scripts.AddRange(scripts);
-        await _indexerServiceClient.UnsubscribeForScriptsAsync(req, cancellationToken: cancellationToken);
-    }
-
-    public async IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId,
+    public async IAsyncEnumerable<VtxoSubscriptionEvent> OpenSubscriptionStreamAsync(
+        IReadOnlySet<string>? initialScripts,
+        string? existingSubscriptionId,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var stream = _indexerServiceClient.GetSubscription(
-            new GetSubscriptionRequest { SubscriptionId = subscriptionId }, cancellationToken: cancellationToken);
+        var request = new GetSubscriptionRequest
+        {
+            SubscriptionId = existingSubscriptionId ?? string.Empty,
+        };
+
+        if (existingSubscriptionId is null && initialScripts?.Count > 0)
+        {
+            request.Filter = new SubscriptionFilter { Scripts = new ScriptFilter() };
+            request.Filter.Scripts.Add.AddRange(initialScripts);
+        }
+
+        var stream = _indexerServiceClient.GetSubscription(request, cancellationToken: cancellationToken);
 
         await foreach (var response in stream.ResponseStream.ReadAllAsync(cancellationToken))
         {
-            if (response == null) continue;
             switch (response.DataCase)
             {
-                case GetSubscriptionResponse.DataOneofCase.None:
-                case GetSubscriptionResponse.DataOneofCase.Heartbeat:
+                case GetSubscriptionResponse.DataOneofCase.SubscriptionStarted:
+                    yield return new VtxoSubscriptionStarted(response.SubscriptionStarted.SubscriptionId);
                     break;
                 case GetSubscriptionResponse.DataOneofCase.Event when response.Event is not null:
-                    yield return response.Event.Scripts.ToHashSet();
+                    yield return new VtxoScriptsChanged(response.Event.Scripts.ToHashSet());
                     break;
-                default:
-                    throw new InvalidDataException("Operator error: unexpected response from indexer");
+                case GetSubscriptionResponse.DataOneofCase.Heartbeat:
+                case GetSubscriptionResponse.DataOneofCase.None:
+                    break;
             }
         }
+    }
+
+    public async Task UpdateSubscriptionScriptsAsync(
+        string subscriptionId,
+        IReadOnlySet<string>? add,
+        IReadOnlySet<string>? remove,
+        CancellationToken cancellationToken = default)
+    {
+        if ((add is null || add.Count == 0) && (remove is null || remove.Count == 0))
+            return;
+
+        var req = new UpdateSubscriptionRequest
+        {
+            SubscriptionId = subscriptionId,
+            Filter = new SubscriptionFilter { Scripts = new ScriptFilter() },
+        };
+
+        if (add?.Count > 0)
+            req.Filter.Scripts.Add.AddRange(add);
+        if (remove?.Count > 0)
+            req.Filter.Scripts.Remove.AddRange(remove);
+
+        await _indexerServiceClient.UpdateSubscriptionAsync(req, cancellationToken: cancellationToken);
     }
 
     public async IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(
