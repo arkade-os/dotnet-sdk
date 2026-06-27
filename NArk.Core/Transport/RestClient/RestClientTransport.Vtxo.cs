@@ -99,7 +99,11 @@ public partial class RestClientTransport
             url = query.Count > 0 ? $"/v1/indexer/subscription?{query}" : "/v1/indexer/subscription";
         }
 
-        using var stream = await _http.GetStreamAsync(url, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
 
         while (!cancellationToken.IsCancellationRequested)

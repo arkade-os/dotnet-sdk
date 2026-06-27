@@ -555,6 +555,13 @@ public class VtxoSynchronizationService : IAsyncDisposable
                 try { _subscriptionId = null; }
                 finally { _viewSyncLock.Release(); }
             }
+            catch (Exception ex) when (IsNonRetryableSubscriptionError(ex))
+            {
+                // Server does not support subscriptions (e.g. HTTP 501 Not Implemented).
+                // Fall back to polling-only — retrying would spam logs without benefit.
+                _logger?.LogInformation("VTXO subscription not supported by server ({Reason}) — falling back to polling", ex.Message);
+                return;
+            }
             catch (Exception ex)
             {
                 _logger?.LogWarning(ex, "VTXO subscription stream faulted — reconnecting");
@@ -587,6 +594,17 @@ public class VtxoSynchronizationService : IAsyncDisposable
     private static bool IsSubscriptionNotFound(Exception ex)
         => ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
            || (ex.InnerException is { } inner && inner.Message.Contains("not found", StringComparison.OrdinalIgnoreCase));
+
+    // HTTP 501 means the server does not implement the subscription endpoint at all.
+    // Retrying is pointless and spams logs — treat it as a permanent failure.
+    private static bool IsNonRetryableSubscriptionError(Exception ex)
+    {
+        if (ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.NotImplemented })
+            return true;
+        if (ex.InnerException is HttpRequestException { StatusCode: System.Net.HttpStatusCode.NotImplemented })
+            return true;
+        return false;
+    }
 
     private async Task? StartQueryLogic(CancellationToken cancellationToken)
     {
