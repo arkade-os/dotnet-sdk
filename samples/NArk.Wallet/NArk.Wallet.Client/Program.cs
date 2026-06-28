@@ -54,7 +54,7 @@ builder.Services.Configure<NArk.Core.Models.Options.SimpleIntentSchedulerOptions
 {
     // Trigger re-boarding for VTXOs expiring within 7 days.
     // Boarding UTXOs (Unrolled=true) are always batched regardless of this threshold.
-    opts.Threshold = TimeSpan.FromDays(7);
+    opts.Threshold = TimeSpan.FromDays(1);
 });
 builder.Services.AddSingleton<IIntentScheduler, SimpleIntentScheduler>();
 builder.Services.AddSingleton<ISafetyService, WasmSafetyService>();
