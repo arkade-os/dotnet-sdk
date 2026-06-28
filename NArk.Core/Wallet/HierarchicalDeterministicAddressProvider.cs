@@ -20,9 +20,8 @@ public class HierarchicalDeterministicAddressProvider(
     ArkAddress? sweepDestination)
     : IArkadeAddressProvider
 {
-    private int _lastUsedIndex = wallet.LastUsedIndex;
-
-    public async Task<bool> IsOurs(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
+    ///<inheritdoc/>
+    public Task<bool> IsOurs(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
     {
         // Guard: the wallet must have an account descriptor. The pre-existing
         // `OutputDescriptor.Parse(wallet.AccountDescriptor, network)` line on
@@ -36,12 +35,13 @@ public class HierarchicalDeterministicAddressProvider(
         var index = descriptor.Extract().DerivationPath?.Indexes.Last().ToString();
         if (index is null)
         {
-            return false;
+            return Task.FromResult(false);
         }
         var expected = GetDescriptorFromIndex(network, wallet.AccountDescriptor, Convert.ToInt32(index));
-        return expected.Equals(descriptor);
+        return Task.FromResult(expected.Equals(descriptor));
     }
-
+    
+    ///<inheritdoc/>
     public async Task<OutputDescriptor> GetNextSigningDescriptor(CancellationToken cancellationToken = default)
     {
         await using var @lock = await safetyService.LockKeyAsync($"wallet::{wallet.Id}", cancellationToken);
@@ -58,8 +58,6 @@ public class HierarchicalDeterministicAddressProvider(
 
         await walletStorage.UpdateLastUsedIndex(wallet.Id, nextIndex + 1, cancellationToken);
 
-        _lastUsedIndex = nextIndex + 1;
-
         return descriptor;
     }
 
@@ -74,9 +72,10 @@ public class HierarchicalDeterministicAddressProvider(
     {
         // Route through the cached parser — `OutputDescriptor.Parse` is observed
         // at ~500-1000ms per call and this path runs on every IsOurs check.
-        return NArk.Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(descriptor.Replace("/*", $"/{index}"), network);
+        return KeyExtensions.ParseOutputDescriptor(descriptor.Replace("/*", $"/{index}"), network);
     }
 
+    ///<inheritdoc/>
     public async Task<(ArkContract contract, ArkContractEntity entity)> GetNextContract(
         NextContractPurpose purpose,
         ContractActivityState activityState,
@@ -84,48 +83,45 @@ public class HierarchicalDeterministicAddressProvider(
         CancellationToken cancellationToken = default)
     {
         var info = await transport.GetServerInfoAsync(cancellationToken);
-        ArkContract? result = null;
-
-        if (purpose == NextContractPurpose.Boarding)
+        
+        (ArkContract contract, ContractActivityState state) = purpose switch
         {
-            result = new ArkBoardingContract(
-                info.SignerKey,
-                info.BoardingExit,
-                await GetNextSigningDescriptor(cancellationToken)
-            );
-        }
-        else if (purpose == NextContractPurpose.SendToSelf && sweepDestination is not null)
-        {
-            result = new UnknownArkContract(sweepDestination, info.SignerKey, info.Network.ChainName == ChainName.Mainnet);
-            activityState = ContractActivityState.Inactive;
-        }
-        else if (purpose == NextContractPurpose.SendToSelf)
-        {
-            var recycledDescriptor = inputContracts is not null
-                ? await TryGetRecyclableDescriptor(inputContracts, info.SignerKey, cancellationToken)
-                : null;
+            NextContractPurpose.Boarding => (
+                new ArkBoardingContract(
+                    info.SignerKey, info.BoardingExit, await GetNextSigningDescriptor(cancellationToken)),
+                activityState),
 
-            if (recycledDescriptor is not null)
-            {
-                result = new ArkPaymentContract(info.SignerKey, info.UnilateralExit, recycledDescriptor);
-                activityState = ContractActivityState.Inactive;
-            }
-            else
-            {
-                activityState = ContractActivityState.AwaitingFundsBeforeDeactivate;
-            }
-        }
+            // Collaborative-exit sweep target: a fixed external address, never tracked.
+            NextContractPurpose.SendToSelf when sweepDestination is not null => (
+                new UnknownArkContract(sweepDestination, info.SignerKey, info.Network.ChainName == ChainName.Mainnet),
+                ContractActivityState.Inactive),
 
-        result ??= new ArkPaymentContract(
-            info.SignerKey,
-            info.UnilateralExit,
-            await GetNextSigningDescriptor(cancellationToken)
-        );
+            NextContractPurpose.SendToSelf =>
+                await SendToSelfContractAsync(info, inputContracts, cancellationToken),
 
-        var entity = result.ToEntity(wallet.Id, info.SignerKey, null, activityState);
-        if (result is UnknownArkContract)
+            _ => (
+                new ArkPaymentContract(info.SignerKey, info.UnilateralExit, await GetNextSigningDescriptor(cancellationToken)),
+                activityState),
+        };
+
+        var entity = contract.ToEntity(wallet.Id, info.SignerKey, null, state);
+        if (contract is UnknownArkContract)
             entity = entity with { Metadata = new Dictionary<string, string> { ["Source"] = "sweep-destination" } };
-        return (result, entity);
+        return (contract, entity);
+    }
+    
+    private async Task<(ArkContract, ContractActivityState)> SendToSelfContractAsync(
+        ArkServerInfo info, ArkContract[]? inputContracts, CancellationToken cancellationToken)
+    {
+        var recycledDescriptor = inputContracts is not null
+            ? await TryGetRecyclableDescriptor(inputContracts, info.SignerKey, cancellationToken)
+            : null;
+
+        return recycledDescriptor is not null
+            ? (new ArkPaymentContract(info.SignerKey, info.UnilateralExit, recycledDescriptor),
+               ContractActivityState.Inactive)
+            : (new ArkPaymentContract(info.SignerKey, info.UnilateralExit, await GetNextSigningDescriptor(cancellationToken)),
+               ContractActivityState.AwaitingFundsBeforeDeactivate);
     }
 
     private async Task<OutputDescriptor?> TryGetRecyclableDescriptor(

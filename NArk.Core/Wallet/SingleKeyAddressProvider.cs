@@ -20,6 +20,7 @@ public class SingleKeyAddressProvider(
 {
     public OutputDescriptor Descriptor { get; } = OutputDescriptor.Parse(wallet.AccountDescriptor!, network);
 
+    /// <inheritdoc/>>
     public Task<bool> IsOurs(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
     {
         var theirs = descriptor.Extract().XOnlyPubKey.ToBytes();
@@ -39,11 +40,13 @@ public class SingleKeyAddressProvider(
         return Task.FromResult(match);
     }
 
+    /// <inheritdoc/>>
     public Task<OutputDescriptor> GetNextSigningDescriptor(CancellationToken cancellationToken = default)
     {
         return Task.FromResult(Descriptor);
     }
-
+    
+    /// <inheritdoc/>>
     public async Task<(ArkContract contract, ArkContractEntity entity)> GetNextContract(
         NextContractPurpose purpose,
         ContractActivityState activityState,
