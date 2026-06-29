@@ -36,9 +36,9 @@ public static class FulmineLiquidityHelper
             Console.WriteLine($"[FulmineLiquidity] ARK balance: spendable={spendable} raw={rawBalance} sats (attempt {attempt}, need {minBalance})");
             if (effective >= minBalance) return;
 
-            if (rawBalance < minBalance)
+            if (effective < minBalance)
             {
-                // Genuinely underfunded — board fresh BTC before settling.
+                // Board fresh BTC before settling.
                 await FundFulmineBoarding(fulmineHttp);
 
                 // Mine blocks to confirm the boarding UTXO (arkd requires confirmed inputs)

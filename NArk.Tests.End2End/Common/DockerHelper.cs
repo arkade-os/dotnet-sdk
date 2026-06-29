@@ -58,7 +58,10 @@ public static class DockerHelper
         return result.StandardOutput.Trim();
     }
 
-    public static async Task MineBlocks(int count = 20, CancellationToken ct = default)
+    /// <summary>
+    /// Mines <paramref name="count"/> regtest blocks (default 1).
+    /// </summary>
+    public static async Task MineBlocks(int count = 1, CancellationToken ct = default)
         => await Exec(Container.Bitcoin, [.. BitcoinCliArgs, "-generate", count.ToString()], ct);
 
     /// <summary>
