@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using NArk.Abstractions.Intents;
 using NArk.Core;
+using NArk.Core.Extensions;
 
 namespace NArk.Transport.RestClient;
 
@@ -23,7 +24,7 @@ public partial class RestClientTransport
             var response = await _http.PostAsJsonAsync("/v1/batch/registerIntent", body, JsonOpts, cancellationToken);
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, cancellationToken);
-            return json.GetProperty("intent_id").GetString()!;
+            return json.GetPropInvariantCase("intent_id").GetString()!;
         }
         catch (OperationCanceledException)
         {
@@ -116,18 +117,18 @@ public partial class RestClientTransport
         var json = await response.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, cancellationToken);
 
         var pending = new List<NArk.Core.Transport.Models.PendingArkTransaction>();
-        if (json.TryGetProperty("pendingTxs", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        if (json.TryGetPropInvariantCase("pending_txs", out var arr) && arr.ValueKind == JsonValueKind.Array)
         {
             foreach (var p in arr.EnumerateArray())
             {
-                var arkTxId = p.GetProperty("arkTxid").GetString();
+                var arkTxId = p.GetPropInvariantCase("ark_txid").GetString();
                 // Skip entries the server returns without an arkTxid — coercing to ""
                 // would collide multiple null-arkTxid entries through the recovery
                 // service's HashSet<string> dedup, silently dropping pending txs.
                 if (string.IsNullOrEmpty(arkTxId)) continue;
 
-                var finalArkTx = p.GetProperty("finalArkTx").GetString() ?? string.Empty;
-                var checkpoints = p.TryGetProperty("signedCheckpointTxs", out var cArr) && cArr.ValueKind == JsonValueKind.Array
+                var finalArkTx = p.GetPropInvariantCase("final_ark_tx").GetString() ?? string.Empty;
+                var checkpoints = p.TryGetPropInvariantCase("signed_checkpoint_txs", out var cArr) && cArr.ValueKind == JsonValueKind.Array
                     ? cArr.EnumerateArray().Select(x => x.GetString() ?? string.Empty).ToArray()
                     : Array.Empty<string>();
                 pending.Add(new NArk.Core.Transport.Models.PendingArkTransaction(arkTxId, finalArkTx, checkpoints));
