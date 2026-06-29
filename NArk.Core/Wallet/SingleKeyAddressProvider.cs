@@ -4,6 +4,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
+using NArk.Core.Enums;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
@@ -72,8 +73,13 @@ public class SingleKeyAddressProvider(
                 ContractActivityState.Active),
 
             _ => (
-                new ArkPaymentContract(info.SignerKey, info.UnilateralExit, signingDescriptor),
-                activityState),
+                new HashLockedArkPaymentContract(
+                    info.SignerKey,
+                    info.UnilateralExit,
+                    signingDescriptor,
+                    RandomUtils.GetBytes(32),
+                    HashLockTypeOption.Hash160
+                ), activityState)
         };
 
         var entity = contract.ToEntity(wallet.Id, info.SignerKey, null, state);
