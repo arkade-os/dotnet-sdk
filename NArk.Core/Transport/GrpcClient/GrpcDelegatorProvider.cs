@@ -8,20 +8,20 @@ namespace NArk.Transport.GrpcClient;
 
 public class GrpcDelegatorProvider : IDelegatorProvider
 {
-    private readonly DelegatorService.DelegatorServiceClient _client;
+    private readonly DelegateService.DelegateServiceClient _client;
 
     public GrpcDelegatorProvider(string uri)
     {
         var channel = GrpcChannel.ForAddress(uri);
-        // Delegator service does not validate X-Digest — pass an empty, never-populated holder.
+        // Delegate service does not validate X-Digest — pass an empty, never-populated holder.
         var invoker = channel.CreateCallInvoker().Intercept(new BuildVersionInterceptor(new DigestHolder()));
-        _client = new DelegatorService.DelegatorServiceClient(invoker);
+        _client = new DelegateService.DelegateServiceClient(invoker);
     }
 
     public async Task<DelegatorInfo> GetDelegatorInfoAsync(CancellationToken cancellationToken = default)
     {
-        var response = await _client.GetDelegatorInfoAsync(
-            new GetDelegatorInfoRequest(),
+        var response = await _client.GetDelegateInfoAsync(
+            new GetDelegateInfoRequest(),
             cancellationToken: cancellationToken);
         return new DelegatorInfo(response.Pubkey, response.Fee, response.DelegatorAddress);
     }
