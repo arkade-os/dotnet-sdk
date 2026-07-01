@@ -21,6 +21,9 @@ public class ArkBoardingContract(OutputDescriptor server, Sequence exitDelay, Ou
     public override string Type => ContractType;
     public const string ContractType = "Boarding";
 
+    /// <summary>Boarding funds live on-chain as a boarding UTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Onchain;
+
 
     /// <summary>
     /// Boarding contracts use on-chain Bitcoin addresses, not Ark addresses.

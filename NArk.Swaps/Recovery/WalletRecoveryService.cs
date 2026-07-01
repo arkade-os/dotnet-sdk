@@ -83,7 +83,7 @@ public class WalletRecoveryService(
         var contracts = await contractStorage.GetContracts(
             walletIds: [walletId], cancellationToken: cancellationToken);
         var offchainScripts = contracts
-            .Where(c => c.Type != ArkBoardingContract.ContractType)
+            .Where(c => (c.Scope & ContractScope.Offchain) != 0)
             .Select(c => c.Script)
             .ToHashSet();
         var vtxosSynced = offchainScripts.Count > 0

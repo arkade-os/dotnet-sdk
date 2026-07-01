@@ -75,7 +75,7 @@ public class BoardingUtxoPollService(
     private async Task<bool> HasUnspentBoardingVtxosAsync(CancellationToken cancellationToken)
     {
         var boardingContracts = await contractStorage.GetContracts(
-            contractTypes: [ArkBoardingContract.ContractType],
+            scope: ContractScope.Onchain,
             cancellationToken: cancellationToken);
 
         if (boardingContracts.Count == 0)
