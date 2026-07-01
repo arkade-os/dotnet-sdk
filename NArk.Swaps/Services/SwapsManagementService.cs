@@ -321,7 +321,26 @@ public class SwapsManagementService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Initiates a reverse swap (Lightning → Arkade): creates a Boltz reverse swap and returns the
+    /// BOLT11 invoice to hand to the payer. The recipient absorbs the Boltz fee, so the invoice equals
+    /// the requested amount (LUD-06-safe). Use the <see cref="ReverseSwapFeePayer"/> overload to change
+    /// who pays the fee.
+    /// </summary>
+    public Task<string> InitiateReverseSwap(string walletId, CreateInvoiceParams invoiceParams,
+        CancellationToken cancellationToken = default) =>
+        InitiateReverseSwap(walletId, invoiceParams, ReverseSwapFeePayer.Recipient, cancellationToken);
+
+    /// <summary>
+    /// Initiates a reverse swap (Lightning → Arkade) with an explicit fee payer.
+    /// </summary>
+    /// <param name="feePayer">
+    /// Who absorbs the Boltz reverse-swap fee. <see cref="ReverseSwapFeePayer.Recipient"/> keeps the
+    /// invoice equal to the requested amount (LUD-06-safe); <see cref="ReverseSwapFeePayer.Sender"/>
+    /// inflates the invoice so the receiver nets the exact amount but breaks LNURL/checkout wallets.
+    /// </param>
     public async Task<string> InitiateReverseSwap(string walletId, CreateInvoiceParams invoiceParams,
+        ReverseSwapFeePayer feePayer,
         CancellationToken cancellationToken = default)
     {
         using var _walletScope = _logger?.BeginScope(("WalletId", walletId));
@@ -337,8 +356,15 @@ public class SwapsManagementService : IAsyncDisposable
                 invoiceParams,
                 destinationDescriptor,
                 preimage,
+                feePayer,
                 cancellationToken
             );
+
+        var expectedOnchainSats = BoltzSwapService.ResolveExpectedOnchainAmount(
+            feePayer,
+            (long)invoiceParams.Amount.ToUnit(LightMoneyUnit.Satoshi),
+            revSwap.Swap.OnchainAmount);
+
         await _contractService.ImportContract(walletId, revSwap.Contract,
             ContractActivityState.AwaitingFundsBeforeDeactivate,
             metadata: new Dictionary<string, string> { ["Source"] = $"swap:{revSwap.Swap.Id}" },
@@ -350,7 +376,7 @@ public class SwapsManagementService : IAsyncDisposable
                 walletId,
                 ArkSwapType.ReverseSubmarine,
                 revSwap.Swap.Invoice,
-                (long)invoiceParams.Amount.ToUnit(LightMoneyUnit.Satoshi),
+                expectedOnchainSats,
                 revSwap.Contract.GetArkAddress().ScriptPubKey.ToHex(),
                 revSwap.Swap.LockupAddress,
                 ArkSwapStatus.Pending,

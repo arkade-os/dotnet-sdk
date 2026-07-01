@@ -152,7 +152,7 @@ public partial class BoltzSwapProvider : ISwapProvider
         _intentStorage = intentStorage;
         _intentGenerationService = intentGenerationService;
         _logger = logger;
-        _boltzService = new BoltzSwapService(boltzClient, clientTransport);
+        _boltzService = new BoltzSwapService(boltzClient, clientTransport, limitsValidator);
         _chainSwapMusig = new ChainSwapMusigSession(boltzClient);
         _transactionBuilder = new TransactionHelpers.ArkTransactionBuilder(
             clientTransport, safetyService, walletProvider, intentStorage);
