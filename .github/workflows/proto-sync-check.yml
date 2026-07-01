@@ -37,3 +37,37 @@ jobs:
             exit 1
           fi
           echo "All proto files are in sync with arkd master."
+
+  proto-sync-fulmine:
+    name: Check proto files match fulmine master
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch fulmine proto files from master
+        run: |
+          mkdir -p /tmp/fulmine-protos
+          for f in delegate.proto; do
+            wget -q \
+              "https://raw.githubusercontent.com/ArkLabsHQ/fulmine/master/api-spec/protobuf/fulmine/v1/${f}" \
+              -O "/tmp/fulmine-protos/${f}"
+          done
+
+      - name: Diff against SDK proto files
+        run: |
+          PROTO_DIR="NArk.Core/Transport/GrpcClient/Protos/fulmine/v1"
+          failed=0
+          for f in delegate.proto; do
+            if ! diff -u "/tmp/fulmine-protos/${f}" "${PROTO_DIR}/${f}"; then
+              echo "::error file=${PROTO_DIR}/${f}::${f} is out of sync with fulmine master"
+              failed=1
+            fi
+          done
+          if [ $failed -ne 0 ]; then
+            echo ""
+            echo "Proto files are out of sync with ArkLabsHQ/fulmine master."
+            echo "Copy the updated files from ~/sdks/fulmine/api-spec/protobuf/fulmine/v1/ and commit them."
+            exit 1
+          fi
+          echo "All proto files are in sync with fulmine master."
