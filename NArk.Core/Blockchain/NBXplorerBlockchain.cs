@@ -120,10 +120,15 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     {
         try
         {
+            // maxfeerate=0 (unlimited) + maxburnamount=21e6 so Ark P2A anchor
+            // outputs (non-zero value, non-standard script) are not rejected by
+            // Bitcoin Core's burn-output check (default maxburnamount=0).
             var response = await _explorerClient.RPCClient.SendCommandAsync(
                 "submitpackage",
                 cancellationToken,
-                new object[] { new[] { parent.ToHex(), child.ToHex() } });
+                new[] { parent.ToHex(), child.ToHex() },
+                0m,
+                21_000_000m);
 
             if (response.Error is not null)
             {
@@ -146,12 +151,39 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     private async Task<bool> BroadcastSequentialFallbackAsync(Transaction parent, Transaction child, CancellationToken ct)
     {
-        var parentOk = await BroadcastAsync(parent, ct);
+        // Use direct RPC for the parent so we can pass maxburnamount — NBXplorer's
+        // HTTP broadcast endpoint does not expose that parameter.
+        var parentOk = await BroadcastRpcAsync(parent, ct);
         if (!parentOk) return false;
         var childOk = await BroadcastAsync(child, ct);
         if (!childOk)
             _logger?.LogDebug("Sequential fallback: child CPFP broadcast failed, but parent was accepted");
         return true;
+    }
+
+    // Broadcasts via direct Bitcoin Core RPC with maxburnamount set so Ark P2A
+    // anchor outputs are not rejected by the burn-output check.
+    private async Task<bool> BroadcastRpcAsync(Transaction tx, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _explorerClient.RPCClient.SendCommandAsync(
+                "sendrawtransaction", ct,
+                tx.ToHex(),
+                0m,
+                21_000_000m);
+            if (response.Error is not null)
+            {
+                _logger?.LogWarning("Broadcast failed for tx {Txid}: {Error}", tx.GetHash(), response.Error.Message);
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(0, ex, "Failed to broadcast tx {Txid}", tx.GetHash());
+            return false;
+        }
     }
 
     // ── Tx status (RPC getrawtransaction) ────────────────────────────
