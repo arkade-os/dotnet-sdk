@@ -30,7 +30,7 @@ jobs:
         run: node regtest/regtest.mjs start --profile boltz,delegate
         timeout-minutes: 20
       - name: Restore and build
-        run: dotnet build
+        run: dotnet build NArk.CI.slnf
       - name: Run signer-rotation E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=RealRotation"
         timeout-minutes: 15
