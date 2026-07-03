@@ -1,0 +1,15 @@
+{
+  "solution": {
+    "path": "NArk.sln",
+    "projects": [
+      "NArk.Abstractions/NArk.Abstractions.csproj",
+      "NArk.Core/NArk.Core.csproj",
+      "NArk.Storage.EfCore/NArk.Storage.EfCore.csproj",
+      "NArk.Swaps/NArk.Swaps.csproj",
+      "NArk/NArk.csproj",
+      "NArk.Tests/NArk.Tests.csproj",
+      "NArk.Transport.GrpcClient.Tests/NArk.Transport.GrpcClient.Tests.csproj",
+      "NArk.Tests.End2End/NArk.Tests.End2End.csproj"
+    ]
+  }
+}

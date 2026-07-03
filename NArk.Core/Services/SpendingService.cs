@@ -136,6 +136,10 @@ public class SpendingService(
 
             return txId;
         }
+        catch (AlreadyLockedVtxoException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger?.LogError(0, ex, "Spend transaction failed for wallet {WalletId}", walletId);
@@ -314,6 +318,10 @@ public class SpendingService(
                 ActionState.Successful, null), cancellationToken: cancellationToken);
 
             return txId;
+        }
+        catch (AlreadyLockedVtxoException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

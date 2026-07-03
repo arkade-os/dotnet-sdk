@@ -87,6 +87,13 @@
                                 <span class="detail-value">@vtxo.TransactionOutputIndex</span>
                             </div>
                             <div class="detail-row">
+                                <span class="detail-label">Kind</span>
+                                <span class="detail-value">
+                                    @(vtxo.Unrolled ? "On-chain (boarding / unrolled) — settle into a batch before spending offchain"
+                                        : vtxo.Preconfirmed ? "Preconfirmed VTXO" : "Settled VTXO")
+                                </span>
+                            </div>
+                            <div class="detail-row">
                                 <span class="detail-label">Amount</span>
                                 <span class="detail-value mono">@vtxo.Amount.ToString("N0") sats</span>
                             </div>
@@ -142,13 +149,21 @@
         _ => _vtxos
     };
 
-    // Unconfirmed on-chain VTXOs (e.g. boarding UTXOs still in the mempool)
-    // aren't spendable or settleable yet — surface that instead of "LIVE".
+    // Surface the real state. A *confirmed* boarding UTXO (Unrolled) is NOT yet spendable
+    // offchain — arkd has no VTXO for it until it's settled into a batch, so a Send built
+    // from it fails with VTXO_NOT_FOUND. Showing it as "LIVE" (like a settled VTXO) hides
+    // that distinction, so call it "BOARDING" until the scheduler batches it.
     private static string StatusPillClass(ArkVtxo vtxo) =>
-        vtxo.IsSpent() ? "pill-danger" : vtxo.IsUnconfirmedOnchain() ? "pill-warning" : "pill-success";
+        vtxo.IsSpent() ? "pill-danger"
+        : vtxo.IsUnconfirmedOnchain() ? "pill-warning"
+        : vtxo.Unrolled ? "pill-warning"
+        : "pill-success";
 
     private static string StatusPillLabel(ArkVtxo vtxo) =>
-        vtxo.IsSpent() ? "SPENT" : vtxo.IsUnconfirmedOnchain() ? "PENDING" : "LIVE";
+        vtxo.IsSpent() ? "SPENT"
+        : vtxo.IsUnconfirmedOnchain() ? "PENDING"
+        : vtxo.Unrolled ? "BOARDING"
+        : "LIVE";
 
     protected override async Task OnInitializedAsync()
     {

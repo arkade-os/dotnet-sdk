@@ -3,6 +3,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <WasmBuildNative>true</WasmBuildNative>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\NArk.Core\NArk.Core.csproj" />

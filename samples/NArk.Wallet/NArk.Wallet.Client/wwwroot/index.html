@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Arkade Wallet</title>
-    <base href="/dotnet-sdk/wallet/" />
+    <base href="/" />
     <link rel="stylesheet" href="css/app.css" />
     <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png" />
     <meta name="theme-color" content="#101010" />
@@ -23,10 +23,10 @@
             var redirect = sessionStorage.getItem('blazor-redirect');
             if (redirect) {
                 sessionStorage.removeItem('blazor-redirect');
-                var base = '/dotnet-sdk/wallet/';
+                var base = '/';
                 var route;
                 if (redirect.startsWith(base)) {
-                    // Normal case: /dotnet-sdk/wallet/send → send
+                    // Normal case: /send → send
                     route = redirect.substring(base.length);
                 } else {
                     // Old cached code sent /send or /receive (missing base prefix)

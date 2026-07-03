@@ -9,25 +9,27 @@
     {
         <p class="balance-label">Welcome to Arkade</p>
         <p style="font-size:18px;font-weight:500;margin-bottom:20px;">Create or restore a wallet to get started</p>
-        <button class="btn btn-primary" @onclick="CreateWallet" disabled="@_creating || _restoring">
+        <button class="btn btn-primary" @onclick="CreateWallet" disabled="@(_creating || _restoring)">
             @(_creating ? "Creating..." : "Create Wallet")
         </button>
 
-        <details style="margin-top:24px;text-align:left;max-width:420px;margin-left:auto;margin-right:auto;">
-            <summary style="cursor:pointer;font-size:14px;color:#64748b;">Restore from mnemonic / nsec</summary>
-            <textarea class="form-control" rows="3" placeholder="12 or 24 word mnemonic, or nsec1..."
-                      style="margin-top:12px;width:100%;font-family:monospace;font-size:13px;"
-                      @bind="_restoreSecret" disabled="@(_creating || _restoring)"></textarea>
-            <button class="btn btn-secondary" style="margin-top:8px;width:100%;"
-                    @onclick="RestoreWallet" disabled="@(_creating || _restoring || string.IsNullOrWhiteSpace(_restoreSecret))">
-                @(_restoring ? "Scanning derivation indices…" : "Restore Wallet")
-            </button>
-            @if (_restoreReport is not null)
-            {
-                <p style="margin-top:8px;font-size:13px;color:#16a34a;">
-                    Recovered @_restoreReport.DiscoveredContracts.Count contract(s) up to index @_restoreReport.HighestUsedIndex.
-                </p>
-            }
+        <details class="restore-panel">
+            <summary>Restore from mnemonic / nsec</summary>
+            <div class="restore-body">
+                <textarea class="input-field" rows="3" placeholder="12 or 24 word mnemonic, or nsec1..."
+                          style="font-family:var(--font-mono);font-size:13px;resize:vertical;"
+                          @bind="_restoreSecret" disabled="@(_creating || _restoring)"></textarea>
+                <button class="btn btn-secondary btn-full" style="margin-top:8px;"
+                        @onclick="RestoreWallet" disabled="@(_creating || _restoring || string.IsNullOrWhiteSpace(_restoreSecret))">
+                    @(_restoring ? "Scanning derivation indices…" : "Restore Wallet")
+                </button>
+                @if (_restoreReport is not null)
+                {
+                    <p style="margin-top:8px;font-size:13px;color:var(--arkade-green);">
+                        Recovered @_restoreReport.DiscoveredContracts.Count contract(s) up to index @_restoreReport.HighestUsedIndex.
+                    </p>
+                }
+            </div>
         </details>
 
         @if (_error is not null)

@@ -15,6 +15,6 @@ public static class QrCodeHelper
         using var generator = new QRCodeGenerator();
         using var qrData = generator.CreateQrCode(data, QRCodeGenerator.ECCLevel.L);
         using var svgQr = new SvgQRCode(qrData);
-        return svgQr.GetGraphic(pixelsPerModule, "#000000", "#FFFFFF");
+        return svgQr.GetGraphic(pixelsPerModule, "#000000", "#FFFFFF", sizingMode: SvgQRCode.SizingMode.ViewBoxAttribute);
     }
 }

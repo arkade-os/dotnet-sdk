@@ -15,4 +15,4 @@ runs:
       run: node regtest/regtest.mjs start --profile boltz,delegate
     - name: Restore and build
       shell: bash
-      run: dotnet build
+      run: dotnet build NArk.CI.slnf

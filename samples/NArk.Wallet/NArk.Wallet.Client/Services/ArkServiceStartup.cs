@@ -1,7 +1,6 @@
+using Microsoft.Extensions.Logging;
 using NArk.Core.Services;
-using NArk.Core.Sweeper;
 using NArk.Swaps.Services;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace NArk.Wallet.Client.Services;
 
@@ -14,6 +13,7 @@ public static class ArkServiceStartup
     public static async Task StartArkServicesAsync(this IServiceProvider services)
     {
         var cts = new CancellationTokenSource();
+        var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("ArkServiceStartup");
 
         // Start services in the same order as ArkHostedLifecycle
         var sweeper = services.GetRequiredService<SweeperService>();
@@ -28,8 +28,14 @@ public static class ArkServiceStartup
         var intentGen = services.GetRequiredService<IntentGenerationService>();
         await intentGen.StartAsync(cts.Token);
 
-        var vtxoSync = services.GetRequiredService<VtxoSynchronizationService>();
-        await vtxoSync.StartAsync(cts.Token);
+        // Non-fatal if server subscription endpoint is unavailable (e.g. 500/501) —
+        // VtxoSynchronizationService will fall back to routine polling.
+        try
+        {
+            var vtxoSync = services.GetRequiredService<VtxoSynchronizationService>();
+            await vtxoSync.StartAsync(cts.Token);
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "VtxoSynchronizationService failed to start — falling back to polling"); }
 
         // Start swap management (monitors swap status, handles claims).
         // Non-fatal if Boltz is unreachable — swaps just won't be monitored until next app load.
@@ -38,6 +44,16 @@ public static class ArkServiceStartup
             var swapMgr = services.GetRequiredService<SwapsManagementService>();
             await swapMgr.StartAsync(cts.Token);
         }
-        catch { /* Boltz unavailable — swap monitoring disabled */ }
+        catch (Exception ex) { logger.LogWarning(ex, "SwapsManagementService failed to start"); }
+
+        // Poll boarding UTXOs from the chain. Non-fatal if explorer is unavailable.
+        try
+        {
+            logger.LogInformation("Starting BoardingUtxoPollService...");
+            var boardingPoll = services.GetRequiredService<BoardingUtxoPollService>();
+            await boardingPoll.StartAsync(cts.Token);
+            logger.LogInformation("BoardingUtxoPollService started successfully");
+        }
+        catch (Exception ex) { logger.LogError(ex, "BoardingUtxoPollService failed to start"); }
     }
 }

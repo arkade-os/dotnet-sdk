@@ -1,20 +1,15 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using NArk.Abstractions.Contracts;
-using NArk.Abstractions.VTXOs;
-using NArk.Core.Contracts;
 
 namespace NArk.Core.Services;
 
 /// <summary>
-/// Periodically polls boarding UTXOs for confirmation and spend changes.
-/// Only polls when unspent unrolled VTXOs exist. Complements event-driven sync
-/// to catch missed events (e.g., provider reconnects, block confirmation updates).
+/// Periodically polls the Bitcoin blockchain for boarding UTXOs.
+/// Delegates to <see cref="BoardingUtxoSyncService"/> which exits early when no
+/// boarding contracts are registered.
 /// </summary>
 public class BoardingUtxoPollService(
     BoardingUtxoSyncService boardingUtxoSyncService,
-    IContractStorage contractStorage,
-    IVtxoStorage vtxoStorage,
     ILogger<BoardingUtxoPollService>? logger = null) : IHostedService, IDisposable
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
@@ -55,10 +50,6 @@ public class BoardingUtxoPollService(
         {
             try
             {
-                if (!await HasUnspentBoardingVtxosAsync(cancellationToken))
-                    continue;
-
-                logger?.LogDebug("Polling boarding UTXOs for confirmation/spend changes");
                 await boardingUtxoSyncService.SyncAsync(cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -70,24 +61,6 @@ public class BoardingUtxoPollService(
                 logger?.LogWarning(ex, "Failed to poll boarding UTXOs");
             }
         }
-    }
-
-    private async Task<bool> HasUnspentBoardingVtxosAsync(CancellationToken cancellationToken)
-    {
-        var boardingContracts = await contractStorage.GetContracts(
-            scope: ContractScope.Onchain,
-            cancellationToken: cancellationToken);
-
-        if (boardingContracts.Count == 0)
-            return false;
-
-        var scripts = boardingContracts.Select(c => c.Script).ToArray();
-        var unspentVtxos = await vtxoStorage.GetVtxos(
-            scripts: scripts,
-            includeSpent: false,
-            cancellationToken: cancellationToken);
-
-        return unspentVtxos.Any(v => v.Unrolled);
     }
 
     public void Dispose()
