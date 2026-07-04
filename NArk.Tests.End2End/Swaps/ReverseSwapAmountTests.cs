@@ -17,6 +17,7 @@ using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Core.Transformers;
+using NArk.Tests.Common;
 using NBitcoin;
 
 using CoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
