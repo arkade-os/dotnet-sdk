@@ -25,7 +25,7 @@ public class ArkadeNofNMultisigTapScriptTests
         Assert.That(sut.AugmentedOwners[0].ToBytes(), Is.EqualTo(alice.ToBytes()));
         Assert.That(sut.AugmentedOwners[1].ToBytes(), Is.EqualTo(bob.ToBytes()));
 
-        var expectedTweak = ArkadeScriptHash.Tweak(emulator, arkadeScript);
+        var expectedTweak = ArkadeTweak.Tweak(emulator, arkadeScript);
         Assert.That(sut.AugmentedOwners[2].ToBytes(), Is.EqualTo(expectedTweak.ToBytes()));
     }
 

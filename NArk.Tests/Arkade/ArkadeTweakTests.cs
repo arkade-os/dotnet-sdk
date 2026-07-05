@@ -5,7 +5,7 @@ using NBitcoin.Secp256k1;
 namespace NArk.Tests.Arkade;
 
 /// <summary>
-/// Smoke tests for <see cref="ArkadeScriptHash"/>. The exact tagged-hash bytes
+/// Smoke tests for <see cref="ArkadeTweak"/>. The exact tagged-hash bytes
 /// are dependent on BIP-340's <c>SHA256(SHA256(tag) || SHA256(tag) || msg)</c>
 /// computation; we treat NBitcoin's <see cref="SHA256.InitializeTagged"/> as
 /// the source of truth and just verify deterministic + independent + tweak-
@@ -13,14 +13,14 @@ namespace NArk.Tests.Arkade;
 /// the upcoming ArkadeVtxoScript tests once we have ts-sdk-side fixtures.
 /// </summary>
 [TestFixture]
-public class ArkadeScriptHashTests
+public class ArkadeTweakTests
 {
     [Test]
     public void Compute_IsDeterministic()
     {
         ReadOnlySpan<byte> script = stackalloc byte[] { 0x51, 0xc4, 0xc6 };
-        var a = ArkadeScriptHash.Compute(script);
-        var b = ArkadeScriptHash.Compute(script);
+        var a = ArkadeTweak.ComputeScriptHash(script);
+        var b = ArkadeTweak.ComputeScriptHash(script);
         Assert.That(a, Is.EqualTo(b));
         Assert.That(a, Has.Length.EqualTo(32));
     }
@@ -28,8 +28,8 @@ public class ArkadeScriptHashTests
     [Test]
     public void Compute_DifferentScripts_DifferentDigests()
     {
-        var a = ArkadeScriptHash.Compute([0x51]);
-        var b = ArkadeScriptHash.Compute([0x52]);
+        var a = ArkadeTweak.ComputeScriptHash([0x51]);
+        var b = ArkadeTweak.ComputeScriptHash([0x52]);
         Assert.That(a, Is.Not.EqualTo(b));
     }
 
@@ -43,15 +43,15 @@ public class ArkadeScriptHashTests
         var keyMaterial = new Key(seed);
         var emulatorPubKey = keyMaterial.PubKey.GetTaprootFullPubKey().OutputKey;
 
-        var tweaked = ArkadeScriptHash.Tweak(emulatorPubKey, [0x51, 0xc4, 0xc6]);
+        var tweaked = ArkadeTweak.Tweak(emulatorPubKey, [0x51, 0xc4, 0xc6]);
         Assert.That(tweaked.ToBytes(), Has.Length.EqualTo(32));
 
         // Same tweak applied twice yields the same key.
-        var tweaked2 = ArkadeScriptHash.Tweak(emulatorPubKey, [0x51, 0xc4, 0xc6]);
+        var tweaked2 = ArkadeTweak.Tweak(emulatorPubKey, [0x51, 0xc4, 0xc6]);
         Assert.That(tweaked.ToBytes(), Is.EqualTo(tweaked2.ToBytes()));
 
         // Different scripts → different tweaked keys.
-        var tweakedOther = ArkadeScriptHash.Tweak(emulatorPubKey, [0x52, 0xc4, 0xc6]);
+        var tweakedOther = ArkadeTweak.Tweak(emulatorPubKey, [0x52, 0xc4, 0xc6]);
         Assert.That(tweaked.ToBytes(), Is.Not.EqualTo(tweakedOther.ToBytes()));
     }
 
@@ -64,8 +64,8 @@ public class ArkadeScriptHashTests
         var emulatorPubKey = ECPubKey.Create(new Key().PubKey.ToBytes());
         var script = new byte[] { 0x51, 0xc4 };
 
-        var fromCompressed = ArkadeScriptHash.Tweak(emulatorPubKey, script);
-        var fromXOnly = ArkadeScriptHash.Tweak(new TaprootPubKey(emulatorPubKey.ToXOnlyPubKey().ToBytes()), script);
+        var fromCompressed = ArkadeTweak.Tweak(emulatorPubKey, script);
+        var fromXOnly = ArkadeTweak.Tweak(new TaprootPubKey(emulatorPubKey.ToXOnlyPubKey().ToBytes()), script);
 
         Assert.That(fromCompressed.ToBytes(), Is.EqualTo(fromXOnly.ToBytes()));
     }

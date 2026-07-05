@@ -75,7 +75,7 @@ public interface IEmulatorProvider
 /// <param name="SignerPubkey">
 /// Hex-encoded compressed (33-byte) secp256k1 public key the emulator co-signs
 /// with — pre-tweak. The per-input signing key is derived by tweaking its x-only
-/// form (see <see cref="NArk.Arkade.Crypto.ArkadeScriptHash.Tweak(NBitcoin.Secp256k1.ECPubKey, System.ReadOnlySpan{byte})"/>).
+/// form (see <see cref="ArkadeTweak.Tweak(NBitcoin.Secp256k1.ECPubKey, System.ReadOnlySpan{byte})"/>).
 /// </param>
 /// <param name="DeprecatedSignerPubkeys">
 /// Hex-encoded compressed public keys the emulator still accepts (e.g. after a

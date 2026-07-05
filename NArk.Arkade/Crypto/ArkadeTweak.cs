@@ -4,10 +4,10 @@ using NBitcoin.Secp256k1;
 namespace NArk.Arkade.Crypto;
 
 /// <summary>
-/// Computes the BIP-340 tagged hash <c>tagged_hash("ArkScriptHash", script)</c>
-/// and the resulting "emulator-tweaked" public key
-/// <c>emulator_pubkey + tagged_hash · G</c> that ArkadeScript leaves bind
-/// signing authority to a specific script body.
+/// Computes the BIP-340 tagged hashes <c>tagged_hash("ArkScriptHash", script)</c>
+/// and <c>tagged_hash("ArkWitnessHash", witness)</c>, plus the resulting
+/// "emulator-tweaked" public key <c>emulator_pubkey + tagged_hash · G</c> that
+/// ArkadeScript leaves bind signing authority to a specific script body.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,25 +19,26 @@ namespace NArk.Arkade.Crypto;
 /// signing keys.
 /// </para>
 /// <para>
-/// Tag string is the literal ASCII <c>"ArkScriptHash"</c>. Both producer and
-/// verifier MUST use the same tag — divergence here would silently lock funds
-/// to a key the emulator won't sign for.
+/// Tag strings are the literal ASCII <see cref="ScriptTagName"/> and
+/// <see cref="WitnessTagName"/>. Both producer and verifier MUST use the
+/// same tag — divergence here would silently lock funds to a key the
+/// emulator won't sign for.
 /// </para>
 /// </remarks>
-public static class ArkadeScriptHash
+public static class ArkadeTweak
 {
     /// <summary>The BIP-340 tag bound into every Arkade script hash.</summary>
-    public const string TagName = "ArkScriptHash";
+    public const string ScriptTagName = "ArkScriptHash";
 
     /// <summary>The BIP-340 tag bound into every Arkade witness hash.</summary>
     public const string WitnessTagName = "ArkWitnessHash";
 
     /// <summary>
     /// Computes <c>SHA256(SHA256(tag) || SHA256(tag) || script)</c> for the
-    /// <see cref="TagName"/> tag — the 32-byte scalar used to tweak the
+    /// <see cref="ScriptTagName"/> tag — the 32-byte scalar used to tweak the
     /// emulator's public key.
     /// </summary>
-    public static byte[] Compute(ReadOnlySpan<byte> script) => ComputeTaggedHash(script, TagName);
+    public static byte[] ComputeScriptHash(ReadOnlySpan<byte> script) => ComputeTaggedHash(script, ScriptTagName);
 
     /// <summary>
     /// Computes <c>SHA256(SHA256(tag) || SHA256(tag) || witness)</c> for the
@@ -73,7 +74,7 @@ public static class ArkadeScriptHash
     /// </exception>
     public static TaprootPubKey Tweak(TaprootPubKey emulatorPubKey, ReadOnlySpan<byte> script)
     {
-        var tweakBytes = Compute(script);
+        var tweakBytes = ComputeScriptHash(script);
 
         if (!ECXOnlyPubKey.TryCreate(emulatorPubKey.ToBytes(), Context.Instance, out var xOnly) || xOnly is null)
             throw new ArgumentException("Emulator public key could not be parsed.", nameof(emulatorPubKey));

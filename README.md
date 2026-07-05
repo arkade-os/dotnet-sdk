@@ -1115,7 +1115,7 @@ var bytes = ArkadeScript.AsmToBytes(
 // script above to get the x-only key the emulator co-signs that input with:
 var info = await emulator.GetInfoAsync();
 ECPubKey emulatorPubKey = ECPubKey.Create(Convert.FromHexString(info.SignerPubkey));
-TaprootPubKey signingKey = ArkadeScriptHash.Tweak(emulatorPubKey, bytes);
+TaprootPubKey signingKey = ArkadeTweak.Tweak(emulatorPubKey, bytes);
 ```
 
 Pin an ArkadeScript leaf to an `ArkContract`-based VTXO via the multisig wrapper:
