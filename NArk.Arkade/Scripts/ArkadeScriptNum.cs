@@ -30,11 +30,17 @@ namespace NArk.Arkade.Scripts;
 /// </list>
 /// </para>
 /// <para>Mirrors the ts-sdk's reliance on <c>@scure/btc-signer</c>'s
-/// <c>ScriptNum()</c> serializer; vectors must round-trip 1:1 across SDKs.</para>
+/// <c>ScriptNum()</c> serializer, including its 520-byte cap
+/// (<see cref="MaxBytes"/> = <c>MaxScriptElementSize</c>); vectors must
+/// round-trip 1:1 across SDKs.</para>
 /// </remarks>
 public static class ArkadeScriptNum
 {
+    /// <summary>Maximum encoded length in bytes (= Bitcoin's <c>MaxScriptElementSize</c>).</summary>
+    public const int MaxBytes = 520;
+
     /// <summary>Encode a <see cref="BigInteger"/> using Bitcoin sign-magnitude LE.</summary>
+    /// <exception cref="ArgumentException">The encoded value would exceed <see cref="MaxBytes"/> bytes.</exception>
     public static byte[] Encode(BigInteger value)
     {
         if (value.IsZero) return [];
@@ -49,27 +55,42 @@ public static class ArkadeScriptNum
 
         // If the top bit of the MSB is already set, we need an extra byte to
         // encode the sign without overflowing into the magnitude.
+        byte[] result;
         if ((bytes[^1] & 0x80) != 0)
         {
             var widened = new byte[bytes.Length + 1];
             Array.Copy(bytes, widened, bytes.Length);
             widened[^1] = negative ? (byte)0x80 : (byte)0x00;
-            return widened;
+            result = widened;
+        }
+        else
+        {
+            if (negative)
+                bytes[^1] |= 0x80;
+            result = bytes;
         }
 
-        if (negative)
-            bytes[^1] |= 0x80;
-        return bytes;
+        if (result.Length > MaxBytes)
+            throw new ArgumentException(
+                $"BigNum value exceeds {MaxBytes} bytes (encoded to {result.Length} bytes).", nameof(value));
+
+        return result;
     }
 
     /// <summary>
     /// Decode a Bitcoin sign-magnitude LE byte array to a <see cref="BigInteger"/>.
     /// Empty input decodes to zero. Throws if <paramref name="requireMinimal"/> is
-    /// true and the encoding has a redundant zero byte / sign byte.
+    /// true and the encoding has a redundant zero byte / sign byte, or if the
+    /// input exceeds <see cref="MaxBytes"/> bytes.
     /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="bytes"/> exceeds <see cref="MaxBytes"/> bytes.</exception>
     public static BigInteger Decode(ReadOnlySpan<byte> bytes, bool requireMinimal = true)
     {
         if (bytes.Length == 0) return BigInteger.Zero;
+
+        if (bytes.Length > MaxBytes)
+            throw new ArgumentException(
+                $"BigNum value exceeds {MaxBytes} bytes (got {bytes.Length} bytes).", nameof(bytes));
 
         if (requireMinimal)
         {

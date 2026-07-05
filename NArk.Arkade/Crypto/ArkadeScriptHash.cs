@@ -29,16 +29,31 @@ public static class ArkadeScriptHash
     /// <summary>The BIP-340 tag bound into every Arkade script hash.</summary>
     public const string TagName = "ArkScriptHash";
 
+    /// <summary>The BIP-340 tag bound into every Arkade witness hash.</summary>
+    public const string WitnessTagName = "ArkWitnessHash";
+
     /// <summary>
     /// Computes <c>SHA256(SHA256(tag) || SHA256(tag) || script)</c> for the
     /// <see cref="TagName"/> tag — the 32-byte scalar used to tweak the
     /// emulator's public key.
     /// </summary>
-    public static byte[] Compute(ReadOnlySpan<byte> script)
+    public static byte[] Compute(ReadOnlySpan<byte> script) => ComputeTaggedHash(script, TagName);
+
+    /// <summary>
+    /// Computes <c>SHA256(SHA256(tag) || SHA256(tag) || witness)</c> for the
+    /// <see cref="WitnessTagName"/> tag — the hash pushed by
+    /// <see cref="Scripts.ArkadeOpcode.OP_INSPECTINPUTARKADEWITNESSHASH"/>.
+    /// Returns 32 zero bytes for an empty witness, matching the ts-sdk /
+    /// emulator reference.
+    /// </summary>
+    public static byte[] ComputeWitnessHash(ReadOnlySpan<byte> witness) =>
+        witness.IsEmpty ? new byte[32] : ComputeTaggedHash(witness, WitnessTagName);
+    
+    private static byte[] ComputeTaggedHash(ReadOnlySpan<byte> preimage, string tag)
     {
         using var sha = new SHA256();
-        sha.InitializeTagged(TagName);
-        sha.Write(script);
+        sha.InitializeTagged(tag);
+        sha.Write(preimage);
         return sha.GetHash();
     }
 
