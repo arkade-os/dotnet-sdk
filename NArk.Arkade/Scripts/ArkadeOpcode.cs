@@ -8,15 +8,11 @@ namespace NArk.Arkade.Scripts;
 /// <para>
 /// Byte values track the deployed Arkade VM in <c>arkade-os/emulator</c>
 /// (<c>pkg/arkade/opcode.go</c>) — the service that actually executes these
-/// opcodes, and therefore the authority on what each byte means. Most values
-/// also match the ts-sdk <c>ARKADE_OP</c> table, but the two currently diverge
-/// on <c>0xd7</c>–<c>0xe2</c>: ts-sdk #319 lists 64-bit arithmetic / scriptnum
-/// conversion there, whereas the emulator runs byte-string and elliptic-curve
-/// ops. The emulator wins — a script built with the wrong byte would silently
-/// execute as a different opcode.
+/// opcodes, and therefore the authority on what each byte means. Values match
+/// the ts-sdk <c>ARKADE_OP</c> table (emulator v0.0.4).
 /// </para>
 /// <para>
-/// The values fall in <c>0xb3</c> (repurposed NOP4 slot) and <c>0xc4</c>–<c>0xf6</c>,
+/// The values fall in <c>0xb3</c> (repurposed NOP4 slot) and <c>0xc3</c>–<c>0xf6</c>,
 /// with <c>0xd0</c> and <c>0xdb</c>–<c>0xdf</c> unassigned; standard Bitcoin
 /// opcodes are emitted via NBitcoin's <see cref="NBitcoin.Op"/> type and are NOT
 /// re-declared here.
@@ -26,6 +22,11 @@ public enum ArkadeOpcode : byte
 {
     /// <summary>0xb3 — Verify a Merkle branch (repurposed NOP4 slot).</summary>
     OP_MERKLEBRANCHVERIFY = 0xb3,
+
+    // ─── Digest (0xc3) ──────────────────────────────────────────────
+
+    /// <summary>0xc3 — Compute a digest of the top stack element.</summary>
+    OP_DIGEST = 0xc3,
 
     // ─── SHA-256 streaming (0xc4–0xc6) ─────────────────────────────
 
@@ -82,8 +83,7 @@ public enum ArkadeOpcode : byte
     OP_TXWEIGHT = 0xd6,
 
     // ─── Byte-string / big-number ops (0xd7–0xda) ──────────────────
-    // The emulator places byte-string and modular-arithmetic ops here — NOT the
-    // 64-bit signed-arithmetic opcodes ts-sdk #319 lists at these bytes.
+    // The emulator places byte-string and modular-arithmetic ops here.
     // 0xdb–0xdf are unassigned.
 
     /// <summary>0xd7 — Pad a BigNum to exactly <c>size</c> bytes; fails if it doesn't fit or <c>size</c> is out of range.</summary>
