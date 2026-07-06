@@ -221,7 +221,7 @@ public static class ArkadeProgramCompiler
     /// implements it for values that fit in a <see cref="long"/>; wider EC-scalar-sized
     /// values fall back to a raw <see cref="ArkadeScriptNum"/> push.
     /// </summary>
-    private static Op NumberToOp(BigInteger value)
+    internal static Op NumberToOp(BigInteger value)
         => value >= long.MinValue && value <= long.MaxValue
             ? Op.GetPushOp((long)value)
             : Op.GetPushOp(ArkadeScriptNum.Encode(value));

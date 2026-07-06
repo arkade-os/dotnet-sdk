@@ -52,6 +52,15 @@ public sealed class ArkProgramContract : ArkContract
 
     public override string Type => ContractType;
 
+    /// <summary>Output descriptor for the wallet's own key, if the program names a <c>"user"</c> signer.</summary>
+    public OutputDescriptor? User => _user;
+
+    /// <summary>Args this program was compiled against.</summary>
+    public IReadOnlyDictionary<string, ArkadeToken> Args => _args;
+
+    /// <summary>All compiled spending paths, in declaration order.</summary>
+    public IReadOnlyList<CompiledArkadeFunction> CompiledFunctions => _compiled;
+
     /// <summary>The compiled spending path with the given function name, if any.</summary>
     public CompiledArkadeFunction? FunctionByName(string name)
         => _compiled.FirstOrDefault(f => f.Name == name);
