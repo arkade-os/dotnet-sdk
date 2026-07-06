@@ -1,0 +1,74 @@
+using NArk.Abstractions.Extensions;
+using NArk.Arkade.Contracts;
+using NArk.Arkade.Program;
+using NBitcoin;
+
+namespace NArk.Tests.Arkade;
+
+[TestFixture]
+public class ArkProgramContractTests
+{
+    private static readonly string ServerHex = "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88";
+    private static readonly string EmulatorHex = "030192e796452d6df9697c280542e1560557bcf79a347d925895043136225c7cb4";
+
+    [Test]
+    public void SimpleExitProgram_ProducesAValidAddress()
+    {
+        var server = KeyExtensions.ParseOutputDescriptor(ServerHex, Network.RegTest);
+        var program = new ArkadeProgram
+        {
+            Version = ArkadeProgram.SupportedVersion,
+            Functions = new Dictionary<string, ArkadeFunction>
+            {
+                ["exit"] = new()
+                {
+                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
+                },
+            },
+        };
+
+        var contract = new ArkProgramContract(server, program, new Dictionary<string, ArkadeToken>());
+
+        Assert.That(contract.Type, Is.EqualTo(ArkProgramContract.ContractType));
+        Assert.That(contract.GetArkAddress().ToString(false), Does.StartWith("tark1"));
+    }
+
+    [Test]
+    public void CovenantProgram_RoundTripsThroughContractData_WithSameAddress()
+    {
+        var server = KeyExtensions.ParseOutputDescriptor(ServerHex, Network.RegTest);
+        var emulator = KeyExtensions.ParseOutputDescriptor(EmulatorHex, Network.RegTest);
+        var program = new ArkadeProgram
+        {
+            Version = ArkadeProgram.SupportedVersion,
+            Functions = new Dictionary<string, ArkadeFunction>
+            {
+                ["claim"] = new()
+                {
+                    Inputs = [new ArkadeInputRef { Name = "preimage", Type = ArkadeArgType.Bytes }],
+                    Tapscript = new ArkadeTapscriptSegment
+                    {
+                        Signers = [ArkadeToken.FromText("server")],
+                        Asm =
+                        [
+                            ArkadeToken.FromText("HASH160"),
+                            ArkadeToken.FromText("$hash"),
+                            ArkadeToken.FromText("EQUALVERIFY"),
+                        ],
+                    },
+                    CovenantSegment = new ArkadeCovenantSegment { Asm = [ArkadeToken.FromText("OP_TXID")] },
+                },
+            },
+        };
+        var hash = Convert.FromHexString("4d487dd3753a89bc9fe98401d1196523058251fc");
+        var args = new Dictionary<string, ArkadeToken> { ["hash"] = ArkadeToken.FromBytes(hash) };
+
+        var original = new ArkProgramContract(server, program, args, emulatorKey: emulator.ToXOnlyPubKey());
+        var address = original.GetArkAddress().ToString(false);
+
+        var contractData = original.ToEntity("test-wallet").AdditionalData;
+        var restored = ArkProgramContract.Parse(contractData, Network.RegTest);
+
+        Assert.That(restored.GetArkAddress().ToString(false), Is.EqualTo(address));
+    }
+}

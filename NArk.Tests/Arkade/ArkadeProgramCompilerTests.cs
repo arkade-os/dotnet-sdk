@@ -110,6 +110,63 @@ public class ArkadeProgramCompilerTests
     }
 
     [Test]
+    public void CovenantSegment_ToScriptBuilder_IsArkadeBound()
+    {
+        var (server, _, emulator) = GenerateThreeKeys();
+        var emulatorXOnly = ECXOnlyPubKey.Create(emulator.ToBytes());
+        var program = new ArkadeProgram
+        {
+            Version = ArkadeProgram.SupportedVersion,
+            Functions = new Dictionary<string, ArkadeFunction>
+            {
+                ["claim"] = new()
+                {
+                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
+                    CovenantSegment = new ArkadeCovenantSegment { Asm = [ArkadeToken.FromText("OP_TXID")] },
+                },
+            },
+        };
+
+        var compiled = ArkadeProgramCompiler.Compile(
+            program,
+            new Dictionary<string, ArkadeToken>(),
+            new ArkadeProgramKeys { ServerKey = server, EmulatorKey = emulatorXOnly });
+
+        var builder = compiled[0].ToScriptBuilder();
+
+        Assert.That(builder, Is.InstanceOf<IArkadeBoundScriptBuilder>());
+        var arkadeBound = (IArkadeBoundScriptBuilder)builder;
+        Assert.That(arkadeBound.ArkadeScript, Is.EqualTo(compiled[0].ArkadeScriptBytes));
+        Assert.That(arkadeBound.EmulatorKeys, Has.Count.EqualTo(1));
+        Assert.That(arkadeBound.EmulatorKeys[0].ToBytes(), Is.EqualTo(emulator.ToBytes()));
+        Assert.That(builder.BuildScript().Select(o => o.ToBytes()),
+            Is.EqualTo(ArkadeScript.Decode(compiled[0].LeafScript).Select(o => o.ToBytes())));
+    }
+
+    [Test]
+    public void PlainSegment_ToScriptBuilder_IsNotArkadeBound()
+    {
+        var (server, _, _) = GenerateThreeKeys();
+        var program = new ArkadeProgram
+        {
+            Version = ArkadeProgram.SupportedVersion,
+            Functions = new Dictionary<string, ArkadeFunction>
+            {
+                ["exit"] = new()
+                {
+                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
+                },
+            },
+        };
+
+        var compiled = ArkadeProgramCompiler.Compile(
+            program, new Dictionary<string, ArkadeToken>(), new ArkadeProgramKeys { ServerKey = server });
+
+        var builder = compiled[0].ToScriptBuilder();
+        Assert.That(builder, Is.Not.InstanceOf<IArkadeBoundScriptBuilder>());
+    }
+
+    [Test]
     public void CovenantSegment_WithoutEmulatorKey_Throws()
     {
         var (server, _, _) = GenerateThreeKeys();
