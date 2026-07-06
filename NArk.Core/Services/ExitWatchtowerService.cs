@@ -63,9 +63,15 @@ public class ExitWatchtowerService(
         if (branch.Count == 0)
             return;
 
-        // Optimization: check only the root tx first (position 0).
+        // arkd returns the chain leaf-first (the VTXO's own tx, walking back
+        // to the Commitment anchor) — identify root/leaf by their actual
+        // roles, not by position in the list.
+        var rootTx = branch.FirstOrDefault(tx => tx.Type == ChainedTxType.Commitment);
+        var leafTx = branch.FirstOrDefault(tx => tx.Txid == vtxo.OutPoint.Hash.ToString());
+        if (rootTx is null || leafTx is null)
+            return;
+
         // If root is not on-chain, nothing downstream can be either.
-        var rootTx = branch[0];
         var rootTxid = uint256.Parse(rootTx.Txid);
         var rootStatus = await broadcaster.GetTxStatusAsync(rootTxid, ct);
 
@@ -73,7 +79,6 @@ public class ExitWatchtowerService(
             return; // Root not seen, tree is intact
 
         // Root is on-chain or in mempool — check if leaf is also confirmed
-        var leafTx = branch[^1];
         var leafTxid = uint256.Parse(leafTx.Txid);
         var leafStatus = await broadcaster.GetTxStatusAsync(leafTxid, ct);
 

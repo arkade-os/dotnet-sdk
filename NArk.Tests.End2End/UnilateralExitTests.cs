@@ -205,9 +205,8 @@ public class UnilateralExitTests
         var vtxo = vtxos.First(v => !v.IsSpent() && !v.Unrolled);
         var claimAddress = await GetFreshOnchainAddress();
 
-        var sessions = await setup.ExitService.StartExitAsync(
+        await setup.ExitService.StartExitAsync(
             setup.WalletId, [vtxo.OutPoint], claimAddress, token);
-        var sessionId = sessions[0].Id;
 
         // 1. Drive to AwaitingCsvDelay (broadcast + 1-block confirms).
         ExitSession? current = null;

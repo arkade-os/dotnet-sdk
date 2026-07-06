@@ -34,12 +34,15 @@ public class VirtualTxService(
 
         logger?.LogDebug("Fetching virtual tx chain for VTXO {Outpoint} (mode={Mode})", vtxoOutpoint, mode);
 
-        // 1. Get the chain from arkd indexer (commitment → leaf order).
-        //    The full chain — including the on-chain commitment root — is
-        //    stored so consumers can walk back to the anchor without a
-        //    second indexer call. Each row carries its ChainedTxType so
-        //    UnilateralExitService can skip Commitment when broadcasting.
-        
+        // 1. Get the chain from arkd indexer (leaf → commitment order — the
+        //    VTXO's own tx first, ending at the on-chain Commitment root).
+        //    The full chain — including the commitment root — is stored so
+        //    consumers can walk back to the anchor without a second indexer
+        //    call. Each row carries its ChainedTxType so UnilateralExitService
+        //    can skip Commitment when broadcasting.
+        //    Present an ownership proof when we can build one so the indexer
+        //    serves the chain on withheld/private servers (and returns the
+        //    fully-signed virtual txs); otherwise fall back to anonymous lookup.
         var proof = await proofProvider.TryCreateProofAsync(vtxoOutpoint, cancellationToken);
         var chainEntries = await transport.GetVtxoChainAsync(
             vtxoOutpoint, proof?.Proof, proof?.Message, cancellationToken);

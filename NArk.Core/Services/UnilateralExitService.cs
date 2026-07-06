@@ -229,16 +229,23 @@ public class UnilateralExitService(
             .Zip(hexList, (id, hex) => (id, hex))
             .ToDictionary(t => t.id, t => t.hex);
 
-        // 3. Walk the chain root→leaf, broadcast each off-chain row that
-        //    isn't already in mempool / confirmed. Commitment rows are
-        //    skipped (already on-chain by the operator at batch finalize).
-        string? leafTxid = null;
-        foreach (var entry in chainEntries)
+        // 3. arkd's GetVtxoChainAsync returns the chain leaf→root (the VTXO's
+        //    own tx first, walking back via ancestry to the Commitment
+        //    anchor last) — the leaf is therefore identified by its txid
+        //    matching the VTXO's own outpoint, not by position in the list.
+        var leafTxid = chainEntries
+            .FirstOrDefault(e => e.Txid == vtxoOutpoint.Hash.ToString())?.Txid;
+
+        // Broadcast every off-chain row that isn't already in mempool /
+        // confirmed, root→leaf so each tx's parent is already on-chain/
+        // in-mempool by the time we submit it (chainEntries is leaf→root,
+        // so reverse). Commitment rows are skipped (already on-chain by
+        // the operator at batch finalize).
+        foreach (var entry in chainEntries.Reverse())
         {
             if (entry.Type == ChainedTxType.Commitment)
                 continue;
 
-            leafTxid = entry.Txid;
             if (!hexByTxid.TryGetValue(entry.Txid, out var hex))
                 throw new InvalidOperationException(
                     $"Missing hex for virtual tx {entry.Txid} in chain of VTXO {vtxoOutpoint}");
@@ -266,8 +273,8 @@ public class UnilateralExitService(
 
         if (leafTxid is null)
             throw new InvalidOperationException(
-                $"Virtual-tx chain for VTXO {vtxoOutpoint} contained no off-chain rows " +
-                "— nothing to broadcast.");
+                $"Virtual-tx chain for VTXO {vtxoOutpoint} did not contain a row matching " +
+                "the VTXO's own txid — cannot identify the leaf tx.");
 
         return new ExitPlan(
             WalletId: walletId,
@@ -358,7 +365,7 @@ public class UnilateralExitService(
         var chainProof = await proofProvider.TryCreateProofAsync(vtxoOutpoint, cancellationToken);
         var leafChainType = (await transport.GetVtxoChainAsync(
                 vtxoOutpoint, chainProof?.Proof, chainProof?.Message, cancellationToken))
-            .LastOrDefault(e => e.Type is ChainedTxType.Tree or ChainedTxType.Ark or ChainedTxType.Checkpoint)?.Type
+            .FirstOrDefault(e => e.Txid == plan.LeafTxid)?.Type
             ?? ChainedTxType.Unspecified;
         var parsedLeafTx = ParseVirtualTx(leafHexList[0], serverInfo.Network, leafChainType);
         var vtxoTxOut = parsedLeafTx.Outputs.AsIndexedOutputs()
@@ -415,10 +422,17 @@ public class UnilateralExitService(
             var serverInfo = await transport.GetServerInfoAsync(ct);
             var network = serverInfo.Network;
 
+            // arkd's GetVtxoChainAsync (and thus the stored branch) is
+            // ordered leaf→root (the VTXO's own tx first, walking back to
+            // the Commitment anchor). Broadcasting must go the other way —
+            // each tx's parent needs to be on-chain/in-mempool before the
+            // mempool will accept it — so reverse to root→leaf here.
+            var orderedBranch = branch.Reverse().ToList();
+
             // Process from NextTxIndex onwards
-            for (var i = session.NextTxIndex; i < branch.Count; i++)
+            for (var i = session.NextTxIndex; i < orderedBranch.Count; i++)
             {
-                var vtx = branch[i];
+                var vtx = orderedBranch[i];
 
                 // Commitment is the on-chain anchor — already published by
                 // the operator at batch finalize. Nothing to broadcast for
@@ -489,7 +503,7 @@ public class UnilateralExitService(
                 }
 
                 logger?.LogInformation("Broadcast virtual tx {Txid} ({Index}/{Total}) for session {SessionId}",
-                    vtx.Txid, i + 1, branch.Count, session.Id);
+                    vtx.Txid, i + 1, orderedBranch.Count, session.Id);
             }
 
             // All txs broadcast/confirmed — transition to AwaitingCsvDelay
@@ -498,7 +512,7 @@ public class UnilateralExitService(
             await UpdateSession(session with
             {
                 State = ExitSessionState.AwaitingCsvDelay,
-                NextTxIndex = branch.Count,
+                NextTxIndex = orderedBranch.Count,
                 UpdatedAt = DateTimeOffset.UtcNow
             }, ct);
         }
@@ -578,8 +592,15 @@ public class UnilateralExitService(
                 return;
             }
 
-            // Check that the leaf tx (last in branch) is confirmed
-            var leafTx = branch[^1];
+            // Check that the leaf tx (the VTXO's own tx — arkd returns the
+            // chain leaf-first, so it's identified by txid, not position)
+            // is confirmed.
+            var leafTx = branch.FirstOrDefault(tx => tx.Txid == session.VtxoTxid);
+            if (leafTx is null)
+            {
+                await FailSession(session, "Leaf tx not found in virtual tx branch", ct);
+                return;
+            }
             var leafTxid = uint256.Parse(leafTx.Txid);
             var leafStatus = await blockchain.GetTxStatusAsync(leafTxid, ct);
 
@@ -681,9 +702,11 @@ public class UnilateralExitService(
                 return;
             }
 
-            // Get the leaf tx to find the VTXO output
+            // Get the leaf tx to find the VTXO output. arkd returns the
+            // chain leaf-first, so the leaf is identified by txid matching
+            // the VTXO's own outpoint, not by position in the branch.
             var branch = await virtualTxStorage.GetBranchAsync(vtxoOutpoint, ct);
-            var leafTx = branch.Count > 0 ? branch[^1] : null;
+            var leafTx = branch.FirstOrDefault(tx => tx.Txid == session.VtxoTxid);
             if (leafTx?.Hex is null)
             {
                 await FailSession(session, "Leaf tx hex not available", ct);
