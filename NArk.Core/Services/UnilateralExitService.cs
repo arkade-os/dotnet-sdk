@@ -182,18 +182,29 @@ public class UnilateralExitService(
     // across restarts. Gain: zero exit-specific persistence cost.
 
     /// <summary>
-    /// One-shot, stateless equivalent of <see cref="StartExitAsync"/> +
+    /// Stateless equivalent of <see cref="StartExitAsync"/> +
     /// the Broadcasting phase of <see cref="ProgressExitsAsync"/>: fetches the
-    /// virtual-tx chain from arkd, broadcasts every off-chain row that isn't
+    /// virtual-tx chain from arkd, broadcasts the next off-chain row that isn't
     /// already on-chain, and returns an <see cref="ExitPlan"/> the caller
     /// persists in whatever form they prefer.
     /// </summary>
     /// <remarks>
     /// The SDK doesn't write anything exit-specific in this call —
     /// <see cref="IExitSessionStorage"/> and <see cref="IVirtualTxStorage"/>
-    /// are not touched. Once the leaf-tx confirms on-chain and the CSV
-    /// timelock has matured, feed the returned <see cref="ExitPlan"/> back
-    /// to <see cref="ClaimMaturedExitAsync"/> to finalise the exit.
+    /// are not touched.
+    /// <para>
+    /// Broadcasts at most one off-chain row per call, not the whole chain.
+    /// Bitcoin Core's TRUC/v3 policy (BIP 431) caps a transaction at 1
+    /// unconfirmed descendant; since every off-chain row gets its own CPFP
+    /// child, broadcasting two chained rows before the first confirms would
+    /// give it a second unconfirmed descendant and get rejected — the same
+    /// constraint go-sdk and ts-sdk's unroll sessions are built around.
+    /// Callers must call this repeatedly (polling <c>GetTxStatusAsync</c> or
+    /// simply retrying on an interval) until the whole chain has confirmed.
+    /// </para>
+    /// Once the leaf-tx confirms on-chain and the CSV timelock has matured,
+    /// feed the returned <see cref="ExitPlan"/> to <see cref="ClaimMaturedExitAsync"/>
+    /// to finalise the exit.
     /// </remarks>
     public async Task<ExitPlan> BroadcastExitChainAsync(
         string walletId,
@@ -236,11 +247,20 @@ public class UnilateralExitService(
         var leafTxid = chainEntries
             .FirstOrDefault(e => e.Txid == vtxoOutpoint.Hash.ToString())?.Txid;
 
-        // Broadcast every off-chain row that isn't already in mempool /
-        // confirmed, root→leaf so each tx's parent is already on-chain/
-        // in-mempool by the time we submit it (chainEntries is leaf→root,
-        // so reverse). Commitment rows are skipped (already on-chain by
-        // the operator at batch finalize).
+        // Broadcast at most ONE off-chain row per call, root→leaf (chainEntries
+        // is leaf→root, so reverse), skipping already-confirmed/in-mempool rows
+        // and Commitment (already on-chain by the operator at batch finalize).
+        //
+        // Bitcoin Core's TRUC/v3 policy (BIP 431) caps a v3 tx at 1 unconfirmed
+        // descendant. Every off-chain row gets its own CPFP child, so a row
+        // already has one unconfirmed descendant the moment it's broadcast —
+        // broadcasting the *next* row (which spends this one's output) in the
+        // same call would make it a second, and get rejected. go-sdk/ts-sdk
+        // avoid this by only ever having one unconfirmed link in flight:
+        // broadcast one, then wait for it to fully confirm before touching
+        // the next. Callers must call this repeatedly (like ProgressExitsAsync)
+        // until every row confirms, rather than expecting one call to finish
+        // the whole chain.
         foreach (var entry in chainEntries.Reverse())
         {
             if (entry.Type == ChainedTxType.Commitment)
@@ -252,12 +272,18 @@ public class UnilateralExitService(
 
             var txid = uint256.Parse(entry.Txid);
             var status = await blockchain.GetTxStatusAsync(txid, cancellationToken);
-            if (status.Confirmed || status.InMempool)
+            if (status.Confirmed)
+            {
+                logger?.LogDebug("Stateless exit: virtual tx {Txid} already confirmed", entry.Txid);
+                continue;
+            }
+
+            if (status.InMempool)
             {
                 logger?.LogDebug(
-                    "Stateless exit: virtual tx {Txid} already {Status}, skipping broadcast",
-                    entry.Txid, status.Confirmed ? "confirmed" : "in mempool");
-                continue;
+                    "Stateless exit: virtual tx {Txid} in mempool, waiting for confirmation before broadcasting further",
+                    entry.Txid);
+                break;
             }
 
             var tx = ParseVirtualTx(hex, serverInfo.Network, entry.Type);
@@ -269,6 +295,7 @@ public class UnilateralExitService(
             logger?.LogInformation(
                 "Stateless exit: broadcast virtual tx {Txid} for VTXO {Outpoint}",
                 entry.Txid, vtxoOutpoint);
+            break;
         }
 
         if (leafTxid is null)
@@ -504,6 +531,24 @@ public class UnilateralExitService(
 
                 logger?.LogInformation("Broadcast virtual tx {Txid} ({Index}/{Total}) for session {SessionId}",
                     vtx.Txid, i + 1, orderedBranch.Count, session.Id);
+
+                // Bitcoin Core's TRUC/v3 policy (BIP 431) caps a v3 tx at 1
+                // unconfirmed descendant. This tx just got its own CPFP
+                // child, so it already has one — broadcasting the *next*
+                // tx in the chain right now (which spends this tx's output)
+                // would make it a second unconfirmed descendant and get
+                // rejected. go-sdk/ts-sdk avoid this by only ever having one
+                // unconfirmed link in flight: broadcast one, then wait for
+                // it to fully confirm before touching the next. Pause here;
+                // the next ProgressExitsAsync call re-checks this same
+                // index and only proceeds once it's confirmed.
+                await UpdateSession(session with
+                {
+                    NextTxIndex = i,
+                    RetryCount = 0,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                }, ct);
+                return;
             }
 
             // All txs broadcast/confirmed — transition to AwaitingCsvDelay
