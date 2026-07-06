@@ -1,3 +1,8 @@
+using NArk.Abstractions.Scripts;
+using NArk.Arkade.Scripts;
+using NArk.Core.Scripts;
+using NBitcoin;
+
 namespace NArk.Arkade.Program;
 
 /// <summary>
@@ -19,4 +24,22 @@ public sealed class CompiledArkadeFunction
 
     /// <summary>Resolved covenant (ArkadeScript) bytes; <c>null</c> for pure-tapscript paths.</summary>
     public byte[]? ArkadeScriptBytes { get; init; }
+
+    /// <summary>The pre-tweak emulator key used for this leaf; <c>null</c> for pure-tapscript paths.</summary>
+    public TaprootPubKey? EmulatorKey { get; init; }
+
+    /// <summary>
+    /// Wraps this leaf as a <see cref="ScriptBuilder"/>, ready to hand to
+    /// <see cref="NArk.Abstractions.Contracts.ArkContract.GetScriptBuilders"/>. Covenant
+    /// leaves come back as an <see cref="IArkadeBoundScriptBuilder"/> so the existing
+    /// emulator co-signing pipeline (<see cref="NArk.Arkade.Emulator.ArkadePsbtExtensions"/>)
+    /// picks them up with no further wiring.
+    /// </summary>
+    public ScriptBuilder ToScriptBuilder()
+    {
+        var ops = ArkadeScript.Decode(LeafScript);
+        return ArkadeScriptBytes is { } script && EmulatorKey is { } key
+            ? new ArkadeProgramFunctionScriptBuilder(ops, script, key)
+            : new GenericTapScript(ops);
+    }
 }

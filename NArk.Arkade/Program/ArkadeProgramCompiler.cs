@@ -71,14 +71,15 @@ public static class ArkadeProgramCompiler
             .ToList();
 
         byte[]? arkadeScriptBytes = null;
+        TaprootPubKey? emulatorKey = null;
         if (def.CovenantSegment is { } covenant)
         {
-            var emulatorKey = keys.EmulatorKey
+            emulatorKey = new TaprootPubKey((keys.EmulatorKey
                 ?? throw new InvalidOperationException(
-                    $"Function '{name}' has a covenant segment but no emulator key was configured.");
+                    $"Function '{name}' has a covenant segment but no emulator key was configured.")).ToBytes());
 
             arkadeScriptBytes = ArkadeScript.Encode(ResolveAsmOps(covenant.Asm, args));
-            var tweaked = ArkadeTweak.Tweak(new TaprootPubKey(emulatorKey.ToBytes()), arkadeScriptBytes);
+            var tweaked = ArkadeTweak.Tweak(emulatorKey, arkadeScriptBytes);
             pubkeys.Add(ECXOnlyPubKey.Create(tweaked.ToBytes()));
         }
 
@@ -90,6 +91,7 @@ public static class ArkadeProgramCompiler
             Definition = def,
             LeafScript = leafScript,
             ArkadeScriptBytes = arkadeScriptBytes,
+            EmulatorKey = emulatorKey,
         };
     }
 
