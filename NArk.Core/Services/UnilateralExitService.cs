@@ -5,6 +5,7 @@ using NArk.Abstractions.Exit;
 using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Abstractions.Helpers;
 using NArk.Core.Contracts;
 using NArk.Core.Exit;
 using NArk.Core.Transport;
@@ -499,11 +500,43 @@ public class UnilateralExitService(
                     return;
                 }
 
-                // Not seen — broadcast. arkd's GetVirtualTxs returns the
-                // tree txs as PSBT-encoded strings (the same format that
-                // BatchSession parses across the rest of the codebase) —
-                // not raw consensus-encoded transactions. Parse + extract.
-                var tx = ParseVirtualTx(vtx.Hex, network, vtx.Type);
+                // Wait for checkpoint
+                if (vtx.Type == ChainedTxType.Checkpoint)
+                {
+                    logger?.LogDebug(
+                        "Checkpoint {Txid} not yet published by the server; waiting for arkd to broadcast it",
+                        vtx.Txid);
+                    await UpdateSession(session with
+                    {
+                        NextTxIndex = i,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    }, ct);
+                    return;
+                }
+
+
+                // Re-fetch Tree/Ark txs fresh: the locally-stored hex for a
+                // preconfirmed VTXO is unusable (tree stored sig-less; the Ark
+                // leaf entry holds the checkpoint PSBT). GetVirtualTxs serves the
+                // signed copy carrying the signatures ParseVirtualTx needs.
+                var hexToBroadcast = vtx.Hex;
+                if (vtx.Type is ChainedTxType.Tree or ChainedTxType.Ark)
+                {
+                    try
+                    {
+                        var freshHex = await transport.GetVirtualTxsAsync([vtx.Txid], ct);
+                        if (freshHex.Count > 0 && !string.IsNullOrEmpty(freshHex[0]))
+                            hexToBroadcast = freshHex[0];
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogDebug(ex,
+                            "Fresh GetVirtualTxs refetch failed for {Type} tx {Txid}, falling back to stored hex",
+                            vtx.Type, vtx.Txid);
+                    }
+                }
+
+                var tx = ParseVirtualTx(hexToBroadcast, network, vtx.Type);
                 var success = await BroadcastWithCpfpAsync(tx, ct);
 
                 if (!success)
@@ -882,56 +915,52 @@ public class UnilateralExitService(
     }
 
     /// <summary>
-    /// Parse a virtual tx as returned by arkd's <c>GetVirtualTxs</c>
-    /// indexer endpoint into a signed, broadcastable transaction.
+    /// Parses a virtual tx PSBT from arkd's <c>GetVirtualTxs</c> into a signed,
+    /// broadcastable transaction by building each input's witness from its PSBT
+    /// fields (key-path aggregated sig, or Arkade script-path via
+    /// <see cref="TryFinalizeVtxoScript"/>), falling back to NBitcoin's finalize.
     /// </summary>
-    /// <remarks>
-    /// arkd emits the tx as a PSBT-encoded string and the witness layout
-    /// depends on which kind of tx we're looking at — mirroring the
-    /// approach in arkade-os/ts-sdk's <c>Unroll.Session</c>:
-    ///
-    /// - <c>Tree</c>: cosigned via the taproot key-path (MuSig2). The
-    ///   aggregated Schnorr signature is carried in
-    ///   <c>PSBT_IN_TAP_KEY_SIG</c> (<see cref="PSBTInput.TaprootKeySignature"/>).
-    ///   The final witness is just <c>[sig]</c>; we synthesize it
-    ///   manually because the PSBT doesn't carry <c>witness_utxo</c>
-    ///   (which NBitcoin's <c>Finalize()</c> requires).
-    /// - <c>Ark</c> / <c>Checkpoint</c> / fallback: try standard
-    ///   <c>Finalize() + ExtractTransaction()</c>; if that throws (e.g.
-    ///   missing prevouts), fall back to lifting <c>FinalScriptWitness</c>
-    ///   straight off each input.
-    /// </remarks>
     private static Transaction ParseVirtualTx(string hex, Network network, ChainedTxType type)
     {
         var psbt = PSBT.Parse(hex, network);
+        var tx = psbt.GetGlobalTransaction();
 
-        if (type == ChainedTxType.Tree)
+        // Finalize per input by PSBT fields, not chain type (cf. arkd's
+        // redeem.go / finalizer.go): key-path sig → aggregated-sig witness;
+        // else Arkade script-path → TryFinalizeVtxoScript; else lift an existing
+        // FinalScriptWitness. Fall back to NBitcoin's finalize only if none apply.
+        var allResolved = true;
+        for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
         {
-            var tx = psbt.GetGlobalTransaction();
-            for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
+            var input = psbt.Inputs[i];
+
+            if (input.TaprootKeySignature is not null)
             {
-                var sig = psbt.Inputs[i].TaprootKeySignature;
-                if (sig is null)
-                {
-                    throw new InvalidOperationException(
-                        $"Tree tx {tx.GetHash()} input {i} is missing the MuSig2 " +
-                        "taproot key-path signature (PSBT_IN_TAP_KEY_SIG); arkd should " +
-                        "have populated it during the batch round.");
-                }
-                // The `true` flag tells NBitcoin these bytes are stack
-                // pushes, not a pre-serialized witness — same idiom as
-                // ChainSwapMusigSession / P2ACpfpBuilder elsewhere in
-                // the codebase. Without it the constructor tries to
-                // deserialize the sig bytes as a witness with a count
-                // prefix and throws "No more byte to read".
-                tx.Inputs[i].WitScript = new WitScript(new[] { sig.ToBytes() }, true);
+                // The `true` flag tells NBitcoin these bytes are stack pushes,
+                // not a pre-serialized witness — same idiom as
+                // ChainSwapMusigSession / P2ACpfpBuilder elsewhere.
+                tx.Inputs[i].WitScript = new WitScript(new[] { input.TaprootKeySignature.ToBytes() }, true);
             }
-            return tx;
+            else if (TryFinalizeVtxoScript(input, out var scriptWitness))
+            {
+                tx.Inputs[i].WitScript = scriptWitness;
+            }
+            else if (input.FinalScriptWitness is not null)
+            {
+                tx.Inputs[i].WitScript = input.FinalScriptWitness;
+            }
+            else
+            {
+                allResolved = false;
+                break;
+            }
         }
 
-        // Ark / Checkpoint / Unspecified: try the standard PSBT finalize
-        // path first. If the PSBT lacks witness_utxo it'll throw — fall
-        // back to lifting whatever FinalScriptWitness arkd populated.
+        if (allResolved)
+            return tx;
+
+        // Fallback: standard PSBT finalize. If the PSBT lacks witness_utxo it'll
+        // throw — lift whatever FinalScriptWitness/Sig arkd populated instead.
         try
         {
             psbt.Finalize();
@@ -939,17 +968,84 @@ public class UnilateralExitService(
         }
         catch (PSBTException)
         {
-            var tx = psbt.GetGlobalTransaction();
-            for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
+            var fallbackTx = psbt.GetGlobalTransaction();
+            for (var i = 0; i < psbt.Inputs.Count && i < fallbackTx.Inputs.Count; i++)
             {
                 var psbtInput = psbt.Inputs[i];
                 if (psbtInput.FinalScriptWitness is not null)
-                    tx.Inputs[i].WitScript = psbtInput.FinalScriptWitness;
+                    fallbackTx.Inputs[i].WitScript = psbtInput.FinalScriptWitness;
                 if (psbtInput.FinalScriptSig is not null)
-                    tx.Inputs[i].ScriptSig = psbtInput.FinalScriptSig;
+                    fallbackTx.Inputs[i].ScriptSig = psbtInput.FinalScriptSig;
             }
-            return tx;
+            return fallbackTx;
         }
+    }
+
+    /// <summary>
+    /// Assembles the taproot script-path witness for a leaf Arkade tx from its
+    /// PSBT fields, mirroring arkd's <c>FinalizeVtxoScript</c> (ark-lib
+    /// <c>finalizer.go</c> / <c>closure.go</c>). Exit-only: it reverse-engineers
+    /// the witness from a fully-signed PSBT served by arkd, whereas the normal
+    /// spending path builds it forward from an <c>ArkCoin</c>'s known closure.
+    /// Raw field accessors live in <see cref="PsbtHelpers"/>.
+    /// </summary>
+    private static bool TryFinalizeVtxoScript(PSBTInput input, out WitScript witness)
+    {
+        witness = WitScript.Empty;
+
+        if (!input.TryGetTaprootLeafScript(out var controlBlock, out var leafScript))
+            return false;
+
+        var signatures = input.GetTaprootScriptSpendSignatures();
+        if (signatures.Count == 0)
+            return false;
+
+        var pubKeys = ExtractCheckSigPubKeys(leafScript);
+        if (pubKeys.Count == 0)
+            return false;
+
+        var stack = new List<byte[]>();
+
+        // A condition witness (present only for condition closures) satisfies the
+        // script's condition prefix and sits at the bottom of the stack.
+        var condition = input.GetArkFieldConditionWitness();
+        if (condition is not null)
+            stack.AddRange(condition.Pushes);
+
+        // Signatures are pushed in reverse public-key order — see
+        // MultisigClosure.Witness in arkd's closure.go.
+        for (var i = pubKeys.Count - 1; i >= 0; i--)
+        {
+            if (!signatures.TryGetValue(pubKeys[i], out var sig))
+                return false; // a required signature is missing; cannot finalize
+            stack.Add(sig);
+        }
+
+        stack.Add(leafScript.ToBytes());
+        stack.Add(controlBlock);
+
+        witness = new WitScript(stack.ToArray());
+        return true;
+    }
+
+    // Returns the 32-byte x-only public keys immediately consumed by
+    // OP_CHECKSIG / OP_CHECKSIGVERIFY, in script order. Non-key 32-byte pushes
+    // (e.g. a hashlock preimage hash) are skipped because they are not followed
+    // by a checksig opcode.
+    private static List<string> ExtractCheckSigPubKeys(Script leafScript)
+    {
+        var ops = leafScript.ToOps().ToList();
+        var pubKeys = new List<string>();
+        for (var i = 0; i + 1 < ops.Count; i++)
+        {
+            if (ops[i].PushData is { Length: 32 } push &&
+                ops[i + 1].Code is OpcodeType.OP_CHECKSIG or OpcodeType.OP_CHECKSIGVERIFY)
+            {
+                pubKeys.Add(Convert.ToHexString(push).ToLowerInvariant());
+            }
+        }
+
+        return pubKeys;
     }
 
     private static Scripts.UnilateralPathArkTapScript? GetUnilateralPathTapScript(ArkContract contract)

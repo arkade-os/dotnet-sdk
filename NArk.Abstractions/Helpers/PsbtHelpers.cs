@@ -106,4 +106,63 @@ public static class PsbtHelpers
 
         psbtInput.SetTaprootScriptSpendSignature(pubKey, coin.SpendingScript.LeafHash, sig);
     }
+
+    /// <summary>
+    /// Reads the taproot leaf script (PSBT_IN_TAP_LEAF_SCRIPT, <c>0x15</c>) set by
+    /// <see cref="SetTaprootLeafScript"/> back out of a PSBT input.
+    /// </summary>
+    /// <returns><c>true</c> when the input carries a leaf script.</returns>
+    public static bool TryGetTaprootLeafScript(this PSBTInput input, out byte[] controlBlock, out Script leafScript)
+    {
+        foreach (var pair in input.Unknown)
+        {
+            if (pair.Key.Length > 1 && pair.Key[0] == PsbtInTapLeafScript && pair.Value.Length > 1)
+            {
+                controlBlock = pair.Key[1..];
+                // value = script bytes + 1-byte leaf version
+                leafScript = new Script(pair.Value[..^1]);
+                return true;
+            }
+        }
+
+        controlBlock = [];
+        leafScript = Script.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Reads all taproot script-spend signatures (PSBT_IN_TAP_SCRIPT_SIG, <c>0x14</c>)
+    /// set by <see cref="SetTaprootScriptSpendSignature"/>, keyed by lowercase
+    /// hex-encoded x-only public key.
+    /// </summary>
+    public static IReadOnlyDictionary<string, byte[]> GetTaprootScriptSpendSignatures(this PSBTInput input)
+    {
+        var result = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in input.Unknown)
+        {
+            if (pair.Key.Length == 1 + 32 + 32 && pair.Key[0] == PsbtInTapScriptSig)
+                result[Convert.ToHexString(pair.Key.AsSpan(1, 32)).ToLowerInvariant()] = pair.Value;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reads the Arkade condition-witness field set by
+    /// <see cref="SetArkFieldConditionWitness"/>, or <c>null</c> when absent.
+    /// </summary>
+    public static WitScript? GetArkFieldConditionWitness(this PSBTInput input)
+    {
+        var conditionKey = new[] { ArkPsbtFieldKeyType }
+            .Concat(Encoding.UTF8.GetBytes(ConditionWitness)).ToArray();
+
+        foreach (var pair in input.Unknown)
+        {
+            if (pair.Key.SequenceEqual(conditionKey))
+                return new WitScript(pair.Value);
+        }
+
+        return null;
+    }
+
 }
