@@ -143,16 +143,26 @@ public class UnilateralExitTests
         var vtxo = vtxos.First(v => !v.IsSpent() && !v.Unrolled);
         var claimAddress = await GetFreshOnchainAddress();
 
-        var sessions = await setup.ExitService.StartExitAsync(
+        await setup.ExitService.StartExitAsync(
             setup.WalletId, [vtxo.OutPoint], claimAddress, token);
-        var sessionId = sessions[0].Id;
+
+        var branch = await setup.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint, token);
+        TestContext.WriteLine($"[Exit] chain depth={branch.Count} (incl. commitment)");
 
         // Drive the state machine. Each iteration: progress (broadcasts what
         // it can), mine 1 block to confirm what's in mempool, observe state.
         // Use GetByVtxoAsync (not GetActiveSessionsAsync) so a Failed
         // session is still surfaced — otherwise we'd silently lose it.
+        //
+        // No fixed step cap: since the fix for TRUC/v3 (BIP 431), broadcasting
+        // advances exactly one chain link per ProgressExitsAsync call (broadcast,
+        // then wait for confirmation before touching the next link — see
+        // UnilateralExitService.ProgressBroadcastingAsync), so a deeper chain
+        // — e.g. when CI batches multiple participants into the same round —
+        // legitimately needs more iterations than a single-hop local run. The
+        // [CancelAfter] attribute is the real backstop against a genuine hang.
         ExitSession? current = null;
-        for (var step = 0; step < 30 && !token.IsCancellationRequested; step++)
+        for (var step = 0; !token.IsCancellationRequested; step++)
         {
             await setup.ExitService.ProgressExitsAsync(token);
             await DockerHelper.MineBlocks(1, token);
@@ -208,9 +218,14 @@ public class UnilateralExitTests
         await setup.ExitService.StartExitAsync(
             setup.WalletId, [vtxo.OutPoint], claimAddress, token);
 
-        // 1. Drive to AwaitingCsvDelay (broadcast + 1-block confirms).
+        var branch = await setup.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint, token);
+        TestContext.WriteLine($"[Exit] chain depth={branch.Count} (incl. commitment)");
+
+        // 1. Drive to AwaitingCsvDelay (broadcast + 1-block confirms). No fixed
+        // step cap — see the comment in ProgressExits_AdvancesFromBroadcastingToAwaitingCsvDelay
+        // for why a deeper (CI-only) chain legitimately needs more iterations.
         ExitSession? current = null;
-        for (var step = 0; step < 30 && !token.IsCancellationRequested; step++)
+        for (var step = 0; !token.IsCancellationRequested; step++)
         {
             await setup.ExitService.ProgressExitsAsync(token);
             await DockerHelper.MineBlocks(1, token);
