@@ -136,6 +136,28 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
                 return await BroadcastSequentialFallbackAsync(parent, child, cancellationToken);
             }
 
+            // submitpackage returns HTTP/RPC success even when individual txs in the package are rejected
+            var packageMsg = (string?)response.Result?["package_msg"];
+            if (!string.Equals(packageMsg, "success", StringComparison.OrdinalIgnoreCase))
+            {
+                var txErrors = new List<string>();
+                if (response.Result?["tx-results"] is Newtonsoft.Json.Linq.JObject txResults)
+                {
+                    foreach (var kv in txResults)
+                    {
+                        var err = (string?)kv.Value?["error"];
+                        if (!string.IsNullOrEmpty(err))
+                            txErrors.Add($"{kv.Key}: {err}");
+                    }
+                }
+
+                _logger?.LogWarning(
+                    "submitpackage rejected: package_msg={Msg}; parent={Parent}; tx-errors=[{TxErrors}]",
+                    packageMsg ?? "(none)", parent.GetHash(),
+                    txErrors.Count > 0 ? string.Join("; ", txErrors) : "none reported");
+                return false;
+            }
+
             _logger?.LogDebug("Package broadcast successful: parent={Parent}, child={Child}",
                 parent.GetHash(), child.GetHash());
             return true;
