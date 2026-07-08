@@ -12,18 +12,21 @@ namespace NArk.Arkade.Contracts;
 /// <summary>
 /// Materializes an <see cref="ArkProgramContract"/> VTXO into a spendable <see cref="ArkCoin"/>,
 /// mirroring <c>HashLockedContractTransformer</c>/<c>DelegateContractTransformer</c>: picks a
-/// compiled function and resolves its witness once, at coin-materialization time — this
-/// codebase has no per-contract "send" builder (<c>SpendingService</c> spends any
-/// <see cref="ArkCoin"/> uniformly), so there is no separate call-time API to build.
+/// compiled function and resolves its witness at coin-materialization time (<c>SpendingService</c>
+/// then spends any <see cref="ArkCoin"/> uniformly). Two entry points: the
+/// <see cref="IContractTransformer"/> <see cref="Transform(string, ArkContract, ArkVtxo)"/> auto-selects
+/// the single fully-args-bound path, and the explicit
+/// <see cref="Transform(string, ArkProgramContract, ArkVtxo, string, IReadOnlyDictionary{string, ArkadeToken})"/>
+/// overload spends a named path with call-time witness values (preimage, signature, …).
 /// </summary>
 /// <remarks>
 /// <para>
-/// Scope: a program is transformable only if it has <em>exactly one</em> function whose
+/// Auto-select scope: a program is auto-transformable only if it has <em>exactly one</em> function whose
 /// signers include <c>"user"</c> and whose witness (see <see cref="ArkadeTapscriptSegment.Witness"/>/
 /// <see cref="ArkadeCovenantSegment.Witness"/>) resolves fully from the program's constructor
 /// <c>args</c> — i.e. no unbound call-time inputs. Programs with several wallet-spendable
-/// paths (collaborative vs. unilateral choice) need explicit path-selection context this
-/// transformer does not have; they are left untransformed for now.
+/// paths (claim vs. refund), or a path needing call-time values, use the explicit overload to
+/// select the path and supply its <c>callArgs</c>.
 /// </para>
 /// <para>
 /// A function with both a <see cref="ArkadeTapscriptSegment.Asm"/> condition <em>and</em> a
@@ -62,16 +65,66 @@ public class ArkProgramContractTransformer(
         return SelectSpendableFunction(programContract) is not null;
     }
 
-    public async Task<ArkCoin> Transform(string walletIdentifier, ArkContract contract, ArkVtxo vtxo)
+    public Task<ArkCoin> Transform(string walletIdentifier, ArkContract contract, ArkVtxo vtxo)
     {
         var programContract = (ArkProgramContract)contract;
         var (compiled, witnessOps) = SelectSpendableFunction(programContract)
             ?? throw new InvalidOperationException("No uniquely spendable function found for this program.");
 
+        return Task.FromResult(BuildCoin(walletIdentifier, programContract, vtxo, compiled, witnessOps));
+    }
+
+    /// <summary>
+    /// Materializes a specific spending path (<paramref name="functionName"/>) into a spendable
+    /// <see cref="ArkCoin"/>, supplying its call-time witness values via <paramref name="callArgs"/>.
+    /// Use this when the program exposes several wallet-spendable paths (e.g. claim vs. refund) or a
+    /// witness not fully determined by the program's constructor <c>args</c> — the parameterless
+    /// <see cref="Transform(string, ArkContract, ArkVtxo)"/> only handles the single, fully-args-bound path.
+    /// </summary>
+    /// <param name="functionName">Name of the program function (spending path) to spend through.</param>
+    /// <param name="callArgs">
+    /// Values for the function's declared <c>inputs</c>, keyed by input name. Each is a
+    /// <see cref="ArkadeTokenKind.Bytes"/> token (e.g. an HTLC preimage, a counterparty signature,
+    /// a pubkey or a hash) or a <see cref="ArkadeTokenKind.Number"/> token (an int) — matching the
+    /// input's declared <see cref="ArkadeArgType"/>.
+    /// </param>
+    /// <exception cref="ArgumentException">No function named <paramref name="functionName"/> exists.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The function carries both a covenant and a tapscript condition (unrepresentable with the single
+    /// witness field), or a required call argument is missing from <paramref name="callArgs"/>.
+    /// </exception>
+    public Task<ArkCoin> Transform(
+        string walletIdentifier,
+        ArkProgramContract contract,
+        ArkVtxo vtxo,
+        string functionName,
+        IReadOnlyDictionary<string, ArkadeToken>? callArgs = null)
+    {
+        var compiled = contract.FunctionByName(functionName)
+            ?? throw new ArgumentException($"Program has no function '{functionName}'.", nameof(functionName));
+
+        var def = compiled.Definition;
+        if (def.CovenantSegment is not null && def.Tapscript.Asm is not null)
+            throw new InvalidOperationException(
+                $"Function '{functionName}' has both a covenant and a tapscript condition; " +
+                "the single SpendingConditionWitness field can carry only one.");
+
+        var witnessTokens = def.CovenantSegment?.Witness ?? def.Tapscript.Witness;
+        if (!TryResolveWitness(witnessTokens, contract.Args, callArgs ?? EmptyArgs, out var ops))
+            throw new InvalidOperationException(
+                $"Function '{functionName}' witness could not be resolved — a required call argument is missing.");
+
+        return Task.FromResult(BuildCoin(walletIdentifier, contract, vtxo, compiled, ops));
+    }
+
+    private static ArkCoin BuildCoin(
+        string walletIdentifier, ArkProgramContract contract, ArkVtxo vtxo,
+        CompiledArkadeFunction compiled, IReadOnlyList<Op> witnessOps)
+    {
         var witness = witnessOps.Count > 0 ? new WitScript(witnessOps.ToArray()) : null;
 
         return new ArkCoin(walletIdentifier, contract, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight,
-            vtxo.OutPoint, vtxo.TxOut, programContract.User, compiled.ToScriptBuilder(), witness, null, null,
+            vtxo.OutPoint, vtxo.TxOut, contract.User, compiled.ToScriptBuilder(), witness, null, null,
             vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
     }
 
@@ -92,8 +145,10 @@ public class ArkProgramContractTransformer(
             if (def.CovenantSegment is not null && def.Tapscript.Asm is not null)
                 continue;
 
+            // Auto-select only handles fully-args-bound paths: no call args are supplied, so any
+            // witness token referencing a call-time input leaves this function unresolvable here.
             var witnessTokens = def.CovenantSegment?.Witness ?? def.Tapscript.Witness;
-            if (!TryResolveWitness(witnessTokens, contract.Args, out var ops))
+            if (!TryResolveWitness(witnessTokens, contract.Args, EmptyArgs, out var ops))
                 continue;
 
             candidates.Add((compiled, ops));
@@ -102,15 +157,19 @@ public class ArkProgramContractTransformer(
         return candidates.Count == 1 ? candidates[0] : null;
     }
 
+    private static readonly IReadOnlyDictionary<string, ArkadeToken> EmptyArgs =
+        new Dictionary<string, ArkadeToken>();
+
     /// <summary>
-    /// Resolves a witness token list against the program's constructor <c>args</c> only —
-    /// mirrors the ts-sdk's <c>witnessRefToBytes</c>, minus the call-time <c>callArgs</c> half
-    /// (this transformer has no call-time context, so bare call-argument-name tokens make the
-    /// whole list unresolvable).
+    /// Resolves a witness token list against the program's constructor <c>args</c> (for
+    /// <c>$param</c> tokens) and the spend's <c>callArgs</c> (for bare input-name tokens) —
+    /// mirrors the ts-sdk's <c>witnessRefToBytes</c>. Literal byte/number tokens pass through.
+    /// Returns <c>false</c> if any token references a value that neither map supplies.
     /// </summary>
     private static bool TryResolveWitness(
         IReadOnlyList<ArkadeToken>? witness,
         IReadOnlyDictionary<string, ArkadeToken> args,
+        IReadOnlyDictionary<string, ArkadeToken> callArgs,
         out IReadOnlyList<Op> ops)
     {
         var result = new List<Op>();
@@ -124,14 +183,16 @@ public class ArkProgramContractTransformer(
                 case ArkadeTokenKind.Number:
                     result.Add(ArkadeProgramCompiler.NumberToOp(token.Number!.Value));
                     continue;
+                // $param → bound at contract construction (constructor args).
                 case ArkadeTokenKind.Text when token.IsParam && args.TryGetValue(token.ParamName, out var bound):
-                    result.Add(bound.Kind == ArkadeTokenKind.Bytes
-                        ? Op.GetPushOp(bound.Bytes!)
-                        : ArkadeProgramCompiler.NumberToOp(bound.Number!.Value));
+                    result.Add(ToPush(bound));
+                    continue;
+                // bare input name → supplied at spend time (call args): preimage, sig, pubkey, hash, int.
+                case ArkadeTokenKind.Text when !token.IsParam && callArgs.TryGetValue(token.Text!, out var callValue):
+                    result.Add(ToPush(callValue));
                     continue;
                 default:
-                    // Unbound $param, or a bare name — that's a call-time input this
-                    // transformer cannot supply.
+                    // Unbound $param, or a call-argument name with no supplied value.
                     ops = [];
                     return false;
             }
@@ -139,4 +200,11 @@ public class ArkProgramContractTransformer(
         ops = result;
         return true;
     }
+
+    private static Op ToPush(ArkadeToken token) => token.Kind switch
+    {
+        ArkadeTokenKind.Bytes => Op.GetPushOp(token.Bytes!),
+        ArkadeTokenKind.Number => ArkadeProgramCompiler.NumberToOp(token.Number!.Value),
+        _ => throw new InvalidOperationException("A witness value must be bytes or a number."),
+    };
 }
