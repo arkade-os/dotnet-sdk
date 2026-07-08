@@ -13,11 +13,11 @@ namespace NArk.Arkade.Emulator;
 /// <list type="number">
 ///   <item>
 ///     <description>
-///     <see cref="BuildEmulatorOutput"/> — produces the OP_RETURN
-///     <c>TxOut</c> the unsigned transaction must carry so the emulator
-///     can find the script bytes for each arkade-bound input. The
-///     <c>TxOut</c> must be appended to the tx <em>before</em> any input is
-///     signed, since signatures commit to the full output set.
+///     <see cref="BuildEmulatorPackets"/> — produces the
+///     <see cref="EmulatorPacket"/>(s) pinning each arkade-bound input's script
+///     bytes + witness, for the generic spend path to merge into the single
+///     Extension OP_RETURN. That output must be appended to the tx <em>before</em>
+///     any input is signed, since signatures commit to the full output set.
 ///     </description>
 ///   </item>
 ///   <item>
@@ -51,17 +51,17 @@ public static class ArkadePsbtExtensions
     }
 
     /// <summary>
-    /// Build the OP_RETURN <see cref="TxOut"/> that pins each arkade-bound
-    /// input's <see cref="IArkadeBoundScriptBuilder.ArkadeScript"/> + the
-    /// witness pushes the script reads. Returns <c>null</c> when no input
-    /// in the spend is arkade-bound (in which case the tx needs no
-    /// EmulatorPacket attached at all).
+    /// Build the <see cref="EmulatorPacket"/>(s) for the arkade-bound inputs of a
+    /// spend, without wrapping them in an Extension/OP_RETURN — so the generic
+    /// spend path (<c>NArk.Core</c>) can merge them with the asset packet into a
+    /// single Extension via <see cref="NArk.Core.Assets.ISpendExtensionPacketProvider"/>.
+    /// Returns an empty list when no input is arkade-bound.
     /// </summary>
     /// <param name="coinsByVin">
-    /// The spend inputs in transaction-input-index order — index <c>i</c> in
-    /// this list corresponds to <c>vin = i</c> on the resulting tx.
+    /// The spend inputs in transaction-input-index order — index <c>i</c> in this
+    /// list corresponds to <c>vin = i</c> on the resulting tx.
     /// </param>
-    public static TxOut? BuildEmulatorOutput(IReadOnlyList<ArkCoin> coinsByVin)
+    public static IReadOnlyList<IExtensionPacket> BuildEmulatorPackets(IReadOnlyList<ArkCoin> coinsByVin)
     {
         ArgumentNullException.ThrowIfNull(coinsByVin);
 
@@ -73,11 +73,7 @@ public static class ArkadePsbtExtensions
             entries.Add(new EmulatorEntry((ushort)vin, arkade.ArkadeScript, witness));
         }
 
-        if (entries.Count == 0) return null;
-
-        var packet = new EmulatorPacket(entries);
-        var ext = new Extension([packet]);
-        return ext.ToTxOut();
+        return entries.Count == 0 ? [] : [new EmulatorPacket(entries)];
     }
 
     /// <summary>

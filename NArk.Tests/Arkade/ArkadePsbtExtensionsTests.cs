@@ -33,17 +33,7 @@ public class ArkadePsbtExtensionsTests
     }
 
     [Test]
-    public void BuildEmulatorOutput_NullWhenNoArkadeCoin()
-    {
-        var (alice, bob, _) = MakeKeys();
-        var plain = new NofNMultisigTapScript([alice, bob]);
-        var coin = MakeCoin(alice, bob, plain);
-
-        Assert.That(ArkadePsbtExtensions.BuildEmulatorOutput([coin]), Is.Null);
-    }
-
-    [Test]
-    public void BuildEmulatorOutput_EmitsExtensionWithCorrectVinAndScript()
+    public void BuildEmulatorPackets_EmitsEntryWithCorrectVinAndScript()
     {
         var (alice, bob, emulator) = MakeKeys();
         var arkadeBytes = new byte[] { 0xc4, 0xc6 };
@@ -54,18 +44,59 @@ public class ArkadePsbtExtensionsTests
         var coinPlain = MakeCoin(alice, bob, plain, witnessPushes: []);
         var coinArkade = MakeCoin(alice, bob, arkade, witnessPushes: [Convert.FromHexString("deadbeef")]);
 
-        var output = ArkadePsbtExtensions.BuildEmulatorOutput([coinPlain, coinArkade]);
-        Assert.That(output, Is.Not.Null);
+        var packets = ArkadePsbtExtensions.BuildEmulatorPackets([coinPlain, coinArkade]);
+        Assert.That(packets, Has.Count.EqualTo(1));
 
-        // Round-trip through Extension parsing — the packet should carry one entry.
-        var ext = Extension.FromScript(output!.ScriptPubKey);
-        var packet = EmulatorPacket.FromExtension(ext);
+        var packet = packets[0] as EmulatorPacket;
         Assert.That(packet, Is.Not.Null);
         Assert.That(packet!.Entries, Has.Count.EqualTo(1));
         Assert.That(packet.Entries[0].Vin, Is.EqualTo((ushort)1));
         Assert.That(packet.Entries[0].Script, Is.EqualTo(arkadeBytes));
         Assert.That(packet.Entries[0].Witness, Has.Count.EqualTo(1));
         Assert.That(packet.Entries[0].Witness[0], Is.EqualTo(Convert.FromHexString("deadbeef")));
+    }
+
+    [Test]
+    public void BuildEmulatorPackets_EmptyWhenNoArkadeCoin_OnePacketOtherwise()
+    {
+        var (alice, bob, emulator) = MakeKeys();
+        var plain = new NofNMultisigTapScript([alice, bob]);
+        var arkade = new ArkadeNofNMultisigTapScript([0xc4], [alice], [emulator]);
+
+        Assert.That(ArkadePsbtExtensions.BuildEmulatorPackets([MakeCoin(alice, bob, plain)]), Is.Empty);
+
+        var packets = ArkadePsbtExtensions.BuildEmulatorPackets([MakeCoin(alice, bob, arkade)]);
+        Assert.That(packets, Has.Count.EqualTo(1));
+        Assert.That(packets[0], Is.InstanceOf<EmulatorPacket>());
+    }
+
+    [Test]
+    public void MergedExtension_CarriesBothAssetAndEmulatorPackets_InOneOpReturn()
+    {
+        // Mirrors SpendingService.BuildExtensionOutput: asset packet + emulator
+        // packet merged into a single Extension, so both must survive in one OP_RETURN.
+        var (alice, bob, emulator) = MakeKeys();
+        var arkadeBytes = new byte[] { 0xc4, 0xc6 };
+        var arkade = new ArkadeNofNMultisigTapScript(arkadeBytes, [alice], [emulator]);
+        var coinArkade = MakeCoin(alice, bob, arkade, witnessPushes: [Convert.FromHexString("deadbeef")]);
+
+        var emulatorPacket = ArkadePsbtExtensions.BuildEmulatorPackets([coinArkade])[0];
+
+        var assetId = Convert.ToHexString(Enumerable.Repeat((byte)0x11, 34).ToArray()).ToLowerInvariant();
+        var assetPacket = AssetPacketBuilder.BuildPacket(
+            [(assetId, (ushort)0, 1000UL)], outputs: null, changeVout: 0);
+        Assert.That(assetPacket, Is.Not.Null);
+
+        var merged = new Extension([assetPacket!, emulatorPacket]).ToTxOut();
+
+        var ext = Extension.FromScript(merged.ScriptPubKey);
+        // Asset packet survives the round-trip…
+        Assert.That(ext.GetAssetPacket(), Is.Not.Null);
+        // …and so does the emulator packet, from the same single OP_RETURN.
+        var emu = EmulatorPacket.FromExtension(ext);
+        Assert.That(emu, Is.Not.Null);
+        Assert.That(emu!.Entries, Has.Count.EqualTo(1));
+        Assert.That(emu.Entries[0].Script, Is.EqualTo(arkadeBytes));
     }
 
     [Test]
@@ -90,6 +121,39 @@ public class ArkadePsbtExtensionsTests
         await emulator.Received(1).SubmitTxAsync(
             unsigned.ToBase64(),
             Arg.Is<IReadOnlyList<string>>(l => l.Count == 0),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public void SpendSubmitter_ShouldHandle_OnlyWhenArkadeBound()
+    {
+        var (alice, bob, emulator) = MakeKeys();
+        var arkade = new ArkadeNofNMultisigTapScript([0xc4], [alice], [emulator]);
+        var plain = new NofNMultisigTapScript([alice, bob]);
+        var submitter = new ArkadeEmulatorSpendSubmitter(Substitute.For<IEmulatorProvider>());
+
+        Assert.That(submitter.ShouldHandle([MakeCoin(alice, bob, arkade)]), Is.True);
+        Assert.That(submitter.ShouldHandle([MakeCoin(alice, bob, plain)]), Is.False);
+    }
+
+    [Test]
+    public async Task SpendSubmitter_SubmitAsync_ForwardsArkTxAndCheckpointsToEmulator()
+    {
+        var network = Network.RegTest;
+        var (alice, bob, _) = MakeKeys();
+        var arkTx = BuildEmptyPsbt(network, alice, bob);
+        var checkpoint = BuildEmptyPsbt(network, alice, bob);
+
+        var emulator = Substitute.For<IEmulatorProvider>();
+        emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new EmulatorSubmitTxResult(arkTx.ToBase64(), [])));
+
+        var submitter = new ArkadeEmulatorSpendSubmitter(emulator);
+        await submitter.SubmitAsync([], arkTx, [checkpoint], CancellationToken.None);
+
+        await emulator.Received(1).SubmitTxAsync(
+            arkTx.ToBase64(),
+            Arg.Is<IReadOnlyList<string>>(l => l.Count == 1 && l[0] == checkpoint.ToBase64()),
             Arg.Any<CancellationToken>());
     }
 

@@ -28,7 +28,7 @@ namespace NArk.Arkade.Contracts;
 /// <para>
 /// A function with both a <see cref="ArkadeTapscriptSegment.Asm"/> condition <em>and</em> a
 /// <see cref="ArkadeFunction.CovenantSegment"/> is also left untransformed: this codebase's
-/// <c>ArkCoin.SpendingConditionWitness</c> field is reused by <c>ArkadePsbtExtensions.BuildEmulatorOutput</c>
+/// <c>ArkCoin.SpendingConditionWitness</c> field is reused by <c>ArkadePsbtExtensions.BuildEmulatorPackets</c>
 /// to carry the covenant's witness to the emulator, so it can't simultaneously carry a
 /// different witness for the outer tapscript condition.
 /// </para>

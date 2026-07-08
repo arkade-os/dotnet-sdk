@@ -19,6 +19,18 @@ public static class AssetPacketBuilder
         IReadOnlyCollection<(string assetId, ushort vin, ulong amount)> inputs,
         IReadOnlyCollection<(string assetId, ushort vout, ulong amount)>? outputs,
         ushort changeVout)
+        => BuildPacket(inputs, outputs, changeVout)?.ToTxOut();
+
+    /// <summary>
+    /// Builds the asset <see cref="Packet"/> itself (without wrapping it in an
+    /// Extension/OP_RETURN), so callers can merge it with other
+    /// <see cref="IExtensionPacket"/> records into a single Extension.
+    /// </summary>
+    /// <returns>The asset packet, or null if no assets present.</returns>
+    public static Packet? BuildPacket(
+        IReadOnlyCollection<(string assetId, ushort vin, ulong amount)> inputs,
+        IReadOnlyCollection<(string assetId, ushort vout, ulong amount)>? outputs,
+        ushort changeVout)
     {
         var inputsByAsset = new Dictionary<string, List<(ushort vin, ulong amount)>>();
         foreach (var (assetId, vin, amount) in inputs)
@@ -86,6 +98,6 @@ public static class AssetPacketBuilder
             groups.Add(AssetGroup.Create(assetId, null, groupInputs, groupOutputs, []));
         }
 
-        return Packet.Create(groups).ToTxOut();
+        return Packet.Create(groups);
     }
 }

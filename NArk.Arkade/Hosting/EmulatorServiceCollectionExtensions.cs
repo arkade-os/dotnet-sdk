@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Batches;
 using NArk.Arkade.Emulator;
+using NArk.Core.Assets;
+using NArk.Core.Helpers;
 
 namespace NArk.Arkade.Hosting;
 
@@ -47,6 +49,12 @@ public static class EmulatorServiceCollectionExtensions
     {
         AddEmulatorClient(services, configure);
         services.AddSingleton<IBatchSessionExtension, ArkadeBatchSessionExtension>();
+        // Attaches the emulator OP_RETURN packet to arkade-bound offchain spends so
+        // covenant inputs carry their script + witness to the co-signer.
+        services.AddSingleton<ISpendExtensionPacketProvider, ArkadeEmulatorPacketProvider>();
+        // Routes arkade-bound offchain spends through the emulator (co-sign + submit)
+        // instead of arkd directly.
+        services.AddSingleton<ISpendSubmitHandler, ArkadeEmulatorSpendSubmitter>();
         return services;
     }
 }
