@@ -28,44 +28,44 @@ public static class ArkadeArtifactSerializer
             ["version"] = program.Version,
             ["functions"] = functions,
         };
-        if (program.Params is { Count: > 0 } @params)
+        if (program.Params is { Count: > 0 } prms)
         {
-            root["params"] = new JsonArray(@params.Select(p => (JsonNode)p).ToArray());
+            root["params"] = new JsonArray(prms.Select(p => (JsonNode)p).ToArray());
         }
         return root;
     }
 
-    private static JsonObject SerializeFunction(ArkadeFunction fn)
+    private static JsonObject SerializeFunction(ArkadeFunction function)
     {
-        var obj = new JsonObject { ["tapscript"] = SerializeTapscript(fn.Tapscript) };
-        if (fn.Inputs is { Count: > 0 } inputs)
+        var obj = new JsonObject { ["tapscript"] = SerializeTapscript(function.Tapscript) };
+        if (function.Inputs is { Count: > 0 } inputs)
         {
             obj["inputs"] = new JsonArray(inputs.Select(SerializeInput).ToArray());
         }
-        if (fn.CovenantSegment is { } covenant)
+        if (function.ScriptSegment is { } covenant)
         {
             obj["arkadeScript"] = SerializeCovenant(covenant);
         }
         return obj;
     }
 
-    private static JsonNode SerializeInput(ArkadeInputRef input)
+    private static JsonNode SerializeInput(FunctionInput programInput)
     {
-        if (input.Type is null) return input.Name;
-        return new JsonObject { ["name"] = input.Name, ["type"] = SerializeArgType(input.Type.Value) };
+        if (programInput.Type is null) return programInput.Name;
+        return new JsonObject { ["name"] = programInput.Name, ["type"] = SerializeArgType(programInput.Type.Value) };
     }
 
-    private static string SerializeArgType(ArkadeArgType type) => type switch
+    private static string SerializeArgType(InputType type) => type switch
     {
-        ArkadeArgType.Bytes => "bytes",
-        ArkadeArgType.Pubkey => "pubkey",
-        ArkadeArgType.Sig => "sig",
-        ArkadeArgType.Hash => "hash",
-        ArkadeArgType.Int => "int",
+        InputType.Bytes => "bytes",
+        InputType.Pubkey => "pubkey",
+        InputType.Sig => "sig",
+        InputType.Hash => "hash",
+        InputType.Int => "int",
         _ => throw new InvalidOperationException($"Unknown arg type '{type}'."),
     };
 
-    private static JsonObject SerializeTapscript(ArkadeTapscriptSegment seg)
+    private static JsonObject SerializeTapscript(TapscriptSegment seg)
     {
         var obj = new JsonObject { ["signers"] = SerializeTokenList(seg.Signers) };
         if (seg.Asm is { } asm) obj["asm"] = SerializeTokenList(asm);
@@ -93,21 +93,21 @@ public static class ArkadeArtifactSerializer
         };
     }
 
-    private static JsonObject SerializeCovenant(ArkadeCovenantSegment seg)
+    private static JsonObject SerializeCovenant(ArkadeScriptSegment seg)
     {
         var obj = new JsonObject { ["asm"] = SerializeTokenList(seg.Asm) };
         if (seg.Witness is { } witness) obj["witness"] = SerializeTokenList(witness);
         return obj;
     }
 
-    private static JsonArray SerializeTokenList(IEnumerable<ArkadeToken> tokens)
+    private static JsonArray SerializeTokenList(IEnumerable<AsmToken> tokens)
         => new(tokens.Select(SerializeToken).ToArray());
 
-    private static JsonNode SerializeToken(ArkadeToken token) => token.Kind switch
+    private static JsonNode SerializeToken(AsmToken token) => token.Kind switch
     {
-        ArkadeTokenKind.Bytes => "0x" + Convert.ToHexString(token.Bytes!).ToLowerInvariant(),
-        ArkadeTokenKind.Text => token.Text!,
-        ArkadeTokenKind.Number => SerializeNumber(token.Number!.Value),
+        AsmTokenKind.Bytes => "0x" + Convert.ToHexString(token.Bytes!).ToLowerInvariant(),
+        AsmTokenKind.Text => token.Text!,
+        AsmTokenKind.Number => SerializeNumber(token.Number!.Value),
         _ => throw new InvalidOperationException("Unknown token kind."),
     };
 

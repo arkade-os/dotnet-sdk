@@ -24,7 +24,7 @@ public static class ArkadeProgramCompiler
     /// </summary>
     /// <param name="args">
     /// Bound values for the program's <c>$param</c> placeholders. Only
-    /// <see cref="ArkadeTokenKind.Bytes"/> and <see cref="ArkadeTokenKind.Number"/> tokens
+    /// <see cref="AsmTokenKind.Bytes"/> and <see cref="AsmTokenKind.Number"/> tokens
     /// are meaningful values here — mirrors the ts-sdk's <c>ArkadeParamValue</c>
     /// (<c>Uint8Array | bigint | number</c>, no string).
     /// </param>
@@ -35,7 +35,7 @@ public static class ArkadeProgramCompiler
     /// </exception>
     public static IReadOnlyList<CompiledArkadeFunction> Compile(
         ArkadeProgram program,
-        IReadOnlyDictionary<string, ArkadeToken> args,
+        IReadOnlyDictionary<string, AsmToken> args,
         ArkadeProgramKeys keys)
     {
         ArgumentNullException.ThrowIfNull(program);
@@ -61,7 +61,7 @@ public static class ArkadeProgramCompiler
     private static CompiledArkadeFunction CompileFunction(
         string name,
         ArkadeFunction def,
-        IReadOnlyDictionary<string, ArkadeToken> args,
+        IReadOnlyDictionary<string, AsmToken> args,
         ArkadeProgramKeys keys)
     {
         ValidateTapscript(def.Tapscript);
@@ -72,7 +72,7 @@ public static class ArkadeProgramCompiler
 
         byte[]? arkadeScriptBytes = null;
         TaprootPubKey? emulatorKey = null;
-        if (def.CovenantSegment is { } covenant)
+        if (def.ScriptSegment is { } covenant)
         {
             emulatorKey = new TaprootPubKey((keys.EmulatorKey
                 ?? throw new InvalidOperationException(
@@ -97,12 +97,12 @@ public static class ArkadeProgramCompiler
 
     /// <summary>
     /// Validates that a segment has at least one signer, at most one of
-    /// <see cref="ArkadeTapscriptSegment.Asm"/>/<see cref="ArkadeTapscriptSegment.Csv"/>/
-    /// <see cref="ArkadeTapscriptSegment.Cltv"/>, and no Arkade extension opcodes in
-    /// <see cref="ArkadeTapscriptSegment.Asm"/> (those are <c>OP_SUCCESS</c> on-chain and
+    /// <see cref="TapscriptSegment.Asm"/>/<see cref="TapscriptSegment.Csv"/>/
+    /// <see cref="TapscriptSegment.Cltv"/>, and no Arkade extension opcodes in
+    /// <see cref="TapscriptSegment.Asm"/> (those are <c>OP_SUCCESS</c> on-chain and
     /// belong in the covenant segment instead).
     /// </summary>
-    private static void ValidateTapscript(ArkadeTapscriptSegment seg)
+    private static void ValidateTapscript(TapscriptSegment seg)
     {
         if (seg.Signers.Count == 0)
         {
@@ -119,7 +119,7 @@ public static class ArkadeProgramCompiler
 
         foreach (var token in seg.Asm)
         {
-            if (token.Kind != ArkadeTokenKind.Text || token.IsParam) continue;
+            if (token.Kind != AsmTokenKind.Text || token.IsParam) continue;
             if (ArkadeOpcodeRegistry.GetOpcodeValue(token.Text!) is { } value && ArkadeOpcodeRegistry.IsArkadeOpcode(value))
             {
                 throw new InvalidOperationException(
@@ -135,9 +135,9 @@ public static class ArkadeProgramCompiler
     /// uses), optionally gated by a CSV/CLTV timelock or a resolved condition script.
     /// </summary>
     private static IEnumerable<Op> EncodeTapscriptSegment(
-        ArkadeTapscriptSegment seg,
+        TapscriptSegment seg,
         IReadOnlyList<ECXOnlyPubKey> pubkeys,
-        IReadOnlyDictionary<string, ArkadeToken> args)
+        IReadOnlyDictionary<string, AsmToken> args)
     {
         var multisigOps = new NofNMultisigTapScript(pubkeys.ToArray()).BuildScript().ToList();
         multisigOps[^1] = OpcodeType.OP_CHECKSIG;
@@ -163,18 +163,18 @@ public static class ArkadeProgramCompiler
     }
 
     private static ECXOnlyPubKey ResolveSigner(
-        ArkadeToken signer,
+        AsmToken signer,
         ArkadeProgramKeys keys,
-        IReadOnlyDictionary<string, ArkadeToken> args)
+        IReadOnlyDictionary<string, AsmToken> args)
     {
         var resolved = ResolveToken(signer, args);
 
-        if (resolved.Kind == ArkadeTokenKind.Bytes)
+        if (resolved.Kind == AsmTokenKind.Bytes)
         {
             return ECXOnlyPubKey.Create(resolved.Bytes!);
         }
 
-        if (resolved.Kind != ArkadeTokenKind.Text)
+        if (resolved.Kind != AsmTokenKind.Text)
         {
             throw new InvalidOperationException("A signer token must resolve to text (\"server\"/\"user\") or bytes (a pubkey).");
         }
@@ -188,7 +188,7 @@ public static class ArkadeProgramCompiler
     }
 
     /// <summary>Substitutes a <c>$param</c> token with its bound value; passes any other token through unchanged.</summary>
-    private static ArkadeToken ResolveToken(ArkadeToken token, IReadOnlyDictionary<string, ArkadeToken> args)
+    private static AsmToken ResolveToken(AsmToken token, IReadOnlyDictionary<string, AsmToken> args)
     {
         if (!token.IsParam) return token;
 
@@ -197,14 +197,14 @@ public static class ArkadeProgramCompiler
             : throw new InvalidOperationException($"Unbound parameter '{token.ParamName}'.");
     }
 
-    private static IEnumerable<Op> ResolveAsmOps(IEnumerable<ArkadeToken> asm, IReadOnlyDictionary<string, ArkadeToken> args)
+    private static IEnumerable<Op> ResolveAsmOps(IEnumerable<AsmToken> asm, IReadOnlyDictionary<string, AsmToken> args)
         => asm.Select(t => TokenToOp(ResolveToken(t, args)));
 
-    private static Op TokenToOp(ArkadeToken token) => token.Kind switch
+    private static Op TokenToOp(AsmToken token) => token.Kind switch
     {
-        ArkadeTokenKind.Bytes => Op.GetPushOp(token.Bytes!),
-        ArkadeTokenKind.Number => NumberToOp(token.Number!.Value),
-        ArkadeTokenKind.Text => OpcodeNameToOp(token.Text!),
+        AsmTokenKind.Bytes => Op.GetPushOp(token.Bytes!),
+        AsmTokenKind.Number => NumberToOp(token.Number!.Value),
+        AsmTokenKind.Text => OpcodeNameToOp(token.Text!),
         _ => throw new InvalidOperationException("Unknown token kind."),
     };
 

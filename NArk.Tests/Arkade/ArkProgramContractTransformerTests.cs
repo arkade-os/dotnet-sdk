@@ -61,7 +61,7 @@ public class ArkProgramContractTransformerTests
             Unrolled: false);
     }
 
-    private static ArkProgramContract SingleUserFunctionContract(IReadOnlyList<ArkadeToken>? witness = null) =>
+    private static ArkProgramContract SingleUserFunctionContract(IReadOnlyList<AsmToken>? witness = null) =>
         new(TestServerKey,
             new ArkadeProgram
             {
@@ -70,15 +70,15 @@ public class ArkProgramContractTransformerTests
                 {
                     ["claim"] = new()
                     {
-                        Tapscript = new ArkadeTapscriptSegment
+                        Tapscript = new TapscriptSegment
                         {
-                            Signers = [ArkadeToken.FromText("server"), ArkadeToken.FromText("user")],
+                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
                             Witness = witness,
                         },
                     },
                 },
             },
-            new Dictionary<string, ArkadeToken>(),
+            new Dictionary<string, AsmToken>(),
             user: TestUserKey);
 
     [Test]
@@ -97,9 +97,9 @@ public class ArkProgramContractTransformerTests
             Version = ArkadeProgram.SupportedVersion,
             Functions = new Dictionary<string, ArkadeFunction>
             {
-                ["exit"] = new() { Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] } },
+                ["exit"] = new() { Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] } },
             },
-        }, new Dictionary<string, ArkadeToken>());
+        }, new Dictionary<string, AsmToken>());
 
         var result = await _transformer.CanTransform("wallet-1", contract, CreateVtxo());
         Assert.That(result, Is.False);
@@ -147,15 +147,15 @@ public class ArkProgramContractTransformerTests
                 {
                     ["claim"] = new()
                     {
-                        Tapscript = new ArkadeTapscriptSegment
+                        Tapscript = new TapscriptSegment
                         {
-                            Signers = [ArkadeToken.FromText("server"), ArkadeToken.FromText("user")],
-                            Witness = [ArkadeToken.FromText("$preimage")],
+                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
+                            Witness = [AsmToken.FromText("$preimage")],
                         },
                     },
                 },
             },
-            new Dictionary<string, ArkadeToken> { ["preimage"] = ArkadeToken.FromBytes(hash) },
+            new Dictionary<string, AsmToken> { ["preimage"] = AsmToken.FromBytes(hash) },
             user: TestUserKey);
 
         var coin = await _transformer.Transform("wallet-1", contract, CreateVtxo());
@@ -169,7 +169,7 @@ public class ArkProgramContractTransformerTests
     public async Task CanTransform_ReturnsFalse_WhenWitnessNeedsUnboundCallArgument()
     {
         // Bare (non-$param) witness name — a call-time input this transformer can't supply.
-        var contract = SingleUserFunctionContract(witness: [ArkadeToken.FromText("preimage")]);
+        var contract = SingleUserFunctionContract(witness: [AsmToken.FromText("preimage")]);
         var result = await _transformer.CanTransform("wallet-1", contract, CreateVtxo());
         Assert.That(result, Is.False);
     }
@@ -178,12 +178,12 @@ public class ArkProgramContractTransformerTests
     public async Task Transform_Explicit_ResolvesByteCallArg()
     {
         // A witness bare name that the parameterless path can't resolve…
-        var contract = SingleUserFunctionContract(witness: [ArkadeToken.FromText("preimage")]);
+        var contract = SingleUserFunctionContract(witness: [AsmToken.FromText("preimage")]);
         var preimage = Convert.FromHexString("aabbccdd");
 
         // …resolves when supplied at spend time via the explicit overload.
         var coin = await _transformer.Transform("wallet-1", contract, CreateVtxo(), "claim",
-            new Dictionary<string, ArkadeToken> { ["preimage"] = ArkadeToken.FromBytes(preimage) });
+            new Dictionary<string, AsmToken> { ["preimage"] = AsmToken.FromBytes(preimage) });
 
         Assert.That(coin.SpendingConditionWitness, Is.Not.Null);
         Assert.That(coin.SpendingConditionWitness!.PushCount, Is.EqualTo(1));
@@ -196,19 +196,19 @@ public class ArkProgramContractTransformerTests
         // Various things a covenant may consume: a signature + a pubkey (bytes) and an int.
         var contract = SingleUserFunctionContract(witness:
         [
-            ArkadeToken.FromText("sig"),
-            ArkadeToken.FromText("pubkey"),
-            ArkadeToken.FromText("amount"),
+            AsmToken.FromText("sig"),
+            AsmToken.FromText("pubkey"),
+            AsmToken.FromText("amount"),
         ]);
         var sig = Convert.FromHexString("3045deadbeef");
         var pubkey = Convert.FromHexString("02" + new string('1', 64));
 
         var coin = await _transformer.Transform("wallet-1", contract, CreateVtxo(), "claim",
-            new Dictionary<string, ArkadeToken>
+            new Dictionary<string, AsmToken>
             {
-                ["sig"] = ArkadeToken.FromBytes(sig),
-                ["pubkey"] = ArkadeToken.FromBytes(pubkey),
-                ["amount"] = ArkadeToken.FromNumber(42),
+                ["sig"] = AsmToken.FromBytes(sig),
+                ["pubkey"] = AsmToken.FromBytes(pubkey),
+                ["amount"] = AsmToken.FromNumber(42),
             });
 
         Assert.That(coin.SpendingConditionWitness, Is.Not.Null);
@@ -231,22 +231,22 @@ public class ArkProgramContractTransformerTests
                 {
                     ["collab"] = new()
                     {
-                        Tapscript = new ArkadeTapscriptSegment
+                        Tapscript = new TapscriptSegment
                         {
-                            Signers = [ArkadeToken.FromText("server"), ArkadeToken.FromText("user")],
+                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
                         },
                     },
                     ["refund"] = new()
                     {
-                        Tapscript = new ArkadeTapscriptSegment
+                        Tapscript = new TapscriptSegment
                         {
-                            Signers = [ArkadeToken.FromText("user")],
+                            Signers = [AsmToken.FromText("user")],
                             Csv = new Sequence(144),
                         },
                     },
                 },
             },
-            new Dictionary<string, ArkadeToken>(),
+            new Dictionary<string, AsmToken>(),
             user: TestUserKey);
 
         // Ambiguous → auto-select declines.
@@ -272,7 +272,7 @@ public class ArkProgramContractTransformerTests
     [Test]
     public void Transform_Explicit_Throws_WhenCallArgMissing()
     {
-        var contract = SingleUserFunctionContract(witness: [ArkadeToken.FromText("preimage")]);
+        var contract = SingleUserFunctionContract(witness: [AsmToken.FromText("preimage")]);
         Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await _transformer.Transform("wallet-1", contract, CreateVtxo(), "claim"));
     }
@@ -289,22 +289,22 @@ public class ArkProgramContractTransformerTests
                 {
                     ["collab"] = new()
                     {
-                        Tapscript = new ArkadeTapscriptSegment
+                        Tapscript = new TapscriptSegment
                         {
-                            Signers = [ArkadeToken.FromText("server"), ArkadeToken.FromText("user")],
+                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
                         },
                     },
                     ["unilateral"] = new()
                     {
-                        Tapscript = new ArkadeTapscriptSegment
+                        Tapscript = new TapscriptSegment
                         {
-                            Signers = [ArkadeToken.FromText("user")],
+                            Signers = [AsmToken.FromText("user")],
                             Csv = new Sequence(144),
                         },
                     },
                 },
             },
-            new Dictionary<string, ArkadeToken>(),
+            new Dictionary<string, AsmToken>(),
             user: TestUserKey);
 
         var result = await _transformer.CanTransform("wallet-1", contract, CreateVtxo());

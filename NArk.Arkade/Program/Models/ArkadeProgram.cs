@@ -2,8 +2,8 @@ namespace NArk.Arkade.Program;
 
 /// <summary>
 /// An Arkade contract program (hand-written or compiler-emitted): named functions,
-/// each split into a <see cref="ArkadeFunction.Tapscript"/> segment enforced on-chain
-/// and an optional <see cref="ArkadeFunction.CovenantSegment"/> emulated by the
+/// each split into a <see ArkadeFunctionkadeFn.Tapscript"/> segment enforced on-chain
+/// and an optional <see ArkadeFunctionkadeFn.ScriptSegment"/> emulated by the
 /// co-signing service. Mirrors the ts-sdk's <c>Program</c>.
 /// </summary>
 /// <remarks>

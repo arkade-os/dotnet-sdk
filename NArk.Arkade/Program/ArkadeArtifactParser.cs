@@ -56,15 +56,15 @@ public class ArkadeArtifactParser
         {
             Inputs = ParseInputs(function["inputs"]),
             Tapscript = ParseTapscriptSegment(tapscriptNode),
-            CovenantSegment = ParseCovenantSegment(function["arkadeScript"]?.AsObject()),
+            ScriptSegment = ParseCovenantSegment(function["arkadeScript"]?.AsObject()),
         };
     }
 
-    private ArkadeTapscriptSegment ParseTapscriptSegment(JsonObject tapscript)
+    private TapscriptSegment ParseTapscriptSegment(JsonObject tapscript)
     {
         var (csv, cltv) = ParseTimelocks(tapscript);
 
-        return new ArkadeTapscriptSegment
+        return new TapscriptSegment
         {
             Signers = ParseTokenList(tapscript["signers"]),
             Asm = tapscript["asm"] is { } asm ? ParseTokenList(asm) : null,
@@ -74,11 +74,11 @@ public class ArkadeArtifactParser
         };
     }
 
-    private ArkadeCovenantSegment? ParseCovenantSegment(JsonObject? arkadeScript)
+    private ArkadeScriptSegment? ParseCovenantSegment(JsonObject? arkadeScript)
     {
         if (arkadeScript is null) return null;
 
-        return new ArkadeCovenantSegment
+        return new ArkadeScriptSegment
         {
             Asm = ParseTokenList(arkadeScript["asm"]),
             Witness = arkadeScript["witness"] is { } witness ? ParseTokenList(witness) : null,
@@ -111,7 +111,7 @@ public class ArkadeArtifactParser
         return (csv, null);
     }
 
-    private static List<ArkadeInputRef>? ParseInputs(JsonNode? inputsNode)
+    private static List<FunctionInput>? ParseInputs(JsonNode? inputsNode)
     {
         var arr = inputsNode?.AsArray();
         if (arr is null) return null;
@@ -121,28 +121,28 @@ public class ArkadeArtifactParser
             var node = x ?? throw new InvalidOperationException("'inputs' contains a null entry.");
             if (node.GetValueKind() == JsonValueKind.String)
             {
-                return new ArkadeInputRef { Name = node.GetValue<string>() };
+                return new FunctionInput { Name = node.GetValue<string>() };
             }
 
             var obj = node.AsObject();
             var name = obj["name"]?.GetValue<string>()
                        ?? throw new InvalidOperationException("Input descriptor is missing 'name'.");
-            var type = obj["type"]?.GetValue<string>() is { } t ? ParseArgType(t) : (ArkadeArgType?)null;
-            return new ArkadeInputRef { Name = name, Type = type };
+            var type = obj["type"]?.GetValue<string>() is { } t ? ParseArgType(t) : (InputType?)null;
+            return new FunctionInput { Name = name, Type = type };
         }).ToList();
     }
 
-    private static ArkadeArgType ParseArgType(string s) => s switch
+    private static InputType ParseArgType(string s) => s switch
     {
-        "bytes" => ArkadeArgType.Bytes,
-        "pubkey" => ArkadeArgType.Pubkey,
-        "sig" => ArkadeArgType.Sig,
-        "hash" => ArkadeArgType.Hash,
-        "int" => ArkadeArgType.Int,
+        "bytes" => InputType.Bytes,
+        "pubkey" => InputType.Pubkey,
+        "sig" => InputType.Sig,
+        "hash" => InputType.Hash,
+        "int" => InputType.Int,
         _ => throw new InvalidOperationException($"Unknown input type '{s}'."),
     };
 
-    private static List<ArkadeToken> ParseTokenList(JsonNode? node)
+    private static List<AsmToken> ParseTokenList(JsonNode? node)
     {
         var arr = node?.AsArray();
         if (arr is null) return [];
@@ -152,14 +152,14 @@ public class ArkadeArtifactParser
         ).ToList();
     }
 
-    private static ArkadeToken ParseToken(JsonNode node)
+    private static AsmToken ParseToken(JsonNode node)
     {
         if (node.GetValueKind() == JsonValueKind.Number)
-            return ArkadeToken.FromNumber(node.GetValue<long>());
+            return AsmToken.FromNumber(node.GetValue<long>());
 
         var s = node.GetValue<string>();
         return s.StartsWith("0x", StringComparison.Ordinal)
-            ? ArkadeToken.FromBytes(Convert.FromHexString(s[2..]))
-            : ArkadeToken.FromText(s);
+            ? AsmToken.FromBytes(Convert.FromHexString(s[2..]))
+            : AsmToken.FromText(s);
     }
 }

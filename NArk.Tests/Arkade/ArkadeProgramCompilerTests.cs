@@ -20,13 +20,13 @@ public class ArkadeProgramCompilerTests
             {
                 ["exit"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
+                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] },
                 },
             },
         };
 
         var compiled = ArkadeProgramCompiler.Compile(
-            program, new Dictionary<string, ArkadeToken>(), new ArkadeProgramKeys { ServerKey = server });
+            program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server });
 
         Assert.That(compiled, Has.Count.EqualTo(1));
         var fn = compiled[0];
@@ -51,9 +51,9 @@ public class ArkadeProgramCompilerTests
             {
                 ["refund"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment
+                    Tapscript = new TapscriptSegment
                     {
-                        Signers = [ArkadeToken.FromText("server")],
+                        Signers = [AsmToken.FromText("server")],
                         Csv = sequence,
                     },
                 },
@@ -61,7 +61,7 @@ public class ArkadeProgramCompilerTests
         };
 
         var compiled = ArkadeProgramCompiler.Compile(
-            program, new Dictionary<string, ArkadeToken>(), new ArkadeProgramKeys { ServerKey = server });
+            program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server });
 
         var ops = ArkadeScript.Decode(compiled[0].LeafScript);
         Assert.That(ops[0].ToBytes(), Is.EqualTo(Op.GetPushOp(sequence.Value).ToBytes()));
@@ -71,7 +71,7 @@ public class ArkadeProgramCompilerTests
     }
 
     [Test]
-    public void CovenantSegment_AppendsTweakedEmulatorKey()
+    public void ScriptSegment_AppendsTweakedEmulatorKey()
     {
         var (server, _, emulator) = GenerateThreeKeys();
         var emulatorXOnly = ECXOnlyPubKey.Create(emulator.ToBytes());
@@ -82,10 +82,10 @@ public class ArkadeProgramCompilerTests
             {
                 ["claim"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
-                    CovenantSegment = new ArkadeCovenantSegment
+                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] },
+                    ScriptSegment = new ArkadeScriptSegment
                     {
-                        Asm = [ArkadeToken.FromText("OP_TXID")],
+                        Asm = [AsmToken.FromText("OP_TXID")],
                     },
                 },
             },
@@ -93,7 +93,7 @@ public class ArkadeProgramCompilerTests
 
         var compiled = ArkadeProgramCompiler.Compile(
             program,
-            new Dictionary<string, ArkadeToken>(),
+            new Dictionary<string, AsmToken>(),
             new ArkadeProgramKeys { ServerKey = server, EmulatorKey = emulatorXOnly });
 
         var fn = compiled[0];
@@ -110,7 +110,7 @@ public class ArkadeProgramCompilerTests
     }
 
     [Test]
-    public void CovenantSegment_ToScriptBuilder_IsArkadeBound()
+    public void ScriptSegment_ToScriptBuilder_IsArkadeBound()
     {
         var (server, _, emulator) = GenerateThreeKeys();
         var emulatorXOnly = ECXOnlyPubKey.Create(emulator.ToBytes());
@@ -121,15 +121,15 @@ public class ArkadeProgramCompilerTests
             {
                 ["claim"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
-                    CovenantSegment = new ArkadeCovenantSegment { Asm = [ArkadeToken.FromText("OP_TXID")] },
+                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] },
+                    ScriptSegment = new ArkadeScriptSegment { Asm = [AsmToken.FromText("OP_TXID")] },
                 },
             },
         };
 
         var compiled = ArkadeProgramCompiler.Compile(
             program,
-            new Dictionary<string, ArkadeToken>(),
+            new Dictionary<string, AsmToken>(),
             new ArkadeProgramKeys { ServerKey = server, EmulatorKey = emulatorXOnly });
 
         var builder = compiled[0].ToScriptBuilder();
@@ -154,20 +154,20 @@ public class ArkadeProgramCompilerTests
             {
                 ["exit"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
+                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] },
                 },
             },
         };
 
         var compiled = ArkadeProgramCompiler.Compile(
-            program, new Dictionary<string, ArkadeToken>(), new ArkadeProgramKeys { ServerKey = server });
+            program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server });
 
         var builder = compiled[0].ToScriptBuilder();
         Assert.That(builder, Is.Not.InstanceOf<IArkadeBoundScriptBuilder>());
     }
 
     [Test]
-    public void CovenantSegment_WithoutEmulatorKey_Throws()
+    public void ScriptSegment_WithoutEmulatorKey_Throws()
     {
         var (server, _, _) = GenerateThreeKeys();
         var program = new ArkadeProgram
@@ -177,14 +177,14 @@ public class ArkadeProgramCompilerTests
             {
                 ["claim"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
-                    CovenantSegment = new ArkadeCovenantSegment { Asm = [ArkadeToken.FromText("OP_TXID")] },
+                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] },
+                    ScriptSegment = new ArkadeScriptSegment { Asm = [AsmToken.FromText("OP_TXID")] },
                 },
             },
         };
 
         Assert.Throws<InvalidOperationException>(() => ArkadeProgramCompiler.Compile(
-            program, new Dictionary<string, ArkadeToken>(), new ArkadeProgramKeys { ServerKey = server }));
+            program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server }));
     }
 
     [Test]
@@ -199,14 +199,14 @@ public class ArkadeProgramCompilerTests
             {
                 ["claim"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment
+                    Tapscript = new TapscriptSegment
                     {
-                        Signers = [ArkadeToken.FromText("server")],
+                        Signers = [AsmToken.FromText("server")],
                         Asm =
                         [
-                            ArkadeToken.FromText("HASH160"),
-                            ArkadeToken.FromText("$hash"),
-                            ArkadeToken.FromText("EQUALVERIFY"),
+                            AsmToken.FromText("HASH160"),
+                            AsmToken.FromText("$hash"),
+                            AsmToken.FromText("EQUALVERIFY"),
                         ],
                     },
                 },
@@ -215,7 +215,7 @@ public class ArkadeProgramCompilerTests
 
         var compiled = ArkadeProgramCompiler.Compile(
             program,
-            new Dictionary<string, ArkadeToken> { ["hash"] = ArkadeToken.FromBytes(hash) },
+            new Dictionary<string, AsmToken> { ["hash"] = AsmToken.FromBytes(hash) },
             new ArkadeProgramKeys { ServerKey = server });
 
         var ops = ArkadeScript.Decode(compiled[0].LeafScript);
@@ -236,17 +236,17 @@ public class ArkadeProgramCompilerTests
             {
                 ["claim"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment
+                    Tapscript = new TapscriptSegment
                     {
-                        Signers = [ArkadeToken.FromText("server")],
-                        Asm = [ArkadeToken.FromText("OP_TXID")],
+                        Signers = [AsmToken.FromText("server")],
+                        Asm = [AsmToken.FromText("OP_TXID")],
                     },
                 },
             },
         };
 
         Assert.Throws<InvalidOperationException>(() => ArkadeProgramCompiler.Compile(
-            program, new Dictionary<string, ArkadeToken>(), new ArkadeProgramKeys { ServerKey = server }));
+            program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server }));
     }
 
     [Test]
@@ -260,10 +260,10 @@ public class ArkadeProgramCompilerTests
             {
                 ["claim"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment
+                    Tapscript = new TapscriptSegment
                     {
-                        Signers = [ArkadeToken.FromText("server")],
-                        Asm = [ArkadeToken.FromText("OP_1")],
+                        Signers = [AsmToken.FromText("server")],
+                        Asm = [AsmToken.FromText("OP_1")],
                         Csv = new Sequence(1),
                     },
                 },
@@ -271,7 +271,7 @@ public class ArkadeProgramCompilerTests
         };
 
         Assert.Throws<InvalidOperationException>(() => ArkadeProgramCompiler.Compile(
-            program, new Dictionary<string, ArkadeToken>(), new ArkadeProgramKeys { ServerKey = server }));
+            program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server }));
     }
 
     private static (ECXOnlyPubKey server, ECXOnlyPubKey user, TaprootPubKey emulator) GenerateThreeKeys()

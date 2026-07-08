@@ -10,13 +10,13 @@ namespace NArk.Arkade.Program;
 /// At most one of <see cref="Asm"/>, <see cref="Csv"/>, <see cref="Cltv"/> may be set —
 /// enforced later by validation, not by this data holder.
 /// </remarks>
-public sealed class ArkadeTapscriptSegment
+public sealed class TapscriptSegment
 {
     /// <summary>Required signers. The tweaked co-signer key is appended automatically for covenant paths.</summary>
-    public required IReadOnlyList<ArkadeToken> Signers { get; init; }
+    public required IReadOnlyList<AsmToken> Signers { get; init; }
 
     /// <summary>Optional standard-opcode condition (e.g. a hashlock), encoded into a condition-multisig leaf.</summary>
-    public IReadOnlyList<ArkadeToken>? Asm { get; init; }
+    public IReadOnlyList<AsmToken>? Asm { get; init; }
 
     /// <summary>
     /// Relative timelock (CSV). Mutually exclusive with <see cref="Cltv"/>/<see cref="Asm"/> —
@@ -30,5 +30,5 @@ public sealed class ArkadeTapscriptSegment
     public LockTime? Cltv { get; init; }
 
     /// <summary>Items satisfying the condition (e.g. an HTLC preimage).</summary>
-    public IReadOnlyList<ArkadeToken>? Witness { get; init; }
+    public IReadOnlyList<AsmToken>? Witness { get; init; }
 }

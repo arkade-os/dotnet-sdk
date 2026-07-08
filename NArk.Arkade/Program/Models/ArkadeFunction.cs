@@ -9,11 +9,11 @@ public sealed class ArkadeFunction
     /// <summary>
     /// The function's call arguments, in order. Absent for nullary paths (e.g. exit/cancel).
     /// </summary>
-    public IReadOnlyList<ArkadeInputRef>? Inputs { get; init; }
+    public IReadOnlyList<FunctionInput>? Inputs { get; init; }
 
     /// <summary>The on-chain-enforced segment of this spending path.</summary>
-    public required ArkadeTapscriptSegment Tapscript { get; init; }
+    public required TapscriptSegment Tapscript { get; init; }
 
     /// <summary>The emulator-executed segment, present only for covenant paths.</summary>
-    public ArkadeCovenantSegment? CovenantSegment { get; init; }
+    public ArkadeScriptSegment? ScriptSegment { get; init; }
 }

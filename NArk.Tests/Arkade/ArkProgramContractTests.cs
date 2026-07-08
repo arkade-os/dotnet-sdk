@@ -22,12 +22,12 @@ public class ArkProgramContractTests
             {
                 ["exit"] = new()
                 {
-                    Tapscript = new ArkadeTapscriptSegment { Signers = [ArkadeToken.FromText("server")] },
+                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] },
                 },
             },
         };
 
-        var contract = new ArkProgramContract(server, program, new Dictionary<string, ArkadeToken>());
+        var contract = new ArkProgramContract(server, program, new Dictionary<string, AsmToken>());
 
         Assert.That(contract.Type, Is.EqualTo(ArkProgramContract.ContractType));
         Assert.That(contract.GetArkAddress().ToString(false), Does.StartWith("tark1"));
@@ -45,23 +45,23 @@ public class ArkProgramContractTests
             {
                 ["claim"] = new()
                 {
-                    Inputs = [new ArkadeInputRef { Name = "preimage", Type = ArkadeArgType.Bytes }],
-                    Tapscript = new ArkadeTapscriptSegment
+                    Inputs = [new FunctionInput() { Name = "preimage", Type = InputType.Bytes }],
+                    Tapscript = new TapscriptSegment
                     {
-                        Signers = [ArkadeToken.FromText("server")],
+                        Signers = [AsmToken.FromText("server")],
                         Asm =
                         [
-                            ArkadeToken.FromText("HASH160"),
-                            ArkadeToken.FromText("$hash"),
-                            ArkadeToken.FromText("EQUALVERIFY"),
+                            AsmToken.FromText("HASH160"),
+                            AsmToken.FromText("$hash"),
+                            AsmToken.FromText("EQUALVERIFY"),
                         ],
                     },
-                    CovenantSegment = new ArkadeCovenantSegment { Asm = [ArkadeToken.FromText("OP_TXID")] },
+                    ScriptSegment = new ArkadeScriptSegment { Asm = [AsmToken.FromText("OP_TXID")] },
                 },
             },
         };
         var hash = Convert.FromHexString("4d487dd3753a89bc9fe98401d1196523058251fc");
-        var args = new Dictionary<string, ArkadeToken> { ["hash"] = ArkadeToken.FromBytes(hash) };
+        var args = new Dictionary<string, AsmToken> { ["hash"] = AsmToken.FromBytes(hash) };
 
         var original = new ArkProgramContract(server, program, args, emulatorKey: emulator.ToXOnlyPubKey());
         var address = original.GetArkAddress().ToString(false);

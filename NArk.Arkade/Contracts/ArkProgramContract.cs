@@ -23,7 +23,7 @@ public sealed class ArkProgramContract : ArkContract
     public const string ContractType = "ArkadeProgram";
 
     private readonly ArkadeProgram _program;
-    private readonly IReadOnlyDictionary<string, ArkadeToken> _args;
+    private readonly IReadOnlyDictionary<string, AsmToken> _args;
     private readonly OutputDescriptor? _user;
     private readonly ECXOnlyPubKey? _emulatorKey;
     private readonly IReadOnlyList<CompiledArkadeFunction> _compiled;
@@ -31,7 +31,7 @@ public sealed class ArkProgramContract : ArkContract
     public ArkProgramContract(
         OutputDescriptor server,
         ArkadeProgram program,
-        IReadOnlyDictionary<string, ArkadeToken> args,
+        IReadOnlyDictionary<string, AsmToken> args,
         OutputDescriptor? user = null,
         ECXOnlyPubKey? emulatorKey = null)
         : base(server)
@@ -56,7 +56,7 @@ public sealed class ArkProgramContract : ArkContract
     public OutputDescriptor? User => _user;
 
     /// <summary>Args this program was compiled against.</summary>
-    public IReadOnlyDictionary<string, ArkadeToken> Args => _args;
+    public IReadOnlyDictionary<string, AsmToken> Args => _args;
 
     /// <summary>All compiled spending paths, in declaration order.</summary>
     public IReadOnlyList<CompiledArkadeFunction> CompiledFunctions => _compiled;
@@ -88,7 +88,7 @@ public sealed class ArkProgramContract : ArkContract
         var program = new ArkadeArtifactParser().ParseArtifact(JsonNode.Parse(contractData["program"])!.AsObject());
         var args = contractData.TryGetValue("args", out var argsJson)
             ? DeserializeArgsMap(argsJson)
-            : new Dictionary<string, ArkadeToken>();
+            : new Dictionary<string, AsmToken>();
         var user = contractData.TryGetValue("user", out var userStr)
             ? KeyExtensions.ParseOutputDescriptor(userStr, network)
             : null;
@@ -98,31 +98,31 @@ public sealed class ArkProgramContract : ArkContract
         return new ArkProgramContract(server, program, args, user, emulatorKey);
     }
 
-    private static string SerializeArgsMap(IReadOnlyDictionary<string, ArkadeToken> args)
+    private static string SerializeArgsMap(IReadOnlyDictionary<string, AsmToken> args)
     {
         var obj = new JsonObject();
         foreach (var (key, value) in args)
         {
             obj[key] = value.Kind switch
             {
-                ArkadeTokenKind.Bytes => "0x" + Convert.ToHexString(value.Bytes!).ToLowerInvariant(),
-                ArkadeTokenKind.Number => value.Number!.Value.ToString(),
+                AsmTokenKind.Bytes => "0x" + Convert.ToHexString(value.Bytes!).ToLowerInvariant(),
+                AsmTokenKind.Number => value.Number!.Value.ToString(),
                 _ => throw new InvalidOperationException($"Arg '{key}' must be bytes or a number."),
             };
         }
         return obj.ToJsonString();
     }
 
-    private static Dictionary<string, ArkadeToken> DeserializeArgsMap(string json)
+    private static Dictionary<string, AsmToken> DeserializeArgsMap(string json)
     {
         var obj = JsonNode.Parse(json)!.AsObject();
-        var result = new Dictionary<string, ArkadeToken>();
+        var result = new Dictionary<string, AsmToken>();
         foreach (var (key, node) in obj)
         {
             var s = node!.GetValue<string>();
             result[key] = s.StartsWith("0x", StringComparison.Ordinal)
-                ? ArkadeToken.FromBytes(Convert.FromHexString(s[2..]))
-                : ArkadeToken.FromNumber(BigInteger.Parse(s));
+                ? AsmToken.FromBytes(Convert.FromHexString(s[2..]))
+                : AsmToken.FromNumber(BigInteger.Parse(s));
         }
         return result;
     }
