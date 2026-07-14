@@ -534,12 +534,83 @@ public class UnilateralExitTests
     }
 
 
-    // [Test]
-    // [CancelAfter(420_420)]
-    // public async Task CanExitWithOperatorOffline(CancellationToken token)
-    // {
-    //     
-    // }
+    /// <summary>
+    /// The core promise of unilateral exit: it works with the operator gone.
+    /// Settle a VTXO (operator online, branch captured to storage), stop arkd,
+    /// then drive the exit to Completed. Server info is static config served from
+    /// the transport cache; the virtual-tx branch comes from storage; broadcast
+    /// and claim go through the chain — none of it needs a live operator.
+    /// </summary>
+    [Test]
+    [CancelAfter(300_000)]
+    public async Task CanExitWithOperatorOffline(CancellationToken token)
+    {
+        await using var setup = await SettleAVtxoAsync();
+        var vtxo = (await setup.VtxoStorage.GetVtxos()).First(v => !v.IsSpent() && !v.Unrolled);
+        var vtxoAmount = Money.Satoshis(vtxo.Amount);
+        var claimAddress = await GetFreshOnchainAddress();
+
+        // Start the exit while arkd is up: this populates the branch and warms
+        // the server-info cache. Everything after must run without arkd.
+        await setup.ExitService.StartExitAsync(setup.WalletId, [vtxo.OutPoint], claimAddress, token);
+
+        var serverInfo = await setup.ClientTransport.GetServerInfoAsync(token);
+        if (serverInfo.UnilateralExit.LockType != SequenceLockType.Height)
+            Assert.Ignore("Unilateral-exit delay is time-based; the full-claim path needs a block-based regtest config.");
+
+        // ── operator goes away ──
+        await DockerHelper.StopContainer("arkd", token);
+        try
+        {
+            // Broadcast the branch (root→leaf) from storage until every link confirms.
+            ExitSession? current = null;
+            for (var step = 0; !token.IsCancellationRequested; step++)
+            {
+                await setup.ExitService.ProgressExitsAsync(token);
+                await DockerHelper.MineBlocks(1, token);
+                current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+                if (current?.State is ExitSessionState.Failed)
+                    Assert.Fail($"Exit failed with arkd offline: {current.FailReason}");
+                if (current?.State is ExitSessionState.AwaitingCsvDelay or ExitSessionState.Claimable
+                    or ExitSessionState.Claiming or ExitSessionState.Completed) break;
+            }
+
+            // Mature the CSV delay, then keep progressing until the claim confirms.
+            await DockerHelper.MineBlocks(serverInfo.UnilateralExit.LockHeight + 2, token);
+            for (var step = 0; current!.State != ExitSessionState.Completed && !token.IsCancellationRequested; step++)
+            {
+                await setup.ExitService.ProgressExitsAsync(token);
+                await DockerHelper.MineBlocks(1, token);
+                current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+                if (current?.State is ExitSessionState.Failed)
+                    Assert.Fail($"Claim failed with arkd offline: {current.FailReason}");
+            }
+
+            Assert.That(current!.State, Is.EqualTo(ExitSessionState.Completed),
+                $"Exit must reach Completed with arkd offline; observed={current.State}, fail={current.FailReason ?? "-"}");
+
+            var received = await DockerHelper.BitcoinGetReceivedByAddress(claimAddress.ToString(), minConf: 1, ct: token);
+            Assert.That(received, Is.GreaterThan(vtxoAmount - Money.Satoshis(10_000)),
+                $"Claimed funds ({received}) should land at the claim address even with arkd offline");
+        }
+        finally
+        {
+            // Bring arkd back for the rest of the suite and wait until it answers.
+            await DockerHelper.StartContainer("arkd", CancellationToken.None);
+            await WaitForArkdReady();
+        }
+    }
+
+    private static async Task WaitForArkdReady()
+    {
+        var probe = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        for (var i = 0; i < 30; i++)
+        {
+            try { await probe.GetServerInfoAsync(CancellationToken.None); return; }
+            catch { await Task.Delay(TimeSpan.FromSeconds(2)); }
+        }
+    }
+
     // ----- helpers --------------------------------------------------------
 
     /// <summary>
@@ -597,7 +668,13 @@ public class UnilateralExitTests
             .AddSimpleConsole(o => o.TimestampFormat = "HH:mm:ss.fff ")
             .SetMinimumLevel(LogLevel.Debug));
 
-        var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        // Wrap in the caching decorator so static server info (network, CSV
+        // delay) is served from cache: a unilateral exit reads its branches from
+        // storage and must not need a live operator, which the operator-offline
+        // test asserts by stopping arkd mid-exit.
+        var clientTransport = new NArk.Core.Transport.CachingClientTransport(
+            new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString()),
+            cacheExpiry: TimeSpan.FromMinutes(15));
         var info = await clientTransport.GetServerInfoAsync();
 
         var walletProvider = new InMemoryWalletProvider(clientTransport);
@@ -789,7 +866,7 @@ public class UnilateralExitTests
             var spendingService = new SpendingService(
                 vtxoStorage, contractStorage, walletProvider, coinService,
                 contractService, clientTransport, new DefaultCoinSelector(),
-                safetyService, intentStorage);
+                safetyService, intentStorage, virtualTxStorage);
 
             // Send well under the settled amount so input fees (amount * 0.01)
             // and change comfortably fit; MinExitWorthAmount (1000) keeps the
