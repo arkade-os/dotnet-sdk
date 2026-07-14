@@ -340,7 +340,12 @@ public static class TransactionHelpers
                 foreach (var checkpoint in checkpoints)
                 {
                     var coin = arkCoins.Single(x => x.Outpoint == checkpoint.Psbt.Inputs.Single().PrevOut);
-                    signedCheckpointTxs.Add(await UserSignCheckpoint(checkpoint.Psbt, coin, cancellationToken));
+                    // Only add the wallet's signature when the leaf actually names the user as
+                    // a signer. Covenant paths like an HTLC claim (server + emulator only) have
+                    // no user key, so the wallet must not sign — the emulator + arkd suffice.
+                    signedCheckpointTxs.Add(coin.SignerDescriptor is not null
+                        ? await UserSignCheckpoint(checkpoint.Psbt, coin, cancellationToken)
+                        : checkpoint.Psbt);
                 }
 
                 await handler.SubmitAsync(arkCoins, arkTx, signedCheckpointTxs, cancellationToken);
