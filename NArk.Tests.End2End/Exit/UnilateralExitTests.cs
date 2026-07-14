@@ -14,12 +14,10 @@ using NArk.Blockchain;
 using NArk.Core.Contracts;
 using NArk.Core.Enums;
 using NArk.Core.Events;
-using NArk.Core.Exit;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
-using NArk.Core.VirtualTxs;
 using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Storage.EfCore.Hosting;
@@ -535,6 +533,13 @@ public class UnilateralExitTests
         Assert.That(received, Is.LessThanOrEqualTo(vtxoAmount));
     }
 
+
+    // [Test]
+    // [CancelAfter(420_420)]
+    // public async Task CanExitWithOperatorOffline(CancellationToken token)
+    // {
+    //     
+    // }
     // ----- helpers --------------------------------------------------------
 
     /// <summary>
