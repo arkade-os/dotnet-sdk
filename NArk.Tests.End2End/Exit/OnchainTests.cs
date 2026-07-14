@@ -4,7 +4,6 @@ using Microsoft.Extensions.Hosting;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
-using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
 using NArk.Core.Contracts;
