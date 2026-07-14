@@ -40,6 +40,49 @@ jobs:
     needs: build
     uses: ./.github/workflows/e2e-rotation.yml
 
+  arkade-e2e:
+    name: Arkade E2E Tests (emulator)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Start regtest infrastructure (with emulator)
+        # The `emulator` profile pulls in `ark` (arkd); EMULATOR_SECRET_KEY comes from
+        # regtest/.env.defaults, so the emulator's signer key is deterministic.
+        run: node regtest/regtest.mjs start --profile emulator
+        timeout-minutes: 20
+      - name: Restore and build
+        run: dotnet build
+      - name: Run Arkade E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade"
+        timeout-minutes: 15
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arkade-docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
+
   publish:
     name: Publish NuGet Packages
     runs-on: ubuntu-latest
