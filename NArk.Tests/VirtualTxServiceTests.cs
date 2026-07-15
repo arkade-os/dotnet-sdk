@@ -102,17 +102,44 @@ public class VirtualTxServiceTests
     }
 
     [Test]
-    public async Task FetchAndStoreBranch_SkipsIfBranchExists()
+    public async Task FetchAndStoreBranch_LiteMode_SkipsIfBranchExists()
     {
-        // Arrange
+        // Arrange — Lite mode stores txids only, so an existing branch is
+        // enough to skip (there's no hex to keep signed).
         _storage.HasBranchAsync(_testOutpoint, Arg.Any<CancellationToken>()).Returns(true);
 
         // Act
-        await _service.FetchAndStoreBranchAsync(_testOutpoint);
+        await _service.FetchAndStoreBranchAsync(_testOutpoint, VirtualTxMode.Lite);
 
         // Assert — should not fetch anything
         await _transport.DidNotReceive().GetVtxoChainAsync(
             Arg.Any<OutPoint>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task FetchAndStoreBranch_FullMode_RefetchesWhenStoredBranchNotBroadcastReady()
+    {
+        // Arrange — a branch exists, but its stored hex is a sig-less template
+        // ("deadbeef" won't parse to a finalizable witness). Full mode must NOT
+        // treat that as done: it self-heals by re-fetching until the signed copy
+        // lands, so unilateral exit can broadcast from storage without the operator.
+        _storage.HasBranchAsync(_testOutpoint, Arg.Any<CancellationToken>()).Returns(true);
+        _storage.GetBranchAsync(_testOutpoint, Arg.Any<CancellationToken>())
+            .Returns(new List<VirtualTx> { new("treetxid", "deadbeef", null, ChainedTxType.Tree) });
+
+        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(new List<VtxoChainEntry>
+            {
+                new("treetxid", DateTimeOffset.UtcNow.AddDays(30), ChainedTxType.Tree, [])
+            });
+        _transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new List<string> { "freshhex" });
+
+        // Act
+        await _service.FetchAndStoreBranchAsync(_testOutpoint, VirtualTxMode.Full);
+
+        // Assert — did NOT short-circuit; re-fetched the chain to self-heal.
+        await _transport.Received().GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Test]

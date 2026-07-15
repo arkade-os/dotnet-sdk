@@ -27,6 +27,8 @@ public class DefaultCoinSelector : ICoinSelector
         int maxOpReturnOutputs = 1,
         long? maxInputWeightWu = null)
     {
+        availableCoins = availableCoins.Where(c => !c.Unrolled).ToList();
+
         if (availableCoins.Count == 0)
             throw new NotEnoughFundsException("Not enough funds to create transaction", null, targetAmount);
 
@@ -131,6 +133,10 @@ public class DefaultCoinSelector : ICoinSelector
         int maxOpReturnOutputs = 1,
         long? maxInputWeightWu = null)
     {
+        // See the BTC-only overload: unrolled (on-chain) coins can't be spent
+        // off-chain, so exclude them here too before the asset-aware pass.
+        availableCoins = availableCoins.Where(c => !c.Unrolled).ToList();
+
         if (assetRequirements.Count == 0)
             return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs, maxInputWeightWu);
 

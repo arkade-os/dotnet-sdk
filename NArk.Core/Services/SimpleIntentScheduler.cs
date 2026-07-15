@@ -37,27 +37,8 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
         var chainTime = await chainTimeProvider.GetChainTime(cancellationToken);
         var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        var maxTxWeightWu = serverInfo.MaxTxWeight;
-
         var coins = unspentVtxos
-            .Where(v =>
-                (
-                    // Unrolled coins (boarding UTXOs, unrolled VTXOs) should be batched ASAP
-                    // — they're sitting on-chain and we race against the exit delay expiry.
-                    // Skip unconfirmed boarding UTXOs (no expiry yet) — arkd rejects unconfirmed inputs.
-                    (v.Unrolled && v.ExpiresAt is not null) ||
-                    v.IsRecoverable(chainTime) ||
-                    (v.ExpiresAt is { } exp && options.Value.Threshold is { } thresh &&
-                     exp - thresh < chainTime.Timestamp) ||
-                    (v.ExpiresAtHeight is { } height && options.Value.ThresholdHeight is { } threshHeight &&
-                     height - threshHeight < chainTime.Height)
-                )
-                // A coin under a deprecated signer past its cutoff that still requires a forfeit cannot
-                // join a batch — the operator won't co-sign its forfeit (the old key is gone), so arkd
-                // rejects the whole intent and bricks every other coin chunked with it. Hold it back
-                // until it is forfeit-free (swept/unrolled), when it re-enrolls under the current signer.
-                && !(v.RequiresForfeit() && v.IsDeprecatedSignerPastCutoff(serverInfo.DeprecatedSigners, nowUnix))
-            )
+            .Where(v => ShouldSubmitIntentForCoin(v, chainTime, serverInfo, nowUnix))
             .GroupBy(v => v.WalletIdentifier)
             /*
              TODO(11.06.2026): maybe we could solve tail redistribution problem with remaining sub-dust buckets
@@ -68,7 +49,7 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
                 g =>
                 {
                     var ordered = g.OrderByDescending(v => v.Amount).ToList();
-                    return ChunkByProofTxWeight(ordered, maxTxWeightWu);
+                    return ChunkByProofTxWeight(ordered, serverInfo.MaxTxWeight);
                 }
             );
 
@@ -122,7 +103,46 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
         logger?.LogDebug("Generated {IntentSpecCount} intent specs", intentSpecs.Count);
         return intentSpecs;
     }
-    
+
+
+    private bool ShouldSubmitIntentForCoin(ArkCoin coin, TimeHeight chainTime, ArkServerInfo serverInfo, long timestamp)
+    {
+        // A coin under a deprecated signer past its cutoff that still requires a forfeit cannot
+        // join a batch — the operator won't co-sign its forfeit (the old key is gone), so arkd
+        // rejects the whole intent and bricks every other coin chunked with it. Hold it back
+        // until it is forfeit-free (swept/unrolled), when it re-enrolls under the current signer.
+        if (coin.RequiresForfeit() && coin.IsDeprecatedSignerPastCutoff(serverInfo.DeprecatedSigners, timestamp))
+        {
+            return false;
+        }
+        
+        if (coin.IsRecoverable(chainTime))
+        {
+            return true;
+        }
+
+        if (coin.ExpiresAt is { } exp && options.Value.Threshold is { } thresh &&
+            exp - thresh < chainTime.Timestamp)
+        {
+            return true;
+        }
+
+        if (coin.ExpiresAtHeight is { } height && options.Value.ThresholdHeight is { } threshHeight &&
+            height - threshHeight < chainTime.Height)
+        {
+            return true;
+        }
+
+        // Unrolled coins (boarding UTXOs, unrolled VTXOs) should be batched ASAP
+        // — they're sitting on-chain and we race against the exit delay expiry.
+        // Skip unconfirmed boarding UTXOs (no expiry yet) — arkd rejects unconfirmed inputs.
+        if (coin.ExpiresAt is null && coin.ExpiresAtHeight is null)
+        {
+            return false;
+        }
+        return coin.Unrolled;
+    }
+
     private static List<ArkCoin[]> ChunkByProofTxWeight(IReadOnlyList<ArkCoin> coins, long maxTxWeightWu)
     {
         // Overhead that every chunk pays regardless of coin count.

@@ -70,7 +70,7 @@ public sealed class EARSCoinSelector : ICoinSelector
     }
 
     private static IReadOnlyList<CoinCandidate> BuildCandidates(List<ArkCoin> coins, Money dustThreshold) =>
-        coins.Select(c => new CoinCandidate(
+        coins.Where(c => !c.Unrolled).Select(c => new CoinCandidate(
             Coin: c,
             Value: c.TxOut.Value,
             ExpiryGroup: c.ExpiresAtHeight ?? 0u,

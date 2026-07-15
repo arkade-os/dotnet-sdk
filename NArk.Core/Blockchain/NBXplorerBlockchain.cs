@@ -136,6 +136,28 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
                 return await BroadcastSequentialFallbackAsync(parent, child, cancellationToken);
             }
 
+            // submitpackage returns HTTP/RPC success even when individual txs in the package are rejected
+            var packageMsg = (string?)response.Result?["package_msg"];
+            if (!string.Equals(packageMsg, "success", StringComparison.OrdinalIgnoreCase))
+            {
+                var txErrors = new List<string>();
+                if (response.Result?["tx-results"] is Newtonsoft.Json.Linq.JObject txResults)
+                {
+                    foreach (var kv in txResults)
+                    {
+                        var err = (string?)kv.Value?["error"];
+                        if (!string.IsNullOrEmpty(err))
+                            txErrors.Add($"{kv.Key}: {err}");
+                    }
+                }
+
+                _logger?.LogWarning(
+                    "submitpackage rejected: package_msg={Msg}; parent={Parent}; tx-errors=[{TxErrors}]",
+                    packageMsg ?? "(none)", parent.GetHash(),
+                    txErrors.Count > 0 ? string.Join("; ", txErrors) : "none reported");
+                return false;
+            }
+
             _logger?.LogDebug("Package broadcast successful: parent={Parent}, child={Child}",
                 parent.GetHash(), child.GetHash());
             return true;
@@ -199,12 +221,26 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
                 return new TxStatus(false, null, false);
 
             var confirmations = (int?)response.Result?["confirmations"] ?? 0;
-            var blockHeight = (uint?)(long?)response.Result?["blockheight"];
+            if (confirmations <= 0)
+                return new TxStatus(false, null, true); // In mempool
 
-            if (confirmations > 0)
-                return new TxStatus(true, blockHeight, false);
+            // Bitcoin Core's getrawtransaction does not return a "blockheight"
+            // field — only "blockhash" + "confirmations". Resolve the height
+            // via the block header rather than trusting a field that never
+            // populates (previously left BlockHeight permanently null, which
+            // stalls any caller — e.g. UnilateralExitService's CSV maturity
+            // check — that requires a non-null height to proceed).
+            var blockHash = (string?)response.Result?["blockhash"];
+            uint? blockHeight = null;
+            if (blockHash is not null)
+            {
+                var headerResponse = await _explorerClient.RPCClient.SendCommandAsync(
+                    "getblockheader", cancellationToken, blockHash, true);
+                if (headerResponse.Error is null)
+                    blockHeight = (uint?)(long?)headerResponse.Result?["height"];
+            }
 
-            return new TxStatus(false, null, true); // In mempool
+            return new TxStatus(true, blockHeight, false);
         }
         catch
         {

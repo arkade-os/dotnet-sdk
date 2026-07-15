@@ -604,16 +604,25 @@ services.AddInMemoryExitStorage();  // registers InMemoryExitSessionStorage + In
 // Don't call ConfigureArkExitEntities() — no SQL tables needed
 ```
 
-**2. Stateless one-shot API** — `UnilateralExitService.BroadcastExitChainAsync` + `ClaimMaturedExitAsync` skip both `IExitSessionStorage` and `IVirtualTxStorage` entirely. The SDK persists nothing exit-specific; the caller saves the returned `ExitPlan` record however they want and feeds it back to claim once the CSV timelock matures.
+**2. Stateless API** — `UnilateralExitService.BroadcastExitChainAsync` + `ClaimMaturedExitAsync` skip both `IExitSessionStorage` and `IVirtualTxStorage` entirely. The SDK persists nothing exit-specific; the caller saves the returned `ExitPlan` record however they want and feeds it back to claim once the CSV timelock matures.
+
+`BroadcastExitChainAsync` broadcasts **at most one** not-yet-onchain tx per call, not the whole chain — call it repeatedly (like `ProgressExitsAsync`) until the chain is fully confirmed. This is required by Bitcoin Core's TRUC/v3 relay policy (BIP 431): each tx gets its own CPFP child to pay its zero fee, and a v3 tx can have at most 1 unconfirmed descendant, so the next tx in the chain can't be broadcast until the previous one confirms on-chain (the same constraint go-sdk and ts-sdk's unroll sessions are built around).
 
 ```csharp
-// Broadcast the chain now — no SDK persistence
-var plan = await exitService.BroadcastExitChainAsync(
-    walletId, vtxoOutpoint, claimAddress, ct);
+// Call on an interval until the whole chain is confirmed (mirrors ProgressExitsAsync)
+ExitPlan plan;
+while (true)
+{
+    plan = await exitService.BroadcastExitChainAsync(
+        walletId, vtxoOutpoint, claimAddress, ct);
+    var leafStatus = await blockchain.GetTxStatusAsync(uint256.Parse(plan.LeafTxid), ct);
+    if (leafStatus.Confirmed) break;
+    await Task.Delay(pollInterval, ct);
+}
 
 // ... persist `plan` somewhere (a JSON blob, a settings entry, etc.) ...
 
-// Later — once leaf-tx confirms + CSV matures:
+// Later — once the CSV timelock matures:
 var claimTxid = await exitService.ClaimMaturedExitAsync(plan, ct);
 if (claimTxid is null)
 {
@@ -621,7 +630,7 @@ if (claimTxid is null)
 }
 ```
 
-Trade-off vs. the stateful path: no idempotency (a second `BroadcastExitChainAsync` will re-broadcast), no automatic watchtower progression. The caller owns persistence and time-keeping in their own format.
+Trade-off vs. the stateful path: no idempotency (re-broadcasting an already-confirmed link is a no-op, but the caller must track when to stop polling), no automatic watchtower progression. The caller owns persistence and time-keeping in their own format.
 
 Virtual tx data is automatically pruned when VTXOs are spent. Sibling VTXOs sharing internal tree nodes naturally deduplicate — shared nodes are only cleaned up when no VTXO references them.
 

@@ -14,12 +14,10 @@ using NArk.Blockchain;
 using NArk.Core.Contracts;
 using NArk.Core.Enums;
 using NArk.Core.Events;
-using NArk.Core.Exit;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
-using NArk.Core.VirtualTxs;
 using DefaultCoinSelector = NArk.Core.CoinSelector.DefaultCoinSelector;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Storage.EfCore.Hosting;
@@ -143,16 +141,26 @@ public class UnilateralExitTests
         var vtxo = vtxos.First(v => !v.IsSpent() && !v.Unrolled);
         var claimAddress = await GetFreshOnchainAddress();
 
-        var sessions = await setup.ExitService.StartExitAsync(
+        await setup.ExitService.StartExitAsync(
             setup.WalletId, [vtxo.OutPoint], claimAddress, token);
-        var sessionId = sessions[0].Id;
+
+        var branch = await setup.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint, token);
+        TestContext.WriteLine($"[Exit] chain depth={branch.Count} (incl. commitment)");
 
         // Drive the state machine. Each iteration: progress (broadcasts what
         // it can), mine 1 block to confirm what's in mempool, observe state.
         // Use GetByVtxoAsync (not GetActiveSessionsAsync) so a Failed
         // session is still surfaced — otherwise we'd silently lose it.
+        //
+        // No fixed step cap: since the fix for TRUC/v3 (BIP 431), broadcasting
+        // advances exactly one chain link per ProgressExitsAsync call (broadcast,
+        // then wait for confirmation before touching the next link — see
+        // UnilateralExitService.ProgressBroadcastingAsync), so a deeper chain
+        // — e.g. when CI batches multiple participants into the same round —
+        // legitimately needs more iterations than a single-hop local run. The
+        // [CancelAfter] attribute is the real backstop against a genuine hang.
         ExitSession? current = null;
-        for (var step = 0; step < 30 && !token.IsCancellationRequested; step++)
+        for (var step = 0; !token.IsCancellationRequested; step++)
         {
             await setup.ExitService.ProgressExitsAsync(token);
             await DockerHelper.MineBlocks(1, token);
@@ -205,13 +213,17 @@ public class UnilateralExitTests
         var vtxo = vtxos.First(v => !v.IsSpent() && !v.Unrolled);
         var claimAddress = await GetFreshOnchainAddress();
 
-        var sessions = await setup.ExitService.StartExitAsync(
+        await setup.ExitService.StartExitAsync(
             setup.WalletId, [vtxo.OutPoint], claimAddress, token);
-        var sessionId = sessions[0].Id;
 
-        // 1. Drive to AwaitingCsvDelay (broadcast + 1-block confirms).
+        var branch = await setup.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint, token);
+        TestContext.WriteLine($"[Exit] chain depth={branch.Count} (incl. commitment)");
+
+        // 1. Drive to AwaitingCsvDelay (broadcast + 1-block confirms). No fixed
+        // step cap — see the comment in ProgressExits_AdvancesFromBroadcastingToAwaitingCsvDelay
+        // for why a deeper (CI-only) chain legitimately needs more iterations.
         ExitSession? current = null;
-        for (var step = 0; step < 30 && !token.IsCancellationRequested; step++)
+        for (var step = 0; !token.IsCancellationRequested; step++)
         {
             await setup.ExitService.ProgressExitsAsync(token);
             await DockerHelper.MineBlocks(1, token);
@@ -288,6 +300,317 @@ public class UnilateralExitTests
             $"observed state={current?.State}, fail={current?.FailReason ?? "-"}");
     }
 
+    /// <summary>
+    /// Equivalent of go-sdk TestUnilateralExit end-to-end and ts-sdk "should
+    /// complete unroll after unilateral exit delay": drive the whole pipeline
+    /// past the CSV delay, claim on-chain, and assert the session reaches
+    /// <see cref="ExitSessionState.Completed"/> AND the claimed funds actually
+    /// land at the on-chain claim address.
+    ///
+    /// This is the piece the other exit suites intentionally stop short of —
+    /// they only assert the session *reaches* Claimable/Claiming/Completed as
+    /// an alternation. Here we require Completed specifically and verify the
+    /// money moved, which is only reliably assertable now that the regtest
+    /// config is block-based (a block-height CSV delay matures by mining;
+    /// the previous time-based config could not be matured in a way arkd's
+    /// CSV check honoured — see AwaitingCsvDelay_DoesNotAdvanceUntilDelayMatures).
+    /// </summary>
+    [Test]
+    [CancelAfter(300_000)]
+    public async Task FullExit_ReachesCompleted_AndFundsLandAtClaimAddress(CancellationToken token)
+    {
+        await using var setup = await SettleAVtxoAsync();
+        var vtxos = await setup.VtxoStorage.GetVtxos();
+        var vtxo = vtxos.First(v => !v.IsSpent() && !v.Unrolled);
+        var vtxoAmount = Money.Satoshis(vtxo.Amount);
+
+        // Use a bitcoin-core wallet address so getreceivedbyaddress can track
+        // the claimed funds — a freshly-derived external taproot address is
+        // unknown to the node's wallet and would always report zero.
+        var claimAddress = await GetFreshOnchainAddress();
+
+        await setup.ExitService.StartExitAsync(
+            setup.WalletId, [vtxo.OutPoint], claimAddress, token);
+
+        var branch = await setup.VirtualTxStorage.GetBranchAsync(vtxo.OutPoint, token);
+        TestContext.WriteLine($"[Exit] chain depth={branch.Count} (incl. commitment), amount={vtxoAmount}");
+
+        // Phase 1: broadcast the tree root-to-leaf until every link confirms
+        // (Broadcasting → AwaitingCsvDelay). One link per ProgressExitsAsync
+        // call (TRUC/v3 one-at-a-time broadcast), so no fixed step cap — the
+        // [CancelAfter] budget is the real backstop.
+        ExitSession? current = null;
+        for (var step = 0; !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            if (current?.State is ExitSessionState.Failed)
+                Assert.Fail($"Exit failed during broadcast: {current.FailReason}");
+            if (current?.State is ExitSessionState.AwaitingCsvDelay
+                or ExitSessionState.Claimable or ExitSessionState.Claiming
+                or ExitSessionState.Completed) break;
+        }
+        Assert.That(current, Is.Not.Null);
+
+        // arkd v0.9 may return a time-based unilateral-exit delay. A block-based
+        // regtest config yields LockType=Height, which we mature by mining; a
+        // time-based delay can't be matured in a way arkd's CSV check honours,
+        // so there's nothing to complete — surface that as Ignore rather than a
+        // false failure. (Mirrors the guard in AwaitingCsvDelay_DoesNotAdvance…)
+        var serverInfo = await setup.ClientTransport.GetServerInfoAsync(token);
+        if (serverInfo.UnilateralExit.LockType != SequenceLockType.Height)
+        {
+            Assert.Ignore(
+                $"Unilateral-exit delay is time-based (LockPeriod={serverInfo.UnilateralExit.LockPeriod}); " +
+                "full-claim path requires a block-based delay. Expected block-based regtest config.");
+        }
+
+        // Phase 2: mature the CSV delay by mining, then keep progressing so the
+        // claim tx is built + broadcast (Claimable → Claiming) and confirmed
+        // (Claiming → Completed). Each iteration mines a block, which both
+        // matures any remaining CSV and confirms the claim tx once broadcast.
+        var csvBlocks = serverInfo.UnilateralExit.LockHeight + 2;
+        TestContext.WriteLine($"[Exit] mining {csvBlocks} blocks to mature CSV delay");
+        await DockerHelper.MineBlocks(csvBlocks, token);
+
+        for (var step = 0; current!.State != ExitSessionState.Completed && !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            TestContext.WriteLine(
+                $"[Exit] claim step={step} state={current?.State} claimTxid={current?.ClaimTxid ?? "-"} " +
+                $"fail={current?.FailReason ?? "-"}");
+            if (current?.State is ExitSessionState.Failed)
+                Assert.Fail($"Exit failed during claim: {current.FailReason}");
+        }
+
+        Assert.That(current!.State, Is.EqualTo(ExitSessionState.Completed),
+            $"Exit should reach Completed; observed={current.State}, fail={current.FailReason ?? "-"}");
+        Assert.That(current.ClaimTxid, Is.Not.Null.And.Not.Empty,
+            "Completed session must record the on-chain claim txid");
+
+        // The claimed funds must actually arrive at the claim address — the
+        // whole point of a unilateral exit. Received == VTXO amount minus the
+        // on-chain claim fee, so assert it's in a sane band rather than exact.
+        var received = await DockerHelper.BitcoinGetReceivedByAddress(claimAddress.ToString(), minConf: 1, ct: token);
+        TestContext.WriteLine($"[Exit] received at claim address: {received} (vtxo amount {vtxoAmount})");
+        Assert.That(received, Is.GreaterThan(Money.Zero),
+            "Claimed funds should be received at the on-chain claim address");
+        Assert.That(received, Is.LessThanOrEqualTo(vtxoAmount),
+            "Received amount cannot exceed the VTXO amount");
+        Assert.That(received, Is.GreaterThan(vtxoAmount - Money.Satoshis(10_000)),
+            $"Received {received} implausibly below VTXO amount {vtxoAmount} after fee");
+    }
+
+    /// <summary>
+    /// Equivalent of go-sdk <c>TestUnilateralExit/preconfirmed vtxo</c>: exit a
+    /// VTXO that was received off-chain (an Arkade tx, never batch-settled).
+    /// Its ancestry chain is strictly deeper than a settled leaf's — it carries
+    /// an extra off-chain <see cref="ChainedTxType.Ark"/> hop (and checkpoint)
+    /// on top of the same on-chain commitment — so the broadcast path has more
+    /// links to push. The exit must still reach <see cref="ExitSessionState.AwaitingCsvDelay"/>.
+    /// </summary>
+    [Test]
+    [CancelAfter(420_000)]
+    public async Task PreconfirmedVtxoExit_AdvancesToAwaitingCsvDelay(CancellationToken token)
+    {
+        await using var setup = await SettleAVtxoAsync(preconfirmSelfSend: true);
+        Assert.That(setup.PreconfirmedVtxoOutpoint, Is.Not.Null,
+            "Setup with preconfirmSelfSend:true must surface a preconfirmed VTXO outpoint");
+        var outpoint = setup.PreconfirmedVtxoOutpoint!;
+        var claimAddress = await GetFreshOnchainAddress();
+
+        var sessions = await setup.ExitService.StartExitAsync(
+            setup.WalletId, [outpoint], claimAddress, token);
+        Assert.That(sessions, Has.Count.EqualTo(1));
+        Assert.That(sessions[0].State, Is.EqualTo(ExitSessionState.Broadcasting));
+
+        // The branch must anchor on-chain (Commitment) AND include the off-chain
+        // Arkade hop that makes this VTXO *preconfirmed* rather than settled —
+        // that's exactly what distinguishes this case from the settled-leaf suites.
+        var branch = await setup.VirtualTxStorage.GetBranchAsync(outpoint, token);
+        TestContext.WriteLine(
+            $"[Exit] preconfirmed chain depth={branch.Count}: " +
+            string.Join(", ", branch.Select(t => t.Type)));
+        Assert.That(branch.Any(tx => tx.Type == ChainedTxType.Commitment), Is.True,
+            "Preconfirmed VTXO chain must still anchor at the on-chain commitment");
+        Assert.That(branch.Any(tx => tx.Type == ChainedTxType.Ark), Is.True,
+            "Preconfirmed VTXO chain must include the off-chain Arkade move that created it");
+
+        // Drive the unroll like go-sdk's e2e loop (test/e2e/exit_test.go
+        // "preconfirmed vtxo"): progress, mine a block, and pause briefly so the
+        // Arkade server can detect the on-chain tree tx and broadcast the
+        // checkpoint before we try to broadcast the leaf that spends it.
+        ExitSession? current = null;
+        for (var step = 0; !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            await Task.Delay(TimeSpan.FromSeconds(2), token);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(outpoint, token);
+            if (current?.State is ExitSessionState.Failed)
+                Assert.Fail($"Preconfirmed exit failed: {current.FailReason}");
+            if (current?.State is ExitSessionState.AwaitingCsvDelay
+                or ExitSessionState.Claimable or ExitSessionState.Claiming
+                or ExitSessionState.Completed) break;
+        }
+
+        Assert.That(current!.State,
+            Is.EqualTo(ExitSessionState.AwaitingCsvDelay)
+                .Or.EqualTo(ExitSessionState.Claimable)
+                .Or.EqualTo(ExitSessionState.Claiming)
+                .Or.EqualTo(ExitSessionState.Completed),
+            $"Preconfirmed exit should advance past Broadcasting; final={current.State}, " +
+            $"fail={current.FailReason ?? "-"}");
+    }
+
+    /// <summary>
+    /// Claim-after-expiry safety property: an exit whose branch is already
+    /// broadcast + confirmed on-chain (AwaitingCsvDelay) must still complete
+    /// even after the chain advances past the VTXO tree-expiry window
+    /// (<c>ARKD_VTXO_TREE_EXPIRY=180</c> blocks in the regtest config). Once the
+    /// user has spent their unilateral path out of the commitment, the operator's
+    /// post-expiry sweep can no longer touch those outputs, so the funds remain
+    /// claimable. This is only assertable now that expiry is block-based and can
+    /// be matured by mining a bounded number of regtest blocks.
+    /// </summary>
+    [Test]
+    [CancelAfter(300_000)]
+    public async Task ExitConfirmedOnChain_StillCompletes_AfterVtxoTreeExpiry(CancellationToken token)
+    {
+        await using var setup = await SettleAVtxoAsync();
+        var vtxo = (await setup.VtxoStorage.GetVtxos()).First(v => !v.IsSpent() && !v.Unrolled);
+        var vtxoAmount = Money.Satoshis(vtxo.Amount);
+        var claimAddress = await GetFreshOnchainAddress();
+
+        await setup.ExitService.StartExitAsync(setup.WalletId, [vtxo.OutPoint], claimAddress, token);
+
+        // Phase 1: broadcast the whole branch on-chain (Broadcasting → AwaitingCsvDelay).
+        // After this, our path out of the commitment is spent and confirmed.
+        ExitSession? current = null;
+        for (var step = 0; !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            if (current?.State is ExitSessionState.Failed)
+                Assert.Fail($"Exit failed during broadcast: {current.FailReason}");
+            if (current?.State is ExitSessionState.AwaitingCsvDelay
+                or ExitSessionState.Claimable or ExitSessionState.Claiming
+                or ExitSessionState.Completed) break;
+        }
+        Assert.That(current, Is.Not.Null);
+
+        var serverInfo = await setup.ClientTransport.GetServerInfoAsync(token);
+        if (serverInfo.UnilateralExit.LockType != SequenceLockType.Height)
+            Assert.Ignore("Unilateral-exit delay is time-based; block-based regtest config expected.");
+
+        // Phase 2: blow past the VTXO tree-expiry window. 200 > ARKD_VTXO_TREE_EXPIRY
+        // (180) and also covers the 5-block CSV delay in one shot. If a post-expiry
+        // operator sweep could strand an already-broadcast exit, the claim below
+        // would fail — that's the regression this guards against.
+        TestContext.WriteLine("[Exit] mining 200 blocks to pass VTXO tree-expiry (180) + CSV (5)");
+        await DockerHelper.MineBlocks(200, token);
+
+        for (var step = 0; current!.State != ExitSessionState.Completed && !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            TestContext.WriteLine($"[Exit] post-expiry step={step} state={current?.State} fail={current?.FailReason ?? "-"}");
+            if (current?.State is ExitSessionState.Failed)
+                Assert.Fail($"Exit failed after tree expiry: {current.FailReason}");
+        }
+
+        Assert.That(current!.State, Is.EqualTo(ExitSessionState.Completed),
+            $"An on-chain-confirmed exit must still complete after tree expiry; observed={current.State}");
+
+        var received = await DockerHelper.BitcoinGetReceivedByAddress(claimAddress.ToString(), minConf: 1, ct: token);
+        Assert.That(received, Is.GreaterThan(Money.Zero),
+            "Funds must still reach the claim address after tree expiry");
+        Assert.That(received, Is.LessThanOrEqualTo(vtxoAmount));
+    }
+
+
+    /// <summary>
+    /// The core promise of unilateral exit: it works with the operator gone.
+    /// Settle a VTXO (operator online, branch captured to storage), stop arkd,
+    /// then drive the exit to Completed. Server info is static config served from
+    /// the transport cache; the virtual-tx branch comes from storage; broadcast
+    /// and claim go through the chain — none of it needs a live operator.
+    /// </summary>
+    [Test]
+    [CancelAfter(300_000)]
+    public async Task CanExitWithOperatorOffline(CancellationToken token)
+    {
+        await using var setup = await SettleAVtxoAsync();
+        var vtxo = (await setup.VtxoStorage.GetVtxos()).First(v => !v.IsSpent() && !v.Unrolled);
+        var vtxoAmount = Money.Satoshis(vtxo.Amount);
+        var claimAddress = await GetFreshOnchainAddress();
+
+        // Start the exit while arkd is up: this populates the branch and warms
+        // the server-info cache. Everything after must run without arkd.
+        await setup.ExitService.StartExitAsync(setup.WalletId, [vtxo.OutPoint], claimAddress, token);
+
+        var serverInfo = await setup.ClientTransport.GetServerInfoAsync(token);
+        if (serverInfo.UnilateralExit.LockType != SequenceLockType.Height)
+            Assert.Ignore("Unilateral-exit delay is time-based; the full-claim path needs a block-based regtest config.");
+
+        // ── operator goes away ──
+        await DockerHelper.StopContainer("arkd", token);
+        try
+        {
+            // Broadcast the branch (root→leaf) from storage until every link confirms.
+            ExitSession? current = null;
+            for (var step = 0; !token.IsCancellationRequested; step++)
+            {
+                await setup.ExitService.ProgressExitsAsync(token);
+                await DockerHelper.MineBlocks(1, token);
+                current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+                if (current?.State is ExitSessionState.Failed)
+                    Assert.Fail($"Exit failed with arkd offline: {current.FailReason}");
+                if (current?.State is ExitSessionState.AwaitingCsvDelay or ExitSessionState.Claimable
+                    or ExitSessionState.Claiming or ExitSessionState.Completed) break;
+            }
+
+            // Mature the CSV delay, then keep progressing until the claim confirms.
+            await DockerHelper.MineBlocks(serverInfo.UnilateralExit.LockHeight + 2, token);
+            for (var step = 0; current!.State != ExitSessionState.Completed && !token.IsCancellationRequested; step++)
+            {
+                await setup.ExitService.ProgressExitsAsync(token);
+                await DockerHelper.MineBlocks(1, token);
+                current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+                if (current?.State is ExitSessionState.Failed)
+                    Assert.Fail($"Claim failed with arkd offline: {current.FailReason}");
+            }
+
+            Assert.That(current!.State, Is.EqualTo(ExitSessionState.Completed),
+                $"Exit must reach Completed with arkd offline; observed={current.State}, fail={current.FailReason ?? "-"}");
+
+            var received = await DockerHelper.BitcoinGetReceivedByAddress(claimAddress.ToString(), minConf: 1, ct: token);
+            Assert.That(received, Is.GreaterThan(vtxoAmount - Money.Satoshis(10_000)),
+                $"Claimed funds ({received}) should land at the claim address even with arkd offline");
+        }
+        finally
+        {
+            // Bring arkd back for the rest of the suite and wait until it answers.
+            await DockerHelper.StartContainer("arkd", CancellationToken.None);
+            await WaitForArkdReady();
+        }
+    }
+
+    private static async Task WaitForArkdReady()
+    {
+        var probe = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        for (var i = 0; i < 30; i++)
+        {
+            try { await probe.GetServerInfoAsync(CancellationToken.None); return; }
+            catch { await Task.Delay(TimeSpan.FromSeconds(2)); }
+        }
+    }
+
     // ----- helpers --------------------------------------------------------
 
     /// <summary>
@@ -296,7 +619,16 @@ public class UnilateralExitTests
     /// the same TestStorage so all subsequent service calls share state.
     /// Returns a disposable holding everything tests need to drive the exit.
     /// </summary>
-    private static async Task<ExitTestSetup> SettleAVtxoAsync()
+    /// <param name="preconfirmSelfSend">
+    /// When true, after the batch settle the wallet performs an off-chain Arkade
+    /// self-send (checkpoint + Arkade tx, no batch), producing a fresh
+    /// <b>preconfirmed</b> VTXO whose ancestry chain anchors at the settled
+    /// VTXO's on-chain commitment through the checkpoint. Its outpoint is
+    /// surfaced via <see cref="ExitTestSetup.PreconfirmedVtxoOutpoint"/>. This is
+    /// the go-sdk <c>TestUnilateralExit/preconfirmed vtxo</c> scenario — the
+    /// deeper-chain counterpart of the settled-leaf case.
+    /// </param>
+    private static async Task<ExitTestSetup> SettleAVtxoAsync(bool preconfirmSelfSend = false)
     {
         // ---- wallet + storage + transport ----
         // Build a ServiceCollection so the standard DI graph + the unilateral
@@ -336,7 +668,13 @@ public class UnilateralExitTests
             .AddSimpleConsole(o => o.TimestampFormat = "HH:mm:ss.fff ")
             .SetMinimumLevel(LogLevel.Debug));
 
-        var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        // Wrap in the caching decorator so static server info (network, CSV
+        // delay) is served from cache: a unilateral exit reads its branches from
+        // storage and must not need a live operator, which the operator-offline
+        // test asserts by stopping arkd mid-exit.
+        var clientTransport = new NArk.Core.Transport.CachingClientTransport(
+            new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString()),
+            cacheExpiry: TimeSpan.FromMinutes(15));
         var info = await clientTransport.GetServerInfoAsync();
 
         var walletProvider = new InMemoryWalletProvider(clientTransport);
@@ -502,6 +840,48 @@ public class UnilateralExitTests
         await batchPolledTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await settledVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(60));
 
+        // ---- optional: turn the settled VTXO into a *preconfirmed* one ----
+        // An off-chain Arkade self-send spends the settled VTXO and lands a new
+        // VTXO at a fresh Receive contract without going through a batch. That
+        // new VTXO is "preconfirmed": its chain anchors at the same on-chain
+        // commitment but through an extra checkpoint + Arkade tx, so exiting it
+        // unilaterally exercises a strictly deeper broadcast path than the
+        // settled-leaf case. (The autoFetch + vtxoSync services started above
+        // observe the new VTXO and fetch its chain.)
+        OutPoint? preconfirmedOutpoint = null;
+        if (preconfirmSelfSend)
+        {
+            var receiveContract = await contractService.DeriveContract(
+                walletId, NextContractPurpose.Receive);
+            var receiveScript = receiveContract.GetArkAddress().ScriptPubKey.ToHex();
+
+            var preconfirmedTcs = new TaskCompletionSource();
+            void OnPreconfirmed(object? _, ArkVtxo v)
+            {
+                if (v.Script == receiveScript && !v.IsSpent() && !v.Unrolled)
+                    preconfirmedTcs.TrySetResult();
+            }
+            vtxoStorage.VtxosChanged += OnPreconfirmed;
+
+            var spendingService = new SpendingService(
+                vtxoStorage, contractStorage, walletProvider, coinService,
+                contractService, clientTransport, new DefaultCoinSelector(),
+                safetyService, intentStorage, virtualTxStorage);
+
+            // Send well under the settled amount so input fees (amount * 0.01)
+            // and change comfortably fit; MinExitWorthAmount (1000) keeps the
+            // result worth exiting.
+            await spendingService.Spend(walletId,
+                [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(30_000), receiveContract.GetArkAddress())]);
+
+            await preconfirmedTcs.Task.WaitAsync(TimeSpan.FromSeconds(60));
+            vtxoStorage.VtxosChanged -= OnPreconfirmed;
+
+            var preconfirmedVtxo = (await vtxoStorage.GetVtxos(scripts: [receiveScript]))
+                .First(v => !v.IsSpent() && !v.Unrolled);
+            preconfirmedOutpoint = preconfirmedVtxo.OutPoint;
+        }
+
         // ---- exit-side dependencies ----
         var explorerClient = new ExplorerClient(
             new NBXplorerNetworkProvider(info.Network.ChainName).GetBTC(),
@@ -545,7 +925,10 @@ public class UnilateralExitTests
             {
                 intentGeneration, intentSync, batchManager, vtxoSync,
                 new HostedServiceAdapter(autoFetchService),
-            });
+            })
+        {
+            PreconfirmedVtxoOutpoint = preconfirmedOutpoint,
+        };
     }
 
     private static async Task<BitcoinAddress> GetFreshOnchainAddress()
@@ -590,6 +973,13 @@ public class UnilateralExitTests
         public UnilateralExitService ExitService { get; } = exitService;
         /// <summary>Address to which another wallet can send funds for this wallet to exit.</summary>
         public ArkAddress? ReceiveAddress { get; init; }
+
+        /// <summary>
+        /// Outpoint of the preconfirmed (off-chain, non-batched) VTXO produced
+        /// when <see cref="SettleAVtxoAsync"/> is called with
+        /// <c>preconfirmSelfSend: true</c>; otherwise <c>null</c>.
+        /// </summary>
+        public OutPoint? PreconfirmedVtxoOutpoint { get; init; }
 
         public async ValueTask DisposeAsync()
         {

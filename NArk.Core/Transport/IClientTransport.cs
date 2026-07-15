@@ -91,7 +91,9 @@ public interface IClientTransport
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns the chain of virtual txs from commitment tx to the given VTXO leaf.
+    /// Returns the chain of virtual txs for the given VTXO, ordered leaf→root:
+    /// the VTXO's own tx first, then each ancestor in turn, ending at the
+    /// on-chain Commitment anchor.
     /// <para>
     /// When <paramref name="intentProof"/> and <paramref name="intentMessage"/> are supplied
     /// (a BIP-322-style ownership proof built by

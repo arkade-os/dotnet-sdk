@@ -3,6 +3,7 @@ using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
+using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Assets;
@@ -29,7 +30,8 @@ public class SpendingService(
     ISafetyService safetyService,
     IIntentStorage intentStorage,
     IEnumerable<IEventHandler<PostCoinsSpendActionEvent>> postSpendEventHandlers,
-    ILogger<SpendingService>? logger = null) : ISpendingService
+    ILogger<SpendingService>? logger = null,
+    IVirtualTxStorage? virtualTxStorage = null) : ISpendingService
 {
     public SpendingService(IVtxoStorage vtxoStorage,
         IContractStorage contractStorage,
@@ -39,9 +41,10 @@ public class SpendingService(
         IClientTransport transport,
         CoinSelector_ICoinSelector coinSelector,
         ISafetyService safetyService,
-        IIntentStorage intentStorage)
+        IIntentStorage intentStorage,
+        IVirtualTxStorage? virtualTxStorage = null)
         : this(vtxoStorage, contractStorage, coinService, walletProvider, paymentService, transport, coinSelector,
-            safetyService, intentStorage, [], null)
+            safetyService, intentStorage, [], null, virtualTxStorage)
     {
     }
 
@@ -54,9 +57,10 @@ public class SpendingService(
         CoinSelector_ICoinSelector coinSelector,
         ISafetyService safetyService,
         IIntentStorage intentStorage,
-        ILogger<SpendingService> logger)
+        ILogger<SpendingService> logger,
+        IVirtualTxStorage? virtualTxStorage = null)
         : this(vtxoStorage, contractStorage, coinService, walletProvider, paymentService, transport, coinSelector,
-            safetyService, intentStorage, [], logger)
+            safetyService, intentStorage, [], logger, virtualTxStorage)
     {
     }
 
@@ -122,7 +126,7 @@ public class SpendingService(
             var assetPacketOutput = BuildAssetPacket(inputs, outputs);
 
             var transactionBuilder =
-                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage);
+                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage, virtualTxStorage);
 
             var swSubmit = System.Diagnostics.Stopwatch.StartNew();
             var tx = await transactionBuilder.ConstructAndSubmitArkTransaction(inputs, outputs, cancellationToken,
@@ -306,7 +310,7 @@ public class SpendingService(
             var assetPacketOutput = BuildAssetPacket(selectedCoins, outputs);
 
             var transactionBuilder =
-                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage);
+                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage, virtualTxStorage);
 
             var tx = await transactionBuilder.ConstructAndSubmitArkTransaction(selectedCoins, outputs,
                 cancellationToken, assetPacketOutput);

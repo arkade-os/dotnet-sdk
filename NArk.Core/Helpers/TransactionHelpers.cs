@@ -4,6 +4,7 @@ using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Scripts;
+using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Core.Extensions;
@@ -25,7 +26,8 @@ public static class TransactionHelpers
         IClientTransport clientTransport,
         ISafetyService safetyService,
         IWalletProvider walletProvider,
-        IIntentStorage intentStorage)
+        IIntentStorage intentStorage,
+        IVirtualTxStorage? virtualTxStorage = null)
     {
         private async Task<PSBT> FinalizeCheckpointTx(PSBT checkpointTx, PSBT receivedCheckpointTx, ArkCoin coin,
             CancellationToken cancellationToken)
@@ -292,6 +294,24 @@ public static class TransactionHelpers
 
             await clientTransport.FinalizeTx(response.ArkTxId, [.. signedCheckpoints.Select(x => x.Psbt.ToBase64())],
                 cancellationToken: cancellationToken);
+
+            // Capture the signed off-chain txs we just produced, keyed by txid,
+            // so a later unilateral exit of the resulting preconfirmed VTXO
+            // broadcasts them straight from storage. The
+            // auto-fetch that builds the exit branch preserves these signed rows
+            // (see VirtualTxService.FetchAndStoreBranchAsync), and they are
+            // pruned on spend like any other virtual-tx row.
+            if (virtualTxStorage is not null)
+            {
+                var captured = new List<VirtualTx>
+                {
+                    new(arkTx.GetGlobalTransaction().GetHash().ToString(), arkTx.ToBase64(), null, ChainedTxType.Ark),
+                };
+                captured.AddRange(signedCheckpoints.Select(c => new VirtualTx(
+                    c.Psbt.GetGlobalTransaction().GetHash().ToString(), c.Psbt.ToBase64(), null, ChainedTxType.Checkpoint)));
+
+                await virtualTxStorage.UpsertVirtualTxsAsync(captured, cancellationToken);
+            }
         }
 
 
