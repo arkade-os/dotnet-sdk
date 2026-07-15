@@ -213,8 +213,9 @@ public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalida
         CancellationToken cancellationToken = default)
         => Guard(() => _inner.GetPendingTxAsync(proof, message, cancellationToken));
 
-    public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
-        => Guard(() => _inner.GetVtxoChainAsync(vtxoOutpoint, cancellationToken));
+    public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint,
+        string? intentProof = null, string? intentMessage = null, CancellationToken cancellationToken = default)
+        => Guard(() => _inner.GetVtxoChainAsync(vtxoOutpoint, intentProof, intentMessage, cancellationToken));
 
     public Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default)
         => Guard(() => _inner.GetVirtualTxsAsync(txids, cancellationToken));

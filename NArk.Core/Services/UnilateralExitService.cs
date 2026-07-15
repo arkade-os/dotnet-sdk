@@ -25,6 +25,7 @@ public class UnilateralExitService(
     IBitcoinBlockchain blockchain,
     IWalletProvider walletProvider,
     VirtualTxService virtualTxService,
+    IVtxoChainProofProvider proofProvider,
     IFeeWallet? feeWallet = null,
     ILogger<UnilateralExitService>? logger = null)
 {
@@ -201,9 +202,10 @@ public class UnilateralExitService(
         CancellationToken cancellationToken = default)
     {
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
-
-        // 1. Fetch the chain fresh from arkd — no virtualTxStorage hit.
-        var chainEntries = await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+        
+        var proof = await proofProvider.TryCreateProofAsync(vtxoOutpoint, cancellationToken);
+        var chainEntries = await transport.GetVtxoChainAsync(
+            vtxoOutpoint, proof?.Proof, proof?.Message, cancellationToken);
         if (chainEntries.Count == 0)
             throw new InvalidOperationException(
                 $"arkd returned an empty virtual-tx chain for VTXO {vtxoOutpoint}; " +
@@ -353,7 +355,9 @@ public class UnilateralExitService(
             throw new InvalidOperationException(
                 $"arkd didn't return hex for leaf tx {plan.LeafTxid}; cannot build claim.");
 
-        var leafChainType = (await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken))
+        var chainProof = await proofProvider.TryCreateProofAsync(vtxoOutpoint, cancellationToken);
+        var leafChainType = (await transport.GetVtxoChainAsync(
+                vtxoOutpoint, chainProof?.Proof, chainProof?.Message, cancellationToken))
             .LastOrDefault(e => e.Type is ChainedTxType.Tree or ChainedTxType.Ark or ChainedTxType.Checkpoint)?.Type
             ?? ChainedTxType.Unspecified;
         var parsedLeafTx = ParseVirtualTx(leafHexList[0], serverInfo.Network, leafChainType);

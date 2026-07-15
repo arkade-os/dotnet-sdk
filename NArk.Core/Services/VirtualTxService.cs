@@ -13,6 +13,7 @@ namespace NArk.Core.Services;
 public class VirtualTxService(
     IClientTransport transport,
     IVirtualTxStorage storage,
+    IVtxoChainProofProvider proofProvider,
     ILogger<VirtualTxService>? logger = null)
 {
     /// <summary>
@@ -38,7 +39,10 @@ public class VirtualTxService(
         //    stored so consumers can walk back to the anchor without a
         //    second indexer call. Each row carries its ChainedTxType so
         //    UnilateralExitService can skip Commitment when broadcasting.
-        var chainEntries = await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+        
+        var proof = await proofProvider.TryCreateProofAsync(vtxoOutpoint, cancellationToken);
+        var chainEntries = await transport.GetVtxoChainAsync(
+            vtxoOutpoint, proof?.Proof, proof?.Message, cancellationToken);
 
         if (chainEntries.Count == 0)
         {
