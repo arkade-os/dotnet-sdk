@@ -1,6 +1,6 @@
 using NBitcoin;
 
-namespace NArk.Arkade.Program;
+namespace NArk.Arkade.Program.Models;
 
 /// <summary>
 /// The Bitcoin-Script segment of a spending path — enforced on-chain. Mirrors the

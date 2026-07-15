@@ -1,6 +1,6 @@
 using NArk.Abstractions.Extensions;
 using NArk.Arkade.Contracts;
-using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 using NBitcoin;
 
 namespace NArk.Tests.Arkade;

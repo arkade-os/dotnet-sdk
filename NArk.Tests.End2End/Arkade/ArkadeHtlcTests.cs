@@ -6,7 +6,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
-using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Tests.End2End.Common;

@@ -1,3 +1,5 @@
+using NArk.Arkade.Program.Models;
+
 namespace NArk.Arkade.Program;
 
 /// <summary>

@@ -1,4 +1,4 @@
-namespace NArk.Arkade.NonInteractiveSwaps;
+namespace NArk.ArkadeIntents.SolverRegistry;
 
 /// <summary>
 /// An asset descriptor (base or quote side of a market), per the Arkade Market Discovery

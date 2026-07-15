@@ -1,4 +1,5 @@
 using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 
 namespace NArk.Tests.Arkade;
 

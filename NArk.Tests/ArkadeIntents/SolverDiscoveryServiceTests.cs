@@ -1,9 +1,10 @@
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using NArk.Arkade.NonInteractiveSwaps;
+using NArk.ArkadeIntents.Services;
+using NArk.ArkadeIntents.SolverRegistry;
 
-namespace NArk.Tests.Arkade;
+namespace NArk.Tests.ArkadeIntents;
 
 [TestFixture]
 public class SolverDiscoveryServiceTests

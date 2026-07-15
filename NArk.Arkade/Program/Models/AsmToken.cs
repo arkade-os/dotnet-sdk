@@ -1,6 +1,6 @@
 using System.Numerics;
 
-namespace NArk.Arkade.Program;
+namespace NArk.Arkade.Program.Models;
 
 /// <summary>The kind of value an <see cref="AsmToken"/> carries.</summary>
 public enum AsmTokenKind

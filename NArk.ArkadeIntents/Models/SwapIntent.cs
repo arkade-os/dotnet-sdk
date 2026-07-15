@@ -1,6 +1,7 @@
+using NArk.ArkadeIntents.Services;
 using NBitcoin;
 
-namespace NArk.Arkade.NonInteractiveSwaps;
+namespace NArk.ArkadeIntents.Models;
 
 public class SwapIntent
 {

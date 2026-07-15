@@ -1,4 +1,4 @@
-namespace NArk.Arkade.NonInteractiveSwaps;
+namespace NArk.ArkadeIntents.Models;
 
 /// <summary>
 /// Lifecycle of a non-interactive swap, derived from the covenant VTXO's on-chain state (mirrors

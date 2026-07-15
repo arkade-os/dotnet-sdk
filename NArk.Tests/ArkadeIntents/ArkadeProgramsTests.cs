@@ -1,7 +1,7 @@
-using NArk.Arkade.Program;
-using NArk.Arkade.Programs;
+using NArk.Arkade.Program.Models;
+using NArk.ArkadeIntents.Programs;
 
-namespace NArk.Tests.Arkade;
+namespace NArk.Tests.ArkadeIntents;
 
 [TestFixture]
 public class ArkadeProgramsTests

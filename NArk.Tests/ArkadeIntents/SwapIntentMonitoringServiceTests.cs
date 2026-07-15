@@ -1,9 +1,10 @@
 using NArk.Abstractions.VTXOs;
-using NArk.Arkade.NonInteractiveSwaps;
 using NArk.ArkadeIntents;
+using NArk.ArkadeIntents.Models;
+using NArk.ArkadeIntents.Services;
 using NBitcoin;
 
-namespace NArk.Tests.Arkade;
+namespace NArk.Tests.ArkadeIntents;
 
 [TestFixture]
 public class SwapIntentMonitoringServiceTests

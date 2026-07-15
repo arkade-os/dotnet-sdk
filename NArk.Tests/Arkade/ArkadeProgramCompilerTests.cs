@@ -1,5 +1,6 @@
 using NArk.Arkade.Crypto;
 using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 using NArk.Arkade.Scripts;
 using NBitcoin;
 using NBitcoin.Secp256k1;

@@ -1,4 +1,4 @@
-namespace NArk.Arkade.Program;
+namespace NArk.Arkade.Program.Models;
 
 /// <summary>
 /// The ArkadeScript segment of a spending path — emulated by the co-signing service,

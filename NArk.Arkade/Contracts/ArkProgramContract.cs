@@ -4,6 +4,7 @@ using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
 using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;

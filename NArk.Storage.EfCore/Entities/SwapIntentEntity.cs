@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using NArk.Arkade.NonInteractiveSwaps;
+using NArk.ArkadeIntents.Models;
 
 namespace NArk.Storage.EfCore.Entities;
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NArk.Arkade.Program.Models;
 using NBitcoin;
 
 namespace NArk.Arkade.Program;

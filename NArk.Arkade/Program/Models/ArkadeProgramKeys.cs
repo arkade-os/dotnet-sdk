@@ -1,6 +1,6 @@
 using NBitcoin.Secp256k1;
 
-namespace NArk.Arkade.Program;
+namespace NArk.Arkade.Program.Models;
 
 /// <summary>
 /// The signer keys an <see cref="ArkadeProgram"/> is compiled against. Mirrors the

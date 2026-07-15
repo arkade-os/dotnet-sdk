@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
-using NArk.Arkade.NonInteractiveSwaps;
 using NArk.ArkadeIntents;
+using NArk.ArkadeIntents.Models;
 using NArk.Storage.EfCore.Entities;
 using NBitcoin;
 

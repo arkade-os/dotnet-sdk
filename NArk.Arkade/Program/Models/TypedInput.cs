@@ -1,4 +1,4 @@
-namespace NArk.Arkade.Program;
+namespace NArk.Arkade.Program.Models;
 
 /// <summary>
 /// The declared type of a function input. Mirrors the ts-sdk's <c>ArkadeArgType</c>

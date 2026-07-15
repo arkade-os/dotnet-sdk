@@ -1,4 +1,4 @@
-namespace NArk.Arkade.Program;
+namespace NArk.Arkade.Program.Models;
 
 /// <summary>
 /// One named spending path of an <see cref="ArkadeProgram"/>. Mirrors the ts-sdk's

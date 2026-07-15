@@ -1,4 +1,4 @@
-namespace NArk.Arkade.NonInteractiveSwaps;
+namespace NArk.ArkadeIntents.SolverRegistry;
 
 /// <summary>
 /// A solver's source market card (Arkade Market Discovery Protocol v0), stored in a registry repo

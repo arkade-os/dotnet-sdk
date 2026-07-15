@@ -1,7 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
-using NArk.Arkade.NonInteractiveSwaps;
+using NArk.ArkadeIntents.Services;
 
-namespace NArk.ArkadeIntents;
+namespace NArk.ArkadeIntents.Hosting;
 
 public static class ArkadeIntentsCollectionExtensions
 {

@@ -1,4 +1,4 @@
-namespace NArk.Arkade.Program;
+namespace NArk.Arkade.Program.Models;
 
 /// <summary>
 /// An Arkade contract program (hand-written or compiler-emitted): named functions,

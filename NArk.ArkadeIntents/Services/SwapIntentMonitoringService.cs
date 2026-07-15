@@ -1,9 +1,9 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.VTXOs;
-using NArk.ArkadeIntents;
+using NArk.ArkadeIntents.Models;
 
-namespace NArk.Arkade.NonInteractiveSwaps;
+namespace NArk.ArkadeIntents.Services;
 
 /// <summary>
 /// Reactive glue that turns covenant-VTXO changes into swap-status transitions. It opens no

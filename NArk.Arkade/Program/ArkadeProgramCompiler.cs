@@ -1,5 +1,6 @@
 using System.Numerics;
 using NArk.Arkade.Crypto;
+using NArk.Arkade.Program.Models;
 using NArk.Arkade.Scripts;
 using NArk.Core.Scripts;
 using NBitcoin;

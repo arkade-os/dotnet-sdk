@@ -1,5 +1,5 @@
 using NArk.Abstractions.Scripts;
-using NArk.Arkade.NonInteractiveSwaps;
+using NArk.ArkadeIntents.Models;
 
 namespace NArk.ArkadeIntents;
 

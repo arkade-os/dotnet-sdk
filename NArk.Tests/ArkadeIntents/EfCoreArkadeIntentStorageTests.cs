@@ -1,6 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using NArk.Arkade.NonInteractiveSwaps;
+using NArk.ArkadeIntents.Models;
 using NArk.Storage.EfCore;
 using NArk.Storage.EfCore.Storage;
 using NBitcoin;

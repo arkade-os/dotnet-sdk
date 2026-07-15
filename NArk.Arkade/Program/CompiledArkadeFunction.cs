@@ -1,4 +1,5 @@
 using NArk.Abstractions.Scripts;
+using NArk.Arkade.Program.Models;
 using NArk.Arkade.Scripts;
 using NArk.Core.Scripts;
 using NBitcoin;

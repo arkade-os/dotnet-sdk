@@ -1,4 +1,4 @@
-namespace NArk.Arkade.NonInteractiveSwaps;
+namespace NArk.ArkadeIntents.Models;
 
 public enum SwapIntentType
 {

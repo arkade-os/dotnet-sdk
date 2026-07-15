@@ -2,8 +2,9 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using NArk.ArkadeIntents.SolverRegistry;
 
-namespace NArk.Arkade.NonInteractiveSwaps;
+namespace NArk.ArkadeIntents.Services;
 
 /// <summary>
 /// Client for the Arkade Market Discovery Protocol v0: fetches per-network solver indexes, merges

@@ -1,4 +1,6 @@
-namespace NArk.Arkade.NonInteractiveSwaps;
+using NArk.ArkadeIntents.Services;
+
+namespace NArk.ArkadeIntents.SolverRegistry;
 
 /// <summary>
 /// A per-network index (the reducer/CI output published as <c>&lt;network&gt;.json</c>) in the Arkade

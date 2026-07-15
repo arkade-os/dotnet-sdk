@@ -2,7 +2,7 @@ using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
-using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 using NArk.Core.Contracts;
 using NBitcoin;
 using NBitcoin.Scripting;

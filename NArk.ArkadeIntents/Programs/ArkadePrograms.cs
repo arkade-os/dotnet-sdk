@@ -1,8 +1,9 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
 using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 
-namespace NArk.Arkade.Programs;
+namespace NArk.ArkadeIntents.Programs;
 
 /// <summary>
 /// The built-in Arkade program artifacts, parsed once from their embedded JSON and cached for the
