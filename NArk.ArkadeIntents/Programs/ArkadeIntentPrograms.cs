@@ -11,7 +11,7 @@ namespace NArk.ArkadeIntents.Programs;
 /// <see cref="ArkadeProgram"/> template with unbound <c>$params</c> — bind the constructor args and
 /// keys at contract construction (see <c>ArkProgramContract</c>).
 /// </summary>
-public static class ArkadePrograms
+public static class ArkadeIntentPrograms
 {
     private static readonly ArkadeArtifactParser Parser = new();
 

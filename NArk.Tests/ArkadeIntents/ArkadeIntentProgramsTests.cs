@@ -4,12 +4,12 @@ using NArk.ArkadeIntents.Programs;
 namespace NArk.Tests.ArkadeIntents;
 
 [TestFixture]
-public class ArkadeProgramsTests
+public class ArkadeIntentProgramsTests
 {
     [Test]
     public void BtcToAsset_LoadsFromEmbeddedArtifact()
     {
-        var program = ArkadePrograms.BtcToAsset;
+        var program = ArkadeIntentPrograms.BtcToAsset;
 
         Assert.That(program.Name, Is.EqualTo("banco-btc-to-asset"));
         Assert.That(program.Version, Is.EqualTo(ArkadeProgram.SupportedVersion));
@@ -29,7 +29,7 @@ public class ArkadeProgramsTests
     [Test]
     public void AssetToBtc_LoadsFromEmbeddedArtifact()
     {
-        var program = ArkadePrograms.AssetToBtc;
+        var program = ArkadeIntentPrograms.AssetToBtc;
 
         Assert.That(program.Name, Is.EqualTo("banco-asset-to-btc"));
         Assert.That(program.Functions.Keys, Is.EquivalentTo(new[] { "fulfill", "cancel" }));
@@ -39,7 +39,7 @@ public class ArkadeProgramsTests
     [Test]
     public void Programs_AreCached_SameInstancePerAccess()
     {
-        Assert.That(ArkadePrograms.BtcToAsset, Is.SameAs(ArkadePrograms.BtcToAsset));
-        Assert.That(ArkadePrograms.AssetToBtc, Is.SameAs(ArkadePrograms.AssetToBtc));
+        Assert.That(ArkadeIntentPrograms.BtcToAsset, Is.SameAs(ArkadeIntentPrograms.BtcToAsset));
+        Assert.That(ArkadeIntentPrograms.AssetToBtc, Is.SameAs(ArkadeIntentPrograms.AssetToBtc));
     }
 }
