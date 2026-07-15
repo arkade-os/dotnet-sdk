@@ -28,6 +28,10 @@ public static class ArkadeArtifactSerializer
             ["version"] = program.Version,
             ["functions"] = functions,
         };
+        if (program.Name is { } programName)
+        {
+            root["name"] = programName;
+        }
         if (program.Params is { Count: > 0 } prms)
         {
             root["params"] = new JsonArray(prms.Select(SerializeInput).ToArray());

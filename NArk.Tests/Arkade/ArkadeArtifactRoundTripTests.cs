@@ -82,6 +82,20 @@ public class ArkadeArtifactRoundTripTests
     }
 
     [Test]
+    public void Name_RoundTrips()
+    {
+        var named = RoundTrip("""
+        { "version": 0, "name": "htlc", "functions": { "f": { "tapscript": { "signers": ["server"] } } } }
+        """);
+        Assert.That(named.Name, Is.EqualTo("htlc"));
+
+        var unnamed = RoundTrip("""
+        { "version": 0, "functions": { "f": { "tapscript": { "signers": ["server"] } } } }
+        """);
+        Assert.That(unnamed.Name, Is.Null);
+    }
+
+    [Test]
     public void Cltv_ValueSurvives()
     {
         var program = RoundTrip("""

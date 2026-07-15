@@ -31,6 +31,7 @@ public class ArkadeArtifactParser
         return new ArkadeProgram
         {
             Version = version,
+            Name = json["name"]?.GetValue<string>(),
             Params = ParseInputs(json["params"]),
             Functions = ParseFunctions(functions),
         };

@@ -20,6 +20,12 @@ public sealed class ArkadeProgram
     public required int Version { get; init; }
 
     /// <summary>
+    /// Optional program name — metadata only: round-tripped through the artifact JSON, never used
+    /// in compilation, validation or the taproot tree. Mirrors the ts-sdk's <c>Program.name</c>.
+    /// </summary>
+    public string? Name { get; init; }
+
+    /// <summary>
     /// Ordered constructor parameters. When declared, they are authoritative:
     /// <see cref="ArkadeProgramValidator"/> requires every param to be bound and every <c>$name</c>
     /// reference in the program to be declared here. Entries may be typed descriptors
