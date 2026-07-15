@@ -14,8 +14,8 @@ public static class ArkadePrograms
 {
     private static readonly ArkadeArtifactParser Parser = new();
 
-    private static readonly Lazy<ArkadeProgram> LazyBtcToAsset = Load("banco-btc-to-asset.program.json");
-    private static readonly Lazy<ArkadeProgram> LazyAssetToBtc = Load("banco-asset-to-btc.program.json");
+    private static readonly Lazy<ArkadeProgram> LazyBtcToAsset = Load("btc-to-asset.program.json");
+    private static readonly Lazy<ArkadeProgram> LazyAssetToBtc = Load("asset-to-btc.program.json");
 
     /// <summary>
     /// Swap Ark BTC → an Arkade asset. The solver fills the covenant <c>fulfill</c> path (the

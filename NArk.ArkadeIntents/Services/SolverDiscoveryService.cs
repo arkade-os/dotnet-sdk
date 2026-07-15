@@ -19,6 +19,7 @@ namespace NArk.Arkade.NonInteractiveSwaps;
 public sealed class SolverDiscoveryService
 {
     /// <summary>Default per-network index URLs published by the reference registry.</summary>
+    // todo(15.06.2026): i don't like it being here. we probably should move it to ArkNetworkConfig or smh
     public static readonly Uri MainnetRegistry = new("https://arkade-os.github.io/solver-registry/bitcoin.json");
     public static readonly Uri SignetRegistry = new("https://arkade-os.github.io/solver-registry/signet.json");
     public static readonly Uri MutinynetRegistry = new("https://arkade-os.github.io/solver-registry/mutinynet.json");
