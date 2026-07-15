@@ -127,7 +127,7 @@ public class VirtualTxServiceTests
         _storage.GetBranchAsync(_testOutpoint, Arg.Any<CancellationToken>())
             .Returns(new List<VirtualTx> { new("treetxid", "deadbeef", null, ChainedTxType.Tree) });
 
-        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>())
+        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<VtxoChainEntry>
             {
                 new("treetxid", DateTimeOffset.UtcNow.AddDays(30), ChainedTxType.Tree, [])
@@ -139,7 +139,7 @@ public class VirtualTxServiceTests
         await _service.FetchAndStoreBranchAsync(_testOutpoint, VirtualTxMode.Full);
 
         // Assert — did NOT short-circuit; re-fetched the chain to self-heal.
-        await _transport.Received().GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>());
+        await _transport.Received().GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Test]
