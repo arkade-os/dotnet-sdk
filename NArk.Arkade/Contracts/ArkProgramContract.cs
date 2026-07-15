@@ -37,9 +37,11 @@ public sealed class ArkProgramContract : ArkContract
         : base(server)
     {
         _program = program;
-        _args = args;
         _user = user;
         _emulatorKey = emulatorKey;
+        // Bind the conventional $server/$user params from this contract's own keys before
+        // compiling, so a program can reference them without the caller wiring the pubkeys.
+        _args = ApplyDefaultSignerArgs(program, args, server, user);
 
         var keys = new ArkadeProgramKeys
         {
@@ -47,12 +49,45 @@ public sealed class ArkProgramContract : ArkContract
             UserKey = user?.ToXOnlyPubKey(),
             EmulatorKey = emulatorKey,
         };
-        _compiled = ArkadeProgramCompiler.Compile(program, args, keys);
+        _compiled = ArkadeProgramCompiler.Compile(program, _args, keys);
+    }
+
+    /// <summary>
+    /// Binds the conventional <c>server</c>/<c>user</c> parameters from the contract's own keys
+    /// when the program declares them (in <see cref="ArkadeProgram.Params"/>) and the caller left
+    /// them unbound — mirrors the ts-sdk's <c>Arkade.contract</c> defaulting. A program references
+    /// these as ordinary <c>$server</c>/<c>$user</c> placeholders; explicit <paramref name="args"/>
+    /// always win, and the resulting map is what gets persisted so a rebuilt contract re-derives
+    /// the identical script.
+    /// </summary>
+    private static IReadOnlyDictionary<string, AsmToken> ApplyDefaultSignerArgs(
+        ArkadeProgram program,
+        IReadOnlyDictionary<string, AsmToken> args,
+        OutputDescriptor server,
+        OutputDescriptor? user)
+    {
+        var declared = program.Params;
+        if (declared is null) return args;
+
+        Dictionary<string, AsmToken>? augmented = null;
+        Dictionary<string, AsmToken> Ensure() => augmented ??= new Dictionary<string, AsmToken>(args);
+
+        if (declared.Contains("server") && !args.ContainsKey("server"))
+        {
+            Ensure()["server"] = AsmToken.FromBytes(server.ToXOnlyPubKey().ToBytes());
+        }
+
+        if (user is not null && declared.Contains("user") && !args.ContainsKey("user"))
+        {
+            Ensure()["user"] = AsmToken.FromBytes(user.ToXOnlyPubKey().ToBytes());
+        }
+
+        return augmented ?? args;
     }
 
     public override string Type => ContractType;
 
-    /// <summary>Output descriptor for the wallet's own key, if the program names a <c>"user"</c> signer.</summary>
+    /// <summary>Output descriptor for the wallet's own key, bound as the <c>$user</c> param when the program declares it.</summary>
     public OutputDescriptor? User => _user;
 
     /// <summary>Args this program was compiled against.</summary>

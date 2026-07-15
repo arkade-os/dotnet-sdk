@@ -66,13 +66,14 @@ public class ArkProgramContractTransformerTests
             new ArkadeProgram
             {
                 Version = ArkadeProgram.SupportedVersion,
+                Params = ["server", "user"],
                 Functions = new Dictionary<string, ArkadeFunction>
                 {
                     ["claim"] = new()
                     {
                         Tapscript = new TapscriptSegment
                         {
-                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
+                            Signers = [AsmToken.FromText("$server"), AsmToken.FromText("$user")],
                             Witness = witness,
                         },
                     },
@@ -95,9 +96,10 @@ public class ArkProgramContractTransformerTests
         var contract = new ArkProgramContract(TestServerKey, new ArkadeProgram
         {
             Version = ArkadeProgram.SupportedVersion,
+            Params = ["server"],
             Functions = new Dictionary<string, ArkadeFunction>
             {
-                ["exit"] = new() { Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] } },
+                ["exit"] = new() { Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("$server")] } },
             },
         }, new Dictionary<string, AsmToken>());
 
@@ -143,13 +145,14 @@ public class ArkProgramContractTransformerTests
             new ArkadeProgram
             {
                 Version = ArkadeProgram.SupportedVersion,
+                Params = ["server", "user"],
                 Functions = new Dictionary<string, ArkadeFunction>
                 {
                     ["claim"] = new()
                     {
                         Tapscript = new TapscriptSegment
                         {
-                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
+                            Signers = [AsmToken.FromText("$server"), AsmToken.FromText("$user")],
                             Witness = [AsmToken.FromText("$preimage")],
                         },
                     },
@@ -227,20 +230,21 @@ public class ArkProgramContractTransformerTests
             new ArkadeProgram
             {
                 Version = ArkadeProgram.SupportedVersion,
+                Params = ["server", "user"],
                 Functions = new Dictionary<string, ArkadeFunction>
                 {
                     ["collab"] = new()
                     {
                         Tapscript = new TapscriptSegment
                         {
-                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
+                            Signers = [AsmToken.FromText("$server"), AsmToken.FromText("$user")],
                         },
                     },
                     ["refund"] = new()
                     {
                         Tapscript = new TapscriptSegment
                         {
-                            Signers = [AsmToken.FromText("user")],
+                            Signers = [AsmToken.FromText("$user")],
                             Csv = new Sequence(144),
                         },
                     },
@@ -285,20 +289,21 @@ public class ArkProgramContractTransformerTests
             new ArkadeProgram
             {
                 Version = ArkadeProgram.SupportedVersion,
+                Params = ["server", "user"],
                 Functions = new Dictionary<string, ArkadeFunction>
                 {
                     ["collab"] = new()
                     {
                         Tapscript = new TapscriptSegment
                         {
-                            Signers = [AsmToken.FromText("server"), AsmToken.FromText("user")],
+                            Signers = [AsmToken.FromText("$server"), AsmToken.FromText("$user")],
                         },
                     },
                     ["unilateral"] = new()
                     {
                         Tapscript = new TapscriptSegment
                         {
-                            Signers = [AsmToken.FromText("user")],
+                            Signers = [AsmToken.FromText("$user")],
                             Csv = new Sequence(144),
                         },
                     },

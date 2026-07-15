@@ -67,8 +67,11 @@ public static class ArkadeProgramCompiler
         ValidateTapscript(def.Tapscript);
 
         var pubkeys = def.Tapscript.Signers
-            .Select(signer => ResolveSigner(signer, keys, args))
+            .Select(signer => ResolveSigner(signer, args))
             .ToList();
+
+        // The declared signers (in order), before the covenant co-signer key is appended.
+        var signerKeys = pubkeys.ToArray();
 
         byte[]? arkadeScriptBytes = null;
         TaprootPubKey? emulatorKey = null;
@@ -92,6 +95,7 @@ public static class ArkadeProgramCompiler
             LeafScript = leafScript,
             ArkadeScriptBytes = arkadeScriptBytes,
             EmulatorKey = emulatorKey,
+            SignerKeys = signerKeys,
         };
     }
 
@@ -162,29 +166,43 @@ public static class ArkadeProgramCompiler
         return multisigOps;
     }
 
+    /// <summary>
+    /// Resolves a signer reference to an x-only key. Mirrors the ts-sdk's <c>resolveSigner</c>:
+    /// literal <see cref="AsmTokenKind.Bytes"/> pass through as a pubkey, and a <c>$param</c>
+    /// placeholder resolves against <paramref name="args"/> (and must be bytes). There are no
+    /// magic <c>"server"</c>/<c>"user"</c> keywords — those are conventional <c>$param</c>s the
+    /// contract layer binds from its own keys (see <see cref="Contracts.ArkProgramContract"/>).
+    /// </summary>
     private static ECXOnlyPubKey ResolveSigner(
         AsmToken signer,
-        ArkadeProgramKeys keys,
         IReadOnlyDictionary<string, AsmToken> args)
     {
-        var resolved = ResolveToken(signer, args);
-
-        if (resolved.Kind == AsmTokenKind.Bytes)
+        if (signer.Kind == AsmTokenKind.Bytes)
         {
-            return ECXOnlyPubKey.Create(resolved.Bytes!);
+            return ECXOnlyPubKey.Create(signer.Bytes!);
         }
 
-        if (resolved.Kind != AsmTokenKind.Text)
+        if (signer.Kind != AsmTokenKind.Text)
         {
-            throw new InvalidOperationException("A signer token must resolve to text (\"server\"/\"user\") or bytes (a pubkey).");
+            throw new InvalidOperationException("A signer token must be a '$param' reference or literal pubkey bytes.");
         }
 
-        return resolved.Text switch
+        if (!signer.IsParam)
         {
-            "server" => keys.ServerKey,
-            "user" => keys.UserKey ?? throw new InvalidOperationException("Signer 'user' requires a configured user key."),
-            _ => throw new InvalidOperationException($"Unknown signer reference '{resolved.Text}'."),
-        };
+            throw new InvalidOperationException($"Unknown signer reference '{signer.Text}' — use '${signer.Text}'.");
+        }
+
+        if (!args.TryGetValue(signer.ParamName, out var value))
+        {
+            throw new InvalidOperationException($"Unbound parameter '{signer.ParamName}'.");
+        }
+
+        if (value.Kind != AsmTokenKind.Bytes)
+        {
+            throw new InvalidOperationException($"Signer '{signer.Text}' must resolve to a pubkey (bytes).");
+        }
+
+        return ECXOnlyPubKey.Create(value.Bytes!);
     }
 
     /// <summary>Substitutes a <c>$param</c> token with its bound value; passes any other token through unchanged.</summary>

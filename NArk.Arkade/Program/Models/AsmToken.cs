@@ -5,7 +5,7 @@ namespace NArk.Arkade.Program;
 /// <summary>The kind of value an <see cref="AsmToken"/> carries.</summary>
 public enum AsmTokenKind
 {
-    /// <summary>An opcode mnemonic, a <c>$param</c> placeholder, or a signer keyword (<c>"server"</c>/<c>"user"</c>).</summary>
+    /// <summary>An opcode mnemonic or a <c>$param</c> placeholder (signers are literal bytes or a <c>$param</c> such as <c>$server</c>/<c>$user</c>).</summary>
     Text,
 
     /// <summary>A numeric literal (script-num at resolve time).</summary>

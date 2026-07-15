@@ -2,6 +2,7 @@ using NArk.Abstractions.Scripts;
 using NArk.Arkade.Scripts;
 using NArk.Core.Scripts;
 using NBitcoin;
+using NBitcoin.Secp256k1;
 
 namespace NArk.Arkade.Program;
 
@@ -27,6 +28,13 @@ public sealed class CompiledArkadeFunction
 
     /// <summary>The pre-tweak emulator key used for this leaf; <c>null</c> for pure-tapscript paths.</summary>
     public TaprootPubKey? EmulatorKey { get; init; }
+
+    /// <summary>
+    /// The resolved declared signer keys (x-only), in <see cref="TapscriptSegment.Signers"/> order —
+    /// excludes the covenant co-signer key appended for <see cref="ArkadeScriptBytes"/> paths. Mirrors
+    /// the ts-sdk's <c>signerKeys</c>; used to detect which paths the wallet's own key can sign.
+    /// </summary>
+    public required IReadOnlyList<ECXOnlyPubKey> SignerKeys { get; init; }
 
     /// <summary>
     /// Wraps this leaf as a <see cref="ScriptBuilder"/>, ready to hand to

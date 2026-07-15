@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Arkade.Program;
@@ -22,7 +23,7 @@ namespace NArk.Arkade.Contracts;
 /// <remarks>
 /// <para>
 /// Auto-select scope: a program is auto-transformable only if it has <em>exactly one</em> function whose
-/// signers include <c>"user"</c> and whose witness (see <see cref="TapscriptSegment.Witness"/>/
+/// resolved signers include the wallet's own key (the <c>$user</c> param) and whose witness (see <see cref="TapscriptSegment.Witness"/>/
 /// <see cref="ArkadeScriptSegment.Witness"/>) resolves fully from the program's constructor
 /// <c>args</c> — i.e. no unbound call-time inputs. Programs with several wallet-spendable
 /// paths (claim vs. refund), or a path needing call-time values, use the explicit overload to
@@ -131,12 +132,17 @@ public class ArkProgramContractTransformer(
     private static (CompiledArkadeFunction Function, IReadOnlyList<Op> Witness)? SelectSpendableFunction(
         ArkProgramContract contract)
     {
+        if (contract.User is null)
+            return null;
+
+        var userKey = contract.User.ToXOnlyPubKey().ToBytes();
         var candidates = new List<(CompiledArkadeFunction, IReadOnlyList<Op>)>();
 
         foreach (var compiled in contract.CompiledFunctions)
         {
             var def = compiled.Definition;
-            if (!def.Tapscript.Signers.Any(s => s.Kind == AsmTokenKind.Text && s.Text == "user"))
+            // Only paths the wallet can co-sign: its own key must be among the resolved signers.
+            if (!compiled.SignerKeys.Any(k => k.ToBytes().SequenceEqual(userKey)))
                 continue;
 
             // The emulator packet reuses SpendingConditionWitness for the covenant's own

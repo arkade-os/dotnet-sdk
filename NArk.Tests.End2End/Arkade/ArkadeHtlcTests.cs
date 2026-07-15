@@ -54,7 +54,7 @@ public class ArkadeHtlcTests
         var program = new ArkadeProgram
         {
             Version = ArkadeProgram.SupportedVersion,
-            Params = ["hash", "receiver", "amount"],
+            Params = ["server", "hash", "receiver", "amount"],
             Functions = new Dictionary<string, ArkadeFunction>
             {
                 ["claim"] = new()
@@ -62,7 +62,7 @@ public class ArkadeHtlcTests
                     Inputs = [new FunctionInput { Name = "preimage", Type = InputType.Bytes }],
                     Tapscript = new TapscriptSegment
                     {
-                        Signers = ["server"],
+                        Signers = ["$server"],
                         Asm = ["HASH160", "$hash", "EQUAL"],
                         Witness = ["preimage"],
                     },
@@ -101,13 +101,13 @@ public class ArkadeHtlcTests
         var program = new ArkadeProgram
         {
             Version = ArkadeProgram.SupportedVersion,
-            Params = ["receiver", "amount"],
+            Params = ["server", "receiver", "amount"],
             Functions = new Dictionary<string, ArkadeFunction>
             {
                 ["refund"] = new()
                 {
                     // genesis-relative CLTV, always satisfied in regtest.
-                    Tapscript = new TapscriptSegment { Signers = ["server"], Cltv = new LockTime(500_000_000) },
+                    Tapscript = new TapscriptSegment { Signers = ["$server"], Cltv = new LockTime(500_000_000) },
                     ScriptSegment = new ArkadeScriptSegment { Asm = PayTo(), Witness = [0] },
                 },
             },

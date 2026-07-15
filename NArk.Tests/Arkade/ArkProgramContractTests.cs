@@ -18,11 +18,12 @@ public class ArkProgramContractTests
         var program = new ArkadeProgram
         {
             Version = ArkadeProgram.SupportedVersion,
+            Params = ["server"],
             Functions = new Dictionary<string, ArkadeFunction>
             {
                 ["exit"] = new()
                 {
-                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("server")] },
+                    Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("$server")] },
                 },
             },
         };
@@ -41,6 +42,7 @@ public class ArkProgramContractTests
         var program = new ArkadeProgram
         {
             Version = ArkadeProgram.SupportedVersion,
+            Params = ["server"],
             Functions = new Dictionary<string, ArkadeFunction>
             {
                 ["claim"] = new()
@@ -48,7 +50,7 @@ public class ArkProgramContractTests
                     Inputs = [new FunctionInput() { Name = "preimage", Type = InputType.Bytes }],
                     Tapscript = new TapscriptSegment
                     {
-                        Signers = [AsmToken.FromText("server")],
+                        Signers = [AsmToken.FromText("$server")],
                         Asm =
                         [
                             AsmToken.FromText("HASH160"),
