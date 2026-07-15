@@ -232,12 +232,14 @@ public sealed class SolverDiscoveryService
             ? decimal.Parse(node.GetValue<string>(), CultureInfo.InvariantCulture)
             : node.GetValue<decimal>();
 
-    private static decimal Pow10(int n)
-    {
-        var result = 1m;
-        for (var i = 0; i < n; i++) result *= 10m;
-        return result;
-    }
+    private static readonly decimal[] Pow10Table =
+    [
+        1e0m, 1e1m, 1e2m, 1e3m, 1e4m, 1e5m, 1e6m, 1e7m,
+        1e8m, 1e9m, 1e10m, 1e11m, 1e12m, 1e13m, 1e14m,
+        1e15m, 1e16m, 1e17m, 1e18m, 1e19m, 1e20m,
+        1e21m, 1e22m, 1e23m, 1e24m, 1e25m, 1e26m, 1e27m, 1e28m
+    ];
+    private static decimal Pow10(int n) => Pow10Table[n];
 
     private static IndexedMarket ToIndexed(SolverMarket m, string solver, string? discoveryPubkey) => new()
     {

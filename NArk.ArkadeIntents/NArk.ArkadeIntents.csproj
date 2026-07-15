@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <EmbeddedResource Include="Programs\asset-to-btc.program.json" />
+      <EmbeddedResource Include="Programs\btc-to-asset.program.json" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\NArk.Arkade\NArk.Arkade.csproj" />
+    </ItemGroup>
+
+</Project>
