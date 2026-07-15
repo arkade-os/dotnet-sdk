@@ -92,8 +92,24 @@ public interface IClientTransport
 
     /// <summary>
     /// Returns the chain of virtual txs from commitment tx to the given VTXO leaf.
+    /// <para>
+    /// When <paramref name="intentProof"/> and <paramref name="intentMessage"/> are supplied
+    /// (a BIP-322-style ownership proof built by
+    /// <see cref="Helpers.IntentProofHelper.CreateGetVtxoChainOwnershipProofAsync"/>), the call
+    /// authenticates against the Arkade indexer: on servers running with withheld/private tx
+    /// exposure this is what makes the indexer return the chain (and, for withheld, the
+    /// fully-signed virtual txs) instead of stripping it. The proof is presented on the first
+    /// page; the server issues an auth token that transparently drives cursor pagination for the
+    /// remaining pages.
+    /// </para>
+    /// <para>
+    /// When the proof is omitted the call uses the legacy anonymous outpoint lookup, which only
+    /// returns data on servers configured with public tx exposure.
+    /// </para>
     /// </summary>
-    Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint,
+        string? intentProof = null, string? intentMessage = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Returns raw tx hex for the given virtual transaction IDs.
