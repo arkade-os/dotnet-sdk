@@ -7,6 +7,7 @@ using NArk.Abstractions.Payments;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.ArkadeIntents;
 using NArk.Storage.EfCore.Storage;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Services;
@@ -46,6 +47,10 @@ public static class StorageServiceCollectionExtensions
 
         services.AddSingleton<EfCoreSwapStorage>();
         services.AddSingleton<ISwapStorage>(sp => sp.GetRequiredService<EfCoreSwapStorage>());
+
+        services.AddSingleton<EfCoreArkadeIntentStorage>();
+        services.AddSingleton<IArkadeIntentStorage>(sp => sp.GetRequiredService<EfCoreArkadeIntentStorage>());
+        services.AddSingleton<IActiveScriptsProvider>(sp => sp.GetRequiredService<EfCoreArkadeIntentStorage>());
 
         services.AddSingleton<EfCoreWalletStorage>();
         services.AddSingleton<IWalletStorage>(sp => sp.GetRequiredService<EfCoreWalletStorage>());
