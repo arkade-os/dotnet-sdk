@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
-using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Wallets;
 using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Intents;
@@ -313,8 +312,8 @@ public class BatchSessionTests
             => inner.GetIntentsByProofAsync(proof, message, cancellationToken);
         public Task<PendingArkTransaction[]> GetPendingTxAsync(string proof, string message, CancellationToken cancellationToken = default)
             => inner.GetPendingTxAsync(proof, message, cancellationToken);
-        public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
-            => inner.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+        public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, string? intentProof = null, string? intentMessage = null, CancellationToken cancellationToken = default)
+            => inner.GetVtxoChainAsync(vtxoOutpoint, intentProof, intentMessage, cancellationToken);
         public Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default)
             => inner.GetVirtualTxsAsync(txids, cancellationToken);
         public Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default)

@@ -12,6 +12,7 @@ public class VirtualTxServiceTests
 {
     private IClientTransport _transport = null!;
     private IVirtualTxStorage _storage = null!;
+    private IVtxoChainProofProvider _proofProvider = null!;
     private VirtualTxService _service = null!;
     private readonly OutPoint _testOutpoint = new(uint256.Parse("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"), 0);
 
@@ -20,7 +21,11 @@ public class VirtualTxServiceTests
     {
         _transport = Substitute.For<IClientTransport>();
         _storage = Substitute.For<IVirtualTxStorage>();
-        _service = new VirtualTxService(_transport, _storage);
+        _proofProvider = Substitute.For<IVtxoChainProofProvider>();
+        // Default: no proof available → service falls back to anonymous lookup (null proof/message).
+        _proofProvider.TryCreateProofAsync(Arg.Any<OutPoint>(), Arg.Any<CancellationToken>())
+            .Returns((ValueTuple<string, string>?)null);
+        _service = new VirtualTxService(_transport, _storage, _proofProvider);
     }
 
     [Test]
@@ -35,7 +40,7 @@ public class VirtualTxServiceTests
             new("treetxid1", DateTimeOffset.UtcNow.AddDays(30), ChainedTxType.Tree, []),
             new("treetxid2", DateTimeOffset.UtcNow.AddDays(30), ChainedTxType.Tree, [])
         };
-        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>())
+        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(chainEntries);
 
         // GetVirtualTxs is only called for non-Commitment txs
@@ -80,7 +85,7 @@ public class VirtualTxServiceTests
         {
             new("treetxid1", DateTimeOffset.UtcNow.AddDays(30), ChainedTxType.Tree, [])
         };
-        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>())
+        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(chainEntries);
 
         // Act
@@ -107,7 +112,7 @@ public class VirtualTxServiceTests
 
         // Assert — should not fetch anything
         await _transport.DidNotReceive().GetVtxoChainAsync(
-            Arg.Any<OutPoint>(), Arg.Any<CancellationToken>());
+            Arg.Any<OutPoint>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -121,7 +126,7 @@ public class VirtualTxServiceTests
             new("commitmenttx", DateTimeOffset.UtcNow, ChainedTxType.Commitment, []),
             new("treetx", DateTimeOffset.UtcNow, ChainedTxType.Tree, [])
         };
-        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>())
+        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(chainEntries);
         _transport.GetVirtualTxsAsync(
             Arg.Is<IReadOnlyList<string>>(l => l.Count == 1 && l[0] == "treetx"),
@@ -183,7 +188,7 @@ public class VirtualTxServiceTests
         {
             new("tx1", DateTimeOffset.UtcNow, ChainedTxType.Tree, [])
         };
-        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<CancellationToken>())
+        _transport.GetVtxoChainAsync(_testOutpoint, Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(chainEntries);
         _transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns(new List<string> { "hex1" });

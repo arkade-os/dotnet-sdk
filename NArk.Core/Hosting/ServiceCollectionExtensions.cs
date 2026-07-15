@@ -128,6 +128,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddArkCoreServices(this IServiceCollection services)
     {
         services.AddSingleton<ICoinService, CoinService>();
+        services.AddSingleton<IVtxoChainProofProvider, VtxoChainProofProvider>();
         services.AddTransient<IContractTransformer, PaymentContractTransformer>();
         services.AddTransient<IContractTransformer, NoteContractTransformer>();
         services.AddTransient<IContractTransformer, HashLockedContractTransformer>();

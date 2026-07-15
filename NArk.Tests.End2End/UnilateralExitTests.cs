@@ -483,9 +483,12 @@ public class UnilateralExitTests
             DefaultMode = VirtualTxMode.Full,
             MinExitWorthAmount = 1000,
         });
+        var chainProofProvider = new VtxoChainProofProvider(
+            vtxoStorage, contractStorage, coinService, walletProvider, clientTransport,
+            loggerFactory.CreateLogger<VtxoChainProofProvider>());
         var autoFetchService = new VtxoChainAutoFetchService(
             vtxoStorage,
-            new VirtualTxService(clientTransport, virtualTxStorage,
+            new VirtualTxService(clientTransport, virtualTxStorage, chainProofProvider,
                 loggerFactory.CreateLogger<VirtualTxService>()),
             virtualTxOptions,
             loggerFactory.CreateLogger<VtxoChainAutoFetchService>());
@@ -506,7 +509,7 @@ public class UnilateralExitTests
         var broadcaster = new NBXplorerBlockchain(
             explorerClient, loggerFactory.CreateLogger<NBXplorerBlockchain>());
         var virtualTxService = new VirtualTxService(
-            clientTransport, virtualTxStorage,
+            clientTransport, virtualTxStorage, chainProofProvider,
             loggerFactory.CreateLogger<VirtualTxService>());
 
         // Tree txs are v3 (TRUC). Bitcoin Core won't accept a v3 child of a
@@ -527,6 +530,7 @@ public class UnilateralExitTests
             broadcaster,
             walletProvider,
             virtualTxService,
+            chainProofProvider,
             feeWallet: feeWallet,
             logger: loggerFactory.CreateLogger<UnilateralExitService>());
 
