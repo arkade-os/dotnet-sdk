@@ -4,7 +4,7 @@ namespace NArk.ArkadeIntents.Models;
 /// Lifecycle of a non-interactive swap, derived from the covenant VTXO's on-chain state (mirrors
 /// the arkade wallet's <c>AssetSwapStatus</c>).
 /// </summary>
-public enum SwapIntentStatus
+public enum ArkadeSwapIntentStatus
 {
     /// <summary>Deposit funded; waiting for the solver to fill (or for expiry).</summary>
     Pending,

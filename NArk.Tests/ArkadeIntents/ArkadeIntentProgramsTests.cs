@@ -11,7 +11,7 @@ public class ArkadeIntentProgramsTests
     {
         var program = ArkadeIntentPrograms.BtcToAsset;
 
-        Assert.That(program.Name, Is.EqualTo("banco-btc-to-asset"));
+        Assert.That(program.Name, Is.EqualTo("btc-to-asset"));
         Assert.That(program.Version, Is.EqualTo(ArkadeProgram.SupportedVersion));
         Assert.That(program.Functions.Keys, Is.EquivalentTo(new[] { "fulfill", "cancel" }));
 
@@ -31,7 +31,7 @@ public class ArkadeIntentProgramsTests
     {
         var program = ArkadeIntentPrograms.AssetToBtc;
 
-        Assert.That(program.Name, Is.EqualTo("banco-asset-to-btc"));
+        Assert.That(program.Name, Is.EqualTo("asset-to-btc"));
         Assert.That(program.Functions.Keys, Is.EquivalentTo(new[] { "fulfill", "cancel" }));
         Assert.That(program.Functions["fulfill"].ScriptSegment, Is.Not.Null);
     }

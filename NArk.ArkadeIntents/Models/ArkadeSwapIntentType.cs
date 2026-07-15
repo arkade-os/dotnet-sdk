@@ -1,6 +1,6 @@
 namespace NArk.ArkadeIntents.Models;
 
-public enum SwapIntentType
+public enum ArkadeSwapIntentType
 {
     BtcToAsset,
     AssetToBtc,

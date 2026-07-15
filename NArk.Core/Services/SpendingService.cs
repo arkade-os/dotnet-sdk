@@ -67,7 +67,7 @@ public class SpendingService(
     }
 
     public async Task<uint256> Spend(string walletId, ArkCoin[] inputs, ArkTxOut[] outputs,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, IReadOnlyList<IExtensionPacket>? extensionPackets = null)
     {
         using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Spending {InputCount} inputs with {OutputCount} outputs for wallet {WalletId}", inputs.Length,
@@ -126,7 +126,7 @@ public class SpendingService(
 
             // Build the Extension OP_RETURN: asset packet (if any) merged with any
             // provider packets (e.g. the Arkade emulator packet for covenant inputs).
-            var extensionOutput = BuildExtensionOutput(inputs, outputs);
+            var extensionOutput = BuildExtensionOutput(inputs, outputs, extensionPackets);
 
             var transactionBuilder =
                 new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage,
@@ -233,7 +233,8 @@ public class SpendingService(
         return coins;
     }
 
-    public async Task<uint256> Spend(string walletId, ArkTxOut[] outputs, CancellationToken cancellationToken = default)
+    public async Task<uint256> Spend(string walletId, ArkTxOut[] outputs, CancellationToken cancellationToken = default,
+        IReadOnlyList<IExtensionPacket>? extensionPackets = null)
     {
         using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Spending with automatic coin selection for wallet {WalletId} with {OutputCount} outputs",
@@ -311,7 +312,7 @@ public class SpendingService(
                 outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
             }
             // Build asset packet if any inputs or outputs carry assets
-            var extensionOutput = BuildExtensionOutput(selectedCoins, outputs);
+            var extensionOutput = BuildExtensionOutput(selectedCoins, outputs, extensionPackets);
 
             var transactionBuilder =
                 new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage,
@@ -397,7 +398,8 @@ public class SpendingService(
     /// carrying. All packets share one OP_RETURN so the spend stays within the
     /// server's OP_RETURN-output limit.
     /// </summary>
-    private TxOut? BuildExtensionOutput(IReadOnlyCollection<ArkCoin> inputs, ArkTxOut[] outputs)
+    private TxOut? BuildExtensionOutput(IReadOnlyCollection<ArkCoin> inputs, ArkTxOut[] outputs,
+        IReadOnlyList<IExtensionPacket>? extensionPackets = null)
     {
         // Materialize once so the asset packet and the providers index the same
         // coin order (index i == vin i on the resulting tx).
@@ -409,6 +411,10 @@ public class SpendingService(
 
         foreach (var provider in extensionPacketProviders ?? [])
             packets.AddRange(provider.BuildPackets(coinsByVin));
+
+        // Per-call packets (e.g. an Arkade offer packet on a funding deposit).
+        if (extensionPackets is not null)
+            packets.AddRange(extensionPackets);
 
         return packets.Count > 0 ? new Extension(packets).ToTxOut() : null;
     }

@@ -16,19 +16,19 @@ namespace NArk.ArkadeIntents.Services;
 /// <remarks>
 /// A spent covenant VTXO means the solver fulfilled the swap; a swept one means it expired and the
 /// deposit is recoverable. Only pending swaps transition — <see cref="IArkadeIntentStorage.UpdateStatus"/>
-/// ignores non-pending swaps, so a swap moved to <see cref="SwapIntentStatus.Cancelling"/> before its
+/// ignores non-pending swaps, so a swap moved to <see cref="ArkadeSwapIntentStatus.Cancelling"/> before its
 /// cancel-spend is never read as a fill.
 /// </remarks>
-public sealed class SwapIntentMonitoringService : IHostedService
+public sealed class ArkadeSwapIntentMonitoringService : IHostedService
 {
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IArkadeIntentStorage _intentStorage;
-    private readonly ILogger<SwapIntentMonitoringService>? _logger;
+    private readonly ILogger<ArkadeSwapIntentMonitoringService>? _logger;
 
-    public SwapIntentMonitoringService(
+    public ArkadeSwapIntentMonitoringService(
         IVtxoStorage vtxoStorage,
         IArkadeIntentStorage intentStorage,
-        ILogger<SwapIntentMonitoringService>? logger = null)
+        ILogger<ArkadeSwapIntentMonitoringService>? logger = null)
     {
         _vtxoStorage = vtxoStorage;
         _intentStorage = intentStorage;
@@ -48,10 +48,10 @@ public sealed class SwapIntentMonitoringService : IHostedService
     }
 
     /// <summary>Map a covenant VTXO's lifecycle to a terminal swap status, or <c>null</c> while still open.</summary>
-    public static SwapIntentStatus? ResolveTerminalStatus(ArkVtxo vtxo)
+    public static ArkadeSwapIntentStatus? ResolveTerminalStatus(ArkVtxo vtxo)
     {
-        if (vtxo.IsSpent()) return SwapIntentStatus.Fulfilled;
-        if (vtxo.Swept) return SwapIntentStatus.Recoverable;
+        if (vtxo.IsSpent()) return ArkadeSwapIntentStatus.Fulfilled;
+        if (vtxo.Swept) return ArkadeSwapIntentStatus.Recoverable;
         return null;
     }
 
@@ -62,7 +62,7 @@ public sealed class SwapIntentMonitoringService : IHostedService
             var status = ResolveTerminalStatus(vtxo);
             if (status is null) return;
 
-            var spentTxid = status == SwapIntentStatus.Fulfilled
+            var spentTxid = status == ArkadeSwapIntentStatus.Fulfilled
                 ? vtxo.ArkTxid ?? vtxo.SpentByTransactionId
                 : null;
 

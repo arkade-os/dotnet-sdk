@@ -7,23 +7,23 @@ using NBitcoin;
 namespace NArk.Tests.ArkadeIntents;
 
 [TestFixture]
-public class SwapIntentMonitoringServiceTests
+public class ArkadeSwapIntentMonitoringServiceTests
 {
     // ─── Pure status mapping ──────────────────────────────────────────
 
     [Test]
     public void ResolveTerminalStatus_Spent_IsFulfilled()
-        => Assert.That(SwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s", spentBy: "tx")),
-            Is.EqualTo(SwapIntentStatus.Fulfilled));
+        => Assert.That(ArkadeSwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s", spentBy: "tx")),
+            Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
 
     [Test]
     public void ResolveTerminalStatus_Swept_IsRecoverable()
-        => Assert.That(SwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s", swept: true)),
-            Is.EqualTo(SwapIntentStatus.Recoverable));
+        => Assert.That(ArkadeSwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s", swept: true)),
+            Is.EqualTo(ArkadeSwapIntentStatus.Recoverable));
 
     [Test]
     public void ResolveTerminalStatus_Open_IsNull()
-        => Assert.That(SwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s")), Is.Null);
+        => Assert.That(ArkadeSwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s")), Is.Null);
 
     // ─── Reactive → storage ───────────────────────────────────────────
 
@@ -36,7 +36,7 @@ public class SwapIntentMonitoringServiceTests
         vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx", arkTxid: "arktx"));
 
         Assert.That(intents.Updates, Has.Count.EqualTo(1));
-        Assert.That(intents.Updates[0], Is.EqualTo(("script1", SwapIntentStatus.Fulfilled, "arktx")));
+        Assert.That(intents.Updates[0], Is.EqualTo(("script1", ArkadeSwapIntentStatus.Fulfilled, "arktx")));
     }
 
     [Test]
@@ -47,7 +47,7 @@ public class SwapIntentMonitoringServiceTests
 
         vtxos.RaiseVtxo(Vtxo("script1", swept: true));
 
-        Assert.That(intents.Updates[0], Is.EqualTo(("script1", SwapIntentStatus.Recoverable, (string?)null)));
+        Assert.That(intents.Updates[0], Is.EqualTo(("script1", ArkadeSwapIntentStatus.Recoverable, (string?)null)));
     }
 
     [Test]
@@ -75,11 +75,11 @@ public class SwapIntentMonitoringServiceTests
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
-    private static (FakeVtxoStorage, FakeIntentStorage, SwapIntentMonitoringService) Build()
+    private static (FakeVtxoStorage, FakeIntentStorage, ArkadeSwapIntentMonitoringService) Build()
     {
         var vtxos = new FakeVtxoStorage();
         var intents = new FakeIntentStorage();
-        return (vtxos, intents, new SwapIntentMonitoringService(vtxos, intents));
+        return (vtxos, intents, new ArkadeSwapIntentMonitoringService(vtxos, intents));
     }
 
     private static ArkVtxo Vtxo(string script, string? spentBy = null, bool swept = false, string? arkTxid = null) =>
@@ -111,24 +111,24 @@ public class SwapIntentMonitoringServiceTests
 
     private sealed class FakeIntentStorage : IArkadeIntentStorage
     {
-        public event EventHandler<SwapIntent>? SwapsChanged;
+        public event EventHandler<ArkadeSwapIntent>? SwapsChanged;
         public event EventHandler? ActiveScriptsChanged;
 
-        public readonly List<(string Script, SwapIntentStatus Status, string? SpentTxid)> Updates = new();
+        public readonly List<(string Script, ArkadeSwapIntentStatus Status, string? SpentTxid)> Updates = new();
 
-        public Task<IReadOnlyCollection<SwapIntent>> GetSwapIntents(
-            SwapIntentStatus? status = null,
+        public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+            ArkadeSwapIntentStatus? status = null,
             string? swapPkScript = null,
             string[]? walletIds = null,
             int? skip = null,
             int? take = null,
             CancellationToken cancellationToken = default)
-            => Task.FromResult<IReadOnlyCollection<SwapIntent>>(Array.Empty<SwapIntent>());
+            => Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(Array.Empty<ArkadeSwapIntent>());
 
-        public Task SaveSwapIntent(SwapIntent intent, CancellationToken cancellationToken = default)
+        public Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
-        public Task<bool> UpdateStatus(string swapPkScript, SwapIntentStatus status, string? spentTxid = null,
+        public Task<bool> UpdateStatus(string swapPkScript, ArkadeSwapIntentStatus status, string? spentTxid = null,
             CancellationToken cancellationToken = default)
         {
             Updates.Add((swapPkScript, status, spentTxid));

@@ -11,7 +11,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
 {
     private readonly IArkDbContextFactory _dbContextFactory;
 
-    public event EventHandler<SwapIntent>? SwapsChanged;
+    public event EventHandler<ArkadeSwapIntent>? SwapsChanged;
     public event EventHandler? ActiveScriptsChanged;
 
     public EfCoreArkadeIntentStorage(IArkDbContextFactory dbContextFactory)
@@ -19,8 +19,8 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         _dbContextFactory = dbContextFactory;
     }
 
-    public async Task<IReadOnlyCollection<SwapIntent>> GetSwapIntents(
-        SwapIntentStatus? status = null,
+    public async Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+        ArkadeSwapIntentStatus? status = null,
         string? swapPkScript = null,
         string[]? walletIds = null,
         int? skip = null,
@@ -28,7 +28,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var query = db.Set<SwapIntentEntity>().AsQueryable();
+        var query = db.Set<ArkadeSwapIntentEntity>().AsQueryable();
 
         if (status is { } s)
             query = query.Where(x => x.Status == s);
@@ -45,10 +45,10 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         return rows.Select(ToDomain).ToList();
     }
 
-    public async Task SaveSwapIntent(SwapIntent intent, CancellationToken cancellationToken = default)
+    public async Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var set = db.Set<SwapIntentEntity>();
+        var set = db.Set<ArkadeSwapIntentEntity>();
 
         var existing = await set.FirstOrDefaultAsync(x => x.Id == intent.Id, cancellationToken);
         if (existing is null)
@@ -62,16 +62,16 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
 
     public async Task<bool> UpdateStatus(
         string swapPkScript,
-        SwapIntentStatus status,
+        ArkadeSwapIntentStatus status,
         string? spentTxid = null,
         CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var set = db.Set<SwapIntentEntity>();
+        var set = db.Set<ArkadeSwapIntentEntity>();
 
         // Race guard lives here: only a pending swap on this script transitions.
         var entity = await set.FirstOrDefaultAsync(
-            x => x.SwapPkScript == swapPkScript && x.Status == SwapIntentStatus.Pending,
+            x => x.SwapPkScript == swapPkScript && x.Status == ArkadeSwapIntentStatus.Pending,
             cancellationToken);
         if (entity is null)
             return false;
@@ -85,13 +85,13 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         return true;
     }
 
-    private void Notify(SwapIntent intent)
+    private void Notify(ArkadeSwapIntent intent)
     {
         SwapsChanged?.Invoke(this, intent);
         ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private static SwapIntent ToDomain(SwapIntentEntity e) => new()
+    private static ArkadeSwapIntent ToDomain(ArkadeSwapIntentEntity e) => new()
     {
         Id = e.Id,
         WalletId = e.WalletId,
@@ -103,19 +103,20 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         SwapPkScript = e.SwapPkScript,
         SwapAddress = e.SwapAddress,
         OfferHex = e.OfferHex,
+        MakerDescriptor = e.MakerDescriptor,
         FromAssetId = e.FromAssetId,
         ToAssetId = e.ToAssetId,
         SpentTxid = e.SpentTxid,
     };
 
-    private static SwapIntentEntity ToEntity(SwapIntent intent)
+    private static ArkadeSwapIntentEntity ToEntity(ArkadeSwapIntent intent)
     {
-        var entity = new SwapIntentEntity { Id = intent.Id };
+        var entity = new ArkadeSwapIntentEntity { Id = intent.Id };
         Apply(intent, entity);
         return entity;
     }
 
-    private static void Apply(SwapIntent i, SwapIntentEntity e)
+    private static void Apply(ArkadeSwapIntent i, ArkadeSwapIntentEntity e)
     {
         e.WalletId = i.WalletId;
         e.Type = i.Type;
@@ -126,6 +127,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         e.SwapPkScript = i.SwapPkScript;
         e.SwapAddress = i.SwapAddress;
         e.OfferHex = i.OfferHex;
+        e.MakerDescriptor = i.MakerDescriptor;
         e.FromAssetId = i.FromAssetId;
         e.ToAssetId = i.ToAssetId;
         e.SpentTxid = i.SpentTxid;
