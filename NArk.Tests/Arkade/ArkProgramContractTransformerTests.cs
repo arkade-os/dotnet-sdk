@@ -145,7 +145,7 @@ public class ArkProgramContractTransformerTests
             new ArkadeProgram
             {
                 Version = ArkadeProgram.SupportedVersion,
-                Params = ["server", "user"],
+                Params = ["server", "user", "preimage"],
                 Functions = new Dictionary<string, ArkadeFunction>
                 {
                     ["claim"] = new()

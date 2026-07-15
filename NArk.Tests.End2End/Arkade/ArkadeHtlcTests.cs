@@ -59,7 +59,7 @@ public class ArkadeHtlcTests
             {
                 ["claim"] = new()
                 {
-                    Inputs = [new FunctionInput { Name = "preimage", Type = InputType.Bytes }],
+                    Inputs = [new TypedInput { Name = "preimage", Type = InputType.Bytes }],
                     Tapscript = new TapscriptSegment
                     {
                         Signers = ["$server"],

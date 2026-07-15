@@ -69,15 +69,17 @@ public sealed class ArkProgramContract : ArkContract
         var declared = program.Params;
         if (declared is null) return args;
 
+        bool Declares(string name) => declared.Any(p => p.Name == name);
+        
         Dictionary<string, AsmToken>? augmented = null;
         Dictionary<string, AsmToken> Ensure() => augmented ??= new Dictionary<string, AsmToken>(args);
 
-        if (declared.Contains("server") && !args.ContainsKey("server"))
+        if (Declares("server") && !args.ContainsKey("server"))
         {
             Ensure()["server"] = AsmToken.FromBytes(server.ToXOnlyPubKey().ToBytes());
         }
 
-        if (user is not null && declared.Contains("user") && !args.ContainsKey("user"))
+        if (user is not null && Declares("user") && !args.ContainsKey("user"))
         {
             Ensure()["user"] = AsmToken.FromBytes(user.ToXOnlyPubKey().ToBytes());
         }
@@ -122,7 +124,7 @@ public sealed class ArkProgramContract : ArkContract
         var server = KeyExtensions.ParseOutputDescriptor(contractData["server"], network);
         var program = new ArkadeArtifactParser().ParseArtifact(JsonNode.Parse(contractData["program"])!.AsObject());
         var args = contractData.TryGetValue("args", out var argsJson)
-            ? DeserializeArgsMap(argsJson)
+            ? DeserializeArgsMap(argsJson, program)
             : new Dictionary<string, AsmToken>();
         var user = contractData.TryGetValue("user", out var userStr)
             ? KeyExtensions.ParseOutputDescriptor(userStr, network)
@@ -148,17 +150,54 @@ public sealed class ArkProgramContract : ArkContract
         return obj.ToJsonString();
     }
 
-    private static Dictionary<string, AsmToken> DeserializeArgsMap(string json)
+    /// <summary>
+    /// Decodes the persisted args map. A param with a declared <see cref="InputType"/> decodes by
+    /// that type (no <c>0x</c>/decimal guessing); a bare param decodes by the <c>0x</c>-prefix
+    /// heuristic. Mirrors the ts-sdk's <c>deserializeArkadeContractParams</c> / <c>parseTypedArgValue</c>.
+    /// </summary>
+    private static Dictionary<string, AsmToken> DeserializeArgsMap(string json, ArkadeProgram program)
     {
+        var paramTypes = new Dictionary<string, InputType>();
+        foreach (var p in program.Params ?? [])
+        {
+            if (p.Type is { } type) paramTypes[p.Name] = type;
+        }
+
         var obj = JsonNode.Parse(json)!.AsObject();
         var result = new Dictionary<string, AsmToken>();
         foreach (var (key, node) in obj)
         {
-            var s = node!.GetValue<string>();
-            result[key] = s.StartsWith("0x", StringComparison.Ordinal)
-                ? AsmToken.FromBytes(Convert.FromHexString(s[2..]))
-                : AsmToken.FromNumber(BigInteger.Parse(s));
+            result[key] = paramTypes.TryGetValue(key, out var declaredType)
+                ? ParseTypedArgValue(key, declaredType, node!)
+                : ParseUntypedArgValue(node!);
         }
         return result;
+    }
+
+    private static AsmToken ParseUntypedArgValue(JsonNode node)
+    {
+        var s = node.GetValue<string>();
+        return s.StartsWith("0x", StringComparison.Ordinal)
+            ? AsmToken.FromBytes(Convert.FromHexString(s[2..]))
+            : AsmToken.FromNumber(BigInteger.Parse(s));
+    }
+
+    private static AsmToken ParseTypedArgValue(string name, InputType type, JsonNode node)
+    {
+        if (type == InputType.Int)
+        {
+            return node.GetValueKind() == System.Text.Json.JsonValueKind.Number
+                ? AsmToken.FromNumber(node.GetValue<long>())
+                : AsmToken.FromNumber(BigInteger.Parse(node.GetValue<string>()));
+        }
+
+        var s = node.GetValue<string>();
+        if (s.StartsWith("0x", StringComparison.Ordinal))
+        {
+            return AsmToken.FromBytes(Convert.FromHexString(s[2..]));
+        }
+
+        throw new InvalidOperationException(
+            $"arkade contract params: '{name}' expects {type.ToString().ToLowerInvariant()} as 0x-prefixed hex, got '{s}'.");
     }
 }

@@ -31,7 +31,7 @@ public class ArkadeArtifactParser
         return new ArkadeProgram
         {
             Version = version,
-            Params = json["params"]?.AsArray().Select(p => p!.GetValue<string>()).ToList(),
+            Params = ParseInputs(json["params"]),
             Functions = ParseFunctions(functions),
         };
     }
@@ -111,7 +111,7 @@ public class ArkadeArtifactParser
         return (csv, null);
     }
 
-    private static List<FunctionInput>? ParseInputs(JsonNode? inputsNode)
+    private static List<TypedInput>? ParseInputs(JsonNode? inputsNode)
     {
         var arr = inputsNode?.AsArray();
         if (arr is null) return null;
@@ -121,14 +121,14 @@ public class ArkadeArtifactParser
             var node = x ?? throw new InvalidOperationException("'inputs' contains a null entry.");
             if (node.GetValueKind() == JsonValueKind.String)
             {
-                return new FunctionInput { Name = node.GetValue<string>() };
+                return new TypedInput { Name = node.GetValue<string>() };
             }
 
             var obj = node.AsObject();
             var name = obj["name"]?.GetValue<string>()
                        ?? throw new InvalidOperationException("Input descriptor is missing 'name'.");
             var type = obj["type"]?.GetValue<string>() is { } t ? ParseArgType(t) : (InputType?)null;
-            return new FunctionInput { Name = name, Type = type };
+            return new TypedInput { Name = name, Type = type };
         }).ToList();
     }
 

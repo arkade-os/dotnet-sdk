@@ -53,6 +53,8 @@ public static class ArkadeProgramCompiler
             throw new InvalidOperationException("ArkadeProgram has no functions.");
         }
 
+        ArkadeProgramValidator.Validate(program, args);
+
         return program.Functions
             .Select(kv => CompileFunction(kv.Key, kv.Value, args, keys))
             .ToList();

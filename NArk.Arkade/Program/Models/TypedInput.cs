@@ -30,12 +30,19 @@ public enum InputType
 /// (<see cref="Type"/> is <c>null</c>) falls back to the loose <c>ArkadeArgValue</c> at
 /// call sites; a typed descriptor gives the call argument a precise type.
 /// </summary>
-public sealed class FunctionInput
+public sealed class TypedInput
 {
     /// <summary>The input's name — how it is referenced from <c>witness</c> lists.</summary>
     public required string Name { get; init; }
 
     /// <summary>The input's declared type, or <c>null</c> for a bare (untyped) input.</summary>
     public InputType? Type { get; init; }
+
+    /// <summary>
+    /// Implicitly wrap a bare (untyped) input/param name — mirrors the ts-sdk's bare-string
+    /// <c>InputRef</c>. Lets callers write <c>Params = ["server", "hash"]</c> alongside typed
+    /// descriptors (<c>new FunctionInput { Name = "hash", Type = InputType.Hash }</c>).
+    /// </summary>
+    public static implicit operator TypedInput(string name) => new() { Name = name };
 }
 

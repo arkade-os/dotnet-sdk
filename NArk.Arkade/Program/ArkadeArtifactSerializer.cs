@@ -30,7 +30,7 @@ public static class ArkadeArtifactSerializer
         };
         if (program.Params is { Count: > 0 } prms)
         {
-            root["params"] = new JsonArray(prms.Select(p => (JsonNode)p).ToArray());
+            root["params"] = new JsonArray(prms.Select(SerializeInput).ToArray());
         }
         return root;
     }
@@ -49,7 +49,7 @@ public static class ArkadeArtifactSerializer
         return obj;
     }
 
-    private static JsonNode SerializeInput(FunctionInput programInput)
+    private static JsonNode SerializeInput(TypedInput programInput)
     {
         if (programInput.Type is null) return programInput.Name;
         return new JsonObject { ["name"] = programInput.Name, ["type"] = SerializeArgType(programInput.Type.Value) };

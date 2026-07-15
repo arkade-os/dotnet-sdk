@@ -9,7 +9,7 @@ public sealed class ArkadeFunction
     /// <summary>
     /// The function's call arguments, in order. Absent for nullary paths (e.g. exit/cancel).
     /// </summary>
-    public IReadOnlyList<FunctionInput>? Inputs { get; init; }
+    public IReadOnlyList<TypedInput>? Inputs { get; init; }
 
     /// <summary>The on-chain-enforced segment of this spending path.</summary>
     public required TapscriptSegment Tapscript { get; init; }

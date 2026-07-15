@@ -58,7 +58,8 @@ public class ArkadeArtifactRoundTripTests
         var program = RoundTrip(json);
 
         Assert.That(program.Version, Is.EqualTo(ArkadeProgram.SupportedVersion));
-        Assert.That(program.Params, Is.EqualTo(new[] { "hash", "receiver" }));
+        Assert.That(program.Params!.Select(p => p.Name), Is.EqualTo(new[] { "hash", "receiver" }));
+        Assert.That(program.Params!.All(p => p.Type is null), Is.True); // bare strings stay untyped
         Assert.That(program.Functions.Keys, Is.EqualTo(new[] { "claim", "refund" }));
 
         var claim = program.Functions["claim"];
