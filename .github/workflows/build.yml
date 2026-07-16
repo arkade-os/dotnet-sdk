@@ -57,10 +57,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Start regtest infrastructure (with emulator)
-        # The `emulator` profile pulls in `ark` (arkd); EMULATOR_SECRET_KEY comes from
-        # regtest/.env.defaults, so the emulator's signer key is deterministic.
-        run: node regtest/regtest.mjs start --profile emulator
+      - name: Start regtest infrastructure (with solver)
+        # `solver` pulls in `ark` (arkd) + `emulator`, brings up the mock pricefeed + solver, and runs
+        # solver-init (fund + mint asset + register pairs) so the swap fulfill E2E has a live market.
+        # `boltz` adds fulmine (:7003) — the funding endpoint the shared test harness uses to top up
+        # wallets. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
+        run: node regtest/regtest.mjs start --profile solver,boltz
         timeout-minutes: 20
       - name: Restore and build
         run: dotnet build
@@ -72,6 +74,8 @@ jobs:
         run: |
           docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
           docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs solver > /tmp/solver-logs.txt 2>&1 || true
+          docker logs solver-init > /tmp/solver-init-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
       - name: Upload logs
         if: failure()
