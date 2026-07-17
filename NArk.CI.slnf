@@ -8,6 +8,7 @@
       "NArk.Swaps/NArk.Swaps.csproj",
       "NArk/NArk.csproj",
       "NArk.Tests/NArk.Tests.csproj",
+      "NArk.Arkade/NArk.Arkade.csproj",
       "NArk.Transport.GrpcClient.Tests/NArk.Transport.GrpcClient.Tests.csproj",
       "NArk.Tests.End2End/NArk.Tests.End2End.csproj"
     ]
