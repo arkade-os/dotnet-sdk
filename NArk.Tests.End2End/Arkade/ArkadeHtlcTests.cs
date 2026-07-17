@@ -15,7 +15,7 @@ using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 
-namespace NArk.Tests.End2End.Core;
+namespace NArk.Tests.End2End.Arkade;
 
 /// <summary>
 /// End-to-end covenant tests against a live arkd + emulator (docker `--profile emulator`).
