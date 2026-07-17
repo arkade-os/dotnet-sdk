@@ -80,7 +80,7 @@ public class ArkTransactionBuilderSubmitRoutingTests
 
     private TransactionHelpers.ArkTransactionBuilder Builder() =>
         new(_transport, Substitute.For<ISafetyService>(), Substitute.For<IWalletProvider>(),
-            Substitute.For<IIntentStorage>(), [_handler]);
+            Substitute.For<IIntentStorage>(), submitHandlers: [_handler]);
 
     private static PSBT AnyPsbt()
     {
