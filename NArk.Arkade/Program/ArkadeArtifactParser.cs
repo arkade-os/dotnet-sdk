@@ -58,7 +58,7 @@ public class ArkadeArtifactParser
         {
             Inputs = ParseInputs(function["inputs"]),
             Tapscript = ParseTapscriptSegment(tapscriptNode),
-            ScriptSegment = ParseCovenantSegment(function["arkadeScript"]?.AsObject()),
+            ScriptSegment = ParseArkadeScriptSegment(function["arkadeScript"]?.AsObject()),
         };
     }
 
@@ -76,7 +76,7 @@ public class ArkadeArtifactParser
         };
     }
 
-    private ArkadeScriptSegment? ParseCovenantSegment(JsonObject? arkadeScript)
+    private ArkadeScriptSegment? ParseArkadeScriptSegment(JsonObject? arkadeScript)
     {
         if (arkadeScript is null) return null;
 
