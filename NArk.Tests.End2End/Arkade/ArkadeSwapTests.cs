@@ -75,7 +75,7 @@ public class ArkadeSwapTests
             spent = true;
             await foreach (var v in ctx.Transport.GetVtxoByScriptsAsSnapshot(new HashSet<string> { intent.SwapPkScript }))
             {
-                if (!v.Swept && v.SpentByTransactionId is null) spent = false;
+                if (!v.Swept && string.IsNullOrEmpty(v.SpentByTransactionId)) spent = false;
             }
             if (!spent) await Task.Delay(1000);
         }
@@ -191,7 +191,7 @@ public class ArkadeSwapTests
         {
             await foreach (var vtxo in ctx.Transport.GetVtxoByScriptsAsSnapshot(new HashSet<string> { scriptHex }))
             {
-                if (!vtxo.Swept && vtxo.SpentByTransactionId is null)
+                if (!vtxo.Swept && string.IsNullOrEmpty(vtxo.SpentByTransactionId))
                     return vtxo;
             }
             await Task.Delay(1000);

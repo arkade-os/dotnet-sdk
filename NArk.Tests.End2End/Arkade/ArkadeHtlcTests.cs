@@ -178,7 +178,7 @@ public class ArkadeHtlcTests
         {
             await foreach (var vtxo in ctx.Transport.GetVtxoByScriptsAsSnapshot(new HashSet<string> { script }))
             {
-                if (!vtxo.Swept && vtxo.SpentByTransactionId is null)
+                if (!vtxo.Swept && string.IsNullOrEmpty(vtxo.SpentByTransactionId))
                     return vtxo;
             }
             await Task.Delay(1000);
