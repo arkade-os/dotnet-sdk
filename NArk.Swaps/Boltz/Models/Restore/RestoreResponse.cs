@@ -44,16 +44,34 @@ public record SwapDetails
     public long? Amount { get; init; }
 
     /// <summary>
-    /// Transaction hex (if available).
+    /// Lockup transaction reference (if available).
     /// </summary>
     [JsonPropertyName("transaction")]
-    public string? Transaction { get; init; }
+    public RestoreTransaction? Transaction { get; init; }
 
     /// <summary>
     /// Blinding key for Liquid swaps (optional).
     /// </summary>
     [JsonPropertyName("blindingKey")]
     public string? BlindingKey { get; init; }
+}
+
+/// <summary>
+/// Reference to the lockup transaction of a restorable swap.
+/// </summary>
+public record RestoreTransaction
+{
+    /// <summary>
+    /// ID of the lockup transaction.
+    /// </summary>
+    [JsonPropertyName("id")]
+    public required string Id { get; init; }
+
+    /// <summary>
+    /// Index of the lockup output in the transaction.
+    /// </summary>
+    [JsonPropertyName("vout")]
+    public required long Vout { get; init; }
 }
 
 /// <summary>
