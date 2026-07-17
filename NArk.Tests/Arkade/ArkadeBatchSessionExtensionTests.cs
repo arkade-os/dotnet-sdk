@@ -166,6 +166,7 @@ public class ArkadeBatchSessionExtensionTests
         }
 
         public override string Type => "test";
+        public override ContractScope DefaultScope => ContractScope.Offchain;
         protected override IEnumerable<ScriptBuilder> GetScriptBuilders() { yield return _spending; }
         protected override Dictionary<string, string> GetContractData() => new() { ["arkcontract"] = Type };
 

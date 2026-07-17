@@ -23,6 +23,9 @@ public sealed class ArkProgramContract : ArkContract
     /// <summary>The contract type discriminator used in <see cref="ArkContract.Type"/> and persistence.</summary>
     public const string ContractType = "ArkadeProgram";
 
+    /// <inheritdoc />
+    public override ContractScope DefaultScope => ContractScope.Offchain;
+
     private readonly ArkadeProgram _program;
     private readonly IReadOnlyDictionary<string, AsmToken> _args;
     private readonly OutputDescriptor? _user;

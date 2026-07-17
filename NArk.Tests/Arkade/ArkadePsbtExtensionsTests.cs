@@ -223,6 +223,7 @@ public class ArkadePsbtExtensionsTests
         }
 
         public override string Type => "test";
+        public override ContractScope DefaultScope => ContractScope.Offchain;
 
         protected override IEnumerable<ScriptBuilder> GetScriptBuilders() { yield return _spending; }
 
