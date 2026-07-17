@@ -125,8 +125,13 @@ public class ArkProgramContractTransformer(
     {
         var witness = witnessOps.Count > 0 ? new WitScript(witnessOps.ToArray()) : null;
 
+        // The tapscript segment's CSV/CLTV drive the OP_CHECKSEQUENCEVERIFY / OP_CHECKLOCKTIMEVERIFY
+        // the compiled leaf encodes, so carry them onto the coin — ArkCoin requires a matching
+        // Sequence whenever the spending script contains OP_CSV.
+        var seg = compiled.Definition.Tapscript;
+
         return new ArkCoin(walletIdentifier, contract, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight,
-            vtxo.OutPoint, vtxo.TxOut, contract.User, compiled.ToScriptBuilder(), witness, null, null,
+            vtxo.OutPoint, vtxo.TxOut, contract.User, compiled.ToScriptBuilder(), witness, seg.Cltv, seg.Csv,
             vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
     }
 
