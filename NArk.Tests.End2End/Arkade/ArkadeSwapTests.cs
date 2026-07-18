@@ -25,6 +25,8 @@ namespace NArk.Tests.End2End.Arkade;
 public class ArkadeSwapTests
 {
     private static readonly Uri EmulatorEndpoint = new("http://localhost:7073");
+    private static readonly Uri SolverEndpoint = new("http://localhost:7091");
+    
     private const long DepositSats = 50_000;
     private const long WantAmount = 1_000_000; // asset units the maker wants (synthetic asset)
 
@@ -124,7 +126,6 @@ public class ArkadeSwapTests
 
     // ─── Setup + helpers ──────────────────────────────────────────────
 
-    private static readonly Uri SolverEndpoint = new("http://localhost:7091");
 
     private static async Task<bool> Poll(Func<Task<bool>> condition, TimeSpan timeout)
     {

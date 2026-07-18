@@ -35,6 +35,8 @@ public sealed class SolverDiscoveryService
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         PropertyNameCaseInsensitive = true,
+        // The registry encodes amounts (min/max base & quote) as JSON strings, e.g. "min_base_amount": "1000".
+        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString,
     };
 
     private readonly HttpClient _http;
