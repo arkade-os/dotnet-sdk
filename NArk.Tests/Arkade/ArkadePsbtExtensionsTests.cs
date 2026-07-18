@@ -1,7 +1,6 @@
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
-using NArk.Arkade.Crypto;
 using NArk.Arkade.Emulator;
 using NArk.Arkade.Scripts;
 using NArk.Core.Assets;
@@ -37,12 +36,15 @@ public class ArkadePsbtExtensionsTests
     {
         var (alice, bob, emulator) = MakeKeys();
         var arkadeBytes = new byte[] { 0xc4, 0xc6 };
-        var arkade = new ArkadeNofNMultisigTapScript(arkadeBytes, [alice], [emulator]);
+        // The arkade-script witness now travels on the builder, not the coin's
+        // on-chain SpendingConditionWitness.
+        var arkade = new ArkadeNofNMultisigTapScript(
+            arkadeBytes, [alice], [emulator], new WitScript(Op.GetPushOp(Convert.FromHexString("deadbeef"))));
         var plain = new NofNMultisigTapScript([alice, bob]);
 
         // vin 0 = plain, vin 1 = arkade — expect a single entry with vin=1.
-        var coinPlain = MakeCoin(alice, bob, plain, witnessPushes: []);
-        var coinArkade = MakeCoin(alice, bob, arkade, witnessPushes: [Convert.FromHexString("deadbeef")]);
+        var coinPlain = MakeCoin(alice, bob, plain);
+        var coinArkade = MakeCoin(alice, bob, arkade);
 
         var packets = ArkadePsbtExtensions.BuildEmulatorPackets([coinPlain, coinArkade]);
         Assert.That(packets, Has.Count.EqualTo(1));
@@ -77,8 +79,9 @@ public class ArkadePsbtExtensionsTests
         // packet merged into a single Extension, so both must survive in one OP_RETURN.
         var (alice, bob, emulator) = MakeKeys();
         var arkadeBytes = new byte[] { 0xc4, 0xc6 };
-        var arkade = new ArkadeNofNMultisigTapScript(arkadeBytes, [alice], [emulator]);
-        var coinArkade = MakeCoin(alice, bob, arkade, witnessPushes: [Convert.FromHexString("deadbeef")]);
+        var arkade = new ArkadeNofNMultisigTapScript(
+            arkadeBytes, [alice], [emulator], new WitScript(Op.GetPushOp(Convert.FromHexString("deadbeef"))));
+        var coinArkade = MakeCoin(alice, bob, arkade);
 
         var emulatorPacket = ArkadePsbtExtensions.BuildEmulatorPackets([coinArkade])[0];
 

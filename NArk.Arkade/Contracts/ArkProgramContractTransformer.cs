@@ -31,11 +31,13 @@ namespace NArk.Arkade.Contracts;
 /// select the path and supply its <c>callArgs</c>.
 /// </para>
 /// <para>
-/// A function with both a <see cref="TapscriptSegment.Asm"/> condition <em>and</em> a
-/// <see cref="ArkadeFunction.ScriptSegment"/> is also left untransformed: this codebase's
-/// <c>ArkCoin.SpendingConditionWitness</c> field is reused by <c>ArkadePsbtExtensions.BuildEmulatorPackets</c>
-/// to carry the covenant's witness to the emulator, so it can't simultaneously carry a
-/// different witness for the outer tapscript condition.
+/// A function may combine a <see cref="TapscriptSegment.Asm"/> condition (an on-chain gate such as
+/// a hashlock) with an <see cref="ArkadeFunction.ScriptSegment"/> covenant. Its two witnesses are
+/// carried separately: the tapscript witness satisfies the on-chain condition via
+/// <c>ArkCoin.SpendingConditionWitness</c>, while the arkade-script witness travels to the emulator
+/// on <see cref="NArk.Arkade.Scripts.IArkadeBoundScriptBuilder.ArkadeScriptWitness"/> (assembled into
+/// the emulator packet by <c>ArkadePsbtExtensions.BuildEmulatorPackets</c>). This mirrors the ts-sdk,
+/// which likewise splits the on-chain <c>ConditionWitness</c> from the emulator packet's witness.
 /// </para>
 /// </remarks>
 public class ArkProgramContractTransformer(
@@ -70,10 +72,10 @@ public class ArkProgramContractTransformer(
     public Task<ArkCoin> Transform(string walletIdentifier, ArkContract contract, ArkVtxo vtxo)
     {
         var programContract = (ArkProgramContract)contract;
-        var (compiled, witnessOps) = SelectSpendableFunction(programContract)
+        var (compiled, onchainOps, arkadeScriptOps) = SelectSpendableFunction(programContract)
             ?? throw new InvalidOperationException("No uniquely spendable function found for this program.");
 
-        return Task.FromResult(BuildCoin(walletIdentifier, programContract, vtxo, compiled, witnessOps));
+        return Task.FromResult(BuildCoin(walletIdentifier, programContract, vtxo, compiled, onchainOps, arkadeScriptOps));
     }
 
     /// <summary>
@@ -106,24 +108,33 @@ public class ArkProgramContractTransformer(
             ?? throw new ArgumentException($"Program has no function '{functionName}'.", nameof(functionName));
 
         var def = compiled.Definition;
-        if (def.ScriptSegment is not null && def.Tapscript.Asm is not null)
-            throw new InvalidOperationException(
-                $"Function '{functionName}' has both a covenant and a tapscript condition; " +
-                "the single SpendingConditionWitness field can carry only one.");
 
-        var witnessTokens = def.ScriptSegment?.Witness ?? def.Tapscript.Witness;
-        if (!TryResolveWitness(witnessTokens, contract.Args, callArgs ?? EmptyArgs, out var ops))
+        // The on-chain tapscript witness (e.g. a hashlock preimage) and the
+        // arkade-script witness (the covenant's own inputs, e.g. the inspected
+        // output index) are carried on SEPARATE fields — a single leaf can
+        // require both at once (an HTLC claim gates on a preimage on-chain AND a
+        // covenant), so they must not share one witness field.
+        if (!TryResolveWitness(def.Tapscript.Witness, contract.Args, callArgs ?? EmptyArgs, out var onchainOps))
             throw new InvalidOperationException(
-                $"Function '{functionName}' witness could not be resolved — a required call argument is missing.");
+                $"Function '{functionName}' tapscript witness could not be resolved — a required call argument is missing.");
 
-        return Task.FromResult(BuildCoin(walletIdentifier, contract, vtxo, compiled, ops));
+        IReadOnlyList<Op> arkadeScriptOps = [];
+        if (def.ScriptSegment is not null &&
+            !TryResolveWitness(def.ScriptSegment.Witness, contract.Args, callArgs ?? EmptyArgs, out arkadeScriptOps))
+            throw new InvalidOperationException(
+                $"Function '{functionName}' arkade-script witness could not be resolved — a required call argument is missing.");
+
+        return Task.FromResult(BuildCoin(walletIdentifier, contract, vtxo, compiled, onchainOps, arkadeScriptOps));
     }
 
     private static ArkCoin BuildCoin(
         string walletIdentifier, ArkProgramContract contract, ArkVtxo vtxo,
-        CompiledArkadeFunction compiled, IReadOnlyList<Op> witnessOps)
+        CompiledArkadeFunction compiled, IReadOnlyList<Op> onchainWitnessOps, IReadOnlyList<Op> arkadeScriptWitnessOps)
     {
-        var witness = witnessOps.Count > 0 ? new WitScript(witnessOps.ToArray()) : null;
+        // On-chain condition witness (prepended to the script-path witness at spend
+        // time); the arkade-script witness travels separately in the emulator packet.
+        var onchainWitness = onchainWitnessOps.Count > 0 ? new WitScript(onchainWitnessOps.ToArray()) : null;
+        var arkadeScriptWitness = arkadeScriptWitnessOps.Count > 0 ? new WitScript(arkadeScriptWitnessOps.ToArray()) : null;
 
         // The tapscript segment's CSV/CLTV drive the OP_CHECKSEQUENCEVERIFY / OP_CHECKLOCKTIMEVERIFY
         // the compiled leaf encodes, so carry them onto the coin — ArkCoin requires a matching
@@ -131,18 +142,18 @@ public class ArkProgramContractTransformer(
         var seg = compiled.Definition.Tapscript;
 
         return new ArkCoin(walletIdentifier, contract, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight,
-            vtxo.OutPoint, vtxo.TxOut, contract.User, compiled.ToScriptBuilder(), witness, seg.Cltv, seg.Csv,
+            vtxo.OutPoint, vtxo.TxOut, contract.User, compiled.ToScriptBuilder(arkadeScriptWitness), onchainWitness, seg.Cltv, seg.Csv,
             vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
     }
 
-    private static (CompiledArkadeFunction Function, IReadOnlyList<Op> Witness)? SelectSpendableFunction(
-        ArkProgramContract contract)
+    private static (CompiledArkadeFunction Function, IReadOnlyList<Op> OnchainWitness, IReadOnlyList<Op> ArkadeScriptWitness)?
+        SelectSpendableFunction(ArkProgramContract contract)
     {
         if (contract.User is null)
             return null;
 
         var userKey = contract.User.ToXOnlyPubKey().ToBytes();
-        var candidates = new List<(CompiledArkadeFunction, IReadOnlyList<Op>)>();
+        var candidates = new List<(CompiledArkadeFunction, IReadOnlyList<Op>, IReadOnlyList<Op>)>();
 
         foreach (var compiled in contract.CompiledFunctions)
         {
@@ -151,19 +162,18 @@ public class ArkProgramContractTransformer(
             if (!compiled.SignerKeys.Any(k => k.ToBytes().SequenceEqual(userKey)))
                 continue;
 
-            // The emulator packet reuses SpendingConditionWitness for the covenant's own
-            // witness — a function needing both an outer condition witness and a covenant
-            // witness can't be represented with the current single-field design.
-            if (def.ScriptSegment is not null && def.Tapscript.Asm is not null)
-                continue;
-
             // Auto-select only handles fully-args-bound paths: no call args are supplied, so any
             // witness token referencing a call-time input leaves this function unresolvable here.
-            var witnessTokens = def.ScriptSegment?.Witness ?? def.Tapscript.Witness;
-            if (!TryResolveWitness(witnessTokens, contract.Args, EmptyArgs, out var ops))
+            // The on-chain tapscript witness and the arkade-script witness are resolved separately.
+            if (!TryResolveWitness(def.Tapscript.Witness, contract.Args, EmptyArgs, out var onchainOps))
                 continue;
 
-            candidates.Add((compiled, ops));
+            IReadOnlyList<Op> arkadeScriptOps = [];
+            if (def.ScriptSegment is not null &&
+                !TryResolveWitness(def.ScriptSegment.Witness, contract.Args, EmptyArgs, out arkadeScriptOps))
+                continue;
+
+            candidates.Add((compiled, onchainOps, arkadeScriptOps));
         }
 
         return candidates.Count == 1 ? candidates[0] : null;

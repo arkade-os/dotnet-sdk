@@ -37,6 +37,9 @@ public sealed class ArkadeNofNMultisigTapScript : ScriptBuilder, IArkadeBoundScr
     /// <summary>The ArkadeScript bytecode this leaf is bound to.</summary>
     public byte[] ArkadeScript { get; }
 
+    /// <inheritdoc />
+    public WitScript? ArkadeScriptWitness { get; }
+
     /// <summary>The emulators whose tweaked keys were appended to the owner set.</summary>
     public IReadOnlyList<TaprootPubKey> EmulatorKeys { get; }
 
@@ -49,7 +52,8 @@ public sealed class ArkadeNofNMultisigTapScript : ScriptBuilder, IArkadeBoundScr
     public ArkadeNofNMultisigTapScript(
         byte[] arkadeScript,
         IEnumerable<ECXOnlyPubKey> baseOwners,
-        IEnumerable<TaprootPubKey> emulatorKeys)
+        IEnumerable<TaprootPubKey> emulatorKeys,
+        WitScript? arkadeScriptWitness = null)
     {
         ArgumentNullException.ThrowIfNull(arkadeScript);
         ArgumentNullException.ThrowIfNull(baseOwners);
@@ -58,6 +62,7 @@ public sealed class ArkadeNofNMultisigTapScript : ScriptBuilder, IArkadeBoundScr
             throw new ArgumentException("ArkadeScript bytecode cannot be empty.", nameof(arkadeScript));
 
         ArkadeScript = arkadeScript;
+        ArkadeScriptWitness = arkadeScriptWitness;
         EmulatorKeys = emulatorKeys.ToArray();
         if (EmulatorKeys.Count == 0)
             throw new ArgumentException("At least one emulator key is required.", nameof(emulatorKeys));

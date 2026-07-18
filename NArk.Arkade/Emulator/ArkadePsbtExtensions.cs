@@ -69,7 +69,9 @@ public static class ArkadePsbtExtensions
         for (var vin = 0; vin < coinsByVin.Count; vin++)
         {
             if (coinsByVin[vin].SpendingScriptBuilder is not IArkadeBoundScriptBuilder arkade) continue;
-            var witness = ExtractWitnessPushes(coinsByVin[vin].SpendingConditionWitness);
+            // The emulator's witness is the arkade-script witness carried on the builder — NOT the
+            // coin's on-chain SpendingConditionWitness (that one satisfies the tapscript condition).
+            var witness = ExtractWitnessPushes(arkade.ArkadeScriptWitness);
             entries.Add(new EmulatorEntry((ushort)vin, arkade.ArkadeScript, witness));
         }
 

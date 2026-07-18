@@ -17,12 +17,17 @@ public sealed class ArkadeProgramFunctionScriptBuilder : GenericTapScript, IArka
     public byte[] ArkadeScript { get; }
 
     /// <inheritdoc />
+    public WitScript? ArkadeScriptWitness { get; }
+
+    /// <inheritdoc />
     public IReadOnlyList<TaprootPubKey> EmulatorKeys { get; }
 
-    public ArkadeProgramFunctionScriptBuilder(IEnumerable<Op> ops, byte[] arkadeScript, TaprootPubKey emulatorKey)
+    public ArkadeProgramFunctionScriptBuilder(
+        IEnumerable<Op> ops, byte[] arkadeScript, TaprootPubKey emulatorKey, WitScript? arkadeScriptWitness = null)
         : base(ops)
     {
         ArkadeScript = arkadeScript;
+        ArkadeScriptWitness = arkadeScriptWitness;
         EmulatorKeys = [emulatorKey];
     }
 }

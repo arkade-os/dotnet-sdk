@@ -43,6 +43,15 @@ public interface IArkadeBoundScriptBuilder
     byte[] ArkadeScript { get; }
 
     /// <summary>
+    /// The witness the emulator pushes before executing <see cref="ArkadeScript"/>
+    /// (e.g. the inspected output index). Distinct from the on-chain
+    /// <c>ArkCoin.SpendingConditionWitness</c> — a leaf can carry an on-chain
+    /// condition (a hashlock preimage) AND an arkade-script witness at once.
+    /// Null when the arkade script needs no witness.
+    /// </summary>
+    WitScript? ArkadeScriptWitness { get; }
+
+    /// <summary>
     /// Pre-tweak emulator pubkeys (one per emulator). The tapscript
     /// leaf's signing set carries the post-tweak versions of these — the
     /// pre-tweak forms are kept so the dispatch layer can decide whether

@@ -44,11 +44,11 @@ public sealed class CompiledArkadeFunction
     /// emulator co-signing pipeline (<see cref="NArk.Arkade.Emulator.ArkadePsbtExtensions"/>)
     /// picks them up with no further wiring.
     /// </summary>
-    public ScriptBuilder ToScriptBuilder()
+    public ScriptBuilder ToScriptBuilder(WitScript? arkadeScriptWitness = null)
     {
         var ops = ArkadeScript.Decode(LeafScript);
         return ArkadeScriptBytes is { } script && EmulatorKey is { } key
-            ? new ArkadeProgramFunctionScriptBuilder(ops, script, key)
+            ? new ArkadeProgramFunctionScriptBuilder(ops, script, key, arkadeScriptWitness)
             : new GenericTapScript(ops);
     }
 }
