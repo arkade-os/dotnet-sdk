@@ -141,7 +141,7 @@ public class ArkadeSwapTests
     {
         await foreach (var v in ctx.Transport.GetVtxoByScriptsAsSnapshot(new HashSet<string> { scriptHex }))
         {
-            if (v.SpentByTransactionId is not null || v.Swept) continue;
+            if (!string.IsNullOrEmpty(v.SpentByTransactionId) || v.Swept) continue;
             if (v.Assets is { Count: > 0 } assets && assets.Any(a => a.AssetId == assetId)) return true;
         }
         return false;

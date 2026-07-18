@@ -1,3 +1,4 @@
+using System.Text;
 using NArk.Arkade.Crypto;
 using NBitcoin;
 using NBitcoin.Secp256k1;
@@ -9,8 +10,7 @@ namespace NArk.Tests.Arkade;
 /// are dependent on BIP-340's <c>SHA256(SHA256(tag) || SHA256(tag) || msg)</c>
 /// computation; we treat NBitcoin's <see cref="SHA256.InitializeTagged"/> as
 /// the source of truth and just verify deterministic + independent + tweak-
-/// validity properties here. Cross-SDK byte-equal vectors will land alongside
-/// the upcoming ArkadeVtxoScript tests once we have ts-sdk-side fixtures.
+/// validity properties here.
 /// </summary>
 [TestFixture]
 public class ArkadeTweakTests
@@ -68,5 +68,83 @@ public class ArkadeTweakTests
         var fromXOnly = ArkadeTweak.Tweak(new TaprootPubKey(emulatorPubKey.ToXOnlyPubKey().ToBytes()), script);
 
         Assert.That(fromCompressed.ToBytes(), Is.EqualTo(fromXOnly.ToBytes()));
+    }
+
+    // secp256k1 group order N minus 1. Multiplying a scalar by this tweak negates it —
+    // used below to mirror btcec's ModNScalar.Negate() step from the reference test,
+    // since NBitcoin.Secp256k1's ECPrivKey exposes no direct negation.
+    private static readonly byte[] SecpOrderMinusOne =
+        Convert.FromHexString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140");
+
+    private static byte[] PrivKeyBytesFromSeedWithParity(string seed, bool wantOddCompressedPrefix)
+    {
+        var digest = System.Security.Cryptography.SHA256.HashData(Encoding.ASCII.GetBytes(seed));
+        var priv = ECPrivKey.Create(digest);
+        var isOdd = priv.CreatePubKey().ToBytes(true)[0] == 0x03;
+        if (isOdd == wantOddCompressedPrefix) return digest;
+
+        var negated = priv.TweakMul(SecpOrderMinusOne);
+        Span<byte> negatedBytes = stackalloc byte[32];
+        negated.WriteToSpan(negatedBytes);
+        return negatedBytes.ToArray();
+    }
+
+    // test vectors from https://github.com/arkade-os/emulator/blob/master/pkg/arkade/tweak_test.go#L23-L50, commit 210d327
+    private static IEnumerable<TestCaseData> ScriptKeyTweakingVectors()
+    {
+        yield return new TestCaseData(
+                PrivKeyBytesFromSeedWithParity("private-key-seed-even", wantOddCompressedPrefix: false), (byte?)null)
+            .SetName("{m}_even");
+        yield return new TestCaseData(
+                PrivKeyBytesFromSeedWithParity("private-key-seed-odd", wantOddCompressedPrefix: true), (byte?)null)
+            .SetName("{m}_odd");
+        yield return new TestCaseData(
+                Convert.FromHexString("05717677ccec3c6ec975b8356b104808b6e149b82d9816d2d7c3b25dd658c220"), (byte?)0x03)
+            .SetName("{m}_even_to_tweaked_odd");
+        yield return new TestCaseData(
+                Convert.FromHexString("2b6f9e9c6b1b6ada475009bb6ac01e7cacc5879ab2610b1ad017cf7e467665af"), (byte?)0x02)
+            .SetName("{m}_even_to_tweaked_even");
+    }
+
+    /// <summary>
+    /// Mirrors ComputeArkadeScriptPrivateKey from the Go emulator: negate the private
+    /// key's scalar if its compressed pubkey is odd, then add the tagged script hash
+    /// as a scalar. This is the emulator-side counterpart of <see cref="ArkadeTweak.Tweak(TaprootPubKey,ReadOnlySpan{byte})"/>,
+    /// which only ever sees the public key.
+    /// </summary>
+    private static ECPrivKey ComputeArkadeScriptPrivateKey(ECPrivKey priv, byte[] scriptHash)
+    {
+        var isOdd = priv.CreatePubKey().ToBytes(true)[0] == 0x03;
+        var normalized = isOdd ? priv.TweakMul(SecpOrderMinusOne) : priv;
+        return normalized.TweakAdd(scriptHash);
+    }
+
+    [TestCaseSource(nameof(ScriptKeyTweakingVectors))]
+    public void Tweak_MatchesEmulatorReferencePrivateKeyTweaking(byte[] privKeyBytes, byte? expectedTweakedPrefix)
+    {
+        var script = "OP_TRUE"u8.ToArray();
+        var scriptHash = ArkadeTweak.ComputeScriptHash(script);
+
+        var priv = ECPrivKey.Create(privKeyBytes);
+        var originalXOnly = priv.CreatePubKey().ToXOnlyPubKey().ToBytes();
+
+        var tweakedPriv = ComputeArkadeScriptPrivateKey(priv, scriptHash);
+        var expectedTweakedPub = ArkadeTweak.Tweak(new TaprootPubKey(originalXOnly), script);
+
+        // The public-key-only tweak this SDK exposes must be bit-compatible with what
+        // the emulator derives by tweaking its own private key.
+        Assert.That(tweakedPriv.CreatePubKey().ToXOnlyPubKey().ToBytes(), Is.EqualTo(expectedTweakedPub.ToBytes()));
+
+        var message = System.Security.Cryptography.SHA256.HashData("yo"u8.ToArray());
+        var signature = tweakedPriv.SignBIP340(message);
+
+        var tweakedXOnlyPub = ECXOnlyPubKey.Create(expectedTweakedPub.ToBytes());
+        Assert.That(tweakedXOnlyPub.SigVerifyBIP340(signature, message), Is.True);
+
+        var originalXOnlyPub = ECXOnlyPubKey.Create(originalXOnly);
+        Assert.That(originalXOnlyPub.SigVerifyBIP340(signature, message), Is.False);
+
+        if (expectedTweakedPrefix is { } prefix)
+            Assert.That(tweakedPriv.CreatePubKey().ToBytes(true)[0], Is.EqualTo(prefix));
     }
 }
