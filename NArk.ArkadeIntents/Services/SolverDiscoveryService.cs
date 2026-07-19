@@ -210,6 +210,27 @@ public sealed class SolverDiscoveryService
         return (long)Math.Floor(depositBaseUnits * price * spread);
     }
 
+    /// <summary>
+    /// Inverse of <see cref="ComputeWantAmount"/> — the deposit (base atomic units) a maker must
+    /// fund to receive at least <paramref name="wantAmount"/> of the quote asset, at
+    /// <paramref name="price"/> (atomic quote-per-base) after conceding <c>feeBps + safetyBps</c>.
+    /// This is the <c>wantAmount</c> arm of the discovery-client's <c>quoteOffer</c> (the maker
+    /// names the amount they want and gets quoted the required deposit). Rounds up so the resulting
+    /// deposit never quotes short. Returns <c>0</c> when the spread is non-positive.
+    /// </summary>
+    public static long ComputeRequiredDeposit(
+        long wantAmount,
+        decimal price,
+        int feeBps,
+        int safetyBps = DefaultSafetyBps)
+    {
+        if (wantAmount <= 0 || price <= 0m) return 0;
+        var net = 10000 - feeBps - safetyBps;
+        if (net <= 0) return 0;
+        var spread = net / 10000m;
+        return (long)Math.Ceiling(wantAmount / (price * spread));
+    }
+
     /// <summary>Resolve an RFC 6901 JSON Pointer (e.g. <c>"/price"</c>, <c>"/data/0/px"</c>) against a JSON tree.</summary>
     public static JsonNode ResolveJsonPointer(JsonNode root, string pointer)
     {

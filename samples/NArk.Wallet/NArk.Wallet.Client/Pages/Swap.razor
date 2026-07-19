@@ -50,27 +50,35 @@
                 @if (_selected is not null)
                 {
                     <label class="input-label">You pay (BTC sats)</label>
-                    <input class="input-field mb-8" type="number" @bind="_depositSats" @bind:event="oninput"
+                    <input class="input-field mb-4" type="number" @bind="_depositSats" @bind:event="oninput" @bind:after="OnDepositEdited"
                            min="@_selected.MinBaseAmount" max="@_selected.MaxBaseAmount" placeholder="e.g. 50000" />
                     <p class="text-secondary" style="font-size:11px;margin:0 0 12px;">
                         min @_selected.MinBaseAmount · max @_selected.MaxBaseAmount sats
                         @if (_price is not null)
                         {
-                            <span> · price ≈ @_price.Value.ToString("0.##") @_selected.QuoteAsset.Ticker/BTC</span>
+                            <span> · price ≈ @_price.Value.ToString("0.########") (atomic @(_selected.QuoteAsset.Ticker ?? "asset")/sat)</span>
+                        }
+                        @if (_suggestedWant > 0)
+                        {
+                            <br />
+                            <span>→ you receive ≈ </span>
+                            <button class="link-btn" @onclick="ApplySuggestedWant">@_suggestedWant @(_selected.QuoteAsset.Ticker ?? "units")</button>
+                            <span> (after @(_selected.FeeBps / 100.0)% fee)</span>
                         }
                     </p>
 
                     <label class="input-label">You receive (@(_selected.QuoteAsset.Ticker ?? "asset") atomic units)</label>
-                    <input class="input-field mb-4" type="number" @bind="_wantAmount" placeholder="want amount" />
+                    <input class="input-field mb-4" type="number" @bind="_wantAmount" @bind:event="oninput" @bind:after="OnWantEdited" placeholder="want amount" />
                     <p class="text-secondary" style="font-size:11px;margin:0 0 12px;">
-                        @if (_suggestedWant > 0)
+                        @if (_suggestedDeposit > 0)
                         {
-                            <button class="link-btn" @onclick="ApplySuggested">Use suggested: @_suggestedWant</button>
-                            <span> (from feed price, minus fee)</span>
+                            <span>→ you pay ≈ </span>
+                            <button class="link-btn" @onclick="ApplySuggestedDeposit">@_suggestedDeposit sats</button>
+                            <span> (incl. @(_selected.FeeBps / 100.0)% fee)</span>
                         }
                         else
                         {
-                            <span>Enter how many atomic units of @(_selected.QuoteAsset.Ticker ?? "the asset") you want.</span>
+                            <span>Enter how many atomic units of @(_selected.QuoteAsset.Ticker ?? "the asset") you want, or use the estimate above.</span>
                         }
                     </p>
 
@@ -124,7 +132,8 @@
     private IndexedMarket? _selected;
     private long _depositSats;
     private long _wantAmount;
-    private long _suggestedWant;
+    private long _suggestedWant;      // ← quoted from the deposit ("you receive")
+    private long _suggestedDeposit;   // ← quoted from the want   ("you pay")
     private decimal? _price;
     private bool _loadingMarkets = true;
     private bool _busy;
@@ -176,32 +185,51 @@
     {
         _price = null;
         _suggestedWant = 0;
+        _suggestedDeposit = 0;
         if (_selected is null) return;
         try
         {
             _price = await Ark.GetMarketPrice(_selected);
             RecomputeSuggested();
+            RecomputeRequiredDeposit();
         }
         catch { _price = null; }
         StateHasChanged();
     }
 
+    // Two-way quote, mirroring the discovery-client's quoteOffer (name one side, get the other):
+    //   • edit the deposit  → quote how much asset you receive  (ComputeWantAmount, forward)
+    //   • edit the want      → quote how many sats you must pay  (ComputeRequiredDeposit, inverse)
+    // _price is the atomic quote-per-base price from the feed (FetchPriceAsync ≙ deriveAtomicPrice),
+    // so no extra decimal scaling is needed. Both concede feeBps + the default safety cushion, which
+    // keeps the resulting offer inside the solver's slippage band. Both stay editable.
     private void RecomputeSuggested()
     {
-        if (_selected is null || _price is null || _depositSats <= 0) { _suggestedWant = 0; return; }
-        // want(quote, atomic) = depositBTC * price(quote/BTC) * 10^precision, discounted by fee so the
-        // solver profits (higher fill chance). Kept editable — the maker sets the final amount.
-        var baseBtc = (decimal)_depositSats / 100_000_000m;
-        var whole = baseBtc * _price.Value;
-        var atomic = whole * (decimal)Math.Pow(10, _selected.QuoteAsset.Precision);
-        var discount = 1m - ((_selected.FeeBps + 100) / 10_000m); // fee + 1% safety
-        _suggestedWant = (long)Math.Floor(atomic * discount);
+        _suggestedWant = (_selected is null || _price is null || _depositSats <= 0)
+            ? 0
+            : NArk.ArkadeIntents.Services.SolverDiscoveryService.ComputeWantAmount(
+                _depositSats, _price.Value, _selected.FeeBps);
     }
 
-    private void ApplySuggested()
+    private void RecomputeRequiredDeposit()
     {
-        RecomputeSuggested();
-        if (_suggestedWant > 0) _wantAmount = _suggestedWant;
+        _suggestedDeposit = (_selected is null || _price is null || _wantAmount <= 0)
+            ? 0
+            : NArk.ArkadeIntents.Services.SolverDiscoveryService.ComputeRequiredDeposit(
+                _wantAmount, _price.Value, _selected.FeeBps);
+    }
+
+    private void OnDepositEdited() => RecomputeSuggested();   // "you pay" changed → requote "you receive"
+    private void OnWantEdited() => RecomputeRequiredDeposit(); // "you receive" changed → requote "you pay"
+
+    private void ApplySuggestedWant()
+    {
+        if (_suggestedWant > 0) { _wantAmount = _suggestedWant; RecomputeRequiredDeposit(); }
+    }
+
+    private void ApplySuggestedDeposit()
+    {
+        if (_suggestedDeposit > 0) { _depositSats = _suggestedDeposit; RecomputeSuggested(); }
     }
 
     private async Task CreateSwap()

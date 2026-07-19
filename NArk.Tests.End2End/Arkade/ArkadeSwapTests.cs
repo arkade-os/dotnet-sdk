@@ -111,10 +111,19 @@ public class ArkadeSwapTests
 
         var ctx = await SetUpAsync();
         var deposit = (long)Math.Clamp((ulong)DepositSats, pair.MinAmount, Math.Min(pair.MaxAmount, 200_000UL));
-        const long lowWant = 10; // ask for very little → always profitable for the solver to fill
+
+        // The solver rejects any offer whose price deviates more than the pair's slippage
+        // (default ±1%) from the feed, so we must ask for the fair amount — not "very little"
+        // (the old lowWant=10 was ~100% below feed and always rejected). The solver-init mock
+        // market is configured 1 sat ↔ 1 asset unit (base_decimals=8, quote_decimals=0,
+        // feed btc-asset=1e-8 BTC/unit), so the atomic quote-per-base price is exactly 1. Use
+        // the canonical maker formula (SolverDiscoveryService.ComputeWantAmount ≙ discovery-client
+        // computeWantAmount): conceding the default safety_bps lands the offer inside the band.
+        const decimal atomicPrice = 1m; // quote-atomic per base-atomic for the 1:1 mock market
+        var want = SolverDiscoveryService.ComputeWantAmount(deposit, atomicPrice, feeBps: 0);
 
         var intent = await ctx.Manager.CreateSwap(new CreateSwapRequest(
-            ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, deposit, lowWant, AssetId.FromString(assetIdHex)));
+            ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, deposit, want, AssetId.FromString(assetIdHex)));
 
         // The covenant forces the fill to pay the asset to the maker's payout script.
         var makerScript = Convert.ToHexString(

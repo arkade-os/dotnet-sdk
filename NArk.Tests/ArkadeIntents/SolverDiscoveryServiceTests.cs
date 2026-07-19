@@ -128,6 +128,43 @@ public class SolverDiscoveryServiceTests
         Assert.That(SolverDiscoveryService.ComputeWantAmount(1000, 2m, feeBps: 0, safetyBps: 100), Is.EqualTo(1980));
     }
 
+    [Test]
+    public void ComputeWantAmount_LandsInsideSolverBand_ForUnitPriceMarket()
+    {
+        // The regtest mock market is 1 sat ↔ 1 asset unit (atomic quote-per-base price = 1).
+        // Conceding only the default safety (feeBps=0) keeps the offer inside the solver's ±100 bps
+        // band: floor(50000 * 1 * 0.995) = 49750 → offerPrice = feed * 1/0.995 ≈ +50 bps.
+        const long deposit = 50_000;
+        var want = SolverDiscoveryService.ComputeWantAmount(deposit, price: 1m, feeBps: 0);
+        Assert.That(want, Is.EqualTo(49_750));
+
+        // Solver: offerPrice = (deposit/10^8)/(want/10^0); feed (base/quote) for this market is 1e-8.
+        const double feed = 1e-8;
+        var offerPrice = (deposit / 1e8) / (want / 1e0);
+        Assert.That(offerPrice, Is.GreaterThanOrEqualTo(feed));        // maker concedes → favours solver
+        Assert.That(offerPrice, Is.LessThanOrEqualTo(feed * 1.01));    // still within +1%
+    }
+
+    [Test]
+    public void ComputeRequiredDeposit_IsInverseOfComputeWantAmount()
+    {
+        // Naming a target want and funding the quoted deposit must yield at least that want back.
+        foreach (var (want, price, fee) in new[] { (496_000L, 0.5m, 30), (2_000L, 2m, 0), (49_750L, 1m, 0) })
+        {
+            var deposit = SolverDiscoveryService.ComputeRequiredDeposit(want, price, fee);
+            var got = SolverDiscoveryService.ComputeWantAmount(deposit, price, fee);
+            Assert.That(got, Is.GreaterThanOrEqualTo(want), $"want={want} price={price} fee={fee} → deposit={deposit} got={got}");
+        }
+    }
+
+    [Test]
+    public void ComputeRequiredDeposit_GuardsInvalidInput()
+    {
+        Assert.That(SolverDiscoveryService.ComputeRequiredDeposit(0, 1m, 0), Is.EqualTo(0));
+        Assert.That(SolverDiscoveryService.ComputeRequiredDeposit(1000, 0m, 0), Is.EqualTo(0));
+        Assert.That(SolverDiscoveryService.ComputeRequiredDeposit(1000, 1m, feeBps: 10000), Is.EqualTo(0)); // net ≤ 0
+    }
+
     // ─── Filter / rank ────────────────────────────────────────────────
 
     [Test]
