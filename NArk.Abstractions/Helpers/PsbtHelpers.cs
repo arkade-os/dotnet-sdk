@@ -35,17 +35,21 @@ public static class PsbtHelpers
 
 
     public static void SetTaprootScriptSpendSignature(this PSBTInput input, ECXOnlyPubKey key, uint256 leafHash,
-        SecpSchnorrSignature signature)
+        SecpSchnorrSignature signature, TaprootSigHash sigHash = TaprootSigHash.Default)
     {
-        var (keyBytes, valueBytes) = GetTaprootScriptSpendSignature(key, leafHash, signature);
+        var (keyBytes, valueBytes) = GetTaprootScriptSpendSignature(key, leafHash, signature, sigHash);
         input.Unknown[keyBytes] = valueBytes;
     }
 
     private static (byte[] key, byte[] value) GetTaprootScriptSpendSignature(ECXOnlyPubKey key, uint256 leafHash,
-        SecpSchnorrSignature signature)
+        SecpSchnorrSignature signature, TaprootSigHash sigHash)
     {
         byte[] keyBytes = [PsbtInTapScriptSig, .. key.ToBytes(), .. leafHash.ToBytes()];
-        var valueBytes = signature.ToBytes();
+        // BIP341: a non-default sighash needs its type byte appended to the 64-byte Schnorr
+        // signature (65 bytes total), or a verifier reads the witness as SIGHASH_DEFAULT.
+        var valueBytes = sigHash == TaprootSigHash.Default
+            ? signature.ToBytes()
+            : [.. signature.ToBytes(), (byte)sigHash];
         return (keyBytes, valueBytes);
     }
 
@@ -104,7 +108,7 @@ public static class PsbtHelpers
 
         var (pubKey, sig) = await signer.Sign(coin.SignerDescriptor, hash, cancellationToken);
 
-        psbtInput.SetTaprootScriptSpendSignature(pubKey, coin.SpendingScript.LeafHash, sig);
+        psbtInput.SetTaprootScriptSpendSignature(pubKey, coin.SpendingScript.LeafHash, sig, sigHash);
     }
 
     /// <summary>
