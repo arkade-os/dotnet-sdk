@@ -133,6 +133,171 @@ public class ArkadeSwapTests
         Assert.That(filled, Is.True, "solver should fulfill the offer — asset VTXO at the maker's address");
     }
 
+    /// <summary>
+    /// The full swap in a full setup
+    /// </summary>
+    [Test]
+    public async Task FullSwap_ThroughMonitor_TransitionsIntentToFulfilled()
+    {
+        var solver = new SolverClient(SolverEndpoint);
+        if (!await Poll(() => solver.IsRunningAsync(), TimeSpan.FromSeconds(20)))
+            Assert.Ignore("solver not running — enable the regtest `solver` profile + `solver-init`");
+
+        var pair = (await solver.ListPairsAsync())
+            .FirstOrDefault(p => p.Pair.StartsWith("BTC/", StringComparison.OrdinalIgnoreCase));
+        if (pair is null)
+            Assert.Ignore("no BTC/<asset> market registered by solver-init");
+
+        var assetIdHex = pair.Pair.Split('/')[1];
+        if (!await Poll(async () => (await solver.GetAssetBalancesAsync()).GetValueOrDefault(assetIdHex) > 0,
+                TimeSpan.FromSeconds(30)))
+            Assert.Ignore("solver has no asset inventory for the pair");
+
+        var ctx = await SetUpAsync();
+
+        // Wire the monitor + a sync that watches the pending-swap covenant scripts — the same shape as
+        // AddArkadeIntentsServices: IArkadeIntentStorage is the IActiveScriptsProvider the shared
+        // VtxoSynchronizationService consumes, and the monitor reacts to IVtxoStorage.VtxosChanged.
+        await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
+        await swapSync.StartAsync(default);
+        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage);
+        await monitor.StartAsync(default);
+
+        try
+        {
+            var deposit = (long)Math.Clamp((ulong)DepositSats, pair.MinAmount, Math.Min(pair.MaxAmount, 200_000UL));
+            // 1 sat ↔ 1 asset unit mock market → atomic price 1; the canonical maker formula lands the
+            // offer inside the solver's slippage band (see FullSwap_SolverFulfills_BtcToAsset).
+            var want = SolverDiscoveryService.ComputeWantAmount(deposit, price: 1m, feeBps: 0);
+
+            var intent = await ctx.Manager.CreateSwap(new CreateSwapRequest(
+                ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, deposit, want, AssetId.FromString(assetIdHex)));
+
+            var fulfilled = await Poll(async () =>
+                    (await ctx.IntentStorage.GetArkadeSwapIntents())
+                        .FirstOrDefault(s => s.Id == intent.Id)?.Status == ArkadeSwapIntentStatus.Fulfilled,
+                TimeSpan.FromSeconds(90));
+
+            Assert.That(fulfilled, Is.True,
+                "the monitor should transition the intent to Fulfilled once the solver spends the covenant VTXO");
+        }
+        finally
+        {
+            await monitor.StopAsync(default);
+        }
+    }
+
+    /// <summary>
+    /// Cancel in the same production-shaped setup, proving the monitor does <b>not</b> misread a cancel
+    /// spend as a fill. <see cref="ArkadeIntentManager.CancelSwap"/> moves the intent out of
+    /// <see cref="ArkadeSwapIntentStatus.Pending"/> before spending the covenant's cancel path, and
+    /// <see cref="IArkadeIntentStorage.UpdateStatus"/> only transitions pending swaps — so the monitor's
+    /// reaction to the (now spent) covenant VTXO is a no-op and the intent stays
+    /// <see cref="ArkadeSwapIntentStatus.Cancelled"/>. Self-contained: a synthetic asset the solver never
+    /// touches, cancelled by us.
+    /// </summary>
+    [Test]
+    public async Task CancelThroughMonitor_MarksCancelled_AndIsNotMisreadAsFill()
+    {
+        var ctx = await SetUpAsync();
+
+        await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
+        await swapSync.StartAsync(default);
+        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage);
+        await monitor.StartAsync(default);
+
+        try
+        {
+            var intent = await ctx.Manager.CreateSwap(new CreateSwapRequest(
+                ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, DepositSats, WantAmount, SyntheticAsset()));
+
+            // The real sync lands the covenant VTXO in storage (it watches the pending-swap script), so
+            // CancelSwap can read it — no manual UpsertVtxo stand-in like CreateThenCancel needs.
+            var landed = await Poll(async () =>
+                    (await ctx.VtxoStorage.GetVtxos(scripts: [intent.SwapPkScript])).Count > 0,
+                TimeSpan.FromSeconds(30));
+            Assert.That(landed, Is.True, "sync should land the covenant VTXO in storage");
+
+            var cancelled = await ctx.Manager.CancelSwap(intent.Id);
+            Assert.That(cancelled.Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
+
+            // Give the monitor a beat to observe the cancel spend, then confirm it did not flip the
+            // already-cancelled intent to Fulfilled.
+            await Task.Delay(2000);
+            var stored = (await ctx.IntentStorage.GetArkadeSwapIntents()).First(s => s.Id == intent.Id);
+            Assert.That(stored.Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled),
+                "the cancel spend must not be misread by the monitor as a fill");
+        }
+        finally
+        {
+            await monitor.StopAsync(default);
+        }
+    }
+
+    /// <summary>
+    /// The reverse (asset→BTC) leg, in the same production-shaped setup. The test wallet is funded only
+    /// with BTC, so it first acquires the asset via a BTC→asset fill, then deposits that asset for a
+    /// asset→BTC swap. Requires the solver to have registered the <c>&lt;asset&gt;/BTC</c> pair and to hold
+    /// BTC inventory to pay the reverse; guarded with <see cref="Assert.Ignore(string)"/> otherwise.
+    /// </summary>
+    [Test]
+    public async Task FullSwap_AssetToBtc_ThroughMonitor_TransitionsIntentToFulfilled()
+    {
+        var solver = new SolverClient(SolverEndpoint);
+        if (!await Poll(() => solver.IsRunningAsync(), TimeSpan.FromSeconds(20)))
+            Assert.Ignore("solver not running — enable the regtest `solver` profile + `solver-init`");
+
+        var pairs = await solver.ListPairsAsync();
+        var btcToAsset = pairs.FirstOrDefault(p => p.Pair.StartsWith("BTC/", StringComparison.OrdinalIgnoreCase));
+        if (btcToAsset is null) Assert.Ignore("no BTC/<asset> market registered by solver-init");
+        var assetIdHex = btcToAsset.Pair.Split('/')[1];
+        var reverse = pairs.FirstOrDefault(p =>
+            p.Pair.Equals($"{assetIdHex}/BTC", StringComparison.OrdinalIgnoreCase));
+        if (reverse is null) Assert.Ignore("no <asset>/BTC market registered by solver-init");
+        if (!await Poll(async () => (await solver.GetAssetBalancesAsync()).GetValueOrDefault(assetIdHex) > 0,
+                TimeSpan.FromSeconds(30)))
+            Assert.Ignore("solver has no asset inventory to fill the first (BTC→asset) leg");
+
+        var ctx = await SetUpAsync();
+        await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
+        await swapSync.StartAsync(default);
+        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage);
+        await monitor.StartAsync(default);
+
+        try
+        {
+            var asset = AssetId.FromString(assetIdHex);
+
+            // Leg 1 — acquire the asset: a BTC→asset swap the solver fills, paying the asset to our maker script.
+            var deposit1 = (long)Math.Clamp((ulong)DepositSats, btcToAsset.MinAmount, Math.Min(btcToAsset.MaxAmount, 200_000UL));
+            var want1 = SolverDiscoveryService.ComputeWantAmount(deposit1, price: 1m, feeBps: 0);
+            var leg1 = await ctx.Manager.CreateSwap(new CreateSwapRequest(
+                ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, deposit1, want1, asset));
+            var maker1 = Convert.ToHexString(
+                OfferCodec.Decode(Convert.FromHexString(leg1.OfferHex)).MakerPkScript).ToLowerInvariant();
+            if (!await Poll(() => HasAssetVtxo(ctx, maker1, assetIdHex), TimeSpan.FromSeconds(90)))
+                Assert.Ignore("first leg (BTC→asset) did not fill — cannot exercise the reverse");
+
+            // Leg 2 — the reverse: deposit half the asset we now hold, want BTC back.
+            var depositAsset = Math.Max(1, want1 / 2);
+            var want2 = SolverDiscoveryService.ComputeWantAmount(depositAsset, price: 1m, feeBps: 0);
+            var leg2 = await ctx.Manager.CreateSwap(new CreateSwapRequest(
+                ctx.WalletId, ArkadeSwapIntentType.AssetToBtc, depositAsset, want2, asset));
+
+            var fulfilled = await Poll(async () =>
+                    (await ctx.IntentStorage.GetArkadeSwapIntents())
+                        .FirstOrDefault(s => s.Id == leg2.Id)?.Status == ArkadeSwapIntentStatus.Fulfilled,
+                TimeSpan.FromSeconds(90));
+
+            Assert.That(fulfilled, Is.True,
+                "the monitor should transition the asset→BTC intent to Fulfilled once the solver fills it");
+        }
+        finally
+        {
+            await monitor.StopAsync(default);
+        }
+    }
+
     // ─── Setup + helpers ──────────────────────────────────────────────
 
 
