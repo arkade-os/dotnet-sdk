@@ -114,7 +114,41 @@ public static class TransactionHelpers
 
             var arkTx = CreateArkTxBuilder(serverInfo.Network);
             // arkTx.Send(p2a, Money.Zero);
-            arkTx.AddCoins(checkpointCoins);
+            // The checkpoint's collaborative leaf preserves the original VTXO leaf's CLTV, so arkd's
+            // offchain.buildArkTx re-derives the ark tx's locktime + a non-final input sequence
+            // (cltvSequence = 0xFFFFFFFE) from that closure when rebuilding it. We must match exactly or
+            // arkd rejects the spend with ARK_TX_MISMATCH (the checkpoint txids already agree; only the
+            // ark tx diverges). A non-CLTV path (e.g. a hashlock claim) leaves LockTime null → locktime
+            // 0 and final sequences, so this is a no-op there.
+            var arkLockTime = LockTime.Zero;
+            foreach (var cc in checkpointCoins)
+            {
+                if (cc.LockTime is not { } lt || lt == LockTime.Zero) continue;
+                // Match arkd/ts-sdk buildVirtualTx: absolute locktimes across inputs must share a unit
+                // (all block-height or all timestamp) — nLockTime is a single field that can't encode
+                // both, so a mixed tx is unrepresentable. Fail loudly rather than emit a tx arkd rejects.
+                if (arkLockTime != LockTime.Zero && arkLockTime.IsTimeLock != lt.IsTimeLock)
+                    throw new InvalidOperationException(
+                        "cannot mix seconds and blocks absolute locktimes across inputs of one ark tx");
+                if (lt.Value > arkLockTime.Value)
+                    arkLockTime = lt;
+            }
+            if (arkLockTime != LockTime.Zero)
+            {
+                arkTx.SetLockTime(arkLockTime);
+                foreach (var cc in checkpointCoins)
+                {
+                    var hasLocktime = cc.LockTime is not null && cc.LockTime != LockTime.Zero;
+                    arkTx.AddCoin(cc, new CoinOptions
+                    {
+                        Sequence = cc.Sequence ?? (hasLocktime ? new Sequence(0xFFFFFFFE) : new Sequence(0xFFFFFFFF)),
+                    });
+                }
+            }
+            else
+            {
+                arkTx.AddCoins(checkpointCoins);
+            }
 
             // Track OP_RETURN outputs to enforce the limit
             // Use server-configured limit, falling back to the const default
