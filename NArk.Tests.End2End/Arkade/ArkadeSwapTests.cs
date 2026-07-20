@@ -134,7 +134,10 @@ public class ArkadeSwapTests
     }
 
     /// <summary>
-    /// The full swap in a full setup
+    /// The full swap in a production-shaped setup (see the class remarks on the monitor + sync wiring),
+    /// asserting on the stored intent status. Provisions its <em>own</em> well-funded market via
+    /// <see cref="SolverLiquidityHelper"/> so it neither depends on nor drains the shared solver-init
+    /// inventory that <see cref="FullSwap_SolverFulfills_BtcToAsset"/> uses.
     /// </summary>
     [Test]
     public async Task FullSwap_ThroughMonitor_TransitionsIntentToFulfilled()
@@ -143,15 +146,11 @@ public class ArkadeSwapTests
         if (!await Poll(() => solver.IsRunningAsync(), TimeSpan.FromSeconds(20)))
             Assert.Ignore("solver not running — enable the regtest `solver` profile + `solver-init`");
 
+        // Mint + fund our own asset market so a single 49_750-unit fill doesn't have to share the
+        // stingy SOLVER_INIT_ASSET_FUNDING pool with the other solver tests.
+        var assetIdHex = await SolverLiquidityHelper.EnsureAssetMarket(SolverEndpoint);
         var pair = (await solver.ListPairsAsync())
-            .FirstOrDefault(p => p.Pair.StartsWith("BTC/", StringComparison.OrdinalIgnoreCase));
-        if (pair is null)
-            Assert.Ignore("no BTC/<asset> market registered by solver-init");
-
-        var assetIdHex = pair.Pair.Split('/')[1];
-        if (!await Poll(async () => (await solver.GetAssetBalancesAsync()).GetValueOrDefault(assetIdHex) > 0,
-                TimeSpan.FromSeconds(30)))
-            Assert.Ignore("solver has no asset inventory for the pair");
+            .First(p => p.Pair.Equals($"BTC/{assetIdHex}", StringComparison.OrdinalIgnoreCase));
 
         var ctx = await SetUpAsync();
 
@@ -236,9 +235,11 @@ public class ArkadeSwapTests
 
     /// <summary>
     /// The reverse (asset→BTC) leg, in the same production-shaped setup. The test wallet is funded only
-    /// with BTC, so it first acquires the asset via a BTC→asset fill, then deposits that asset for a
-    /// asset→BTC swap. Requires the solver to have registered the <c>&lt;asset&gt;/BTC</c> pair and to hold
-    /// BTC inventory to pay the reverse; guarded with <see cref="Assert.Ignore(string)"/> otherwise.
+    /// with BTC, so it first acquires the asset via a BTC→asset fill, then deposits that asset for an
+    /// asset→BTC swap. <see cref="SolverLiquidityHelper.EnsureAssetMarket"/> registers <em>both</em>
+    /// directions and seeds the solver's asset inventory; the reverse covenant
+    /// (<c>ArkadeIntentPrograms.AssetToBtc</c>: output 0 pays ≥ <c>$wantAmount</c> to <c>$makerWP</c>)
+    /// forces the solver to pay BTC, which it holds from solver-init plus leg 1's deposit.
     /// </summary>
     [Test]
     public async Task FullSwap_AssetToBtc_ThroughMonitor_TransitionsIntentToFulfilled()
@@ -247,16 +248,11 @@ public class ArkadeSwapTests
         if (!await Poll(() => solver.IsRunningAsync(), TimeSpan.FromSeconds(20)))
             Assert.Ignore("solver not running — enable the regtest `solver` profile + `solver-init`");
 
+        // Our own funded market: this also registers the <asset>/BTC reverse pair (EnsureAssetMarket
+        // registers both directions) and seeds the solver's asset inventory for leg 1.
+        var assetIdHex = await SolverLiquidityHelper.EnsureAssetMarket(SolverEndpoint);
         var pairs = await solver.ListPairsAsync();
-        var btcToAsset = pairs.FirstOrDefault(p => p.Pair.StartsWith("BTC/", StringComparison.OrdinalIgnoreCase));
-        if (btcToAsset is null) Assert.Ignore("no BTC/<asset> market registered by solver-init");
-        var assetIdHex = btcToAsset.Pair.Split('/')[1];
-        var reverse = pairs.FirstOrDefault(p =>
-            p.Pair.Equals($"{assetIdHex}/BTC", StringComparison.OrdinalIgnoreCase));
-        if (reverse is null) Assert.Ignore("no <asset>/BTC market registered by solver-init");
-        if (!await Poll(async () => (await solver.GetAssetBalancesAsync()).GetValueOrDefault(assetIdHex) > 0,
-                TimeSpan.FromSeconds(30)))
-            Assert.Ignore("solver has no asset inventory to fill the first (BTC→asset) leg");
+        var btcToAsset = pairs.First(p => p.Pair.Equals($"BTC/{assetIdHex}", StringComparison.OrdinalIgnoreCase));
 
         var ctx = await SetUpAsync();
         await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
