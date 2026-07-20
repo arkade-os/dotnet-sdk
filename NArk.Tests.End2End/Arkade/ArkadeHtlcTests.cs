@@ -54,7 +54,13 @@ public class ArkadeHtlcTests
         var program = new ArkadeProgram
         {
             Version = ArkadeProgram.SupportedVersion,
-            Params = ["server", "hash", "receiver", "amount"],
+            Params =
+            [
+                new TypedInput { Name = "server", Type = InputType.Pubkey },
+                new TypedInput { Name = "hash", Type = InputType.Hash },
+                new TypedInput { Name = "receiver", Type = InputType.Pubkey },
+                new TypedInput { Name = "amount", Type = InputType.Int },
+            ],
             Functions = new Dictionary<string, ArkadeFunction>
             {
                 ["claim"] = new()
@@ -101,7 +107,12 @@ public class ArkadeHtlcTests
         var program = new ArkadeProgram
         {
             Version = ArkadeProgram.SupportedVersion,
-            Params = ["server", "receiver", "amount"],
+            Params =
+            [
+                new TypedInput { Name = "server", Type = InputType.Pubkey },
+                new TypedInput { Name = "receiver", Type = InputType.Pubkey },
+                new TypedInput { Name = "amount", Type = InputType.Int },
+            ],
             Functions = new Dictionary<string, ArkadeFunction>
             {
                 ["refund"] = new()
@@ -121,6 +132,7 @@ public class ArkadeHtlcTests
 
         var coin = await new ArkProgramContractTransformer(ctx.WalletProvider)
             .Transform(ctx.WalletId, contract, vtxo, "refund");
+
 
         var txid = await Spend(ctx, coin,
             [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(ContractAmount), receiverAddress)]);
