@@ -41,41 +41,8 @@ jobs:
     uses: ./.github/workflows/e2e-rotation.yml
 
   arkade-e2e:
-    name: Arkade E2E Tests (emulator)
-    runs-on: ubuntu-latest
     needs: build
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-          fetch-depth: 0
-      # `solver` pulls in `ark` (arkd) + `emulator`, brings up the mock pricefeed + solver, and runs
-      # solver-init (fund + mint asset + register pairs) so the swap fulfill E2E has a live market.
-      # `boltz` adds fulmine (:7003) — the funding endpoint the shared test harness uses to top up
-      # wallets. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
-      - uses: ./.github/actions/e2e-setup
-        with:
-          profile: solver,boltz
-      - name: Run Arkade E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade"
-        timeout-minutes: 15
-      - name: Collect docker logs on failure
-        if: failure()
-        run: |
-          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
-          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
-          docker logs solver > /tmp/solver-logs.txt 2>&1 || true
-          docker logs solver-init > /tmp/solver-init-logs.txt 2>&1 || true
-          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
-      - name: Upload logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: arkade-docker-logs
-          path: /tmp/*-logs.txt
-      - name: Stop infrastructure
-        if: always()
-        run: node regtest/regtest.mjs clean || true
+    uses: ./.github/workflows/e2e-arkade.yml
 
   publish:
     name: Publish NuGet Packages
