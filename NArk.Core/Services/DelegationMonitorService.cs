@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Fees;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.Services;
@@ -12,6 +13,7 @@ using NArk.Core.Contracts;
 using NArk.Core.Extensions;
 using NArk.Core.Helpers;
 using NArk.Core.Assets;
+using NArk.Core.Models;
 using NArk.Core.Transformers;
 using NArk.Core.Transport;
 using NBitcoin;
@@ -30,6 +32,7 @@ public class DelegationMonitorService(
     IDelegatorProvider delegatorProvider,
     IWalletProvider walletProvider,
     IClientTransport clientTransport,
+    IFeeEstimator feeEstimator,
     ILogger<DelegationMonitorService>? logger = null) : IHostedService, IDisposable
 {
     private readonly HashSet<OutPoint> _delegatedOutpoints = new();
@@ -135,13 +138,19 @@ public class DelegationMonitorService(
 
         var (signer, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(walletId, signerDescriptor);
 
-        // Build the intent message
-        var intentMessage = JsonSerializer.Serialize(new
+        // Build the intent message. Field names must be snake_case (Messages.RegisterIntentMessage's
+        // JsonPropertyName values) to match arkd/Fulmine's Go RegisterMessage struct tags — a
+        // camelCase mismatch silently unmarshals to zero values rather than erroring. The delegator
+        // schedules its registration task at ValidAt (time.Unix(message.ValidAt, 0) in Fulmine's
+        // delegator_service.go) and rejects ValidAt == 0 outright ("invalid valid at"); "now" makes
+        // it register immediately, since a past/zero-delay schedule runs right away.
+        var intentMessage = JsonSerializer.Serialize(new Messages.RegisterIntentMessage
         {
-            type = "register",
-            cosignersPublicKeys = new[] { Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant() },
-            validAt = 0,
-            expireAt = 0
+            Type = "register",
+            OnchainOutputsIndexes = [],
+            ValidAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ExpireAt = 0,
+            CosignersPublicKeys = [Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant()]
         });
 
         // Build intent proof PSBT (BIP322-style)
@@ -151,6 +160,22 @@ public class DelegationMonitorService(
             null, null, null, vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
 
         var intentPsbt = IntentProofHelper.CreateBip322Psbt(intentMessage, serverInfo.Network, intentCoin);
+
+        // CreateBip322Psbt leaves a bare 0-value OP_RETURN placeholder output (the base BIP322
+        // proof shape). Replace it with the real send-to-self destination — same script as the
+        // original VTXO, minus the operator's intent fee (arkd's INTENT_INSUFFICIENT_FEE rejects
+        // a same-amount send-to-self as paying zero fee) — mirroring
+        // IntentGenerationService.CreateIntent's Outputs.RemoveAt(0)/AddRange(outputs).
+        var destinationAddress = vtxo.TxOut.ScriptPubKey.GetDestinationAddress(serverInfo.Network)
+            ?? throw new InvalidOperationException($"Cannot derive destination address for script {vtxo.Script}");
+        var destinationOutput = new ArkTxOut(ArkTxOutType.Vtxo, vtxo.TxOut.Value, destinationAddress);
+        var fee = await feeEstimator.EstimateFeeAsync([intentCoin], [destinationOutput]);
+        var destinationAmount = vtxo.TxOut.Value - Money.Satoshis(fee);
+
+        var proofGtx = intentPsbt.GetGlobalTransaction();
+        proofGtx.Outputs.RemoveAt(0);
+        proofGtx.Outputs.Add(new TxOut(destinationAmount, vtxo.TxOut.ScriptPubKey));
+        intentPsbt = PSBT.FromTransaction(proofGtx, serverInfo.Network).UpdateFrom(intentPsbt);
 
         // Build asset packet if the VTXO carries assets — delegation is send-to-self (vout=0)
         if (vtxo.Assets is { Count: > 0 } vtxoAssets)
@@ -175,7 +200,7 @@ public class DelegationMonitorService(
             outpoint, vtxo.TxOut, signerDescriptor, forfeitScriptBuilder,
             null, null, null, vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
 
-        var forfeitTx = CreateForfeitTransaction(serverInfo.Network, forfeitCoin);
+        var forfeitTx = CreateForfeitTransaction(serverInfo, forfeitCoin);
         var forfeitPrecomputed = forfeitTx.GetGlobalTransaction()
             .PrecomputeTransactionData([forfeitCoin.TxOut]);
 
@@ -188,18 +213,30 @@ public class DelegationMonitorService(
             [forfeitTx.ToBase64()]);
     }
 
-    private static PSBT CreateForfeitTransaction(Network network, ArkCoin coin)
+    private static PSBT CreateForfeitTransaction(ArkServerInfo serverInfo, ArkCoin coin)
     {
-        var tx = network.CreateTransaction();
-        tx.Version = 2;
-        tx.LockTime = 0;
-        tx.Inputs.Add(new TxIn(coin.Outpoint) { Sequence = 0 });
-        tx.Outputs.Add(new TxOut(Money.Zero, new Script(OpcodeType.OP_RETURN)));
+        // Matches the 2-output shape ArkTransactionBuilder.ConstructForfeitTx produces
+        // (payment to the operator's forfeit address + P2A anchor) — the delegator's forfeit
+        // validation requires it. Built as a raw transaction rather than through
+        // TransactionBuilder.Send()/BuildPSBT(): at delegation time the batch connector
+        // doesn't exist yet (the delegator attaches it later when it joins a batch), so the
+        // declared forfeit amount (coin.Amount + assumed dust) is intentionally larger than
+        // this single input — TransactionBuilder's balance check would reject that.
+        var hasLocktime = coin.LockTime is not null && coin.LockTime != LockTime.Zero;
+        var vtxoSequence = coin.Sequence
+            ?? (hasLocktime ? new Sequence(0xFFFFFFFE) : new Sequence(0xFFFFFFFF));
 
-        var psbt = PSBT.FromTransaction(tx, network);
-        psbt.Settings.AutomaticUTXOTrimming = false;
-        psbt.AddCoins(coin);
-        return psbt;
+        var tx = serverInfo.Network.CreateTransaction();
+        tx.Version = 3;
+        tx.LockTime = coin.LockTime ?? LockTime.Zero;
+        tx.Inputs.Add(new TxIn(coin.Outpoint) { Sequence = vtxoSequence });
+        tx.Outputs.Add(new TxOut(coin.Amount + serverInfo.Dust, serverInfo.ForfeitAddress));
+        tx.Outputs.Add(new TxOut(Money.Zero, Constants.ArkP2A));
+
+        var forfeitTx = PSBT.FromTransaction(tx, serverInfo.Network);
+        forfeitTx.Settings.AutomaticUTXOTrimming = false;
+        forfeitTx.AddCoins(coin);
+        return forfeitTx;
     }
 
     private async Task<ECPubKey> GetDelegatePubkeyAsync()

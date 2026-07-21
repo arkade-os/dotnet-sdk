@@ -1,11 +1,14 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
+using NArk.Abstractions;
 using NArk.Abstractions.Assets;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Intents;
+using NArk.Abstractions.VTXOs;
+using NArk.Abstractions.Wallets;
 using NArk.Core.CoinSelector;
 using NArk.Core.Contracts;
 using NArk.Core.Events;
@@ -262,6 +265,142 @@ public class DelegationTests
             "Asset balance should be preserved after batch settlement at delegate contract");
 
         TestContext.Progress.WriteLine("Delegate asset VTXO survived batch settlement");
+    }
+
+    [Test]
+    public async Task DelegationMonitorAutoRenewsAssetVtxoAcrossMultipleBatchRounds()
+    {
+        var wallet = await FundedWalletHelper.GetFundedDelegateWallet(
+            SharedDelegationInfrastructure.DelegatorEndpoint);
+
+        var walletDetails = (wallet.safetyService, wallet.walletProvider,
+            wallet.walletIdentifier, wallet.vtxoStorage, wallet.contractService,
+            wallet.contracts, wallet.clientTransport, wallet.vtxoSync);
+
+        var delegateTransformer = new DelegateContractTransformer(wallet.walletProvider);
+        var (assetManager, coinService, intentStorage) =
+            AssetTestHelpers.CreateAssetServices(walletDetails, [delegateTransformer]);
+
+        // Real automatic delegation: the wallet only watches its own VTXOs and hands off
+        // pre-signed artifacts. It never runs IntentGenerationService/BatchManagementService
+        // itself here — the live delegator is solely responsible for joining batch rounds
+        // and refreshing the VTXO before it expires.
+        var delegatorProvider = new GrpcDelegatorProvider(
+            SharedDelegationInfrastructure.DelegatorEndpoint.ToString());
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var feeEstimator = new DefaultFeeEstimator(wallet.clientTransport, chainTimeProvider);
+        using var monitor = new DelegationMonitorService(
+            wallet.vtxoStorage,
+            wallet.contracts,
+            [new DelegateContractDelegationTransformer(wallet.walletProvider)],
+            delegatorProvider,
+            wallet.walletProvider,
+            wallet.clientTransport,
+            feeEstimator);
+        await monitor.StartAsync(CancellationToken.None);
+
+        // Issuing lands the asset VTXO on the delegate contract and fires VtxosChanged,
+        // which the monitor picks up to auto-delegate it.
+        var issuance = await assetManager.IssueAsync(wallet.walletIdentifier,
+            new IssuanceParams(Amount: 1000));
+        var assetId = issuance.AssetId;
+
+        await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+
+        // AssetManager mints the asset carrier at exactly serverInfo.Dust (330 sats here) with
+        // no headroom. arkd requires every offchain output to be >= dust, so once delegation's
+        // intent fee (offchainInputFee, ~1% here) is deducted, a bare-dust renewal output always
+        // falls under that floor — AMOUNT_TOO_LOW is unavoidable for this VTXO as issued. Consolidate
+        // it with the wallet's plain BTC funding VTXO into one delegate-contract output so the
+        // renewal has room to pay the fee and still clear dust.
+        var vtxosBeforeConsolidation = await wallet.vtxoStorage.GetVtxos(includeSpent: false);
+        var assetVtxo = vtxosBeforeConsolidation.First(v =>
+            v.Assets is { Count: > 0 } a && a.Any(x => x.AssetId == assetId));
+        var fundingVtxo = vtxosBeforeConsolidation.First(v => v.Assets is not { Count: > 0 });
+
+        var assetCoin = await coinService.GetCoin(assetVtxo, wallet.walletIdentifier);
+        var fundingCoin = await coinService.GetCoin(fundingVtxo, wallet.walletIdentifier);
+
+        var consolidatedContract = await wallet.contractService.DeriveContract(
+            wallet.walletIdentifier, NextContractPurpose.SendToSelf,
+            [assetCoin.Contract, fundingCoin.Contract]);
+        var consolidatedAddress = consolidatedContract.GetArkAddress();
+
+        var consolidationFee = await feeEstimator.EstimateFeeAsync(
+            [assetCoin, fundingCoin],
+            [new ArkTxOut(ArkTxOutType.Vtxo, assetCoin.Amount + fundingCoin.Amount, consolidatedAddress)]);
+        var consolidatedOutput = new ArkTxOut(
+            ArkTxOutType.Vtxo, assetCoin.Amount + fundingCoin.Amount - Money.Satoshis(consolidationFee),
+            consolidatedAddress)
+        {
+            Assets = [new ArkTxOutAsset(assetId, 1000)]
+        };
+
+        var spendingService = new SpendingService(
+            wallet.vtxoStorage, wallet.contracts, wallet.walletProvider,
+            coinService, wallet.contractService, wallet.clientTransport,
+            new NArk.Core.CoinSelector.DefaultCoinSelector(), wallet.safetyService, intentStorage);
+        await spendingService.Spend(wallet.walletIdentifier, [assetCoin, fundingCoin], [consolidatedOutput]);
+
+        await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+
+        var lastOutpoint = await GetAssetVtxoOutpoint(wallet.vtxoStorage, assetId);
+        Assert.That(lastOutpoint, Is.Not.Null, "Asset VTXO should exist after consolidation");
+        TestContext.Progress.WriteLine($"Consolidated asset VTXO outpoint: {lastOutpoint}");
+
+        var renewalCount = 0;
+        for (var round = 1; round <= 2; round++)
+        {
+            var roundDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(75);
+            OutPoint? renewedOutpoint = null;
+            while (DateTime.UtcNow < roundDeadline)
+            {
+                await AssetTestHelpers.PollAllScripts(walletDetails);
+                var current = await GetAssetVtxoOutpoint(wallet.vtxoStorage, assetId);
+                if (current is not null && current != lastOutpoint)
+                {
+                    renewedOutpoint = current;
+                    break;
+                }
+
+                await Task.Delay(3000);
+            }
+
+            Assert.That(renewedOutpoint, Is.Not.Null,
+                $"Delegator did not renew the asset VTXO during batch round {round} within 75s " +
+                $"(last outpoint was {lastOutpoint})");
+
+            var balance = await AssetTestHelpers.GetAssetBalance(wallet.vtxoStorage, assetId);
+            Assert.That(balance, Is.EqualTo(1000UL),
+                $"Asset balance should stay at 1000 after batch round {round}");
+
+            TestContext.Progress.WriteLine(
+                $"Batch round {round}: asset VTXO auto-renewed by delegator to outpoint {renewedOutpoint}");
+
+            lastOutpoint = renewedOutpoint;
+            renewalCount++;
+        }
+
+        Assert.That(renewalCount, Is.EqualTo(2),
+            "Expected the delegator to auto-renew the asset VTXO across 2 consecutive batch rounds");
+
+        // Still parked at a delegate contract — not swept, not collapsed to a plain payment contract.
+        var finalVtxos = await wallet.vtxoStorage.GetVtxos(includeSpent: false);
+        var finalAssetVtxo = finalVtxos.First(v => v.Assets is { Count: > 0 } a &&
+                                                    a.Any(x => x.AssetId == assetId));
+        var finalContracts = await wallet.contracts.GetContracts(scripts: [finalAssetVtxo.Script]);
+        Assert.That(finalContracts.First().Type, Is.EqualTo("Delegate").IgnoreCase,
+            "Asset VTXO should still be at a delegate contract after multiple auto-renewals");
+
+        TestContext.Progress.WriteLine(
+            "Delegation monitor kept the asset VTXO alive across 2 consecutive batch rounds without owner intervention");
+    }
+
+    private static async Task<OutPoint?> GetAssetVtxoOutpoint(IVtxoStorage vtxoStorage, string assetId)
+    {
+        var vtxos = await vtxoStorage.GetVtxos(includeSpent: false);
+        var vtxo = vtxos.FirstOrDefault(v => v.Assets is { Count: > 0 } a && a.Any(x => x.AssetId == assetId));
+        return vtxo is null ? null : new OutPoint(uint256.Parse(vtxo.TransactionId), vtxo.TransactionOutputIndex);
     }
 
     private record DelegatorInfoResponse(

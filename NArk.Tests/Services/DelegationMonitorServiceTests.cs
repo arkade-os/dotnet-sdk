@@ -1,5 +1,7 @@
+using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Fees;
 using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
@@ -39,6 +41,7 @@ public class DelegationMonitorServiceTests
     private IDelegatorProvider _delegatorProvider = null!;
     private IWalletProvider _walletProvider = null!;
     private IClientTransport _clientTransport = null!;
+    private IFeeEstimator _feeEstimator = null!;
     private SimpleSeedWallet _seedWallet = null!;
     private OutputDescriptor _userKey;
     private Key _delegatePrivateKey = null!;
@@ -69,9 +72,13 @@ public class DelegationMonitorServiceTests
         _delegatorProvider = Substitute.For<IDelegatorProvider>();
         _walletProvider = Substitute.For<IWalletProvider>();
         _clientTransport = Substitute.For<IClientTransport>();
+        _feeEstimator = Substitute.For<IFeeEstimator>();
 
         _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(CreateServerInfo()));
+
+        _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(0L));
 
         // Real signer/address-provider so the monitor produces a genuinely signed
         // BIP322 intent proof + forfeit tx, not a mocked stand-in.
@@ -142,7 +149,8 @@ public class DelegationMonitorServiceTests
         [new DelegateContractDelegationTransformer(_walletProvider)],
         _delegatorProvider,
         _walletProvider,
-        _clientTransport);
+        _clientTransport,
+        _feeEstimator);
 
     [Test]
     public async Task DelegatesNewUnspentVtxo_OnDelegateContractMatchingDelegator()
