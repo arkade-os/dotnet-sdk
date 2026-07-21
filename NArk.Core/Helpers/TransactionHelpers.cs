@@ -27,7 +27,8 @@ public static class TransactionHelpers
         ISafetyService safetyService,
         IWalletProvider walletProvider,
         IIntentStorage intentStorage,
-        IVirtualTxStorage? virtualTxStorage = null)
+        IVirtualTxStorage? virtualTxStorage = null,
+        IEnumerable<ISpendSubmitHandler>? submitHandlers = null)
     {
         private async Task<PSBT> FinalizeCheckpointTx(PSBT checkpointTx, PSBT receivedCheckpointTx, ArkCoin coin,
             CancellationToken cancellationToken)
@@ -46,6 +47,28 @@ public static class TransactionHelpers
                 cancellationToken: cancellationToken);
 
             return receivedCheckpointTx;
+        }
+
+        /// <summary>
+        /// Attach the wallet's own signature to a freshly-built checkpoint's input
+        /// (before any arkd round-trip). Used by the covenant submit path, where the
+        /// emulator co-signer requires user-signed checkpoints up front — unlike the
+        /// cooperative arkd flow, which signs checkpoints only after arkd co-signs
+        /// (see <see cref="FinalizeCheckpointTx"/>).
+        /// </summary>
+        private async Task<PSBT> UserSignCheckpoint(PSBT checkpointTx, ArkCoin coin, CancellationToken cancellationToken)
+        {
+            var precomputed = checkpointTx.GetGlobalTransaction().PrecomputeTransactionData([coin.TxOut]);
+
+            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Cannot sign checkpoint tx: wallet '{coin.WalletIdentifier}' has no signer " +
+                    "(watch-only wallet, or its remote signer transport is unavailable).");
+
+            await PsbtHelpers.SignAndFillPsbt(signer, coin, checkpointTx, precomputed,
+                cancellationToken: cancellationToken);
+
+            return checkpointTx;
         }
 
         /// <summary>
@@ -308,6 +331,27 @@ public static class TransactionHelpers
         {
             var network = arkTx.Network;
 
+            // Covenant spends: hand off to a submit handler (the emulator co-signer,
+            // which fronts arkd) instead of submitting to arkd directly. The handler
+            // needs the checkpoints already user-signed, then owns co-sign + finalize.
+            if (submitHandlers?.FirstOrDefault(h => h.ShouldHandle(arkCoins)) is { } handler)
+            {
+                var signedCheckpointTxs = new List<PSBT>(checkpoints.Count);
+                foreach (var checkpoint in checkpoints)
+                {
+                    var coin = arkCoins.Single(x => x.Outpoint == checkpoint.Psbt.Inputs.Single().PrevOut);
+                    // Only add the wallet's signature when the leaf actually names the user as
+                    // a signer. Covenant paths like an HTLC claim (server + emulator only) have
+                    // no user key, so the wallet must not sign — the emulator + arkd suffice.
+                    signedCheckpointTxs.Add(coin.SignerDescriptor is not null
+                        ? await UserSignCheckpoint(checkpoint.Psbt, coin, cancellationToken)
+                        : checkpoint.Psbt);
+                }
+
+                await handler.SubmitAsync(arkCoins, arkTx, signedCheckpointTxs, cancellationToken);
+                return;
+            }
+
             var response = await clientTransport.SubmitTx(arkTx.ToBase64(),
                 [.. checkpoints.Select(c => c.Psbt.ToBase64())], cancellationToken);
 
@@ -353,7 +397,7 @@ public static class TransactionHelpers
             IReadOnlyCollection<ArkCoin> arkCoins,
             ArkTxOut[] arkOutputs,
             CancellationToken cancellationToken,
-            TxOut? assetPacketOutput = null)
+            TxOut? extensionOutput = null)
         {
             if (arkOutputs.Any(o => o.Type is not ArkTxOutType.Vtxo))
                 throw new InvalidOperationException();
@@ -369,8 +413,8 @@ public static class TransactionHelpers
                 }
             }
 
-            TxOut[] allOutputs = assetPacketOutput is not null
-                ? [.. arkOutputs, assetPacketOutput]
+            TxOut[] allOutputs = extensionOutput is not null
+                ? [.. arkOutputs, extensionOutput]
                 : [.. arkOutputs];
 
             var (arkTx, checkpoints) =

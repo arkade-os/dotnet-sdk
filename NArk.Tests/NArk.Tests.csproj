@@ -30,13 +30,21 @@
     </ItemGroup>
 
     <ItemGroup>
+      <ProjectReference Include="..\NArk.ArkadeIntents\NArk.ArkadeIntents.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
       <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
+      <ProjectReference Include="..\NArk.Arkade\NArk.Arkade.csproj" />
     </ItemGroup>
 
     <ItemGroup>
       <Content Include="Assets\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+      <!--
+        Arkade fixtures are sourced verbatim from the emulator reference
+        (arkade-os/emulator pkg/arkade/testdata) so cross-SDK divergence
+        fails CI on both sides.
+      -->
+      <Content Include="Arkade\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

@@ -37,6 +37,8 @@
 
     <ItemGroup>
       <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
+      <ProjectReference Include="..\NArk.Arkade\NArk.Arkade.csproj" />
+      <ProjectReference Include="..\NArk.ArkadeIntents\NArk.ArkadeIntents.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
       <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />

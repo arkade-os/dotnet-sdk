@@ -9,6 +9,8 @@
     <ProjectReference Include="..\..\..\NArk.Core\NArk.Core.csproj" />
     <ProjectReference Include="..\..\..\NArk.Swaps\NArk.Swaps.csproj" />
     <ProjectReference Include="..\..\..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
+    <ProjectReference Include="..\..\..\NArk.Arkade\NArk.Arkade.csproj" />
+    <ProjectReference Include="..\..\..\NArk.ArkadeIntents\NArk.ArkadeIntents.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.0" />

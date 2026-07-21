@@ -7,6 +7,7 @@ using NArk.Abstractions.Recovery;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core;
+using NArk.Core.Assets;
 using NArk.Core.Recovery;
 using NArk.Core.Services;
 using NArk.Core.Transport;
@@ -40,7 +41,10 @@ public class ArkWalletService(
     BoltzLimitsValidator boltzLimitsValidator,
     HdWalletRecoveryService recoveryService,
     PendingArkTransactionRecoveryService pendingTxRecoveryService,
-    ArkNetworkConfig networkConfig)
+    ArkNetworkConfig networkConfig,
+    NArk.ArkadeIntents.Services.ArkadeIntentManager arkadeSwaps,
+    NArk.ArkadeIntents.Services.SolverDiscoveryService solverDiscovery,
+    NArk.ArkadeIntents.IArkadeIntentStorage arkadeIntentStorage)
 {
     // ── Wallets ──
 
@@ -179,6 +183,44 @@ public class ArkWalletService(
     /// </summary>
     public async Task<BoltzAllLimits?> GetBoltzLimits()
         => await boltzLimitsValidator.GetAllLimitsAsync();
+
+    // ── Arkade asset swaps (covenant + solver market) ──
+
+    /// <summary>The solver-registry network name for the configured Ark network.</summary>
+    public string SwapNetworkName =>
+        networkConfig == ArkNetworkConfig.Mainnet ? "bitcoin" : "mutinynet";
+
+    /// <summary>Discover the tradable BTC⇄asset markets published by solvers on this network.</summary>
+    public Task<IReadOnlyList<NArk.ArkadeIntents.SolverRegistry.IndexedMarket>> GetSwapMarkets(
+        CancellationToken ct = default)
+        => solverDiscovery.DiscoverMarketsAsync(SwapNetworkName, cancellationToken: ct);
+
+    /// <summary>Current normalized price for a market (quote units per base unit).</summary>
+    public Task<decimal> GetMarketPrice(
+        NArk.ArkadeIntents.SolverRegistry.SolverMarket market, CancellationToken ct = default)
+        => solverDiscovery.FetchPriceAsync(market, ct);
+
+    /// <summary>This wallet's Arkade swap intents (pending / cancelling / cancelled).</summary>
+    public Task<IReadOnlyCollection<NArk.ArkadeIntents.Models.ArkadeSwapIntent>> GetAssetSwaps(
+        string walletId, CancellationToken ct = default)
+        => arkadeIntentStorage.GetArkadeSwapIntents(walletIds: [walletId], cancellationToken: ct);
+
+    /// <summary>
+    /// Create a BTC→asset swap: fund a covenant offer with <paramref name="depositSats"/> BTC and
+    /// ask for <paramref name="wantAssetAmount"/> atomic units of the market's quote asset. A solver
+    /// on the market fulfils it (pays the asset to the wallet's payout address).
+    /// </summary>
+    public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> CreateBtcToAssetSwap(
+        string walletId, NArk.ArkadeIntents.SolverRegistry.IndexedMarket market,
+        long depositSats, long wantAssetAmount, CancellationToken ct = default)
+        => arkadeSwaps.CreateSwap(new NArk.ArkadeIntents.Services.CreateSwapRequest(
+            walletId, NArk.ArkadeIntents.Models.ArkadeSwapIntentType.BtcToAsset,
+            depositSats, wantAssetAmount, AssetId.FromString(market.QuoteAsset.Id)), ct);
+
+    /// <summary>Cancel a pending swap and reclaim the deposit via the covenant's cancel path.</summary>
+    public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> CancelAssetSwap(
+        string swapId, CancellationToken ct = default)
+        => arkadeSwaps.CancelSwap(swapId, ct);
 
     // ── Wallet Info ──
 

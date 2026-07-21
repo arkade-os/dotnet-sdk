@@ -14,9 +14,10 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/e2e-setup
       # Swap and recovery tests run in dedicated parallel workflows (e2e-swaps, e2e-recovery).
-      # Rotation tests run in e2e-rotation. Run everything else here.
+      # Rotation tests run in e2e-rotation. Arkade covenant tests need the emulator profile,
+      # so they run in the arkade-e2e job. Run everything else here.
       - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery&FullyQualifiedName!~Arkade"
         timeout-minutes: 20
       - name: Collect docker logs on failure
         if: failure()
