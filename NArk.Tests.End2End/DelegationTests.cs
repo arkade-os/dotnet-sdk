@@ -96,7 +96,7 @@ public class DelegationTests
         // 3. Verify the contract has the expected structure
         var tapLeaves = delegateContract.GetTapScriptList();
         Assert.That(tapLeaves.Length, Is.EqualTo(3),
-            "Delegate contract should have 3 tap leaves (delegate, forfeit, exit)");
+            "Delegate contract should have 3 tap leaves (forfeit, exit, delegate)");
 
         // 4. Verify round-trip parse via entity serialization
         var entity = delegateContract.ToEntity("test-wallet");
