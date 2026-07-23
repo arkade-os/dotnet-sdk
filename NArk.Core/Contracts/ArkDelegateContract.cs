@@ -35,14 +35,14 @@ public class ArkDelegateContract : ArkContract
     }
 
     /// <summary>
-    /// Leaf ordering follows canonical Ark SDK convention: [delegate, forfeit, exit].
+    /// Leaf ordering follows canonical Arkade SDK convention: [forfeit, exit, delegate].
     /// </summary>
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {
         return [
-            DelegatePath(),
             CollaborativePath(),
-            ExitPath()
+            ExitPath(),
+            DelegatePath()
         ];
     }
 

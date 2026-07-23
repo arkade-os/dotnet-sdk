@@ -53,13 +53,13 @@ public class DelegateContractTests
         Assert.That(leaves, Has.Length.EqualTo(3));
     }
 
-    // Leaf ordering: [0] delegate, [1] forfeit, [2] exit
+    // Leaf ordering: [0] forfeit, [1] exit, [2] delegate
 
     [Test]
     public void DelegateContract_DelegatePath_WithCLTV_HasCltvGate()
     {
         var contract = CreateContract();
-        var delegateScript = contract.GetTapScriptList()[0].Script;
+        var delegateScript = contract.GetTapScriptList()[2].Script;
 
         Assert.That(delegateScript.ToString(), Does.Contain("OP_CLTV"));
         Assert.That(delegateScript.ToString(), Does.Contain("OP_CHECKSIGVERIFY"));
@@ -69,7 +69,7 @@ public class DelegateContractTests
     public void DelegateContract_DelegatePath_WithoutCLTV_NoCltvGate()
     {
         var contract = CreateContract(useCltv: false);
-        var delegateScript = contract.GetTapScriptList()[0].Script;
+        var delegateScript = contract.GetTapScriptList()[2].Script;
 
         Assert.That(delegateScript.ToString(), Does.Not.Contain("OP_CLTV"));
         // Still has multisig: user + delegate CHECKSIGVERIFY, server CHECKSIG
@@ -81,7 +81,7 @@ public class DelegateContractTests
     public void DelegateContract_CollaborativePath_HasChecksigVerify()
     {
         var contract = CreateContract();
-        var forfeitScript = contract.GetTapScriptList()[1].Script;
+        var forfeitScript = contract.GetTapScriptList()[0].Script;
 
         Assert.That(forfeitScript.ToString(), Does.Contain("OP_CHECKSIGVERIFY"));
         Assert.That(forfeitScript.ToString(), Does.Contain("OP_CHECKSIG"));
@@ -91,7 +91,7 @@ public class DelegateContractTests
     public void DelegateContract_ExitPath_HasCSV()
     {
         var contract = CreateContract();
-        var exitScript = contract.GetTapScriptList()[2].Script;
+        var exitScript = contract.GetTapScriptList()[1].Script;
 
         Assert.That(exitScript.ToString(), Does.Contain("OP_CSV"));
     }
