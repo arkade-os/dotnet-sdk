@@ -9,8 +9,8 @@ public class WebSocketResponse
     public required string Event { get; set; }
 
     [JsonPropertyName("channel")]
-    public required string Channel { get; set; }
+    public string? Channel { get; set; }
 
     [JsonPropertyName("args")]
-    public required JsonArray Args { get; set; }
+    public JsonArray Args { get; set; } = [];
 }
