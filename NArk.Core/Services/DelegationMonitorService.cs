@@ -137,6 +137,7 @@ public class DelegationMonitorService(
         };
 
         var (signer, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(walletId, signerDescriptor);
+        var delegatePubkey = await GetDelegatePubkeyAsync();
 
         // Build the intent message. Field names must be snake_case (Messages.RegisterIntentMessage's
         // JsonPropertyName values) to match arkd/Fulmine's Go RegisterMessage struct tags — a
@@ -154,7 +155,10 @@ public class DelegationMonitorService(
             OnchainOutputsIndexes = [],
             ValidAt = DateTimeOffset.UtcNow.AddSeconds(2).ToUnixTimeSeconds(),
             ExpireAt = 0,
-            CosignersPublicKeys = [Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant()]
+            // Cosigner must be the delegate (who joins future rounds on the owner's behalf),
+            // not the owner's own key — the owner is offline, so naming it here just stalls
+            // the round waiting for a nonce nobody sends (SIGNING_SESSION_TIMED_OUT).
+            CosignersPublicKeys = [Convert.ToHexString(delegatePubkey.ToBytes()).ToLowerInvariant()]
         });
 
         // Build intent proof PSBT (BIP322-style)

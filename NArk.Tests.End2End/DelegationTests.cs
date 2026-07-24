@@ -1,7 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions;
@@ -285,7 +284,7 @@ public class DelegationTests
     {
         var delegatorUri = SharedDelegationInfrastructure.DelegatorEndpoint.ToString();
 
-        var arkHost = Host.CreateDefaultBuilder([])
+        using var arkHost = Host.CreateDefaultBuilder([])
             .AddArk()
             .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
             .WithSafetyService<AsyncSafetyService>()
@@ -422,28 +421,16 @@ public class DelegationTests
         var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var feeEstimator = new DefaultFeeEstimator(wallet.clientTransport, chainTimeProvider);
 
-        // Issue BEFORE starting the monitor. DelegationMonitorService reacts to VtxosChanged via
-        // an async-void handler that races the rest of this method — if it were already running,
-        // it would grab the freshly-issued (bare-dust) asset VTXO and register an intent for it
-        // concurrently with the consolidation Spend() below, and whichever call reaches arkd's
-        // RegisterIntent/SubmitTx first wins, leaving the other to fail with
-        // VTXO_ALREADY_REGISTERED. Issuing with no monitor attached means that first landing event
-        // is simply missed (IVtxoStorage.VtxosChanged only fires once per new outpoint, and nobody
-        // is subscribed yet) — harmless, since we don't want the monitor delegating the bare-dust
-        // VTXO anyway.
+        // Don't subscribe the monitor until consolidation is in flight (below): VtxosChanged
+        // fires on ANY row change, so if the monitor were listening while the bare-dust asset
+        // VTXO is still Preconfirmed, its later preconfirmed→settled update would trigger the
+        // monitor to delegate (and spend) it out from under the consolidation Spend() call.
         var issuance = await assetManager.IssueAsync(wallet.walletIdentifier,
             new IssuanceParams(Amount: 1000));
         var assetId = issuance.AssetId;
 
         await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
 
-        // Start the monitor now — after the bare-dust VTXO's landing event has already been
-        // missed, but before consolidation creates the final VTXO below. This is the only window
-        // where the monitor can observe the consolidated VTXO's own (one-time) VtxosChanged event:
-        // starting any earlier re-introduces the issuance race above; starting any later (e.g.
-        // after polling confirms the consolidated VTXO already landed) means that VTXO's landing
-        // event has already fired with nobody listening, and the monitor would never react to it
-        // at all — auto-renewal would silently never trigger.
         using var monitor = new DelegationMonitorService(
             wallet.vtxoStorage,
             wallet.contracts,
@@ -452,7 +439,6 @@ public class DelegationTests
             wallet.walletProvider,
             wallet.clientTransport,
             feeEstimator);
-        await monitor.StartAsync(CancellationToken.None);
 
         // AssetManager mints the asset carrier at exactly serverInfo.Dust (330 sats here) with
         // no headroom. arkd requires every offchain output to be >= dust, so once delegation's
@@ -489,6 +475,11 @@ public class DelegationTests
             coinService, wallet.contractService, wallet.clientTransport,
             new NArk.Core.CoinSelector.DefaultCoinSelector(), wallet.safetyService, intentStorage);
         await spendingService.Spend(wallet.walletIdentifier, [assetCoin, fundingCoin], [consolidatedOutput]);
+
+        // Subscribe now — the consolidation broadcast above is already in flight, and the poll
+        // immediately below is what will discover + upsert the consolidated VTXO, firing
+        // VtxosChanged for the first (and only) time while the monitor is listening.
+        await monitor.StartAsync(CancellationToken.None);
 
         await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
 
