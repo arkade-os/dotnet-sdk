@@ -1,6 +1,6 @@
 # Arkade Wallet — Sample App
 
-A neo-bank style wallet built with the NNark dotnet SDK. Showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and swaps — running entirely in the browser via Blazor WASM.
+A neo-bank style wallet built with the NArk .NET SDK. It showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and swaps. It runs entirely in the browser via Blazor WASM.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ A neo-bank style wallet built with the NNark dotnet SDK. Showcases all SDK featu
     └──────────┘
 ```
 
-The full NNark SDK runs in-browser via WebAssembly. `RestClientTransport` talks directly to arkd's REST API. Storage is persisted in the browser via SQLite over OPFS (Origin Private File System) using [SqliteWasmBlazor](https://github.com/b-straub/SqliteWasmBlazor).
+The full NArk SDK runs in-browser via WebAssembly. `RestClientTransport` talks directly to arkd's REST API. Storage is persisted in the browser via SQLite over OPFS (Origin Private File System) using [SqliteWasmBlazor](https://github.com/b-straub/SqliteWasmBlazor).
 
 The Gateway is a minimal static file server that serves the Blazor WASM app and sets required COOP/COEP headers for `SharedArrayBuffer` support.
 
