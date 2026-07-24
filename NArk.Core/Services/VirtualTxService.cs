@@ -94,23 +94,20 @@ public class VirtualTxService(
             if (txidsToFetch.Count > 0)
             {
                 var hexList = await transport.GetVirtualTxsAsync(txidsToFetch, cancellationToken);
-                if (hexList.Count == txidsToFetch.Count)
+                // arkd's GetVirtualTxs (GetTxsWithTxids → SQL `WHERE id IN (...)`) does NOT return
+                // hexes in request order, so pairing them positionally (Zip) crosses txid↔hex. Key
+                // each hex by the txid parsed from the hex itself — order-proof.
+                var network = (await transport.GetServerInfoAsync(cancellationToken)).Network;
+                var hexByTxid = MapHexByTxid(hexList, network, vtxoOutpoint);
+                for (var i = 0; i < virtualTxs.Count; i++)
                 {
-                    var hexByTxid = txidsToFetch
-                        .Zip(hexList, (id, hex) => (id, hex))
-                        .ToDictionary(t => t.id, t => t.hex);
-                    for (var i = 0; i < virtualTxs.Count; i++)
-                    {
-                        if (hexByTxid.TryGetValue(virtualTxs[i].Txid, out var hex))
-                            virtualTxs[i] = virtualTxs[i] with { Hex = hex };
-                    }
+                    if (hexByTxid.TryGetValue(virtualTxs[i].Txid, out var hex))
+                        virtualTxs[i] = virtualTxs[i] with { Hex = hex };
                 }
-                else
-                {
+                if (hexByTxid.Count != txidsToFetch.Count)
                     logger?.LogWarning(
                         "Virtual tx hex count mismatch for VTXO {Outpoint}: expected {Expected}, got {Actual}",
-                        vtxoOutpoint, txidsToFetch.Count, hexList.Count);
-                }
+                        vtxoOutpoint, txidsToFetch.Count, hexByTxid.Count);
             }
         }
 
@@ -174,6 +171,35 @@ public class VirtualTxService(
     /// Ensure all virtual txs in a VTXO's branch have hex populated.
     /// Upgrades Lite → Full by fetching missing hex on demand.
     /// </summary>
+    /// <summary>
+    /// Maps virtual-tx hexes to the txid parsed from each hex (its PSBT global tx). arkd's
+    /// GetVirtualTxs (GetTxsWithTxids → SQL <c>WHERE id IN (...)</c>) returns hexes in DB order,
+    /// not request order, so callers must key by the parsed txid rather than trusting positional
+    /// pairing — otherwise a tree node's txid gets attached to a sibling's hex and the exit
+    /// broadcasts the wrong tx (bad-txns-inputs-missingorspent). ts-sdk sidesteps this by fetching
+    /// one txid at a time; we fetch the branch in one batch, so we self-key by the returned tx.
+    /// Unparseable hexes are skipped with a warning rather than aborting the whole batch.
+    /// </summary>
+    private Dictionary<string, string> MapHexByTxid(
+        IReadOnlyList<string> hexes, Network network, OutPoint vtxoOutpoint)
+    {
+        var map = new Dictionary<string, string>();
+        foreach (var hex in hexes)
+        {
+            try
+            {
+                var txid = PSBT.Parse(hex, network).GetGlobalTransaction().GetHash().ToString();
+                map[txid] = hex;
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex,
+                    "Skipping unparseable virtual tx hex while populating VTXO {Outpoint}", vtxoOutpoint);
+            }
+        }
+        return map;
+    }
+
     public async Task EnsureHexPopulatedAsync(
         OutPoint vtxoOutpoint,
         CancellationToken cancellationToken = default)
@@ -204,19 +230,22 @@ public class VirtualTxService(
         var txids = missingHex.Select(tx => tx.Txid).ToList();
         var hexList = await transport.GetVirtualTxsAsync(txids, cancellationToken);
 
-        if (hexList.Count != txids.Count)
+        // Key by the txid parsed from each hex — arkd doesn't preserve request order (see
+        // FetchAndStoreBranchAsync), so index-pairing would attach the wrong hex to a txid.
+        var network = (await transport.GetServerInfoAsync(cancellationToken)).Network;
+        var hexByTxid = MapHexByTxid(hexList, network, vtxoOutpoint);
+
+        var updates = new List<VirtualTx>();
+        foreach (var mh in missingHex)
         {
-            logger?.LogWarning(
-                "Hex count mismatch when populating VTXO {Outpoint}: expected {Expected}, got {Actual}",
-                vtxoOutpoint, txids.Count, hexList.Count);
+            if (hexByTxid.TryGetValue(mh.Txid, out var hex))
+                updates.Add(new VirtualTx(mh.Txid, hex, mh.ExpiresAt));
         }
 
-        // Update existing records with hex
-        var updates = new List<VirtualTx>();
-        for (var i = 0; i < Math.Min(txids.Count, hexList.Count); i++)
-        {
-            updates.Add(new VirtualTx(txids[i], hexList[i], missingHex[i].ExpiresAt));
-        }
+        if (updates.Count != missingHex.Count)
+            logger?.LogWarning(
+                "Populated hex for {Actual}/{Expected} virtual txs for VTXO {Outpoint} — some txids missing from the indexer response",
+                updates.Count, missingHex.Count, vtxoOutpoint);
 
         await storage.UpsertVirtualTxsAsync(updates, cancellationToken);
 
