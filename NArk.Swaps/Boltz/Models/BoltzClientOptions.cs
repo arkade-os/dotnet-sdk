@@ -17,6 +17,9 @@ public class BoltzClientOptions
     public required string BoltzUrl { get; set; }
     public required string WebsocketUrl { get; set; }
 
+    /// <summary>Maximum duration of a swap-status request.</summary>
+    public TimeSpan SwapStatusRequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// Referral identifier sent with every Boltz swap-creation request
     /// (Submarine, Reverse, Chain). Defaults to <see cref="DefaultReferralId"/>

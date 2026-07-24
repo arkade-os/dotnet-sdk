@@ -1,6 +1,4 @@
 using Microsoft.Extensions.Logging;
-using NArk.Abstractions.Extensions;
-using NArk.Abstractions.Intents;
 
 namespace NArk.Swaps.Boltz;
 
@@ -12,48 +10,19 @@ public partial class BoltzSwapProvider
         _linkedStartCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdownCts.Token);
         var multiToken = _linkedStartCts;
 
-        var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
-        _serverKey = OutputDescriptorHelpers.Extract(serverInfo.SignerKey).XOnlyPubKey;
-        _network = serverInfo.Network;
-
-        // Seed the script→swap map from persistent storage so VTXOs arriving before
-        // the first routine poll are still dispatched correctly. Without this, a
-        // VTXO that hits a swap contract within the first minute after a restart
-        // (or any pending swap carried over across restarts) silently no-ops in
-        // NotifyVtxoChanged and the swap stalls until the user manually syncs.
         try
         {
             var existingActiveSwaps = await _swapsStorage.GetSwaps(active: true, cancellationToken: ct);
-            foreach (var swap in existingActiveSwaps.Where(s => !string.IsNullOrEmpty(s.ContractScript)))
-                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
-            _logger?.LogInformation("Seeded script→swap map with {Count} active swap(s)", _scriptToSwapId.Count);
+            foreach (var swap in existingActiveSwaps)
+                WatchSwap(swap.SwapId);
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to seed script→swap map from storage; RoutinePoll will populate it on next tick");
+            _logger?.LogWarning(ex, "Failed to load active swaps; routine reconciliation will retry");
         }
 
-        _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
-        _cacheTask = DoUpdateStorage(multiToken.Token);
         _websocketTask = RunWebsocketLoop(multiToken.Token);
-
-        // Watch for batch-session completions on refund-without-receiver intents so we can
-        // trigger a poll immediately rather than waiting up to 1 minute for RoutinePoll.
-        _intentStorage.IntentChanged += OnRefundIntentChanged;
-    }
-
-    private void OnRefundIntentChanged(object? sender, ArkIntent intent)
-    {
-        if (!_intentToSwapId.TryGetValue(intent.IntentTxId, out var swapId))
-            return;
-
-        if (intent.State is ArkIntentState.BatchSucceeded or ArkIntentState.BatchFailed or ArkIntentState.Cancelled)
-        {
-            _logger?.LogInformation(
-                "Refund intent {IntentTxId} for swap {SwapId} reached terminal state {State} — triggering poll",
-                intent.IntentTxId, swapId, intent.State);
-            _triggerChannel.Writer.TryWrite($"id:{swapId}");
-        }
+        _routinePollTask = RoutinePoll(TimeSpan.FromMinutes(1), multiToken.Token);
     }
 
     public Task StopAsync(CancellationToken ct)
@@ -74,7 +43,6 @@ public partial class BoltzSwapProvider
     {
         if (Interlocked.Exchange(ref _shutdownStarted, 1) == 1) return;
 
-        _intentStorage.IntentChanged -= OnRefundIntentChanged;
         _logger?.LogInformation("Shutting down Boltz swap provider");
         try { await _shutdownCts.CancelAsync(); } catch { /* already cancelled */ }
 
@@ -84,7 +52,6 @@ public partial class BoltzSwapProvider
             try { await t; } catch { /* expected on cancel */ }
         }
 
-        await Drain(_cacheTask);
         await Drain(_routinePollTask);
         await Drain(_websocketTask);
 

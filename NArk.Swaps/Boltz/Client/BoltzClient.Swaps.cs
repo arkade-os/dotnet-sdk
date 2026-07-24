@@ -8,6 +8,22 @@ namespace NArk.Swaps.Boltz.Client;
 
 public partial class BoltzClient
 {
+    /// <summary>
+    /// Maximum number of swap IDs Boltz accepts in a single
+    /// <see cref="GetSwapStatusesAsync"/> request.
+    /// </summary>
+    public const int MaxSwapStatusBatchSize = 64;
+
+    /// <summary>
+    /// Bounds a single status request by <see cref="BoltzClientOptions.SwapStatusRequestTimeout"/>
+    /// without letting a slow response block the caller's own token indefinitely.
+    /// </summary>
+    private CancellationTokenSource CreateStatusRequestCts(CancellationToken cancellation)
+    {
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        cts.CancelAfter(_options.Value.SwapStatusRequestTimeout);
+        return cts;
+    }
 
     /// <summary>
     /// Gets the status of a swap.
@@ -22,14 +38,16 @@ public partial class BoltzClient
     /// </exception>
     public virtual async Task<SwapStatusResponse?> GetSwapStatusAsync(string swapId, CancellationToken cancellation)
     {
-        using var resp = await _httpClient.GetAsync($"v2/swap/{swapId}", cancellation);
+        using var requestCts = CreateStatusRequestCts(cancellation);
+        var requestToken = requestCts.Token;
+        using var resp = await _httpClient.GetAsync($"v2/swap/{swapId}", requestToken);
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             // Defensive: only treat as "swap unknown" if the body matches the
             // shape Boltz returns for missing swaps. A 404 from a renamed
             // route or proxy misconfiguration shouldn't trip the safety net.
-            var body = await resp.Content.ReadAsStringAsync(cancellation);
+            var body = await resp.Content.ReadAsStringAsync(requestToken);
             if (body.Contains("could not find swap", StringComparison.OrdinalIgnoreCase))
             {
                 throw new BoltzSwapNotFoundException(swapId, body);
@@ -38,7 +56,29 @@ public partial class BoltzClient
         }
 
         resp.EnsureSuccessStatusCode();
-        return await resp.Content.ReadFromJsonAsync<SwapStatusResponse>(cancellation);
+        return await resp.Content.ReadFromJsonAsync<SwapStatusResponse>(requestToken);
+    }
+
+    /// <summary>
+    /// Gets the latest status of up to <see cref="MaxSwapStatusBatchSize"/> swaps in one request.
+    /// </summary>
+    public virtual async Task<IReadOnlyDictionary<string, SwapStatusResponse>> GetSwapStatusesAsync(
+        IReadOnlyCollection<string> swapIds,
+        CancellationToken cancellation = default)
+    {
+        if (swapIds.Count == 0)
+            return new Dictionary<string, SwapStatusResponse>();
+        if (swapIds.Count > MaxSwapStatusBatchSize)
+            throw new ArgumentOutOfRangeException(nameof(swapIds),
+                $"Boltz accepts at most {MaxSwapStatusBatchSize} swap IDs.");
+
+        var query = string.Join("&", swapIds.Select(id => $"ids={Uri.EscapeDataString(id)}"));
+        using var requestCts = CreateStatusRequestCts(cancellation);
+        var requestToken = requestCts.Token;
+        using var resp = await _httpClient.GetAsync($"v2/swap/status?{query}", requestToken);
+        resp.EnsureSuccessStatusCode();
+        return await resp.Content.ReadFromJsonAsync<Dictionary<string, SwapStatusResponse>>(requestToken)
+               ?? new Dictionary<string, SwapStatusResponse>();
     }
 
     // Submarine Swaps
