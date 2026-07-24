@@ -142,13 +142,17 @@ public class DelegationMonitorService(
         // JsonPropertyName values) to match arkd/Fulmine's Go RegisterMessage struct tags — a
         // camelCase mismatch silently unmarshals to zero values rather than erroring. The delegator
         // schedules its registration task at ValidAt (time.Unix(message.ValidAt, 0) in Fulmine's
-        // delegator_service.go) and rejects ValidAt == 0 outright ("invalid valid at"); "now" makes
-        // it register immediately, since a past/zero-delay schedule runs right away.
+        // delegator_service.go) via its own scheduler and rejects ValidAt == 0 outright ("invalid
+        // valid at"). ts-sdk's DelegateManager always schedules at least 1s in the future (its
+        // production default is ~10% before expiry); a zero-delay "now" was observed to make
+        // Fulmine's reactive per-join event stream (delegator_service.go's joinDelegateBatch, which
+        // opens a fresh GetEventStream only after seeing BatchStartedEvent) consistently lose the
+        // race against arkd's TreeTxEvent broadcast, ending in VTXO_BANNED. Mirror ts-sdk's margin.
         var intentMessage = JsonSerializer.Serialize(new Messages.RegisterIntentMessage
         {
             Type = "register",
             OnchainOutputsIndexes = [],
-            ValidAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ValidAt = DateTimeOffset.UtcNow.AddSeconds(2).ToUnixTimeSeconds(),
             ExpireAt = 0,
             CosignersPublicKeys = [Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant()]
         });

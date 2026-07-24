@@ -1,15 +1,16 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Assets;
-using NArk.Abstractions.Batches;
-using NArk.Abstractions.Batches.ServerEvents;
+using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
-using NArk.Core.CoinSelector;
 using NArk.Core.Contracts;
 using NArk.Core.Events;
 using NArk.Blockchain;
@@ -17,6 +18,9 @@ using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
+using NArk.Hosting;
+using NArk.Safety.AsyncKeyedLock;
+using NArk.Storage.EfCore.Hosting;
 using NArk.Tests.Common;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
@@ -267,6 +271,138 @@ public class DelegationTests
         TestContext.Progress.WriteLine("Delegate asset VTXO survived batch settlement");
     }
 
+    /// <summary>
+    /// Minimal, plain-BTC (no assets) repeated-delegation-cycle test. Funds via a real
+    /// arkd note (redeemed through the full IntentGenerationService/IntentSynchronizationService/
+    /// BatchManagementService pipeline) instead of FundedWalletHelper's fulmine-liquidity-dependent
+    /// path (DockerHelper.SendArkdNoteTo → boltz-fulmine's own wallet balance/settle), which has
+    /// been unreliable (settle() timeouts) independent of the delegation logic under test.
+    /// Uses the production AddArkDelegation() builder wiring (DelegatingWalletProvider +
+    /// DelegationMonitorService as a real IHostedService) instead of manual service construction.
+    /// </summary>
+    [Test]
+    public async Task DelegateVtxoRenewsAcrossRepeatedCyclesViaNoteFunding()
+    {
+        var delegatorUri = SharedDelegationInfrastructure.DelegatorEndpoint.ToString();
+
+        var arkHost = Host.CreateDefaultBuilder([])
+            .AddArk()
+            .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
+            .WithSafetyService<AsyncSafetyService>()
+            .WithIntentScheduler<SimpleIntentScheduler>()
+            .WithWalletProvider<InMemoryWalletProvider>()
+            .ConfigureServices((_, s) =>
+            {
+                s.AddDbContextFactory<TestDbContext>(options =>
+                    options.UseInMemoryDatabase($"Test_{Guid.NewGuid():N}"));
+                s.AddArkEfCoreStorage<TestDbContext>();
+                s.AddNBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+                // AFTER WithWalletProvider — decorates IWalletProvider and registers
+                // DelegationMonitorService as a real IHostedService.
+                s.AddArkDelegation(delegatorUri);
+            })
+            .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
+            {
+                o.Threshold = TimeSpan.FromHours(2);
+                o.ThresholdHeight = 2000;
+            }))
+            .ConfigureServices(s => s.Configure<IntentGenerationServiceOptions>(o => o.PollInterval = TimeSpan.FromSeconds(5)))
+            .Build();
+
+        await arkHost.StartAsync();
+        try
+        {
+            var walletProvider = arkHost.Services.GetRequiredService<InMemoryWalletProvider>();
+            var contractService = arkHost.Services.GetRequiredService<IContractService>();
+            var vtxoStorage = arkHost.Services.GetRequiredService<IVtxoStorage>();
+            var contractStorage = arkHost.Services.GetRequiredService<IContractStorage>();
+
+            var walletId = await walletProvider.CreateTestWallet();
+
+            var note = await DockerHelper.CreateArkNote(500_000);
+            if (string.IsNullOrEmpty(note))
+                throw new Exception("Note creation failed!");
+
+            await contractService.ImportContract(walletId, ArkNoteContract.Parse(note));
+
+            // Wait for the note's redemption to land as a VTXO on a delegate contract.
+            // IWalletProvider is decorated (AddArkDelegation), so whatever "send to self"
+            // destination the redemption picks should already be an ArkDelegateContract.
+            ArkVtxo? currentVtxo = null;
+            var fundedDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
+            while (currentVtxo is null && DateTime.UtcNow < fundedDeadline)
+            {
+                var vtxos = await vtxoStorage.GetVtxos(walletIds: [walletId], includeSpent: false);
+                foreach (var v in vtxos)
+                {
+                    var contracts = await contractStorage.GetContracts(scripts: [v.Script]);
+                    if (contracts.FirstOrDefault()?.Type.Equals("Delegate", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        currentVtxo = v;
+                        break;
+                    }
+                }
+                if (currentVtxo is null)
+                    await Task.Delay(2000);
+            }
+            Assert.That(currentVtxo, Is.Not.Null,
+                "Note redemption did not land a VTXO on a delegate contract within 90s");
+            TestContext.Progress.WriteLine(
+                $"Initial delegate VTXO: {currentVtxo!.TransactionId}:{currentVtxo.TransactionOutputIndex}, amount={currentVtxo.Amount}");
+
+            // Delegate renewals rotate to a fresh HD-derived script every cycle (matching
+            // ts-sdk's WalletReceiveRotator, which deliberately allocates a new receive
+            // descriptor on every vtxo_received event rather than reusing one address) — so
+            // renewal must be detected by wallet + contract-type + outpoint change, not by
+            // watching a single fixed script.
+            var renewalCount = 0;
+            for (var round = 1; round <= 2; round++)
+            {
+                var roundDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(75);
+                ArkVtxo? renewed = null;
+                while (DateTime.UtcNow < roundDeadline)
+                {
+                    var vtxos = await vtxoStorage.GetVtxos(walletIds: [walletId], includeSpent: false);
+                    foreach (var v in vtxos)
+                    {
+                        if (v.TransactionId == currentVtxo.TransactionId &&
+                            v.TransactionOutputIndex == currentVtxo.TransactionOutputIndex)
+                            continue;
+                        if (v.Preconfirmed)
+                            continue;
+                        var contracts = await contractStorage.GetContracts(scripts: [v.Script]);
+                        if (contracts.FirstOrDefault()?.Type.Equals("Delegate", StringComparison.OrdinalIgnoreCase) == true)
+                        {
+                            renewed = v;
+                            break;
+                        }
+                    }
+                    if (renewed is not null)
+                        break;
+                    await Task.Delay(2000);
+                }
+
+                Assert.That(renewed, Is.Not.Null,
+                    $"Delegator did not renew the VTXO during round {round} within 75s " +
+                    $"(last outpoint was {currentVtxo.TransactionId}:{currentVtxo.TransactionOutputIndex})");
+                Assert.That(renewed!.Amount, Is.LessThanOrEqualTo(currentVtxo.Amount),
+                    $"round {round}: renewed amount should not exceed the pre-renewal amount");
+
+                TestContext.Progress.WriteLine(
+                    $"Round {round}: renewed to {renewed.TransactionId}:{renewed.TransactionOutputIndex}, amount={renewed.Amount}");
+                currentVtxo = renewed;
+                renewalCount++;
+            }
+
+            Assert.That(renewalCount, Is.EqualTo(2),
+                "Expected the delegator to auto-renew the VTXO across 2 consecutive rounds");
+        }
+        finally
+        {
+            await arkHost.StopAsync();
+        }
+    }
+
     [Test]
     public async Task DelegationMonitorAutoRenewsAssetVtxoAcrossMultipleBatchRounds()
     {
@@ -281,14 +417,33 @@ public class DelegationTests
         var (assetManager, coinService, intentStorage) =
             AssetTestHelpers.CreateAssetServices(walletDetails, [delegateTransformer]);
 
-        // Real automatic delegation: the wallet only watches its own VTXOs and hands off
-        // pre-signed artifacts. It never runs IntentGenerationService/BatchManagementService
-        // itself here — the live delegator is solely responsible for joining batch rounds
-        // and refreshing the VTXO before it expires.
         var delegatorProvider = new GrpcDelegatorProvider(
             SharedDelegationInfrastructure.DelegatorEndpoint.ToString());
         var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var feeEstimator = new DefaultFeeEstimator(wallet.clientTransport, chainTimeProvider);
+
+        // Issue BEFORE starting the monitor. DelegationMonitorService reacts to VtxosChanged via
+        // an async-void handler that races the rest of this method — if it were already running,
+        // it would grab the freshly-issued (bare-dust) asset VTXO and register an intent for it
+        // concurrently with the consolidation Spend() below, and whichever call reaches arkd's
+        // RegisterIntent/SubmitTx first wins, leaving the other to fail with
+        // VTXO_ALREADY_REGISTERED. Issuing with no monitor attached means that first landing event
+        // is simply missed (IVtxoStorage.VtxosChanged only fires once per new outpoint, and nobody
+        // is subscribed yet) — harmless, since we don't want the monitor delegating the bare-dust
+        // VTXO anyway.
+        var issuance = await assetManager.IssueAsync(wallet.walletIdentifier,
+            new IssuanceParams(Amount: 1000));
+        var assetId = issuance.AssetId;
+
+        await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+
+        // Start the monitor now — after the bare-dust VTXO's landing event has already been
+        // missed, but before consolidation creates the final VTXO below. This is the only window
+        // where the monitor can observe the consolidated VTXO's own (one-time) VtxosChanged event:
+        // starting any earlier re-introduces the issuance race above; starting any later (e.g.
+        // after polling confirms the consolidated VTXO already landed) means that VTXO's landing
+        // event has already fired with nobody listening, and the monitor would never react to it
+        // at all — auto-renewal would silently never trigger.
         using var monitor = new DelegationMonitorService(
             wallet.vtxoStorage,
             wallet.contracts,
@@ -298,14 +453,6 @@ public class DelegationTests
             wallet.clientTransport,
             feeEstimator);
         await monitor.StartAsync(CancellationToken.None);
-
-        // Issuing lands the asset VTXO on the delegate contract and fires VtxosChanged,
-        // which the monitor picks up to auto-delegate it.
-        var issuance = await assetManager.IssueAsync(wallet.walletIdentifier,
-            new IssuanceParams(Amount: 1000));
-        var assetId = issuance.AssetId;
-
-        await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
 
         // AssetManager mints the asset carrier at exactly serverInfo.Dust (330 sats here) with
         // no headroom. arkd requires every offchain output to be >= dust, so once delegation's
@@ -326,12 +473,13 @@ public class DelegationTests
             [assetCoin.Contract, fundingCoin.Contract]);
         var consolidatedAddress = consolidatedContract.GetArkAddress();
 
-        var consolidationFee = await feeEstimator.EstimateFeeAsync(
-            [assetCoin, fundingCoin],
-            [new ArkTxOut(ArkTxOutType.Vtxo, assetCoin.Amount + fundingCoin.Amount, consolidatedAddress)]);
+        // SpendingService.Spend is a direct ark-tx send, not an intent registration — it
+        // computes its own change (totalInput - outputsSum) and auto-adds a change output
+        // for any leftover. Pre-subtracting a fee here (as if for RegisterIntent) would just
+        // leave a gap that Spend fills with a *second* delegate-eligible VTXO. Consolidate the
+        // full amount into one output instead.
         var consolidatedOutput = new ArkTxOut(
-            ArkTxOutType.Vtxo, assetCoin.Amount + fundingCoin.Amount - Money.Satoshis(consolidationFee),
-            consolidatedAddress)
+            ArkTxOutType.Vtxo, assetCoin.Amount + fundingCoin.Amount, consolidatedAddress)
         {
             Assets = [new ArkTxOutAsset(assetId, 1000)]
         };
@@ -344,7 +492,7 @@ public class DelegationTests
 
         await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
 
-        var lastOutpoint = await GetAssetVtxoOutpoint(wallet.vtxoStorage, assetId);
+        var lastOutpoint = (await GetAssetVtxo(wallet.vtxoStorage, assetId))?.OutPoint;
         Assert.That(lastOutpoint, Is.Not.Null, "Asset VTXO should exist after consolidation");
         TestContext.Progress.WriteLine($"Consolidated asset VTXO outpoint: {lastOutpoint}");
 
@@ -356,10 +504,17 @@ public class DelegationTests
             while (DateTime.UtcNow < roundDeadline)
             {
                 await AssetTestHelpers.PollAllScripts(walletDetails);
-                var current = await GetAssetVtxoOutpoint(wallet.vtxoStorage, assetId);
-                if (current is not null && current != lastOutpoint)
+                var current = await GetAssetVtxo(wallet.vtxoStorage, assetId);
+                // A changed outpoint alone isn't proof of a delegator-driven batch renewal — a
+                // direct ark-tx (e.g. SpendingService.Spend's own checkpoint-then-final-tx
+                // settlement) can surface as two different observed txids for the *same* logical
+                // spend, which would false-positive here. arkd's `is_preconfirmed` flag
+                // (ArkVtxo.Preconfirmed) is the actual ground truth: it only flips to false once
+                // the vtxo is settled via a finalized batch round — exactly what auto-renewal is
+                // supposed to produce. Require both: a new outpoint AND settled-not-preconfirmed.
+                if (current is not null && current.OutPoint != lastOutpoint && !current.Preconfirmed)
                 {
-                    renewedOutpoint = current;
+                    renewedOutpoint = current.OutPoint;
                     break;
                 }
 
@@ -396,11 +551,10 @@ public class DelegationTests
             "Delegation monitor kept the asset VTXO alive across 2 consecutive batch rounds without owner intervention");
     }
 
-    private static async Task<OutPoint?> GetAssetVtxoOutpoint(IVtxoStorage vtxoStorage, string assetId)
+    private static async Task<ArkVtxo?> GetAssetVtxo(IVtxoStorage vtxoStorage, string assetId)
     {
         var vtxos = await vtxoStorage.GetVtxos(includeSpent: false);
-        var vtxo = vtxos.FirstOrDefault(v => v.Assets is { Count: > 0 } a && a.Any(x => x.AssetId == assetId));
-        return vtxo is null ? null : new OutPoint(uint256.Parse(vtxo.TransactionId), vtxo.TransactionOutputIndex);
+        return vtxos.FirstOrDefault(v => v.Assets is { Count: > 0 } a && a.Any(x => x.AssetId == assetId));
     }
 
     private record DelegatorInfoResponse(
