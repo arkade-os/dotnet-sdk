@@ -100,6 +100,28 @@ public class SwapsManagementService : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<ISwapProvider> Providers => _providers;
 
+    // ─── Minimal passthroughs for provider-specific extension methods ──────
+    // Boltz's own swap-type-specific methods (InitiateBtcToArkChainSwap etc.) live directly on
+    // this class since NArk.Swaps already owns NArk.Swaps.Boltz. Other providers living in
+    // their own assembly (e.g. NArk.Swaps.Evm, which depends on NArk.Swaps — never the reverse)
+    // can't do that, so they add the equivalent convenience methods as extension methods on
+    // SwapsManagementService instead. These three passthroughs expose just enough of this
+    // class's private state (the same pieces InitiateBtcToArkChainSwap/InitiateArkToBtcChainSwap
+    // already use internally: derive a signing descriptor, fund a lockup, mark a swap Failed on
+    // error) for those extension methods to mirror that exact pattern without needing anything
+    // Boltz-specific from this class.
+
+    /// <summary>Wallet/descriptor access — for deriving refund/claim descriptors the same way
+    /// this class's own Initiate* methods do.</summary>
+    public IWalletProvider WalletProvider => _walletProvider;
+
+    /// <summary>Coin spending — for funding a swap's lockup, mirroring
+    /// <see cref="InitiateArkToBtcChainSwap"/>'s fund-then-mark-Failed-on-exception pattern.</summary>
+    public ISpendingService SpendingService => _spendingService;
+
+    /// <summary>Swap persistence — for the same mark-Failed-on-exception pattern.</summary>
+    public ISwapStorage SwapStorage => _swapsStorage;
+
     // BIP-340 sign+hash gives us a deterministic preimage rooted in the wallet's secret
     // material without leaking the key (signatures reveal nothing about the key). The signed
     // message bundles:

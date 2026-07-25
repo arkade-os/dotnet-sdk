@@ -124,6 +124,17 @@ public class EvmChainSwapProvider : ISwapProvider
     public string ProviderId => Id;
     public string DisplayName => "Boltz (EVM)";
 
+    /// <summary>
+    /// This provider's own EVM account address, derived from <see cref="EvmSwapOptions.PrivateKey"/>
+    /// — the same key <see cref="GetEvmChainClientAsync"/> signs lock/claim/refund transactions
+    /// with. For <c>ChainArkToEvm</c>, this MUST be the <c>evmClaimAddress</c> passed to
+    /// <see cref="CreateArkToEvmSwapAsync"/> (Boltz locks tBTC for whoever this address is, and
+    /// only this provider's own key can later claim it). Address derivation from a private key
+    /// doesn't touch the network, so this is synchronous — chain id only affects transaction
+    /// signing (EIP-155), not address derivation.
+    /// </summary>
+    public string EvmAddress => new Account(_options.PrivateKey).Address;
+
     public event EventHandler<SwapStatusChangedEvent>? SwapStatusChanged;
 
     // ─── Routes ─────────────────────────────────────────────────────────────
@@ -351,6 +362,35 @@ public class EvmChainSwapProvider : ISwapProvider
         };
 
         await _swapStorage.SaveSwap(walletId, swap, ct);
+    }
+
+    /// <summary>
+    /// Locks <paramref name="result"/>'s tBTC amount in <c>ERC20Swap</c> for a
+    /// <c>ChainEvmToArk</c> swap created via <see cref="CreateEvmToArkSwapAsync"/> — approve +
+    /// lock in one call, using the claim address/timelock/amount Boltz returned in
+    /// <c>result.Swap.LockupDetails</c>. Unlike the ARK/BTC legs (where the swap-creation
+    /// response describes an address the counterparty pays into), the EVM leg's lock
+    /// parameters are ones <em>we</em> choose when calling the contract — Boltz's response just
+    /// tells us its own claim address so Boltz can later claim what we lock. Not idempotent:
+    /// the contract reverts on a second lock with the same preimage hash, so call this once per
+    /// swap.
+    /// </summary>
+    public async Task LockEvmAsync(EvmChainSwapResult result, CancellationToken ct = default)
+    {
+        if (result.Swap.LockupDetails is not { ClaimAddress: { } claimAddress } lockupDetails)
+            throw new InvalidOperationException(
+                $"Chain swap {result.Swap.Id}: missing EVM lockup details (claimAddress) — not a ChainEvmToArk swap?");
+
+        var client = await GetEvmChainClientAsync(ct);
+        var info = await EvmChainClient.GetChainInfoAsync(_boltzClient, _options.PairCurrency, ct);
+        var tokenAddress = info.Tokens[_options.PairCurrency];
+
+        await client.ApproveTokenAsync(tokenAddress, lockupDetails.Amount, ct);
+        await client.LockAsync(result.PreimageHash, lockupDetails.Amount, tokenAddress, claimAddress,
+            lockupDetails.TimeoutBlockHeight, ct);
+
+        _logger?.LogInformation("Swap {SwapId}: locked {Amount} tBTC in ERC20Swap for Boltz to claim",
+            result.Swap.Id, lockupDetails.Amount);
     }
 
     // ─── Lifecycle: websocket push (primary) + REST poll loop (safety net) ─────────

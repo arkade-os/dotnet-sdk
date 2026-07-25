@@ -29,6 +29,14 @@ public class ChainSwapData
     [JsonPropertyName("serverPublicKey")]
     public string? ServerPublicKey { get; set; }
 
+    /// <summary>
+    /// EVM address to lock funds for — set on the EVM leg's own <c>lockupDetails</c>
+    /// (e.g. Boltz's own claim address for a <c>ChainEvmToArk</c> swap's tBTC lockup).
+    /// Null for BTC/ARK legs, which use <see cref="SwapTree"/>/<see cref="LockupAddress"/> instead.
+    /// </summary>
+    [JsonPropertyName("claimAddress")]
+    public string? ClaimAddress { get; set; }
+
     [JsonPropertyName("timeoutBlockHeight")]
     public int TimeoutBlockHeight { get; set; }
 
