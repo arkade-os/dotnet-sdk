@@ -108,6 +108,13 @@ public class Erc20SwapContractTests
         var preimageHash = SHA256.HashData(RandomPreimage());
         var timelock = await FarFutureTimelock();
 
+        // All tests in this fixture share one deployed contract + deployer account (one
+        // OneTimeSetUp, not per-test) — approve() *sets* the allowance, so leftover allowance
+        // from an earlier test that approved more than it spent would otherwise let this
+        // "no approval" scenario accidentally succeed depending on test execution order.
+        // Explicitly zero it out first so this test means what it says regardless of history.
+        await client.ApproveTokenAsync(_tokenAddress, 0);
+
         await AssertRevertsAsync(() =>
             client.LockAsync(preimageHash, 1000, _tokenAddress, _deployer.Address, timelock));
     }
