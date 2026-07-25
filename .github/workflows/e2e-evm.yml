@@ -35,7 +35,10 @@ jobs:
       - name: Restore and build
         run: dotnet build NArk.CI.slnf
       - name: Run EVM E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Evm"
+        # Excludes TestCategory=Swaps: those EVM tests (e.g. EvmChainSwapTests) need a real
+        # Boltz counterparty, not just bare Anvil, and already run under e2e-swaps.yml's
+        # full regtest stack (which pulls in the evm profile automatically).
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Evm&TestCategory!=Swaps"
         timeout-minutes: 10
       - name: Upload Anvil logs on failure
         if: failure()
