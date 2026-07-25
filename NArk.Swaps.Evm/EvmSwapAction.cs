@@ -23,9 +23,12 @@ public enum EvmSwapAction
     CanRefundArkLockup,
 
     /// <summary>
-    /// ChainEvmToArk: Boltz locked Ark VTXOs for us — claim them with our preimage.
-    /// Not yet implemented: requires generic Ark VHTLC spending via
-    /// <c>SpendingService</c>. Deferred — see plan's follow-up scope.
+    /// ChainEvmToArk: Boltz locked Ark VTXOs for us — claimed automatically by the wallet-wide
+    /// generic sweeper (<c>SweeperService</c> + <c>SwapSweepPolicy</c> +
+    /// <c>VHTLCContractTransformer</c>), not by this provider. Matches the same reliance
+    /// <c>BoltzSwapProvider</c>'s <c>ChainBtcToArk</c> direction already has (see
+    /// <c>SwapsManagementService.InitiateBtcToArkChainSwap</c>'s "Import VHTLC contract for
+    /// sweeper to claim" comment) — no explicit action needed here.
     /// </summary>
     CanClaimArkLockup,
 }

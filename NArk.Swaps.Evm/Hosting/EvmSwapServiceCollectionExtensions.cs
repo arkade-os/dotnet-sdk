@@ -23,9 +23,8 @@ public static class EvmSwapServiceCollectionExtensions
     {
         services.Configure(configure);
 
-        // Named, not typed (AddHttpClient<EvmChainSwapProvider>() would make the provider
-        // itself a transient typed client — it needs to be a singleton, see constructor).
-        services.AddHttpClient(EvmChainSwapProvider.HttpClientName);
+        // No separate HttpClient here: EvmChainSwapProvider reuses BoltzClient.HttpClient,
+        // which already talks to the same Boltz backend — see BoltzClient.HttpClient's doc.
         services.AddSingleton<EvmChainSwapProvider>();
         services.AddSingleton<ISwapProvider>(sp => sp.GetRequiredService<EvmChainSwapProvider>());
 

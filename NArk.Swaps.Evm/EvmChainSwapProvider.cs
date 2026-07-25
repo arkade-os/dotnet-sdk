@@ -1,13 +1,17 @@
-using System.Net.Http.Json;
 using System.Numerics;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Nethereum.Signer;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
+using NArk.Abstractions;
+using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
+using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
+using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
@@ -36,8 +40,8 @@ public class EvmChainSwapProvider : ISwapProvider
 
     private readonly BoltzClient _boltzClient;
     private readonly IClientTransport _clientTransport;
-    private readonly HttpClient _httpClient;
     private readonly ISwapStorage _swapStorage;
+    private readonly IContractService _contractService;
     private readonly EvmSwapOptions _options;
     private readonly ILogger<EvmChainSwapProvider>? _logger;
 
@@ -46,27 +50,18 @@ public class EvmChainSwapProvider : ISwapProvider
     private EvmChainClient? _evmChainClient;
     private readonly SemaphoreSlim _evmClientInitLock = new(1, 1);
 
-    /// <summary>Name of the named <see cref="HttpClient"/> this provider requests from <see cref="IHttpClientFactory"/>.</summary>
-    public const string HttpClientName = nameof(EvmChainSwapProvider);
-
     public EvmChainSwapProvider(
         BoltzClient boltzClient,
         IClientTransport clientTransport,
-        IHttpClientFactory httpClientFactory,
         ISwapStorage swapStorage,
+        IContractService contractService,
         IOptions<EvmSwapOptions> options,
-        IOptions<Boltz.Models.BoltzClientOptions> boltzClientOptions,
         ILogger<EvmChainSwapProvider>? logger = null)
     {
         _boltzClient = boltzClient;
         _clientTransport = clientTransport;
-        // Same Boltz backend as BoltzClient talks to (just a different currency leg), so we
-        // reuse its BoltzUrl rather than adding a second, redundant "where's Boltz" setting.
-        // A plain named client (not a typed client) so this class itself stays a singleton —
-        // AddHttpClient<T>() would register T as a transient typed client instead.
-        _httpClient = httpClientFactory.CreateClient(HttpClientName);
-        _httpClient.BaseAddress ??= new Uri(boltzClientOptions.Value.BoltzUrl);
         _swapStorage = swapStorage;
+        _contractService = contractService;
         _options = options.Value;
         _logger = logger;
     }
@@ -95,7 +90,7 @@ public class EvmChainSwapProvider : ISwapProvider
 
     public async Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct)
     {
-        var pairs = await _httpClient.GetFromJsonAsync<Dictionary<string, Dictionary<string, EvmChainPairDetails>>>(
+        var pairs = await _boltzClient.GetFromJsonAsync<Dictionary<string, Dictionary<string, EvmChainPairDetails>>>(
             "v2/swap/chain", ct) ?? throw new InvalidOperationException("Boltz returned no chain-swap pairs.");
 
         var (fromKey, toKey) = route.Source.Network == SwapNetwork.EvmArbitrum
@@ -134,9 +129,11 @@ public class EvmChainSwapProvider : ISwapProvider
     /// <summary>
     /// Creates an ARK -&gt; EvmArbitrum chain swap: we lock an Ark VHTLC, Boltz locks tBTC on
     /// Arbitrum for <paramref name="evmClaimAddress"/> (our own EVM account) to claim.
+    /// Persists the swap and imports the VHTLC contract before returning, so the poll loop
+    /// picks it up on the next tick.
     /// </summary>
     public async Task<EvmChainSwapResult> CreateArkToEvmSwapAsync(
-        long amountSats, OutputDescriptor refundDescriptor, string evmClaimAddress,
+        string walletId, long amountSats, OutputDescriptor refundDescriptor, string evmClaimAddress,
         byte[]? preimage = null, CancellationToken ct = default)
     {
         var operatorTerms = await _clientTransport.GetServerInfoAsync(ct);
@@ -159,13 +156,8 @@ public class EvmChainSwapProvider : ISwapProvider
             ReferralId = _boltzClient.ReferralId,
         };
 
-        var httpResponse = await _httpClient.PostAsJsonAsync("v2/swap/chain", request, ct);
-        if (!httpResponse.IsSuccessStatusCode)
-        {
-            var body = await httpResponse.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"POST v2/swap/chain failed ({httpResponse.StatusCode}): {body}", null, httpResponse.StatusCode);
-        }
-        var response = (await httpResponse.Content.ReadFromJsonAsync<ChainResponse>(cancellationToken: ct))!;
+        var response = await _boltzClient.PostAsJsonAsync<EvmChainCreateRequest, ChainResponse>(
+            "v2/swap/chain", request, ct);
 
         var lockupDetails = response.LockupDetails
             ?? throw new InvalidOperationException($"Chain swap {response.Id}: missing lockup details (Ark side).");
@@ -194,16 +186,20 @@ public class EvmChainSwapProvider : ISwapProvider
                 $"Chain swap {response.Id}: Ark lockup address mismatch. " +
                 $"Computed {computedAddress}, Boltz expects {lockupDetails.LockupAddress}");
 
-        return new EvmChainSwapResult(response, preimage, preimageHash, ephemeralEvmKey, vhtlcContract);
+        var result = new EvmChainSwapResult(response, preimage, preimageHash, ephemeralEvmKey, vhtlcContract);
+        await PersistSwapAsync(walletId, result, ArkSwapType.ChainArkToEvm,
+            new SwapRoute(SwapAsset.ArkBtc, SwapAsset.ArbitrumTbtc), amountSats, operatorTerms.Network, ct);
+        return result;
     }
 
     /// <summary>
     /// Creates an EvmArbitrum -&gt; ARK chain swap: we lock tBTC in <c>ERC20Swap</c> on
     /// Arbitrum ourselves, Boltz locks an Ark VHTLC for <paramref name="claimDescriptor"/>
-    /// (our Ark receiving descriptor) to claim.
+    /// (our Ark receiving descriptor) to claim. Persists the swap and imports the VHTLC
+    /// contract before returning, so the poll loop picks it up on the next tick.
     /// </summary>
     public async Task<EvmChainSwapResult> CreateEvmToArkSwapAsync(
-        long amountSats, OutputDescriptor claimDescriptor,
+        string walletId, long amountSats, OutputDescriptor claimDescriptor,
         byte[]? preimage = null, CancellationToken ct = default)
     {
         var operatorTerms = await _clientTransport.GetServerInfoAsync(ct);
@@ -254,7 +250,52 @@ public class EvmChainSwapProvider : ISwapProvider
                 $"Chain swap {response.Id}: Ark claim address mismatch. " +
                 $"Computed {computedAddress}, Boltz expects {claimDetails.LockupAddress}");
 
-        return new EvmChainSwapResult(response, preimage, preimageHash, ephemeralEvmKey, vhtlcContract);
+        var result = new EvmChainSwapResult(response, preimage, preimageHash, ephemeralEvmKey, vhtlcContract);
+        await PersistSwapAsync(walletId, result, ArkSwapType.ChainEvmToArk,
+            new SwapRoute(SwapAsset.ArbitrumTbtc, SwapAsset.ArkBtc), amountSats, operatorTerms.Network, ct);
+        return result;
+    }
+
+    /// <summary>
+    /// Persists the swap record and imports the Ark VHTLC contract, mirroring
+    /// <c>SwapsManagementService</c>'s pattern for the BTC leg — without this, the swap is
+    /// never tracked and the poll loop never sees it.
+    /// </summary>
+    private async Task PersistSwapAsync(
+        string walletId, EvmChainSwapResult result, ArkSwapType swapType, SwapRoute route,
+        long expectedAmountSats, NBitcoin.Network network, CancellationToken ct)
+    {
+        var contract = result.Contract!;
+        await _contractService.ImportContract(walletId, contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
+            cancellationToken: ct);
+
+        var arkAddress = contract.GetArkAddress();
+        var swap = new ArkSwap(
+            result.Swap.Id,
+            walletId,
+            swapType,
+            "",
+            expectedAmountSats,
+            arkAddress.ScriptPubKey.ToHex(),
+            arkAddress.ToString(network.ChainName == ChainName.Mainnet),
+            ArkSwapStatus.Pending,
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            Convert.ToHexString(result.PreimageHash).ToLowerInvariant())
+        {
+            Metadata = new Dictionary<string, string>
+            {
+                [SwapMetadata.Preimage] = Convert.ToHexString(result.Preimage).ToLowerInvariant(),
+                [SwapMetadata.BoltzResponse] = JsonSerializer.Serialize(result.Swap),
+            },
+            ProviderId = Id,
+            Route = route,
+        };
+
+        await _swapStorage.SaveSwap(walletId, swap, ct);
     }
 
     // ─── Lifecycle: simple poll loop (no websocket yet — see plan) ─────────
@@ -319,8 +360,16 @@ public class EvmChainSwapProvider : ISwapProvider
             case EvmSwapAction.CanRefundEvmLockup:
                 await TryRefundEvmLockupAsync(swap, ct);
                 break;
-            case EvmSwapAction.CanRefundArkLockup:
             case EvmSwapAction.CanClaimArkLockup:
+                // No explicit action: PersistSwapAsync already imported this VHTLC via
+                // IContractService.ImportContract(AwaitingFundsBeforeDeactivate), which puts its
+                // script in VtxoSynchronizationService's watched set. Once the VTXO lands, the
+                // wallet-wide SweeperService (always running — registered unconditionally by
+                // AddArkCoreServices) claims it via SwapSweepPolicy/VHTLCContractTransformer,
+                // exactly like BoltzSwapProvider's ChainBtcToArk direction already does — see
+                // InitiateBtcToArkChainSwap's "Import VHTLC contract for sweeper to claim" comment.
+                break;
+            case EvmSwapAction.CanRefundArkLockup:
                 _logger?.LogWarning(
                     "Swap {SwapId}: action {Action} is not implemented yet (Ark-side spending — see plan follow-up scope)",
                     swap.SwapId, action);
@@ -343,7 +392,7 @@ public class EvmChainSwapProvider : ISwapProvider
         var preimage = Convert.FromHexString(preimageHex);
 
         var client = await GetEvmChainClientAsync(ct);
-        var info = await EvmChainClient.GetChainInfoAsync(_httpClient, _options.PairCurrency, ct);
+        var info = await EvmChainClient.GetChainInfoAsync(_boltzClient, _options.PairCurrency, ct);
         var tokenAddress = info.Tokens[_options.PairCurrency];
 
         // Amount/refundAddress/timelock come from Boltz's Lockup event, not our own records —
@@ -362,7 +411,7 @@ public class EvmChainSwapProvider : ISwapProvider
         var preimageHash = Hashes.SHA256(Convert.FromHexString(preimageHex));
 
         var client = await GetEvmChainClientAsync(ct);
-        var info = await EvmChainClient.GetChainInfoAsync(_httpClient, _options.PairCurrency, ct);
+        var info = await EvmChainClient.GetChainInfoAsync(_boltzClient, _options.PairCurrency, ct);
         var tokenAddress = info.Tokens[_options.PairCurrency];
 
         var lockup = await client.FindLockupEventAsync(preimageHash, ct)
@@ -383,7 +432,7 @@ public class EvmChainSwapProvider : ISwapProvider
             if (_evmChainClient != null)
                 return _evmChainClient;
 
-            var info = await EvmChainClient.GetChainInfoAsync(_httpClient, _options.PairCurrency, ct);
+            var info = await EvmChainClient.GetChainInfoAsync(_boltzClient, _options.PairCurrency, ct);
             var account = new Account(_options.PrivateKey, info.Network.ChainId);
             var web3 = new Web3(account, _options.RpcUrl);
             _evmChainClient = new EvmChainClient(web3, info.SwapContracts.Erc20Swap);

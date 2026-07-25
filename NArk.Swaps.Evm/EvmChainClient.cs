@@ -1,7 +1,7 @@
-using System.Net.Http.Json;
 using System.Numerics;
 using Nethereum.RPC.Eth.DTOs;
 using Nethereum.Web3;
+using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Evm.Contracts;
 using NArk.Swaps.Evm.Contracts.Erc20;
 using NArk.Swaps.Evm.Models;
@@ -29,13 +29,14 @@ public class EvmChainClient
 
     /// <summary>
     /// Resolves the <c>EtherSwap</c>/<c>ERC20Swap</c> contract addresses and chain id for a
-    /// Boltz-supported EVM chain via <c>GET /v2/chain/{currency}/contracts</c>. The caller
-    /// owns the <see cref="HttpClient"/> (base address pointed at the Boltz API).
+    /// Boltz-supported EVM chain via <c>GET /v2/chain/{currency}/contracts</c>. Reuses the
+    /// caller's <see cref="BoltzClient"/> rather than a separate <see cref="HttpClient"/> to
+    /// the same backend.
     /// </summary>
     public static async Task<EvmChainContractsResponse> GetChainInfoAsync(
-        HttpClient boltzHttpClient, string chain, CancellationToken ct = default)
+        BoltzClient boltzClient, string chain, CancellationToken ct = default)
     {
-        var response = await boltzHttpClient.GetFromJsonAsync<EvmChainContractsResponse>(
+        var response = await boltzClient.GetFromJsonAsync<EvmChainContractsResponse>(
             $"v2/chain/{chain}/contracts", ct);
 
         return response ?? throw new InvalidOperationException(

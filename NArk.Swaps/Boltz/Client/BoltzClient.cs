@@ -59,9 +59,12 @@ public partial class BoltzClient
     }
 
     /// <summary>
-    /// Posts a value as JSON using the shared serialization options.
+    /// Posts a value as JSON using the shared serialization options. Public — reusable by other
+    /// swap providers on the same Boltz backend (e.g. <c>NArk.Swaps.Evm.EvmChainSwapProvider</c>)
+    /// for REST endpoints this typed client doesn't wrap with a dedicated method, without opening
+    /// a second <see cref="HttpClient"/> to the same host.
     /// </summary>
-    protected async Task<TReturn> PostAsJsonAsync<T, TReturn>(string uri, T value, CancellationToken ct = default)
+    public async Task<TReturn> PostAsJsonAsync<T, TReturn>(string uri, T value, CancellationToken ct = default)
     {
         var resp = await _httpClient.PostAsJsonAsync(uri, value, JsonOptions, ct);
 
@@ -72,5 +75,14 @@ public partial class BoltzClient
 
         var respStr = await resp.Content.ReadAsStringAsync(ct);
         throw new HttpRequestException(respStr, null, resp.StatusCode);
+    }
+
+    /// <summary>
+    /// Gets a value as JSON using the shared serialization options. Public for the same reason
+    /// as <see cref="PostAsJsonAsync{T,TReturn}"/>.
+    /// </summary>
+    public async Task<TReturn?> GetFromJsonAsync<TReturn>(string uri, CancellationToken ct = default)
+    {
+        return await _httpClient.GetFromJsonAsync<TReturn>(uri, JsonOptions, ct);
     }
 }
