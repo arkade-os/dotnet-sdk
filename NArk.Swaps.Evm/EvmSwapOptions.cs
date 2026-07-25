@@ -24,6 +24,9 @@ public class EvmSwapOptions
     /// </summary>
     public required string PrivateKey { get; set; }
 
-    /// <summary>How often to poll Boltz for swap status changes (no websocket yet — see plan).</summary>
+    /// <summary>
+    /// How often to poll Boltz for swap status changes — the fallback safety net; the
+    /// persistent websocket connection is the primary, near-real-time mechanism.
+    /// </summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(10);
 }

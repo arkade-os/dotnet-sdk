@@ -4,10 +4,11 @@ namespace NArk.Tests.End2End.Evm;
 
 /// <summary>
 /// EVM counterpart of <c>NArk.Tests.End2End.Core.SharedArkInfrastructure</c> — checks a local
-/// Anvil node is reachable before any test in this namespace runs. Unlike the Bitcoin/Ark
-/// regtest stack (nigiri/arkd/boltz), Anvil has nothing to do with that infrastructure and
-/// isn't started by <c>regtest/regtest.mjs</c> — it's a single, disposable EVM node you start
-/// yourself (<c>anvil</c>, from Foundry).
+/// Anvil node is reachable before any test in this namespace runs. <see cref="Erc20SwapContractTests"/>
+/// only needs a bare Anvil (<c>anvil</c>, from Foundry, run standalone). Tests that also need a
+/// live Boltz counterparty (e.g. <see cref="EvmChainSwapTests"/>) need the full EVM-enabled
+/// regtest stack instead — <c>node regtest.mjs start --profile boltz,evm</c> — which runs Anvil
+/// as a docker service on the same port and wires Boltz's <c>[arbitrum]</c> config to it.
 /// </summary>
 [SetUpFixture]
 public class SharedEvmInfrastructure
