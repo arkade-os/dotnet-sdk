@@ -24,8 +24,10 @@ namespace NArk.Tests.End2End.Evm;
 ///
 /// Requires: anvil running locally (see SharedEvmInfrastructure). Deploys a fresh
 /// TestERC20 + ERC20Swap once per test run — each test uses its own random preimage/hash so
-/// tests don't interfere with each other despite sharing one deployed ERC20Swap instance.
+/// tests don't interfere with each other despite sharing one deployed ERC20Swap instance
+/// (exception: allowance is shared state too — see Lock_WithoutApproval_Fails).
 /// </summary>
+[Category("Evm")]
 public class Erc20SwapContractTests
 {
     private Web3 _web3 = null!;
