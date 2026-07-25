@@ -13,7 +13,7 @@ jobs:
 
       - name: Fetch contracts from boltz-core master
         run: |
-          FILES="ERC20Swap.sol TransferHelper.sol EtherSwap.sol Router.sol interfaces/OFT.sol interfaces/ITokenMessengerV2.sol"
+          FILES="ERC20Swap.sol TransferHelper.sol EtherSwap.sol Router.sol TestERC20.sol interfaces/OFT.sol interfaces/ITokenMessengerV2.sol"
           for f in $FILES; do
             mkdir -p "/tmp/boltz-core/$(dirname "$f")"
             wget -q \
@@ -24,7 +24,7 @@ jobs:
       - name: Diff against vendored contract source
         run: |
           SOL_DIR="NArk.Swaps.Evm/Contracts/Sol"
-          FILES="ERC20Swap.sol TransferHelper.sol EtherSwap.sol Router.sol interfaces/OFT.sol interfaces/ITokenMessengerV2.sol"
+          FILES="ERC20Swap.sol TransferHelper.sol EtherSwap.sol Router.sol TestERC20.sol interfaces/OFT.sol interfaces/ITokenMessengerV2.sol"
           failed=0
           for f in $FILES; do
             if ! diff -u "/tmp/boltz-core/${f}" "${SOL_DIR}/${f}"; then
@@ -56,7 +56,7 @@ jobs:
               -O "/tmp/ext/permit2/interfaces/${f}"
           done
 
-          OZ_FILES="token/ERC20/IERC20.sol token/ERC20/utils/SafeERC20.sol token/ERC20/extensions/IERC20Metadata.sol interfaces/IERC1363.sol interfaces/IERC20Metadata.sol interfaces/IERC20.sol interfaces/IERC165.sol utils/ReentrancyGuard.sol utils/StorageSlot.sol utils/introspection/IERC165.sol"
+          OZ_FILES="token/ERC20/IERC20.sol token/ERC20/ERC20.sol token/ERC20/utils/SafeERC20.sol token/ERC20/extensions/IERC20Metadata.sol interfaces/IERC1363.sol interfaces/IERC20Metadata.sol interfaces/IERC20.sol interfaces/IERC165.sol interfaces/draft-IERC6093.sol utils/Context.sol utils/ReentrancyGuard.sol utils/StorageSlot.sol utils/introspection/IERC165.sol"
           for f in $OZ_FILES; do
             mkdir -p "/tmp/ext/@openzeppelin/contracts/$(dirname "$f")"
             wget -q "https://raw.githubusercontent.com/OpenZeppelin/openzeppelin-contracts/master/contracts/${f}" \
@@ -66,7 +66,7 @@ jobs:
       - name: Diff against vendored copies
         run: |
           SOL_DIR="NArk.Swaps.Evm/Contracts/Sol"
-          FILES="permit2/interfaces/ISignatureTransfer.sol permit2/interfaces/IEIP712.sol @openzeppelin/contracts/token/ERC20/IERC20.sol @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol @openzeppelin/contracts/interfaces/IERC1363.sol @openzeppelin/contracts/interfaces/IERC20Metadata.sol @openzeppelin/contracts/interfaces/IERC20.sol @openzeppelin/contracts/interfaces/IERC165.sol @openzeppelin/contracts/utils/ReentrancyGuard.sol @openzeppelin/contracts/utils/StorageSlot.sol @openzeppelin/contracts/utils/introspection/IERC165.sol"
+          FILES="permit2/interfaces/ISignatureTransfer.sol permit2/interfaces/IEIP712.sol @openzeppelin/contracts/token/ERC20/IERC20.sol @openzeppelin/contracts/token/ERC20/ERC20.sol @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol @openzeppelin/contracts/interfaces/IERC1363.sol @openzeppelin/contracts/interfaces/IERC20Metadata.sol @openzeppelin/contracts/interfaces/IERC20.sol @openzeppelin/contracts/interfaces/IERC165.sol @openzeppelin/contracts/interfaces/draft-IERC6093.sol @openzeppelin/contracts/utils/Context.sol @openzeppelin/contracts/utils/ReentrancyGuard.sol @openzeppelin/contracts/utils/StorageSlot.sol @openzeppelin/contracts/utils/introspection/IERC165.sol"
           failed=0
           for f in $FILES; do
             if ! diff -u "/tmp/ext/${f}" "${SOL_DIR}/${f}"; then
