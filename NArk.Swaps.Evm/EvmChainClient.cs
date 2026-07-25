@@ -123,4 +123,15 @@ public class EvmChainClient
             .Select(l => l.Event)
             .FirstOrDefault(e => e.PreimageHash.SequenceEqual(preimageHash));
     }
+
+    /// <summary>Finds the <c>Refund</c> event for a preimage hash, if the swap has been refunded yet.</summary>
+    public async Task<RefundEventDTO?> FindRefundEventAsync(byte[] preimageHash, CancellationToken ct = default)
+    {
+        var eventHandler = _web3.Eth.GetEvent<RefundEventDTO>(Erc20SwapAddress);
+        var filter = eventHandler.CreateFilterInput();
+        var logs = await eventHandler.GetAllChangesAsync(filter);
+        return logs
+            .Select(l => l.Event)
+            .FirstOrDefault(e => e.PreimageHash.SequenceEqual(preimageHash));
+    }
 }
