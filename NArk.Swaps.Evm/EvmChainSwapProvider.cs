@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Numerics;
 using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Nethereum.Signer;
@@ -17,6 +19,7 @@ using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
+using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Evm.Models;
 using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
@@ -49,6 +52,19 @@ public class EvmChainSwapProvider : ISwapProvider
     private Task? _pollingTask;
     private EvmChainClient? _evmChainClient;
     private readonly SemaphoreSlim _evmClientInitLock = new(1, 1);
+
+    // ─── WebSocket (real-time status push, mirroring BoltzSwapProvider — the REST poll
+    // loop above stays as the periodic safety net, same dual-mechanism approach used
+    // throughout this codebase, e.g. VtxoSynchronizationService's stream+routine-poll). ───
+
+    /// <summary>Swap ids currently subscribed on the persistent websocket, kept in sync with
+    /// the active set by <see cref="RunPollLoopAsync"/>'s per-tick diff.</summary>
+    private readonly ConcurrentDictionary<string, byte> _swapsIdToWatch = new();
+    private readonly Channel<string> _wsTriggerChannel = Channel.CreateUnbounded<string>();
+    private Task? _websocketTask;
+    private Task? _wsTriggerReaderTask;
+    private BoltzWebsocketClient? _websocket;
+    private readonly SemaphoreSlim _websocketLock = new(1, 1);
 
     public EvmChainSwapProvider(
         BoltzClient boltzClient,
@@ -298,19 +314,26 @@ public class EvmChainSwapProvider : ISwapProvider
         await _swapStorage.SaveSwap(walletId, swap, ct);
     }
 
-    // ─── Lifecycle: simple poll loop (no websocket yet — see plan) ─────────
+    // ─── Lifecycle: websocket push (primary) + REST poll loop (safety net) ─────────
 
     public Task StartAsync(CancellationToken ct)
     {
         _pollingTask = RunPollLoopAsync(_shutdownCts.Token);
+        _websocketTask = RunWebsocketLoop(_shutdownCts.Token);
+        _wsTriggerReaderTask = RunWsTriggerReaderAsync(_shutdownCts.Token);
         return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken ct)
     {
         _shutdownCts.Cancel();
+        _wsTriggerChannel.Writer.TryComplete();
         if (_pollingTask != null)
             await _pollingTask;
+        if (_websocketTask != null)
+            await _websocketTask;
+        if (_wsTriggerReaderTask != null)
+            await _wsTriggerReaderTask;
     }
 
     private async Task RunPollLoopAsync(CancellationToken ct)
@@ -323,8 +346,20 @@ public class EvmChainSwapProvider : ISwapProvider
                     swapTypes: [ArkSwapType.ChainArkToEvm, ArkSwapType.ChainEvmToArk],
                     active: true,
                     cancellationToken: ct);
+                var ourSwaps = swaps.Where(s => s.ProviderId == Id).ToList();
 
-                foreach (var swap in swaps.Where(s => s.ProviderId == Id))
+                // Keep the persistent websocket's subscriptions in sync with the active set.
+                // Covers both "new swap since the websocket last (re)connected" and the initial
+                // race against RunWebsocketLoop's own startup snapshot — self-heals within one
+                // tick either way, no separate seeding needed.
+                var newlyActive = ourSwaps
+                    .Select(s => s.SwapId)
+                    .Where(id => _swapsIdToWatch.TryAdd(id, 0))
+                    .ToArray();
+                if (newlyActive.Length > 0)
+                    await SubscribeOnWebsocketAsync(newlyActive, ct);
+
+                foreach (var swap in ourSwaps)
                 {
                     await PollSwapAsync(swap, ct);
                 }
@@ -382,6 +417,12 @@ public class EvmChainSwapProvider : ISwapProvider
             await _swapStorage.UpdateSwapStatus(swap.WalletId, swap.SwapId, terminal.Value, status.FailureReason, ct);
             SwapStatusChanged?.Invoke(this,
                 new SwapStatusChangedEvent(swap.SwapId, swap.WalletId, Id, terminal.Value, status.FailureReason));
+
+            if (terminal.Value.IsTerminalState())
+            {
+                _swapsIdToWatch.TryRemove(swap.SwapId, out _);
+                await UnsubscribeOnWebsocketAsync([swap.SwapId], ct);
+            }
         }
     }
 
@@ -419,6 +460,187 @@ public class EvmChainSwapProvider : ISwapProvider
 
         await client.RefundAsync(preimageHash, lockup.Amount, tokenAddress, lockup.ClaimAddress, lockup.Timelock, ct);
         _logger?.LogInformation("Swap {SwapId}: refunded EVM lockup", swap.SwapId);
+    }
+
+    // ─── WebSocket ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Single long-lived task owning the persistent Boltz websocket connection for the EVM
+    /// swap leg. Mirrors <c>BoltzSwapProvider.RunWebsocketLoop</c> — one connection, repeated
+    /// subscribe/unsubscribe ops keyed by swap id (per
+    /// https://api.docs.boltz.exchange/api-v2.html#websocket) — reconnects with a 5s backoff
+    /// and re-subscribes to the then-current <see cref="_swapsIdToWatch"/> snapshot.
+    /// </summary>
+    private async Task RunWebsocketLoop(CancellationToken ct)
+    {
+        var wsUri = _boltzClient.DeriveWebSocketUri();
+        while (!ct.IsCancellationRequested)
+        {
+            BoltzWebsocketClient? client = null;
+            try
+            {
+                _logger?.LogInformation("Connecting to Boltz websocket at {Uri} for EVM chain swaps", wsUri);
+                client = new BoltzWebsocketClient(wsUri);
+                client.OnAnyEventReceived += OnSwapEventReceived;
+                await client.ConnectAsync(ct);
+
+                string[] initialSubs;
+                await _websocketLock.WaitAsync(ct);
+                try
+                {
+                    _websocket = client;
+                    initialSubs = _swapsIdToWatch.Keys.ToArray();
+                }
+                finally
+                {
+                    _websocketLock.Release();
+                }
+
+                if (initialSubs.Length > 0)
+                {
+                    await client.SubscribeAsync(initialSubs, ct);
+                    _logger?.LogInformation(
+                        "EVM swap websocket connected, subscribed to {Count} swap(s): [{SwapIds}]",
+                        initialSubs.Length, string.Join(", ", initialSubs));
+                }
+                else
+                {
+                    _logger?.LogInformation("EVM swap websocket connected, no active swaps to subscribe yet");
+                }
+
+                await client.WaitUntilDisconnected(ct);
+                _logger?.LogWarning("EVM swap websocket disconnected");
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "EVM swap websocket error, reconnecting in 5s");
+            }
+            finally
+            {
+                await _websocketLock.WaitAsync(CancellationToken.None);
+                try
+                {
+                    if (client is not null) client.OnAnyEventReceived -= OnSwapEventReceived;
+                    if (ReferenceEquals(_websocket, client)) _websocket = null;
+                }
+                finally
+                {
+                    _websocketLock.Release();
+                }
+                if (client is not null) await client.DisposeAsync();
+            }
+
+            if (!ct.IsCancellationRequested)
+                await Task.Delay(5000, ct);
+        }
+    }
+
+    /// <summary>Subscribes additional swap ids on the current persistent websocket. No-ops when
+    /// disconnected — the reconnect loop picks the ids up from <see cref="_swapsIdToWatch"/>.</summary>
+    private async Task SubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken ct)
+    {
+        if (swapIds.Count == 0) return;
+        await _websocketLock.WaitAsync(ct);
+        try
+        {
+            if (_websocket is null)
+            {
+                _logger?.LogDebug(
+                    "Skipping EVM websocket Subscribe: connection not yet up; reconnect loop will pick up [{SwapIds}]",
+                    string.Join(", ", swapIds));
+                return;
+            }
+            await _websocket.SubscribeAsync(swapIds.ToArray(), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "EVM websocket Subscribe failed for [{SwapIds}]; reconnect loop will retry",
+                string.Join(", ", swapIds));
+        }
+        finally
+        {
+            _websocketLock.Release();
+        }
+    }
+
+    /// <summary>Unsubscribes swap ids from the current persistent websocket. Best-effort —
+    /// leaving a terminal swap subscribed only costs a stray no-op push.</summary>
+    private async Task UnsubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken ct)
+    {
+        if (swapIds.Count == 0) return;
+        await _websocketLock.WaitAsync(ct);
+        try
+        {
+            if (_websocket is null) return;
+            await _websocket.UnsubscribeAsync(swapIds.ToArray(), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogDebug(ex, "EVM websocket Unsubscribe failed for [{SwapIds}]; non-fatal",
+                string.Join(", ", swapIds));
+        }
+        finally
+        {
+            _websocketLock.Release();
+        }
+    }
+
+    private Task OnSwapEventReceived(WebSocketResponse? response)
+    {
+        try
+        {
+            if (response is { Event: "update", Channel: "swap.update", Args.Count: > 0 })
+            {
+                var swapUpdate = response.Args[0];
+                var id = swapUpdate?["id"]?.GetValue<string>();
+                if (id is not null)
+                {
+                    _logger?.LogDebug("EVM websocket event: swap {SwapId} status update", id);
+                    _wsTriggerChannel.Writer.TryWrite(id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error processing EVM websocket event");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Decouples websocket event receipt from swap processing: <see cref="OnSwapEventReceived"/>
+    /// only enqueues the swap id, this loop does the actual (potentially slow — REST call to
+    /// Boltz, on-chain claim/refund) work, so a slow poll never delays draining the next
+    /// websocket message.
+    /// </summary>
+    private async Task RunWsTriggerReaderAsync(CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var swapId in _wsTriggerChannel.Reader.ReadAllAsync(ct))
+            {
+                try
+                {
+                    var swaps = await _swapStorage.GetSwaps(swapIds: [swapId], cancellationToken: ct);
+                    var swap = swaps.FirstOrDefault(s => s.ProviderId == Id);
+                    if (swap is null) continue;
+                    await PollSwapAsync(swap, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger?.LogError(ex, "Websocket-triggered poll failed for swap {SwapId}", swapId);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutting down
+        }
     }
 
     private async Task<EvmChainClient> GetEvmChainClientAsync(CancellationToken ct)
@@ -469,9 +691,15 @@ public class EvmChainSwapProvider : ISwapProvider
     public async ValueTask DisposeAsync()
     {
         _shutdownCts.Cancel();
+        _wsTriggerChannel.Writer.TryComplete();
         if (_pollingTask != null)
             await _pollingTask;
+        if (_websocketTask != null)
+            await _websocketTask;
+        if (_wsTriggerReaderTask != null)
+            await _wsTriggerReaderTask;
         _shutdownCts.Dispose();
         _evmClientInitLock.Dispose();
+        _websocketLock.Dispose();
     }
 }
