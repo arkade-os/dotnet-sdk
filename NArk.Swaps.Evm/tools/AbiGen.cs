@@ -8,7 +8,13 @@
 // Contracts/Sol/ERC20Swap.sol — see generate-bindings.sh for the full pipeline (solc compile
 // + this tool).
 //
-// Usage: dotnet run tools/AbiGen.cs -- <abi.json> <output-dir> <namespace>
+// Usage: dotnet run tools/AbiGen.cs -- <abi.json> <output-dir> <namespace> [bin-file contract-name]
+//
+// The optional trailing pair (bin-file, contract-name) additionally generates a
+// ContractDeploymentMessage class embedding the compiled bytecode — needed for test fixtures
+// that deploy their own throwaway copy of a contract (e.g. TestERC20 on a local Anvil chain),
+// as opposed to calling an already-deployed one (ERC20Swap on real Arbitrum, which is all the
+// production provider needs).
 
 using System.Text.Json;
 using Nethereum.Generators.Core;
@@ -18,13 +24,15 @@ using Nethereum.Generators.Model;
 
 if (args.Length < 3)
 {
-    Console.Error.WriteLine("Usage: AbiGen <abi.json> <output-dir> <namespace>");
+    Console.Error.WriteLine("Usage: AbiGen <abi.json> <output-dir> <namespace> [bin-file contract-name]");
     return 1;
 }
 
 var abiPath = args[0];
 var outDir = args[1];
 var ns = args[2];
+var binPath = args.Length > 3 ? args[3] : null;
+var contractName = args.Length > 4 ? args[4] : null;
 
 if (Directory.Exists(outDir))
     Directory.Delete(outDir, recursive: true);
@@ -37,6 +45,7 @@ var allFunctions = new List<FunctionABI>();
 var allEvents = new List<EventABI>();
 var allStructs = new List<StructABI>();
 var structNamesSeen = new HashSet<string>();
+ConstructorABI? constructorAbi = null;
 
 // Solidity struct params (ABI type "tuple"/"tuple[]") carry their field list in "components"
 // and a Solidity-side name in "internalType" (e.g. "struct ERC20Swap.BatchClaimEntry[]").
@@ -100,6 +109,11 @@ foreach (var entry in doc.RootElement.EnumerateArray())
         var inputs = BuildParams(entry.GetProperty("inputs"), withIndexed: true);
         allEvents.Add(new EventABI(name, contractAbi) { InputParameters = inputs });
     }
+    else if (type == "constructor")
+    {
+        var inputs = BuildParams(entry.GetProperty("inputs"), withIndexed: false);
+        constructorAbi = new ConstructorABI { InputParameters = inputs };
+    }
 }
 
 contractAbi.Functions = allFunctions.ToArray();
@@ -129,6 +143,15 @@ foreach (var eventAbi in allEvents)
 {
     var eventGen = new EventDTOGenerator(eventAbi, ns, ns, CodeGenLanguage.CSharp);
     File.WriteAllText(Path.Combine(outDir, $"{eventAbi.Name}EventDTO.cs"), Wrap(eventGen.GenerateClass()));
+}
+
+if (binPath != null && contractName != null)
+{
+    var byteCode = "0x" + File.ReadAllText(binPath).Trim();
+    var deployAbi = constructorAbi ?? new ConstructorABI { InputParameters = [] };
+    var deployGen = new ContractDeploymentCQSMessageGenerator(deployAbi, ns, byteCode, contractName, CodeGenLanguage.CSharp);
+    File.WriteAllText(Path.Combine(outDir, $"{contractName}Deployment.cs"), Wrap(deployGen.GenerateClass()));
+    Console.WriteLine($"Generated {contractName}Deployment.cs (embedded bytecode from {binPath})");
 }
 
 Console.WriteLine($"Generated {allFunctions.Count} function DTO(s) and {allEvents.Count} event DTO(s) into {outDir}");
