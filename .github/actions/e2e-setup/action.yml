@@ -1,6 +1,16 @@
 name: E2E Setup
 description: Configure .NET + Node, start regtest infrastructure, build. Requires checkout to have already run.
 
+inputs:
+  profiles:
+    description: >-
+      regtest.mjs profile list. Defaults to boltz,delegate (Lightning/BTC/ARK
+      only — evm is opt-in, not pulled in automatically, so jobs that don't
+      need it can't be broken by EVM-side issues). Pass boltz,delegate,evm
+      for jobs that also need the ARK<->TBTC pair (e.g. EvmChainSwapTests).
+    required: false
+    default: 'boltz,delegate'
+
 runs:
   using: composite
   steps:
@@ -12,7 +22,7 @@ runs:
         node-version: '20'
     - name: Start regtest infrastructure
       shell: bash
-      run: node regtest/regtest.mjs start --profile boltz,delegate
+      run: node regtest/regtest.mjs start --profile ${{ inputs.profiles }}
     - name: Restore and build
       shell: bash
       run: dotnet build NArk.CI.slnf

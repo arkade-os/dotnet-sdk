@@ -13,6 +13,8 @@ jobs:
           submodules: true
           fetch-depth: 0
       - uses: ./.github/actions/e2e-setup
+        with:
+          profiles: boltz,delegate,evm
       - name: Run swap E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Swaps"
         timeout-minutes: 20
@@ -25,6 +27,7 @@ jobs:
           docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
           docker logs boltz-lnd > /tmp/boltz-lnd-logs.txt 2>&1 || true
           docker logs boltz-fulmine > /tmp/fulmine-logs.txt 2>&1 || true
+          docker logs anvil > /tmp/anvil-logs.txt 2>&1 || true
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
