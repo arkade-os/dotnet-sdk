@@ -8,11 +8,17 @@ using Nethereum.Signer;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
 using NArk.Abstractions;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Intents;
+using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core;
 using NArk.Core.Contracts;
+using NArk.Core.Fees;
+using NArk.Core.Helpers;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Swaps.Abstractions;
@@ -35,7 +41,11 @@ namespace NArk.Swaps.Evm;
 /// backed by Nethereum calls to Boltz's deployed <c>ERC20Swap</c> contract on Arbitrum.
 /// Reuses <see cref="BoltzClient"/>'s generic <c>v2/swap/chain</c> REST client (create/status)
 /// as-is; the EVM-specific lock/claim/refund mechanics live in <see cref="EvmChainClient"/>.
-/// Non-cooperative path only for this milestone — see the plan's deferred-scope section.
+/// Claim/lock are non-cooperative (script-path) only — see the plan's deferred-scope section
+/// for EIP-712 cooperative signing. The Ark-side refund (<c>ChainArkToEvm</c>) mirrors
+/// <c>BoltzSwapProvider.Refunds.cs</c>'s <c>ChainArkToBtc</c> path exactly: cooperative refund
+/// first (Boltz co-signs), falling back to the refund-without-receiver batch-intent path once
+/// <see cref="VHTLCContract.RefundLocktime"/> elapses.
 /// </summary>
 public class EvmChainSwapProvider : ISwapProvider
 {
@@ -43,15 +53,28 @@ public class EvmChainSwapProvider : ISwapProvider
 
     private readonly BoltzClient _boltzClient;
     private readonly IClientTransport _clientTransport;
+    private readonly IWalletProvider _walletProvider;
     private readonly ISwapStorage _swapStorage;
     private readonly IContractService _contractService;
+    private readonly IContractStorage _contractStorage;
+    private readonly IVtxoStorage _vtxoStorage;
+    private readonly ISafetyService _safetyService;
+    private readonly IIntentStorage _intentStorage;
+    private readonly IBitcoinBlockchain _chainTimeProvider;
+    private readonly IIntentGenerationService? _intentGenerationService;
     private readonly EvmSwapOptions _options;
     private readonly ILogger<EvmChainSwapProvider>? _logger;
+    private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
 
     private readonly CancellationTokenSource _shutdownCts = new();
     private Task? _pollingTask;
     private EvmChainClient? _evmChainClient;
     private readonly SemaphoreSlim _evmClientInitLock = new(1, 1);
+
+    /// <summary>Maps refund intent txId → swapId so <see cref="OnRefundIntentChanged"/> can
+    /// trigger an immediate poll when the batch session for a refund-without-receiver intent
+    /// completes, instead of waiting for the next routine poll tick.</summary>
+    private readonly ConcurrentDictionary<string, string> _intentToSwapId = new();
 
     // ─── WebSocket (real-time status push, mirroring BoltzSwapProvider — the REST poll
     // loop above stays as the periodic safety net, same dual-mechanism approach used
@@ -69,17 +92,33 @@ public class EvmChainSwapProvider : ISwapProvider
     public EvmChainSwapProvider(
         BoltzClient boltzClient,
         IClientTransport clientTransport,
+        IWalletProvider walletProvider,
         ISwapStorage swapStorage,
         IContractService contractService,
+        IContractStorage contractStorage,
+        IVtxoStorage vtxoStorage,
+        ISafetyService safetyService,
+        IIntentStorage intentStorage,
+        IBitcoinBlockchain chainTimeProvider,
         IOptions<EvmSwapOptions> options,
+        IIntentGenerationService? intentGenerationService = null,
         ILogger<EvmChainSwapProvider>? logger = null)
     {
         _boltzClient = boltzClient;
         _clientTransport = clientTransport;
+        _walletProvider = walletProvider;
         _swapStorage = swapStorage;
         _contractService = contractService;
+        _contractStorage = contractStorage;
+        _vtxoStorage = vtxoStorage;
+        _safetyService = safetyService;
+        _intentStorage = intentStorage;
+        _chainTimeProvider = chainTimeProvider;
+        _intentGenerationService = intentGenerationService;
         _options = options.Value;
         _logger = logger;
+        _transactionBuilder = new TransactionHelpers.ArkTransactionBuilder(
+            clientTransport, safetyService, walletProvider, intentStorage);
     }
 
     public string ProviderId => Id;
@@ -321,19 +360,33 @@ public class EvmChainSwapProvider : ISwapProvider
         _pollingTask = RunPollLoopAsync(_shutdownCts.Token);
         _websocketTask = RunWebsocketLoop(_shutdownCts.Token);
         _wsTriggerReaderTask = RunWsTriggerReaderAsync(_shutdownCts.Token);
+        _intentStorage.IntentChanged += OnRefundIntentChanged;
         return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken ct)
     {
+        _intentStorage.IntentChanged -= OnRefundIntentChanged;
         _shutdownCts.Cancel();
         _wsTriggerChannel.Writer.TryComplete();
-        if (_pollingTask != null)
-            await _pollingTask;
-        if (_websocketTask != null)
-            await _websocketTask;
-        if (_wsTriggerReaderTask != null)
-            await _wsTriggerReaderTask;
+        await Drain(_pollingTask);
+        await Drain(_websocketTask);
+        await Drain(_wsTriggerReaderTask);
+    }
+
+    /// <summary>
+    /// Awaits a background task, swallowing any exception. Once shutdown has been requested,
+    /// a fault from work that was interrupted mid-flight (e.g. a refund's nested await noticing
+    /// the now-cancelled <see cref="_shutdownCts"/> token deeper in its call chain than the
+    /// per-tick try/catch in <see cref="RunPollLoopAsync"/> covers) is an artifact of the
+    /// cancellation itself, not a real symptom — mirrors <c>BoltzSwapProvider.Lifecycle.cs</c>'s
+    /// own <c>Drain</c> helper.
+    /// </summary>
+    private static async Task Drain(Task? task)
+    {
+        if (task is null) return;
+        try { await task; }
+        catch { /* expected on cancel */ }
     }
 
     private async Task RunPollLoopAsync(CancellationToken ct)
@@ -405,10 +458,8 @@ public class EvmChainSwapProvider : ISwapProvider
                 // InitiateBtcToArkChainSwap's "Import VHTLC contract for sweeper to claim" comment.
                 break;
             case EvmSwapAction.CanRefundArkLockup:
-                _logger?.LogWarning(
-                    "Swap {SwapId}: action {Action} is not implemented yet (Ark-side spending — see plan follow-up scope)",
-                    swap.SwapId, action);
-                break;
+                await TryCoopRefundArkToEvm(swap, ct);
+                return;
         }
 
         var terminal = BoltzSwapStatus.ToArkSwapStatus(status.Status);
@@ -460,6 +511,282 @@ public class EvmChainSwapProvider : ISwapProvider
 
         await client.RefundAsync(preimageHash, lockup.Amount, tokenAddress, lockup.ClaimAddress, lockup.Timelock, ct);
         _logger?.LogInformation("Swap {SwapId}: refunded EVM lockup", swap.SwapId);
+    }
+
+    // ─── Ark-side refund (ChainArkToEvm) ────────────────────────────────────
+    // Mirrors NArk.Swaps.Boltz.BoltzSwapProvider.Refunds.cs's ChainArkToBtc path exactly:
+    // cooperative refund first (Boltz co-signs via the same generic
+    // POST /v2/swap/chain/{id}/refund/ark endpoint that path uses — it's keyed only by
+    // swapId, not scoped to any particular "to" currency), falling back to the
+    // refund-without-receiver batch-intent path once RefundLocktime elapses (arkd's
+    // checkpoint endpoint rejects that script's absolute-CLTV directly via a normal
+    // SpendingService.Spend, so it has to go through IIntentGenerationService instead).
+
+    private async Task TryCoopRefundArkToEvm(ArkSwap swap, CancellationToken ct)
+    {
+        _logger?.LogInformation(
+            "Swap {SwapId}: chain swap expired (ChainArkToEvm), attempting cooperative refund", swap.SwapId);
+
+        // A refund-without-receiver batch may already be in flight (or settled) from a
+        // previous poll. Resolve that first: once the batch settles the lockup VTXO is
+        // spent, and without this check the coop attempt below would see "no lockup" and
+        // incorrectly mark the swap Failed.
+        var refundIntentStatus = await CheckRefundWithoutReceiverIntentAsync(swap, ct);
+        if (refundIntentStatus is not null) return;
+
+        if (await CoopRefundArkToEvmChainSwap(swap, ct)) return;
+
+        // Nothing to recover — mark Failed so the poll stops retrying.
+        var vtxosLocked = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct);
+        if (vtxosLocked.Count == 0 && swap.Status != ArkSwapStatus.Failed)
+        {
+            _logger?.LogInformation("Swap {SwapId}: expired with no observable lockup — marking Failed", swap.SwapId);
+            await MarkSwapTerminalAsync(swap, ArkSwapStatus.Failed, "Swap expired before any funds were locked", ct);
+        }
+    }
+
+    private async Task<bool> CoopRefundArkToEvmChainSwap(ArkSwap swap, CancellationToken ct)
+    {
+        if (swap.SwapType != ArkSwapType.ChainArkToEvm) return false;
+        if (swap.Status == ArkSwapStatus.Refunded) return true;
+
+        ArkServerInfo? serverInfo = null;
+        VHTLCContract? contract = null;
+        ArkVtxo? vtxo = null;
+        IDestination? refundDestination = null;
+        try
+        {
+            serverInfo = await _clientTransport.GetServerInfoAsync(ct);
+
+            var matchedSwapContracts = await _contractStorage.GetContracts(
+                walletIds: [swap.WalletId], scripts: [swap.ContractScript], cancellationToken: ct);
+            var matchedSwapContractEntity = matchedSwapContracts.SingleOrDefault(e => e.Type == VHTLCContract.ContractType);
+            if (matchedSwapContractEntity is null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: VHTLC contract row not found for Ark refund", swap.SwapId);
+                return false;
+            }
+            contract = ArkContractParser.Parse(matchedSwapContractEntity.Type, matchedSwapContractEntity.AdditionalData,
+                serverInfo.Network) as VHTLCContract;
+            if (contract is null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: failed to parse VHTLC contract for Ark refund", swap.SwapId);
+                return false;
+            }
+
+            // Same arkd refresh pattern BoltzSwapProvider.Refunds.cs uses — closes the gap
+            // between the indexer subscription stream and what arkd actually has right now.
+            await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                               new HashSet<string> { swap.ContractScript }, ct))
+            {
+                await _vtxoStorage.UpsertVtxo(freshVtxo, ct);
+            }
+
+            var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct);
+            if (vtxos.Count == 0)
+            {
+                _logger?.LogWarning("Swap {SwapId}: no VTXOs at VHTLC script for Ark refund", swap.SwapId);
+                return false;
+            }
+
+            vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
+            if (vtxo is null)
+            {
+                _logger?.LogWarning(
+                    "Swap {SwapId}: no unspent VTXO of expected amount {ExpectedAmount} at swap script (have {Total})",
+                    swap.SwapId, swap.ExpectedAmount, vtxos.Count);
+                return false;
+            }
+
+            var timeHeight = await _chainTimeProvider.GetChainTime(ct);
+            if (!vtxo.CanSpendOffchain(timeHeight))
+            {
+                _logger?.LogDebug("Swap {SwapId}: VHTLC VTXO not spendable offchain (spent/swept/expired)", swap.SwapId);
+                return false;
+            }
+
+            (refundDestination, swap) = await swap.GetOrDeriveRefundDestinationAsync(
+                _contractService, _swapStorage, serverInfo.Network, ct);
+
+            var arkCoin = contract.ToCoopRefundCoin(swap.WalletId, vtxo);
+
+            var (arkTx, checkpoints) = await _transactionBuilder.ConstructArkTransaction(
+                [arkCoin], [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDestination)], serverInfo, ct);
+
+            if (checkpoints.Count != 1)
+                throw new InvalidOperationException(
+                    $"Swap {swap.SwapId}: expected exactly 1 checkpoint for a single-input Ark refund, " +
+                    $"got {checkpoints.Count}. Protocol invariant violated or SDK out of sync.");
+            var checkpoint = checkpoints.First();
+
+            var refundResponse = await _boltzClient.RefundChainSwapArkAsync(swap.SwapId,
+                new ChainArkRefundRequest { Transaction = arkTx.ToBase64(), Checkpoint = checkpoint.Psbt.ToBase64() }, ct);
+
+            var boltzSignedRefundPsbt = PSBT.Parse(refundResponse.Transaction, serverInfo.Network);
+            var boltzSignedCheckpointPsbt = PSBT.Parse(refundResponse.Checkpoint, serverInfo.Network);
+            arkTx.UpdateFrom(boltzSignedRefundPsbt);
+            checkpoint.Psbt.UpdateFrom(boltzSignedCheckpointPsbt);
+
+            await _transactionBuilder.SubmitArkTransaction([arkCoin], arkTx, [checkpoint], ct);
+
+            await MarkSwapTerminalAsync(swap, ArkSwapStatus.Refunded, null, ct);
+            _logger?.LogInformation("Swap {SwapId}: ARK->EVM cooperative refund completed", swap.SwapId);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogError(ex, "Swap {SwapId}: ARK->EVM cooperative refund failed", swap.SwapId);
+            if (contract is not null && vtxo is not null && refundDestination is not null && serverInfo is not null)
+                return await TryRefundWithoutReceiverAsync(swap, contract, vtxo, refundDestination, serverInfo, ct);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Fallback for when Boltz permanently refuses the cooperative co-sign: submits the VHTLC
+    /// spend via the <c>refundWithoutReceiver</c> tapscript (server + sender, absolute CLTV) as
+    /// an Arkade batch intent once <see cref="VHTLCContract.RefundLocktime"/> has elapsed.
+    /// The batch path is required because arkd's checkpoint (<c>SubmitTx</c>) endpoint rejects
+    /// this closure's block-height CLTV directly (<c>blockTypeAllowed=false</c>); the
+    /// batch/<c>JoinRound</c> path sets <c>blockTypeAllowed=true</c> and enforces the locktime
+    /// via the forfeit tx's <c>nLockTime</c> instead.
+    /// </summary>
+    private async Task<bool> TryRefundWithoutReceiverAsync(
+        ArkSwap swap, VHTLCContract contract, ArkVtxo vtxo, IDestination refundDestination,
+        ArkServerInfo serverInfo, CancellationToken ct)
+    {
+        var timeHeight = await _chainTimeProvider.GetChainTime(ct);
+
+        var elapsed = contract.RefundLocktime.IsTimeLock
+            ? contract.RefundLocktime.Date <= timeHeight.Timestamp
+            : (uint)timeHeight.Height >= contract.RefundLocktime.Value;
+
+        if (!elapsed)
+        {
+            _logger?.LogDebug("Swap {SwapId}: RefundLocktime {Locktime} not yet elapsed — retrying coop on next poll",
+                swap.SwapId, contract.RefundLocktime.Value);
+            return false;
+        }
+
+        // If we already submitted a refund intent, check its state before creating another.
+        var intentStatus = await CheckRefundWithoutReceiverIntentAsync(swap, ct);
+        if (intentStatus is not null) return intentStatus.Value;
+
+        if (_intentGenerationService is null)
+        {
+            _logger?.LogError(
+                "Swap {SwapId}: cannot generate refund intent — no IIntentGenerationService registered", swap.SwapId);
+            return false;
+        }
+
+        try
+        {
+            _logger?.LogInformation(
+                "Swap {SwapId}: RefundLocktime elapsed, submitting refund-without-receiver batch intent", swap.SwapId);
+
+            var arkCoin = new ArkCoin(swap.WalletId, contract, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight,
+                vtxo.OutPoint, vtxo.TxOut, contract.Sender,
+                contract.CreateRefundWithoutReceiverScript(), null, contract.RefundLocktime, null,
+                vtxo.Swept, vtxo.Unrolled);
+
+            // Estimate fee against the full input amount, then deduct to get the net output.
+            var feeEstimator = new DefaultFeeEstimator(_clientTransport, _chainTimeProvider);
+            var fee = await feeEstimator.EstimateFeeAsync(
+                [arkCoin], [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDestination)], ct);
+            var netOutput = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(arkCoin.Amount.Satoshi - fee), refundDestination);
+
+            var spec = new ArkIntentSpec([arkCoin], [netOutput], DateTimeOffset.UtcNow, null);
+            var intentTxId = await _intentGenerationService.GenerateManualIntent(swap.WalletId, spec, ct);
+            _intentToSwapId[intentTxId] = swap.SwapId;
+
+            var updatedSwap = swap with
+            {
+                Metadata = new Dictionary<string, string>(swap.Metadata ?? []) { [SwapMetadata.RefundIntentTxId] = intentTxId },
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            await _swapStorage.SaveSwap(swap.WalletId, updatedSwap, ct);
+            _logger?.LogInformation(
+                "Swap {SwapId}: refund intent {IntentTxId} submitted — waiting for Arkade batch settlement",
+                swap.SwapId, intentTxId);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogError(ex, "Swap {SwapId}: refund-without-receiver failed", swap.SwapId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Inspects the in-flight refund-without-receiver batch intent (if any) recorded in
+    /// <see cref="SwapMetadata.RefundIntentTxId"/> and reports what the caller should do:
+    /// <c>true</c> — the batch settled, the swap is now <see cref="ArkSwapStatus.Refunded"/>;
+    /// <c>false</c> — an intent is still in flight, the caller should wait and not re-attempt
+    /// the cooperative refund or mark the swap failed; <c>null</c> — no intent recorded, or the
+    /// last one reached a terminal failure, caller should (re-)submit / fall through.
+    /// </summary>
+    private async Task<bool?> CheckRefundWithoutReceiverIntentAsync(ArkSwap swap, CancellationToken ct)
+    {
+        var existingIntentTxId = swap.Get(SwapMetadata.RefundIntentTxId);
+        if (existingIntentTxId is null) return null;
+
+        var intents = await _intentStorage.GetIntents(intentTxIds: [existingIntentTxId], cancellationToken: ct);
+        var intent = intents.FirstOrDefault();
+        if (intent is null) return null;
+
+        // Re-arm the event trigger in case we restarted after saving the metadata.
+        _intentToSwapId.TryAdd(existingIntentTxId, swap.SwapId);
+
+        if (intent.State == ArkIntentState.BatchSucceeded)
+        {
+            await MarkSwapTerminalAsync(swap, ArkSwapStatus.Refunded, null, ct);
+            _intentToSwapId.TryRemove(existingIntentTxId, out _);
+            _logger?.LogInformation("Swap {SwapId}: refund-without-receiver batch succeeded", swap.SwapId);
+            return true;
+        }
+
+        if (intent.State is ArkIntentState.WaitingToSubmit or ArkIntentState.WaitingForBatch or ArkIntentState.BatchInProgress)
+        {
+            _logger?.LogDebug("Swap {SwapId}: refund intent {IntentTxId} still in state {State} — waiting for batch",
+                swap.SwapId, existingIntentTxId, intent.State);
+            return false;
+        }
+
+        // Terminal failure (BatchFailed / Cancelled) — remove and signal re-submit.
+        _logger?.LogWarning(
+            "Swap {SwapId}: refund intent {IntentTxId} reached terminal failure state {State} — re-submitting",
+            swap.SwapId, existingIntentTxId, intent.State);
+        _intentToSwapId.TryRemove(existingIntentTxId, out _);
+        return null;
+    }
+
+    /// <summary>Triggered when an in-flight refund intent's batch session completes (succeeds,
+    /// fails, or is cancelled) — fires an immediate poll via the existing websocket trigger
+    /// channel rather than waiting for the next routine poll tick.</summary>
+    private void OnRefundIntentChanged(object? sender, ArkIntent intent)
+    {
+        if (!_intentToSwapId.TryGetValue(intent.IntentTxId, out var swapId))
+            return;
+
+        if (intent.State is ArkIntentState.BatchSucceeded or ArkIntentState.BatchFailed or ArkIntentState.Cancelled)
+        {
+            _logger?.LogInformation(
+                "Refund intent {IntentTxId} for swap {SwapId} reached terminal state {State} — triggering poll",
+                intent.IntentTxId, swapId, intent.State);
+            _wsTriggerChannel.Writer.TryWrite(swapId);
+        }
+    }
+
+    /// <summary>Persists a terminal status transition and unsubscribes the swap from the
+    /// persistent websocket — the shared cleanup both the cooperative and batch-intent refund
+    /// paths need once a swap reaches <see cref="ArkSwapStatus.Refunded"/>/<see cref="ArkSwapStatus.Failed"/>.</summary>
+    private async Task MarkSwapTerminalAsync(ArkSwap swap, ArkSwapStatus status, string? failReason, CancellationToken ct)
+    {
+        var updated = swap with { Status = status, FailReason = failReason, UpdatedAt = DateTimeOffset.UtcNow };
+        await _swapStorage.SaveSwap(swap.WalletId, updated, ct);
+        SwapStatusChanged?.Invoke(this, new SwapStatusChangedEvent(swap.SwapId, swap.WalletId, Id, status, failReason));
+        _swapsIdToWatch.TryRemove(swap.SwapId, out _);
+        await UnsubscribeOnWebsocketAsync([swap.SwapId], ct);
     }
 
     // ─── WebSocket ─────────────────────────────────────────────────
@@ -690,14 +1017,12 @@ public class EvmChainSwapProvider : ISwapProvider
 
     public async ValueTask DisposeAsync()
     {
+        _intentStorage.IntentChanged -= OnRefundIntentChanged;
         _shutdownCts.Cancel();
         _wsTriggerChannel.Writer.TryComplete();
-        if (_pollingTask != null)
-            await _pollingTask;
-        if (_websocketTask != null)
-            await _websocketTask;
-        if (_wsTriggerReaderTask != null)
-            await _wsTriggerReaderTask;
+        await Drain(_pollingTask);
+        await Drain(_websocketTask);
+        await Drain(_wsTriggerReaderTask);
         _shutdownCts.Dispose();
         _evmClientInitLock.Dispose();
         _websocketLock.Dispose();

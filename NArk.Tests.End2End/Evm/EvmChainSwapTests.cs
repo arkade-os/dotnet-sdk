@@ -1,9 +1,9 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
 using NArk.Abstractions;
 using NArk.Blockchain;
-using NArk.Core.CoinSelector;
 using NArk.Core.Services;
 using NArk.Core.Transformers;
 using NArk.Swaps.Boltz.Client;
@@ -121,8 +121,9 @@ public class EvmChainSwapTests
         });
 
         await using var evmProvider = new EvmChainSwapProvider(
-            boltzClient, testingPrerequisite.clientTransport, swapStorage,
-            testingPrerequisite.contractService, evmOptions);
+            boltzClient, testingPrerequisite.clientTransport, testingPrerequisite.walletProvider, swapStorage,
+            testingPrerequisite.contractService, testingPrerequisite.contracts, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider, evmOptions);
 
         var settledTcs = new TaskCompletionSource();
         swapStorage.SwapsChanged += (_, swap) =>
@@ -164,5 +165,117 @@ public class EvmChainSwapTests
         var claimEvent = await evmClient.FindClaimEventAsync(result.PreimageHash, token);
         Assert.That(claimEvent, Is.Not.Null,
             "Expected a Claim event on ERC20Swap for our preimage hash after the swap settled");
+    }
+
+    /// <summary>
+    /// ARK -&gt; EVM chain swap cooperative refund: the user funds the Ark VHTLC lockup, Boltz is
+    /// forced into <c>swap.expired</c> via a direct DB update + container restart (same pattern
+    /// as <c>ChainSwapTests.ArkToBtcChainSwapRefundsCooperatively</c> — reuses
+    /// <see cref="DockerHelper.SetArkToBtcChainSwapExpiredWithLockup"/> as-is, since that helper's
+    /// SQL only touches the <c>symbol='ARK'</c> row, which is currency-agnostic on Boltz's side),
+    /// and the SDK's poll loop calls <c>CoopRefundArkToEvmChainSwap</c> to return the locked VTXO
+    /// cooperatively. Boltz must have seen the lockup before the forced expiry so it can validate
+    /// the refund PSBT against its own records.
+    /// </summary>
+    [Test]
+    [CancelAfter(360_000)]
+    public async Task CanRefundArkToEvmChainSwapCooperatively(CancellationToken token)
+    {
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
+
+        var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
+        [
+            new PaymentContractTransformer(testingPrerequisite.walletProvider),
+            new HashLockedContractTransformer(testingPrerequisite.walletProvider),
+            new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
+        ]);
+        var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
+            testingPrerequisite.walletProvider, coinService, testingPrerequisite.contractService,
+            testingPrerequisite.clientTransport, new DefaultCoinSelector(),
+            testingPrerequisite.safetyService, intentStorage);
+
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions
+            {
+                BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(),
+                WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString(),
+            }));
+
+        var evmOptions = new OptionsWrapper<EvmSwapOptions>(new EvmSwapOptions
+        {
+            RpcUrl = SharedEvmInfrastructure.AnvilRpcUrl,
+            PrivateKey = SharedEvmInfrastructure.DeployerPrivateKey,
+        });
+
+        using var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        await using var evmProvider = new EvmChainSwapProvider(
+            boltzClient, testingPrerequisite.clientTransport, testingPrerequisite.walletProvider, swapStorage,
+            testingPrerequisite.contractService, testingPrerequisite.contracts, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider, evmOptions,
+            logger: loggerFactory.CreateLogger<EvmChainSwapProvider>());
+
+        var refundedTcs = new TaskCompletionSource();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[ARK→EVM refund] {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            if (swap.Status == ArkSwapStatus.Refunded) refundedTcs.TrySetResult();
+        };
+
+        await evmProvider.StartAsync(token);
+
+        // ── Step 1: create the swap (Boltz + storage) — not funded yet ──
+        var evmAccount = new Account(SharedEvmInfrastructure.DeployerPrivateKey);
+        var refundDescriptor = await (await testingPrerequisite.walletProvider
+            .GetAddressProviderAsync(testingPrerequisite.walletIdentifier))!.GetNextSigningDescriptor(token);
+
+        const long amountSats = 50_000;
+        var result = await evmProvider.CreateArkToEvmSwapAsync(
+            testingPrerequisite.walletIdentifier, amountSats, refundDescriptor, evmAccount.Address, ct: token);
+        var swapId = result.Swap.Id;
+        var vhtlcAddress = result.Contract!.GetArkAddress();
+        Console.WriteLine($"[ARK→EVM refund] Swap created: {swapId}, vhtlc={vhtlcAddress.ToString(false)}");
+        Assert.That(swapId, Is.Not.Null.And.Not.Empty);
+
+        // ── Step 2: stop Boltz so it never locks tBTC (swap can't settle) ──
+        Console.WriteLine("[ARK→EVM refund] Stopping Boltz");
+        await DockerHelper.StopContainer(DockerHelper.Container.Boltz, token);
+
+        // ── Step 3: fund the VHTLC off-chain and mine a block ──
+        Console.WriteLine($"[ARK→EVM refund] Funding VHTLC: {vhtlcAddress.ToString(false)}");
+        await DockerHelper.SendArkdNoteTo(vhtlcAddress.ToString(false), amountSats, token);
+        await DockerHelper.MineBlocks(1, token);
+
+        // ── Step 4: read the VTXO txid directly from arkd ──
+        string? lockupTxid = null;
+        var lockupVout = 0;
+        var contractScript = vhtlcAddress.ScriptPubKey.ToHex();
+        for (var i = 0; i < 10 && lockupTxid is null; i++)
+        {
+            await foreach (var vtxo in testingPrerequisite.clientTransport.GetVtxoByScriptsAsSnapshot(
+                               new HashSet<string> { contractScript }, token))
+            {
+                lockupTxid = vtxo.OutPoint.Hash.ToString();
+                lockupVout = (int)vtxo.OutPoint.N;
+                Console.WriteLine($"[ARK→EVM refund] VTXO found: {lockupTxid}:{lockupVout}");
+                break;
+            }
+            if (lockupTxid is null) await Task.Delay(TimeSpan.FromSeconds(2), token);
+        }
+        Assert.That(lockupTxid, Is.Not.Null, "ARK VTXO not found at VHTLC script after mining");
+
+        // ── Step 5: force swap.expired + set the ARK lockup tx in Boltz's DB, restart Boltz ──
+        Console.WriteLine("[ARK→EVM refund] Setting swap.expired + transactionId in Boltz DB");
+        await DockerHelper.SetArkToBtcChainSwapExpiredWithLockup(swapId, lockupTxid!, lockupVout, token);
+
+        // ── Step 6: the provider's own poll loop (10s default interval) picks up
+        // swap.expired on its next tick and attempts the cooperative refund ──
+        await refundedTcs.Task.WaitAsync(TimeSpan.FromMinutes(3), token);
+
+        var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId], cancellationToken: token)).Single();
+        Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
+            "ARK->EVM swap should reach Refunded status after cooperative refund completes");
     }
 }
