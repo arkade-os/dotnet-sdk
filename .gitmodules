@@ -1,4 +1,4 @@
 [submodule "regtest"]
 	path = regtest
-	url = https://github.com/ArkLabsHQ/arkade-regtest.git
-	branch = master
+	url = https://github.com/d4rp4t/arkade-regtest.git
+	branch = feat/boltz-evm
