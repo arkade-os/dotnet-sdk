@@ -25,6 +25,9 @@ public static class SwapsManagementServiceEvmExtensions
     public static async Task<string> InitiateArkToEvmChainSwap(
         this SwapsManagementService mgmt, string walletId, long amountSats, CancellationToken ct = default)
     {
+        // TODO: .Single() assumes exactly one EvmChainSwapProvider is registered (one EVM chain,
+        // Arbitrum). Once a second EVM chain is supported, this needs a chain-id/route-aware
+        // lookup instead of grabbing whichever single instance is registered.
         var evm = mgmt.Providers.OfType<EvmChainSwapProvider>().Single();
 
         var addressProvider = await mgmt.WalletProvider.GetAddressProviderAsync(walletId, ct);
@@ -61,6 +64,9 @@ public static class SwapsManagementServiceEvmExtensions
     public static async Task<string> InitiateEvmToArkChainSwap(
         this SwapsManagementService mgmt, string walletId, long amountSats, CancellationToken ct = default)
     {
+        // TODO: .Single() assumes exactly one EvmChainSwapProvider is registered (one EVM chain,
+        // Arbitrum). Once a second EVM chain is supported, this needs a chain-id/route-aware
+        // lookup instead of grabbing whichever single instance is registered.
         var evm = mgmt.Providers.OfType<EvmChainSwapProvider>().Single();
 
         var addressProvider = await mgmt.WalletProvider.GetAddressProviderAsync(walletId, ct);

@@ -16,9 +16,9 @@ public enum EvmSwapAction
 
     /// <summary>
     /// ChainArkToEvm: swap expired before Boltz locked tBTC — refund our Ark lockup.
-    /// Not yet implemented: requires the same Ark VHTLC refund-intent machinery
-    /// <c>BoltzSwapProvider.Refunds.cs</c> uses for the BTC leg (PSBT co-sign /
-    /// refund-without-receiver batch intent). Deferred — see plan's follow-up scope.
+    /// Implemented in <see cref="EvmChainSwapProvider.TryCoopRefundArkToEvm"/>: cooperative
+    /// refund first, falling back to the refund-without-receiver batch-intent path, mirroring
+    /// <c>BoltzSwapProvider.Refunds.cs</c>'s <c>ChainArkToBtc</c> path.
     /// </summary>
     CanRefundArkLockup,
 

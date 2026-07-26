@@ -14,6 +14,14 @@ namespace NArk.Swaps.Evm;
 /// claim (with preimage), refund (after timelock). No EIP-712 cooperative signing yet —
 /// see the plan's deferred-scope section.
 /// </summary>
+// TODO: no nonce serialization across concurrent calls from the same account. Each
+// SendRequestAndWaitForReceiptAsync call lets Nethereum's default TransactionManager fetch the
+// account's nonce independently; EvmChainSwapProvider holds one EvmChainClient/Account per
+// process, so two swaps whose approve/lock/claim/refund happen to be in flight at the same time
+// (e.g. RunPollLoopAsync's tick racing a RunWsTriggerReaderAsync-triggered poll for a different
+// swap) can race for the same nonce and have one transaction fail or get silently replaced. Needs
+// either an explicit nonce queue/lock around EvmChainClient's send calls, or Nethereum's
+// InMemoryNonceService/NonceService wired in, before concurrent multi-swap usage is safe.
 public class EvmChainClient
 {
     private readonly Web3 _web3;
@@ -43,6 +51,10 @@ public class EvmChainClient
             $"Boltz returned no contract info for EVM chain '{chain}'.");
     }
 
+    // TODO: approves exactly `amount` on every call rather than checking existing allowance /
+    // approving once for a large/infinite amount — an extra on-chain approve tx (and its gas
+    // cost) per swap. Fine for correctness, worth revisiting for gas efficiency once this is
+    // more than a demo.
     /// <summary>Approves the <c>ERC20Swap</c> contract to spend <paramref name="amount"/> of <paramref name="tokenAddress"/>.</summary>
     public async Task<TransactionReceipt> ApproveTokenAsync(
         string tokenAddress, BigInteger amount, CancellationToken ct = default)
@@ -102,6 +114,13 @@ public class EvmChainClient
             Timelock = timelock,
         }, cancellationToken: ct);
     }
+
+    // TODO: FindLockupEventAsync/FindClaimEventAsync/FindRefundEventAsync all call
+    // CreateFilterInput() with no fromBlock/toBlock and no topic filter on the indexed
+    // preimageHash, so each call re-scans the ERC20Swap contract's entire log history and
+    // filters client-side. Fine on a young regtest/testnet chain; would not scale against
+    // Arbitrum mainnet's real history. Should filter server-side by the preimageHash topic and
+    // bound fromBlock (e.g. to the block the swap was created, or a recent lookback window).
 
     /// <summary>Finds the <c>Lockup</c> event for a preimage hash, if any lockup has landed yet.</summary>
     public async Task<LockupEventDTO?> FindLockupEventAsync(byte[] preimageHash, CancellationToken ct = default)

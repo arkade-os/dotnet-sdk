@@ -147,6 +147,10 @@ public class EvmChainSwapProvider : ISwapProvider
 
     // ─── Routes ─────────────────────────────────────────────────────────────
 
+    // TODO: hardcoded to the single ArkBtc<->ArbitrumTbtc pair (matching EvmSwapOptions.PairCurrency).
+    // Milestone 4 (USDT/generic ERC20 via the Router's DEX-hop) needs both of these to become
+    // route/asset-driven instead of a fixed pair — e.g. a SwapAsset.ArbitrumUsdt route entry once
+    // that leg exists.
     public bool SupportsRoute(SwapRoute route) => route switch
     {
         { Source.Network: SwapNetwork.Ark, Destination.Network: SwapNetwork.EvmArbitrum } => true,
@@ -184,6 +188,11 @@ public class EvmChainSwapProvider : ISwapProvider
         };
     }
 
+    // TODO: ExchangeRate is hardcoded to 1m — correct only because both legs of this pair are
+    // BTC-pegged (ARK BTC <-> Arbitrum tBTC). Boltz's /v2/swap/chain pair response already
+    // carries a real `rate` field (see EvmChainPairDetails.Rate, currently unused/dropped by
+    // GetLimitsAsync), which will need to be threaded through here once Milestone 4 adds a
+    // non-1:1 asset (USDT) to this provider's routes.
     public async Task<SwapQuote> GetQuoteAsync(SwapRoute route, long amount, CancellationToken ct)
     {
         var limits = await GetLimitsAsync(route, ct);
@@ -383,6 +392,10 @@ public class EvmChainSwapProvider : ISwapProvider
     /// the contract reverts on a second lock with the same preimage hash, so call this once per
     /// swap.
     /// </summary>
+    // TODO: no caller-side idempotency guard (e.g. checking FindLockupEventAsync first) — if
+    // InitiateEvmToArkChainSwap's caller retries after a transient failure post-broadcast (tx
+    // sent but the receipt wait/response was lost), this will revert on the second attempt
+    // instead of detecting the existing lockup and treating it as success.
     public async Task LockEvmAsync(EvmChainSwapResult result, CancellationToken ct = default)
     {
         if (result.Swap.LockupDetails is not { ClaimAddress: { } claimAddress } lockupDetails)
