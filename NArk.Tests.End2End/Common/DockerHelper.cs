@@ -293,8 +293,7 @@ public static class DockerHelper
         var dbResult = await Cli.Wrap("docker")
             .WithArguments(["exec", Container.Postgres,
                 "psql", "-U", "postgres", "-d", "boltz",
-                "-v", $"sid={swapId}", "-v", $"status={status}",
-                "-c", "UPDATE \"chainSwaps\" SET status = :'status' WHERE id = :'sid'"])
+                "-c", $"UPDATE \"chainSwaps\" SET status = '{status}' WHERE id = '{swapId}'"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
 
