@@ -1,7 +1,9 @@
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Nethereum.Contracts.MessageEncodingServices;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
 using NArk.Abstractions;
@@ -16,6 +18,9 @@ using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Evm;
 using NArk.Swaps.Evm.Contracts;
+using NArk.Swaps.Evm.Contracts.Erc20;
+using NArk.Swaps.Evm.Contracts.Router;
+using NArk.Swaps.Evm.Contracts.TestFixtures;
 using NArk.Swaps.Evm.Extensions;
 using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
@@ -384,6 +389,159 @@ public class EvmChainSwapTests
         var lockupEvent = await evmClient.FindLockupEventAsync(preimageHash, token);
         Assert.That(lockupEvent, Is.Not.Null,
             "Expected a Lockup event on ERC20Swap for our preimage hash after locking tBTC");
+    }
+
+    /// <summary>
+    /// Milestone 4 (USDT/generic-ERC20 DEX-hop) end-to-end: same swap as <see cref="CanDoEvmToArkChainSwap"/>,
+    /// except funded from a USDT stand-in instead of tBTC directly, via
+    /// <see cref="SwapsManagementServiceEvmExtensions.InitiateEvmToArkChainSwapFromErc20"/> —
+    /// atomically pulls USDT via Permit2, swaps it to tBTC through <c>Router</c> (using a
+    /// <c>MockERC20Dex</c> deployed by the regtest stack itself — see
+    /// <c>arkade-regtest/lib/setup/evm.mjs</c>'s <c>setupUsdtDexHop</c>), and locks the result —
+    /// Boltz never learns any of this happened; it still just watches for the same tBTC Lockup
+    /// event it always does, so everything downstream (Ark VHTLC lock, SweeperService claim) is
+    /// identical to the plain tBTC flow.
+    /// </summary>
+    [Test]
+    [CancelAfter(180_000)]
+    public async Task CanDoEvmToArkChainSwapFromUsdt(CancellationToken token)
+    {
+        var evmAddresses = DockerHelper.GetEvmAddresses();
+
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
+
+        var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
+        [
+            new PaymentContractTransformer(testingPrerequisite.walletProvider),
+            new HashLockedContractTransformer(testingPrerequisite.walletProvider),
+            new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
+        ]);
+        var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
+            testingPrerequisite.walletProvider, coinService, testingPrerequisite.contractService,
+            testingPrerequisite.clientTransport, new DefaultCoinSelector(),
+            testingPrerequisite.safetyService, intentStorage);
+
+        await using var sweepMgr = new SweeperService(
+            [new SwapSweepPolicy()], testingPrerequisite.vtxoStorage,
+            coinService, testingPrerequisite.contracts,
+            spendingService, intentStorage,
+            new OptionsWrapper<SweeperServiceOptions>(new SweeperServiceOptions
+            { ForceRefreshInterval = TimeSpan.Zero }), chainTimeProvider, []);
+        await sweepMgr.StartAsync(token);
+
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions
+            {
+                BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(),
+                WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString(),
+            }));
+
+        var evmOptions = new OptionsWrapper<EvmSwapOptions>(new EvmSwapOptions
+        {
+            RpcUrl = SharedEvmInfrastructure.AnvilRpcUrl,
+            PrivateKey = SharedEvmInfrastructure.DeployerPrivateKey,
+        });
+
+        var dexWeb3 = new Web3(new Account(SharedEvmInfrastructure.DeployerPrivateKey), SharedEvmInfrastructure.AnvilRpcUrl);
+        var routerClient = new RouterClient(dexWeb3, evmAddresses.RouterAddress);
+        var dexQuoteProvider = new MockDexQuoteProvider(evmAddresses.MockDexAddress);
+        var dexSwapService = new DEXSwapService(routerClient, dexQuoteProvider);
+
+        var evmProvider = new EvmChainSwapProvider(
+            boltzClient, testingPrerequisite.clientTransport, testingPrerequisite.walletProvider, swapStorage,
+            testingPrerequisite.contractService, testingPrerequisite.contracts, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider, evmOptions,
+            dexSwapService: dexSwapService);
+
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { evmProvider }, spendingService,
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService,
+            testingPrerequisite.contracts, testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
+
+        var settledTcs = new TaskCompletionSource();
+        swapStorage.SwapsChanged += (_, swap) =>
+        {
+            Console.WriteLine($"[EVM(USDT)→ARK] SwapsChanged: {swap.SwapId} → {swap.Status} (fail: {swap.FailReason})");
+            if (swap.Status == ArkSwapStatus.Settled) settledTcs.TrySetResult();
+        };
+
+        await swapMgr.StartAsync(token);
+
+        // One-time on-chain approve to Permit2 itself — required even with witness signatures,
+        // see Permit2Signer's doc comment. The deployer already holds USDT (setupUsdtDexHop mints
+        // its full initial supply to the deployer, same as tBTC/TestERC20 always has).
+        var usdtApproveHandler = dexWeb3.Eth.GetContractHandler(evmAddresses.UsdtAddress);
+        await usdtApproveHandler.SendRequestAndWaitForReceiptAsync(new ApproveFunction
+        { Spender = evmAddresses.Permit2Address, Value = new BigInteger(1_000_000_000) });
+
+        const long amountSats = 50_000;
+
+        // Not using InitiateEvmToArkChainSwapFromErc20 here: Boltz's lockupDetails.Amount
+        // (what must actually land in ERC20Swap) includes its own fee markup over amountSats —
+        // confirmed live (50248 expected vs 50000 naively assumed) — and is only known after
+        // swap creation, so amountIn can't be chosen correctly until then. Create first, then
+        // lock with the DEX-hop amount actually required.
+        var addressProvider = await testingPrerequisite.walletProvider
+            .GetAddressProviderAsync(testingPrerequisite.walletIdentifier, token);
+        var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(token);
+        var result = await evmProvider.CreateEvmToArkSwapAsync(
+            testingPrerequisite.walletIdentifier, amountSats, claimDescriptor, ct: token);
+        var swapId = result.Swap.Id;
+
+        await evmProvider.LockEvmFromErc20Async(
+            result, evmAddresses.UsdtAddress, result.Swap.LockupDetails!.Amount, token);
+        Console.WriteLine($"[EVM(USDT)→ARK] Swap created and tBTC locked via USDT DEX hop: {swapId}");
+        Assert.That(swapId, Is.Not.Null.And.Not.Empty);
+
+        // Wait for Boltz to observe the lockup, lock an Ark VHTLC for our claim descriptor, and
+        // for the wallet-wide SweeperService to claim it — settling the swap.
+        await settledTcs.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
+
+        var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId], cancellationToken: token)).Single();
+        Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Settled));
+
+        // Verify on-chain: the DEX-hop lock tx must have actually landed on Anvil's ERC20Swap,
+        // and Router must hold no leftover balance of either token.
+        var chainInfo = await EvmChainClient.GetChainInfoAsync(boltzClient, "TBTC", token);
+        var evmClient = new EvmChainClient(dexWeb3, chainInfo.SwapContracts.Erc20Swap);
+        var preimageHash = NBitcoin.Crypto.Hashes.SHA256(Convert.FromHexString(finalSwap.Get(SwapMetadata.Preimage)!));
+        var lockupEvent = await evmClient.FindLockupEventAsync(preimageHash, token);
+        Assert.That(lockupEvent, Is.Not.Null,
+            "Expected a Lockup event on ERC20Swap for our preimage hash after the USDT DEX-hop lock");
+
+        var routerTbtcBalance = await dexWeb3.Eth.GetContractHandler(evmAddresses.TbtcAddress)
+            .QueryAsync<BalanceOfFunction, BigInteger>(new BalanceOfFunction { Account = evmAddresses.RouterAddress });
+        Assert.That(routerTbtcBalance, Is.EqualTo(BigInteger.Zero), "Router should hold no leftover tBTC after the DEX hop");
+    }
+
+    /// <summary>Builds Router Call[]s for a fixed 1:1 MockERC20Dex swap — mirrors
+    /// NArk.Tests.End2End.Evm.RouterDexHopTests's identical private test double.</summary>
+    private class MockDexQuoteProvider(string dexAddress) : IDexQuoteProvider
+    {
+        public Task<DexSwapQuote> GetSwapCallsAsync(
+            string tokenIn, string tokenOut, BigInteger amountIn, CancellationToken ct = default)
+        {
+            var calls = new List<Call>
+            {
+                new()
+                {
+                    Target = tokenIn, Value = 0,
+                    CallData = new FunctionMessageEncodingService<ApproveFunction>()
+                        .GetCallData(new ApproveFunction { Spender = dexAddress, Value = amountIn }),
+                },
+                new()
+                {
+                    Target = dexAddress, Value = 0,
+                    CallData = new FunctionMessageEncodingService<SwapFunction>()
+                        .GetCallData(new SwapFunction { Amount = amountIn }),
+                },
+            };
+            return Task.FromResult(new DexSwapQuote(calls, amountIn));
+        }
     }
 
     /// <summary>
