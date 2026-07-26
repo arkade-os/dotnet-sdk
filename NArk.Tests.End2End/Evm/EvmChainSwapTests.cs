@@ -501,9 +501,11 @@ public class EvmChainSwapTests
             "Expected a Refund event on ERC20Swap for our preimage hash after the timelock passed");
 
         var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId], cancellationToken: token)).Single();
-        Console.WriteLine(
-            $"[EVM→ARK refund] Final swap status: {finalSwap.Status} (Boltz may or may not have observed " +
-            "the on-chain refund yet — TryRefundEvmLockupAsync doesn't set ArkSwap.Status itself)");
+        Console.WriteLine($"[EVM→ARK refund] Final swap status: {finalSwap.Status}");
+        Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
+            "TryRefundEvmLockupAsync should mark the swap Refunded itself once its on-chain refund " +
+            "succeeds, rather than waiting on Boltz's own indexer to notice (which this session found " +
+            "doesn't reliably happen for a refund that doesn't move Boltz's own funds)");
     }
 
     /// <summary>
