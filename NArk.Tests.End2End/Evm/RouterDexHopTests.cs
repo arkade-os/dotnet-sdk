@@ -289,4 +289,90 @@ public class RouterDexHopTests
         Assert.That(await BalanceOfAsync(_tbtcAddress, _routerAddress), Is.EqualTo(BigInteger.Zero), "Router should hold no leftover tBTC");
         Assert.That(await BalanceOfAsync(_usdtAddress, _routerAddress), Is.EqualTo(BigInteger.Zero), "Router should hold no leftover USDT");
     }
+
+    // Same two flows as above, but through RouterClient/DEXSwapService instead of raw Nethereum
+    // calls — proves that higher-level wrapper reproduces the exact same signatures/calldata the
+    // lower-level tests above already verified against a live Router.
+
+    [Test]
+    public async Task DEXSwapService_LockViaDexHopAsync_SwapsUsdtToTbtcThenLocks()
+    {
+        const long amount = 4_000_000;
+        var preimageHash = SHA256.HashData(RandomPreimage());
+        var timelock = await FarFutureTimelock();
+        var claimAddress = EthECKey.GenerateKey().GetPublicAddress();
+        var refundAddress = _deployer.Address;
+
+        await _web3.Eth.GetContractHandler(_usdtAddress)
+            .SendRequestAndWaitForReceiptAsync(new ApproveFunction { Spender = _permit2Address, Value = amount });
+
+        var routerClient = new RouterClient(_web3, _routerAddress);
+        var dexQuoteProvider = new SingleDirectionDexQuoteProvider(_dexUsdtToTbtcAddress);
+        var dexSwapService = new DEXSwapService(routerClient, dexQuoteProvider);
+
+        var usdtBefore = await BalanceOfAsync(_usdtAddress, _deployer.Address);
+
+        await dexSwapService.LockViaDexHopAsync(
+            _deployerKey, _usdtAddress, amount, _tbtcAddress, preimageHash, claimAddress, refundAddress, timelock,
+            permit2Nonce: new BigInteger(Random.Shared.NextInt64(0, long.MaxValue)), permit2Deadline: int.MaxValue);
+
+        var usdtAfter = await BalanceOfAsync(_usdtAddress, _deployer.Address);
+        Assert.That(usdtBefore - usdtAfter, Is.EqualTo((BigInteger)amount));
+
+        var erc20SwapHandler = _web3.Eth.GetContractHandler(_erc20SwapAddress);
+        var hash = await erc20SwapHandler.QueryAsync<HashValuesFunction, byte[]>(new HashValuesFunction
+        {
+            PreimageHash = preimageHash, Amount = amount, TokenAddress = _tbtcAddress,
+            ClaimAddress = claimAddress, RefundAddress = refundAddress, Timelock = timelock,
+        });
+        var locked = await erc20SwapHandler.QueryAsync<SwapsFunction, bool>(new SwapsFunction { ReturnValue1 = hash });
+        Assert.That(locked, Is.True);
+    }
+
+    [Test]
+    public async Task DEXSwapService_ClaimAndSwapAsync_ClaimsTbtcThenSwapsToUsdt()
+    {
+        const long amount = 2_000_000;
+        var preimage = RandomPreimage();
+        var preimageHash = SHA256.HashData(preimage);
+        var timelock = await FarFutureTimelock();
+        var claimKey = EthECKey.GenerateKey();
+        var claimAddress = claimKey.GetPublicAddress();
+        var refundAddress = _deployer.Address;
+
+        var evmChainClient = new EvmChainClient(_web3, _erc20SwapAddress);
+        await evmChainClient.ApproveTokenAsync(_tbtcAddress, amount);
+        await evmChainClient.LockAsync(preimageHash, amount, _tbtcAddress, claimAddress, timelock);
+
+        await TransferEtherAsync(claimAddress, 1_000_000_000_000_000_000);
+        var claimerWeb3 = new Web3(new Account(claimKey.GetPrivateKey()), SharedEvmInfrastructure.AnvilRpcUrl);
+        var routerClient = new RouterClient(claimerWeb3, _routerAddress);
+        var dexQuoteProvider = new SingleDirectionDexQuoteProvider(_dexTbtcToUsdtAddress);
+        var dexSwapService = new DEXSwapService(routerClient, dexQuoteProvider);
+
+        var usdtBefore = await BalanceOfAsync(_usdtAddress, claimAddress);
+
+        var swept = await dexSwapService.ClaimAndSwapAsync(
+            claimKey, preimage, amount, _tbtcAddress, refundAddress, timelock, _usdtAddress);
+
+        var usdtAfter = await BalanceOfAsync(_usdtAddress, claimAddress);
+        Assert.That(usdtAfter - usdtBefore, Is.EqualTo((BigInteger)amount));
+        Assert.That(swept, Is.EqualTo((BigInteger)amount));
+    }
+
+    /// <summary>Test double: builds calls for a single fixed 1:1 MockERC20Dex, ignoring
+    /// tokenIn/tokenOut (the OneTimeSetUp fixture already deploys one dex per direction).</summary>
+    private class SingleDirectionDexQuoteProvider(string dexAddress) : IDexQuoteProvider
+    {
+        public Task<DexSwapQuote> GetSwapCallsAsync(
+            string tokenIn, string tokenOut, BigInteger amountIn, CancellationToken ct = default)
+        {
+            var calls = new List<Call>
+            {
+                new() { Target = tokenIn, Value = 0, CallData = EncodeCall(new ApproveFunction { Spender = dexAddress, Value = amountIn }) },
+                new() { Target = dexAddress, Value = 0, CallData = EncodeCall(new SwapFunction { Amount = amountIn }) },
+            };
+            return Task.FromResult(new DexSwapQuote(calls, amountIn));
+        }
+    }
 }
