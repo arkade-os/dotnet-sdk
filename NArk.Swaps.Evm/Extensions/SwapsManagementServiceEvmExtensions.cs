@@ -1,3 +1,4 @@
+using System.Numerics;
 using NArk.Abstractions;
 using NArk.Swaps.Models;
 using NArk.Swaps.Services;
@@ -77,6 +78,42 @@ public static class SwapsManagementServiceEvmExtensions
         try
         {
             await evm.LockEvmAsync(result, ct);
+        }
+        catch (Exception e)
+        {
+            var swap = (await mgmt.SwapStorage.GetSwaps(swapIds: [result.Swap.Id], cancellationToken: ct)).Single();
+            await mgmt.SwapStorage.SaveSwap(walletId,
+                swap with { Status = ArkSwapStatus.Failed, FailReason = e.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
+                ct);
+            throw;
+        }
+
+        return result.Swap.Id;
+    }
+
+    /// <summary>
+    /// Milestone 4 alternative to <see cref="InitiateEvmToArkChainSwap"/>: funds the same
+    /// EvmArbitrum -&gt; ARK chain swap from an arbitrary ERC20 (e.g. USDT) instead of tBTC
+    /// directly, via <see cref="EvmChainSwapProvider.LockEvmFromErc20Async"/> — requires the
+    /// registered <see cref="EvmChainSwapProvider"/> to have been constructed with a
+    /// <c>DEXSwapService</c> (see that method's TODO — no production DEX-quoting implementation
+    /// exists yet, so this is only usable with a caller-supplied test/mock
+    /// <c>IDexQuoteProvider</c> today). Returns the swap id.
+    /// </summary>
+    public static async Task<string> InitiateEvmToArkChainSwapFromErc20(
+        this SwapsManagementService mgmt, string walletId, long amountSats, string tokenInAddress,
+        BigInteger amountIn, CancellationToken ct = default)
+    {
+        var evm = mgmt.Providers.OfType<EvmChainSwapProvider>().Single();
+
+        var addressProvider = await mgmt.WalletProvider.GetAddressProviderAsync(walletId, ct);
+        var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(ct);
+
+        var result = await evm.CreateEvmToArkSwapAsync(walletId, amountSats, claimDescriptor, ct: ct);
+
+        try
+        {
+            await evm.LockEvmFromErc20Async(result, tokenInAddress, amountIn, ct);
         }
         catch (Exception e)
         {

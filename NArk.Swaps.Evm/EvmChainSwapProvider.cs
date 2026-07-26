@@ -62,6 +62,15 @@ public class EvmChainSwapProvider : ISwapProvider
     private readonly IIntentStorage _intentStorage;
     private readonly IBitcoinBlockchain _chainTimeProvider;
     private readonly IIntentGenerationService? _intentGenerationService;
+
+    /// <summary>
+    /// Milestone 4's USDT/generic-ERC20 DEX-hop support — null unless the caller explicitly
+    /// constructs one (no DI wiring/production <see cref="IDexQuoteProvider"/> exists yet, see
+    /// that interface's TODO). <see cref="LockEvmFromErc20Async"/>/<see cref="ClaimEvmLockupToErc20Async"/>
+    /// throw if this is null; the plain tBTC flow (<see cref="LockEvmAsync"/>,
+    /// <see cref="TryClaimEvmLockupAsync"/>) never needs it.
+    /// </summary>
+    private readonly DEXSwapService? _dexSwapService;
     private readonly EvmSwapOptions _options;
     private readonly ILogger<EvmChainSwapProvider>? _logger;
     private readonly TransactionHelpers.ArkTransactionBuilder _transactionBuilder;
@@ -110,7 +119,8 @@ public class EvmChainSwapProvider : ISwapProvider
         IBitcoinBlockchain chainTimeProvider,
         IOptions<EvmSwapOptions> options,
         IIntentGenerationService? intentGenerationService = null,
-        ILogger<EvmChainSwapProvider>? logger = null)
+        ILogger<EvmChainSwapProvider>? logger = null,
+        DEXSwapService? dexSwapService = null)
     {
         _boltzClient = boltzClient;
         _clientTransport = clientTransport;
@@ -123,6 +133,7 @@ public class EvmChainSwapProvider : ISwapProvider
         _intentStorage = intentStorage;
         _chainTimeProvider = chainTimeProvider;
         _intentGenerationService = intentGenerationService;
+        _dexSwapService = dexSwapService;
         _options = options.Value;
         _logger = logger;
         _transactionBuilder = new TransactionHelpers.ArkTransactionBuilder(
@@ -412,6 +423,83 @@ public class EvmChainSwapProvider : ISwapProvider
 
         _logger?.LogInformation("Swap {SwapId}: locked {Amount} tBTC in ERC20Swap for Boltz to claim",
             result.Swap.Id, lockupDetails.Amount);
+    }
+
+    /// <summary>
+    /// Milestone 4 alternative to <see cref="LockEvmAsync"/>: funds the same
+    /// <c>ChainEvmToArk</c> lockup from an arbitrary ERC20 (e.g. USDT) instead of tBTC directly,
+    /// via <see cref="DEXSwapService.LockViaDexHopAsync"/> — one atomic transaction that pulls
+    /// <paramref name="tokenInAddress"/> via Permit2, swaps it to tBTC, and locks the result.
+    /// This provider's own <see cref="EvmAddress"/> both signs the Permit2 witness and is used
+    /// as the refund address.
+    /// </summary>
+    // TODO: not reachable from SwapsManagementServiceEvmExtensions/the normal swap-creation flow
+    // yet, and there's no caller-side idempotency guard (see LockEvmAsync's identical TODO) —
+    // this is the atomic-mechanics half of Milestone 4; a real IDexQuoteProvider (Uniswap V3) is
+    // the other half, still unimplemented (see that interface's TODO).
+    public async Task LockEvmFromErc20Async(
+        EvmChainSwapResult result, string tokenInAddress, BigInteger amountIn, CancellationToken ct = default)
+    {
+        if (_dexSwapService is null)
+            throw new InvalidOperationException(
+                "No DEXSwapService configured for this provider — pass one to EvmChainSwapProvider's constructor.");
+        if (result.Swap.LockupDetails is not { ClaimAddress: { } claimAddress } lockupDetails)
+            throw new InvalidOperationException(
+                $"Chain swap {result.Swap.Id}: missing EVM lockup details (claimAddress) — not a ChainEvmToArk swap?");
+
+        var info = await EvmChainClient.GetChainInfoAsync(_boltzClient, _options.PairCurrency, ct);
+        var tokenAddress = info.Tokens[_options.PairCurrency];
+        var ownerKey = new EthECKey(_options.PrivateKey);
+
+        await _dexSwapService.LockViaDexHopAsync(
+            ownerKey, tokenInAddress, amountIn, tokenAddress, result.PreimageHash, claimAddress, EvmAddress,
+            lockupDetails.TimeoutBlockHeight,
+            permit2Nonce: new BigInteger(RandomUtils.GetBytes(8), isUnsigned: true),
+            permit2Deadline: DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeSeconds(),
+            ct: ct);
+
+        _logger?.LogInformation(
+            "Swap {SwapId}: swapped {AmountIn} of {TokenIn} to tBTC via Router and locked it for Boltz to claim",
+            result.Swap.Id, amountIn, tokenInAddress);
+    }
+
+    /// <summary>
+    /// Milestone 4 alternative to the automatic claim path (<see cref="TryClaimEvmLockupAsync"/>,
+    /// which the poll loop always uses): claims this swap's tBTC lockup and atomically swaps the
+    /// proceeds to <paramref name="outputTokenAddress"/> via
+    /// <see cref="DEXSwapService.ClaimAndSwapAsync"/>, instead of keeping tBTC. Returns the
+    /// amount swept in the output token.
+    /// </summary>
+    // TODO: caller-invoked only — the poll loop has no way to know a caller wants this instead of
+    // the plain claim (would need a new SwapMetadata field recording the desired output token,
+    // consulted by PollSwapAsync/TryClaimEvmLockupAsync — not designed yet). A real
+    // IDexQuoteProvider is also still unimplemented, same as LockEvmFromErc20Async.
+    public async Task<BigInteger> ClaimEvmLockupToErc20Async(
+        ArkSwap swap, string outputTokenAddress, CancellationToken ct = default)
+    {
+        if (_dexSwapService is null)
+            throw new InvalidOperationException(
+                "No DEXSwapService configured for this provider — pass one to EvmChainSwapProvider's constructor.");
+
+        var preimageHex = swap.Get(SwapMetadata.Preimage)
+            ?? throw new InvalidOperationException($"Swap {swap.SwapId}: missing preimage in metadata.");
+        var preimage = Convert.FromHexString(preimageHex);
+
+        var client = await GetEvmChainClientAsync(ct);
+        var info = await EvmChainClient.GetChainInfoAsync(_boltzClient, _options.PairCurrency, ct);
+        var tokenAddress = info.Tokens[_options.PairCurrency];
+        var lockup = await client.FindLockupEventAsync(Hashes.SHA256(preimage), ct)
+            ?? throw new InvalidOperationException($"Swap {swap.SwapId}: no Lockup event found yet.");
+
+        var claimKey = new EthECKey(_options.PrivateKey);
+        var swept = await _dexSwapService.ClaimAndSwapAsync(
+            claimKey, preimage, lockup.Amount, tokenAddress, lockup.RefundAddress, lockup.Timelock,
+            outputTokenAddress, ct);
+
+        await MarkSwapTerminalAsync(swap, ArkSwapStatus.Settled, null, ct);
+        _logger?.LogInformation("Swap {SwapId}: claimed EVM lockup and swapped {Swept} to {OutputToken}",
+            swap.SwapId, swept, outputTokenAddress);
+        return swept;
     }
 
     // ─── Lifecycle: websocket push (primary) + REST poll loop (safety net) ─────────
