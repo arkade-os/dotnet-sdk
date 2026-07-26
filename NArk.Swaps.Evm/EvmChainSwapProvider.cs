@@ -83,6 +83,14 @@ public class EvmChainSwapProvider : ISwapProvider
     /// <summary>Swap ids currently subscribed on the persistent websocket, kept in sync with
     /// the active set by <see cref="RunPollLoopAsync"/>'s per-tick diff.</summary>
     private readonly ConcurrentDictionary<string, byte> _swapsIdToWatch = new();
+
+    /// <summary>Maps a swap's Ark contract script → swap id, mirroring
+    /// <c>BoltzSwapProvider</c>'s own map — lets <see cref="NotifyVtxoChanged"/> react the
+    /// instant a VTXO lands on a tracked script instead of waiting for the next poll tick.
+    /// Kept fresh by <see cref="NotifySwapChanged"/> and seeded from storage in
+    /// <see cref="StartAsync"/> so swaps carried over across a restart aren't blind until the
+    /// first routine poll runs.</summary>
+    private readonly ConcurrentDictionary<string, string> _scriptToSwapId = new();
     private readonly Channel<string> _wsTriggerChannel = Channel.CreateUnbounded<string>();
     private Task? _websocketTask;
     private Task? _wsTriggerReaderTask;
@@ -395,13 +403,28 @@ public class EvmChainSwapProvider : ISwapProvider
 
     // ─── Lifecycle: websocket push (primary) + REST poll loop (safety net) ─────────
 
-    public Task StartAsync(CancellationToken ct)
+    public async Task StartAsync(CancellationToken ct)
     {
+        // Seed the script→swap map from storage so a VTXO arriving before the first routine
+        // poll (e.g. right after a restart, for a swap that was already active) still dispatches
+        // correctly — mirrors BoltzSwapProvider.Lifecycle.cs's StartAsync exactly.
+        try
+        {
+            var existingActiveSwaps = await _swapStorage.GetSwaps(
+                swapTypes: [ArkSwapType.ChainArkToEvm, ArkSwapType.ChainEvmToArk], active: true, cancellationToken: ct);
+            foreach (var swap in existingActiveSwaps.Where(s => s.ProviderId == Id && !string.IsNullOrEmpty(s.ContractScript)))
+                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
+            _logger?.LogInformation("Seeded script→swap map with {Count} active swap(s)", _scriptToSwapId.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to seed script→swap map from storage; RunPollLoopAsync will pick up on next tick");
+        }
+
         _pollingTask = RunPollLoopAsync(_shutdownCts.Token);
         _websocketTask = RunWebsocketLoop(_shutdownCts.Token);
         _wsTriggerReaderTask = RunWsTriggerReaderAsync(_shutdownCts.Token);
         _intentStorage.IntentChanged += OnRefundIntentChanged;
-        return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken ct)
@@ -484,10 +507,10 @@ public class EvmChainSwapProvider : ISwapProvider
         {
             case EvmSwapAction.CanClaimEvmLockup:
                 await TryClaimEvmLockupAsync(swap, ct);
-                break;
+                return;
             case EvmSwapAction.CanRefundEvmLockup:
                 await TryRefundEvmLockupAsync(swap, ct);
-                break;
+                return;
             case EvmSwapAction.CanClaimArkLockup:
                 // No explicit action: PersistSwapAsync already imported this VHTLC via
                 // IContractService.ImportContract(AwaitingFundsBeforeDeactivate), which puts its
@@ -528,11 +551,20 @@ public class EvmChainSwapProvider : ISwapProvider
         var tokenAddress = info.Tokens[_options.PairCurrency];
 
         // Amount/refundAddress/timelock come from Boltz's Lockup event, not our own records —
-        // Boltz is the one who locked this side of the swap.
+        // Boltz is the one who locked this side of the swap. A null here (classifier already
+        // saw Boltz report the lockup as mempool/confirmed) means our own indexer view just
+        // hasn't caught up yet — transient, so throwing and retrying next tick is correct,
+        // unlike the permanent "never locked" case in TryRefundEvmLockupAsync below.
         var lockup = await client.FindLockupEventAsync(Hashes.SHA256(preimage), ct)
             ?? throw new InvalidOperationException($"Swap {swap.SwapId}: no Lockup event found yet.");
 
         await client.ClaimAsync(preimage, lockup.Amount, tokenAddress, lockup.RefundAddress, lockup.Timelock, ct);
+
+        // Set status ourselves rather than waiting for Boltz's own indexer to notice we spent
+        // its lockup and flip transaction.claimed — Boltz has strong incentive to track this
+        // promptly (it's their funds moving) but nothing here should depend on an external
+        // party's monitoring being fast, or even present.
+        await MarkSwapTerminalAsync(swap, ArkSwapStatus.Settled, null, ct);
         _logger?.LogInformation("Swap {SwapId}: claimed EVM lockup", swap.SwapId);
     }
 
@@ -546,10 +578,29 @@ public class EvmChainSwapProvider : ISwapProvider
         var info = await EvmChainClient.GetChainInfoAsync(_boltzClient, _options.PairCurrency, ct);
         var tokenAddress = info.Tokens[_options.PairCurrency];
 
-        var lockup = await client.FindLockupEventAsync(preimageHash, ct)
-            ?? throw new InvalidOperationException($"Swap {swap.SwapId}: no Lockup event found to refund.");
+        var lockup = await client.FindLockupEventAsync(preimageHash, ct);
+        if (lockup is null)
+        {
+            // Swap expired before we ever locked (LockEvmAsync never ran, or the caller never
+            // funded it) — nothing to refund. Unlike TryClaimEvmLockupAsync's null case, this
+            // is permanent, not transient: mark Failed so the poll loop stops retrying forever.
+            if (swap.Status != ArkSwapStatus.Failed)
+            {
+                _logger?.LogInformation(
+                    "Swap {SwapId}: expired with no EVM lockup observed — marking Failed", swap.SwapId);
+                await MarkSwapTerminalAsync(swap, ArkSwapStatus.Failed, "Swap expired before any funds were locked", ct);
+            }
+            return;
+        }
 
         await client.RefundAsync(preimageHash, lockup.Amount, tokenAddress, lockup.ClaimAddress, lockup.Timelock, ct);
+
+        // Same rationale as TryClaimEvmLockupAsync — but more important here: this is OUR OWN
+        // refund of OUR OWN funds, and empirically (verified live this session) Boltz's own
+        // status can stay stuck on swap.expired indefinitely since it has no direct incentive
+        // to track a refund that doesn't move its funds. Waiting on Boltz's indexer here would
+        // leave the swap Pending forever despite the refund having already succeeded on-chain.
+        await MarkSwapTerminalAsync(swap, ArkSwapStatus.Refunded, null, ct);
         _logger?.LogInformation("Swap {SwapId}: refunded EVM lockup", swap.SwapId);
     }
 
@@ -1052,8 +1103,64 @@ public class EvmChainSwapProvider : ISwapProvider
     private static Sequence ParseSequence(long val) =>
         val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
 
-    public void NotifyVtxoChanged(ArkVtxo vtxo) { }
-    public void NotifySwapChanged(ArkSwap swap) { }
+    /// <summary>
+    /// Called by <c>SwapsManagementService</c> when a VTXO changes on ANY tracked script across
+    /// ALL registered providers, not just ours — mirrors <c>BoltzSwapProvider.NotifyVtxoChanged</c>.
+    /// Scripts belonging to other providers simply won't be in <see cref="_scriptToSwapId"/>, so
+    /// this naturally no-ops for them.
+    /// </summary>
+    public void NotifyVtxoChanged(ArkVtxo vtxo)
+    {
+        try
+        {
+            if (_scriptToSwapId.TryGetValue(vtxo.Script, out var id))
+            {
+                _logger?.LogInformation(
+                    "NotifyVtxoChanged: VTXO {Outpoint} on swap {SwapId}'s contract script (amount={Amount}, spent={Spent}) — triggering status poll",
+                    vtxo.OutPoint, id, vtxo.Amount, vtxo.SpentByTransactionId is not null);
+                _wsTriggerChannel.Writer.TryWrite(id);
+            }
+            else
+            {
+                _logger?.LogDebug(
+                    "NotifyVtxoChanged: VTXO {Outpoint} on script {Script} — no swap mapping, ignoring",
+                    vtxo.OutPoint, vtxo.Script);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "NotifyVtxoChanged: error dispatching VTXO {Outpoint}", vtxo.OutPoint);
+        }
+    }
+
+    /// <summary>
+    /// Called by <c>SwapsManagementService</c> when ANY swap record changes in storage, not just
+    /// ours — mirrors <c>BoltzSwapProvider.NotifySwapChanged</c>. The unconditional trigger write
+    /// at the end for a foreign swap id is harmless: <see cref="RunWsTriggerReaderAsync"/> already
+    /// filters by <c>s.ProviderId == Id</c>.
+    /// </summary>
+    public void NotifySwapChanged(ArkSwap swap)
+    {
+        if (!string.IsNullOrEmpty(swap.ContractScript))
+        {
+            if (swap.Status.IsTerminalState())
+            {
+                if (_scriptToSwapId.TryRemove(swap.ContractScript, out _))
+                    _logger?.LogInformation(
+                        "NotifySwapChanged: swap {SwapId} reached terminal {Status} — removed contract-script mapping",
+                        swap.SwapId, swap.Status);
+            }
+            else
+            {
+                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
+                _logger?.LogDebug(
+                    "NotifySwapChanged: swap {SwapId} storage event (type={Type}, status={Status}) — map now has {Count} entries",
+                    swap.SwapId, swap.SwapType, swap.Status, _scriptToSwapId.Count);
+            }
+        }
+
+        _wsTriggerChannel.Writer.TryWrite(swap.SwapId);
+    }
 
     public async ValueTask DisposeAsync()
     {
