@@ -58,6 +58,9 @@ public static class BoltzOperationClassifier
     public static bool CanCoopRefundSubmarine(ArkSwap swap, string boltzSwapStatus) =>
         ValidateTypeAndStatus(swap, ArkSwapType.Submarine) && IsRefundableStatus(boltzSwapStatus);
 
+    internal static bool IsFinalSubmarineRefundStatus(string status) =>
+        status is BoltzSwapStatus.InvoiceFailedToPay or BoltzSwapStatus.SwapExpired;
+
     public static bool CanCoopRefundArkToBtc(ArkSwap swap, string boltzSwapStatus) =>
         ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToBtc) && boltzSwapStatus == BoltzSwapStatus.SwapExpired;
 
