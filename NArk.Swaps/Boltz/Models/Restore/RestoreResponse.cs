@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace NArk.Swaps.Boltz.Models.Restore;
@@ -37,9 +38,14 @@ public record EvmTransaction
 /// <c>type</c>: <see cref="UtxoSwapDetails"/> ("utxo") for tapscript-tree-based chains (BTC,
 /// Liquid, or the Ark leg of any swap), <see cref="EvmSwapDetails"/> ("evm") for EVM chains.
 /// </summary>
-[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
-[JsonDerivedType(typeof(UtxoSwapDetails), "utxo")]
-[JsonDerivedType(typeof(EvmSwapDetails), "evm")]
+/// <remarks>
+/// Uses a hand-written <see cref="SwapDetailsJsonConverter"/> rather than
+/// <c>[JsonPolymorphic]</c>/<c>[JsonDerivedType]</c> — verified against a real Boltz instance
+/// that the <c>type</c> field is only actually sent for chain-swap legs; reverse/submarine
+/// swaps' claim/refund details omit it entirely, which the built-in polymorphic converter
+/// treats as a hard deserialization error instead of a legitimate default.
+/// </remarks>
+[JsonConverter(typeof(SwapDetailsJsonConverter))]
 public abstract record SwapDetails
 {
     /// <summary>
@@ -211,4 +217,42 @@ public record RestorableSwap
     /// </summary>
     [JsonIgnore]
     public bool IsChainSwap => Type == "chain";
+}
+
+/// <summary>
+/// Reads <see cref="SwapDetails"/> by inspecting the payload rather than requiring a
+/// <c>type</c> discriminator, since Boltz only sends one for EVM legs (missing it entirely for
+/// reverse/submarine's tapscript-tree details) — a missing/non-"evm" <c>type</c> defaults to
+/// <see cref="UtxoSwapDetails"/>, the historically-only shape.
+/// </summary>
+public sealed class SwapDetailsJsonConverter : JsonConverter<SwapDetails>
+{
+    public override SwapDetails? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+            return null;
+
+        using var doc = JsonDocument.ParseValue(ref reader);
+        var root = doc.RootElement;
+        var type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
+
+        return type == "evm"
+            ? root.Deserialize<EvmSwapDetails>(options)
+            : root.Deserialize<UtxoSwapDetails>(options);
+    }
+
+    public override void Write(Utf8JsonWriter writer, SwapDetails value, JsonSerializerOptions options)
+    {
+        switch (value)
+        {
+            case EvmSwapDetails evm:
+                JsonSerializer.Serialize(writer, evm, options);
+                break;
+            case UtxoSwapDetails utxo:
+                JsonSerializer.Serialize(writer, utxo, options);
+                break;
+            default:
+                throw new NotSupportedException($"Unknown {nameof(SwapDetails)} subtype: {value.GetType()}");
+        }
+    }
 }
