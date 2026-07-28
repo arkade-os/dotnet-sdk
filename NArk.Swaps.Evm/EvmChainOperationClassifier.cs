@@ -15,6 +15,9 @@ public static class EvmChainOperationClassifier
 {
     public static EvmSwapAction? Classify(ArkSwap swap, string boltzStatus)
     {
+        if (CanRenegotiateChainSwap(swap, boltzStatus))
+            return EvmSwapAction.CanRenegotiateChain;
+
         if (CanClaimEvmLockup(swap, boltzStatus))
             return EvmSwapAction.CanClaimEvmLockup;
 
@@ -29,6 +32,14 @@ public static class EvmChainOperationClassifier
 
         return null;
     }
+
+    // Renegotiation allows chain swaps that failed due to an incorrect lockup amount to be
+    // salvaged instead of requiring a refund. Applies to both directions, mirroring
+    // BoltzOperationClassifier.CanRenegotiateChainSwap.
+    public static bool CanRenegotiateChainSwap(ArkSwap swap, string status) =>
+        (ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToEvm) ||
+         ValidateTypeAndStatus(swap, ArkSwapType.ChainEvmToArk)) &&
+        status == BoltzSwapStatus.TransactionLockupFailed;
 
     public static bool CanClaimEvmLockup(ArkSwap swap, string status) =>
         ValidateTypeAndStatus(swap, ArkSwapType.ChainArkToEvm) &&

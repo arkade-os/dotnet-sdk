@@ -8,6 +8,14 @@ namespace NArk.Swaps.Evm;
 /// </summary>
 public enum EvmSwapAction
 {
+    /// <summary>
+    /// Either direction: Boltz reported <c>transaction.lockupFailed</c> (the funded amount
+    /// didn't match the quoted amount) — try to renegotiate a new quote before falling back to
+    /// refund. Mirrors <c>BoltzSwapAction.CanRenegotiateChain</c>; implemented in
+    /// <see cref="EvmChainSwapProvider.TryRenegotiateChainSwap"/>.
+    /// </summary>
+    CanRenegotiateChain,
+
     /// <summary>ChainArkToEvm: Boltz locked tBTC for us — claim it on Arbitrum with our preimage.</summary>
     CanClaimEvmLockup,
 

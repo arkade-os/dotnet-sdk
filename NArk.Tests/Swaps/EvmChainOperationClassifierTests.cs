@@ -10,10 +10,6 @@ namespace NArk.Tests;
 /// Unit tests for <see cref="EvmChainOperationClassifier.Classify"/>, mirroring
 /// <see cref="BoltzOperationClassifierTests"/>'s shape for the EVM chain-swap legs
 /// (<see cref="ArkSwapType.ChainArkToEvm"/> / <see cref="ArkSwapType.ChainEvmToArk"/>).
-///
-/// Non-cooperative milestone only — no EIP-712/cooperative-refund actions exist yet, so
-/// there's no analogue of BoltzOperationClassifierTests' "cross-signing"/"renegotiation"
-/// sections here (see <see cref="EvmSwapAction"/> for what's deferred).
 /// </summary>
 [TestFixture]
 public class EvmChainOperationClassifierTests
@@ -132,6 +128,23 @@ public class EvmChainOperationClassifierTests
     {
         var swap = MakeSwap(ArkSwapType.ChainArkToEvm);
         Assert.That(Classify(swap, SwapExpired), Is.Not.EqualTo(EvmSwapAction.CanRefundEvmLockup));
+    }
+
+    // ── Renegotiation (lockup amount mismatch, either direction) ────────────────────
+
+    [TestCase(ArkSwapType.ChainArkToEvm)]
+    [TestCase(ArkSwapType.ChainEvmToArk)]
+    public void Chain_LockupFailed_ReturnsCanRenegotiateChain(ArkSwapType type)
+    {
+        var swap = MakeSwap(type);
+        Assert.That(Classify(swap, TransactionLockupFailed), Is.EqualTo(EvmSwapAction.CanRenegotiateChain));
+    }
+
+    [Test]
+    public void ChainArkToEvm_LockupFailed_AlreadySettled_ReturnsNull()
+    {
+        var swap = MakeSwap(ArkSwapType.ChainArkToEvm, ArkSwapStatus.Settled);
+        Assert.That(Classify(swap, TransactionLockupFailed), Is.Null);
     }
 
     // ── Non-EVM swap types never produce an EVM action ──────────────────────────────

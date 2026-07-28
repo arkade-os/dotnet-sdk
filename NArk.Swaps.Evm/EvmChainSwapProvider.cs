@@ -606,6 +606,27 @@ public class EvmChainSwapProvider : ISwapProvider
         var action = EvmChainOperationClassifier.Classify(swap, status.Status);
         switch (action)
         {
+            case EvmSwapAction.CanRenegotiateChain:
+            {
+                if (await TryRenegotiateChainSwap(swap, ct))
+                {
+                    // Renegotiation accepted — re-poll immediately (against the freshly
+                    // persisted ExpectedAmount) so the claim fires this cycle rather than
+                    // waiting for the next tick, mirroring BoltzSwapProvider's equivalent path.
+                    var refreshed = (await _swapStorage.GetSwaps(swapIds: [swap.SwapId], cancellationToken: ct))
+                        .FirstOrDefault() ?? swap;
+                    await PollSwapAsync(refreshed, ct);
+                    return;
+                }
+
+                // Boltz refused the quote (funded amount outside its limits) — fall back to
+                // refunding whichever side we locked, mirroring BoltzSwapProvider's fallback.
+                if (swap.SwapType == ArkSwapType.ChainArkToEvm)
+                    await TryCoopRefundArkToEvm(swap, ct);
+                else
+                    await TryRefundEvmLockupAsync(swap, ct);
+                return;
+            }
             case EvmSwapAction.CanClaimEvmLockup:
                 await TryClaimEvmLockupAsync(swap, ct);
                 return;
@@ -638,6 +659,96 @@ public class EvmChainSwapProvider : ISwapProvider
                 _swapsIdToWatch.TryRemove(swap.SwapId, out _);
                 await UnsubscribeOnWebsocketAsync([swap.SwapId], ct);
             }
+        }
+    }
+
+    /// <summary>
+    /// Asks Boltz for a new chain-swap quote based on the amount actually funded at the
+    /// lockup, and accepts it. Returns <c>true</c> on success (quote returned and accepted,
+    /// local <see cref="ArkSwap.ExpectedAmount"/> updated). Returns <c>false</c> if Boltz
+    /// refuses the quote — typically because the funded amount falls outside Boltz's published
+    /// limits for this pair — in which case the caller should fall through to the refund path.
+    /// </summary>
+    /// <remarks>
+    /// Wired into <see cref="PollSwapAsync"/> on the <c>transaction.lockupFailed</c> Boltz
+    /// status. Mirrors <c>NArk.Swaps.Boltz.BoltzSwapProvider.TryRenegotiateChainSwap</c>
+    /// exactly — same currency-agnostic <c>GET</c>/<c>POST v2/swap/chain/{id}/quote</c>
+    /// endpoints via the shared <see cref="BoltzClient"/>, just bounded against this pair's own
+    /// limits (<see cref="GetLimitsAsync"/>) instead of <c>BoltzLimitsValidator</c>, which
+    /// hardcodes the <c>BTC</c>/<c>ARK</c> pair keys and can't see our <c>TBTC</c>/etc. pair.
+    /// </remarks>
+    private async Task<bool> TryRenegotiateChainSwap(ArkSwap swap, CancellationToken ct)
+    {
+        try
+        {
+            var newQuote = await _boltzClient.GetChainQuoteAsync(swap.SwapId, ct);
+            if (newQuote is null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: Boltz returned a null chain quote", swap.SwapId);
+                return false;
+            }
+
+            // Bound the renegotiated amount before accepting it and persisting it as the
+            // swap's new ExpectedAmount, same rationale as the Boltz-native path: a 0/negative
+            // quote is a parse/protocol bug, and an out-of-limits amount would be rejected by
+            // AcceptChainQuoteAsync anyway, but checking locally avoids a wire round-trip.
+            if (swap.Route is null)
+            {
+                _logger?.LogWarning("Swap {SwapId}: no Route recorded, cannot validate renegotiated quote", swap.SwapId);
+                return false;
+            }
+            var limits = await GetLimitsAsync(swap.Route, ct);
+            if (newQuote.Amount <= 0 || newQuote.Amount < limits.MinAmount || newQuote.Amount > limits.MaxAmount)
+            {
+                _logger?.LogWarning(
+                    "Swap {SwapId}: rejecting renegotiated chain quote with out-of-bounds amount {Amount} sats " +
+                    "(limits: min={Min}, max={Max})",
+                    swap.SwapId, newQuote.Amount, limits.MinAmount, limits.MaxAmount);
+                return false;
+            }
+
+            await _boltzClient.AcceptChainQuoteAsync(swap.SwapId, newQuote, ct);
+            _logger?.LogInformation(
+                "Swap {SwapId}: chain quote renegotiated — original {Original} sats -> new {New} sats",
+                swap.SwapId, swap.ExpectedAmount, newQuote.Amount);
+
+            var updated = swap with
+            {
+                ExpectedAmount = newQuote.Amount,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            await _swapStorage.SaveSwap(swap.WalletId, updated, ct);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Boltz returns 4xx both for out-of-limits amounts and for an already-accepted
+            // quote (e.g. an overlapping poll tick won the race). Disambiguate by re-reading
+            // server-side status: if Boltz has moved the swap past lockupFailed, renegotiation
+            // effectively succeeded.
+            try
+            {
+                var currentStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, ct);
+                if (currentStatus is not null &&
+                    !string.IsNullOrEmpty(currentStatus.Status) &&
+                    !string.Equals(currentStatus.Status, BoltzSwapStatus.TransactionLockupFailed, StringComparison.Ordinal))
+                {
+                    _logger?.LogInformation(
+                        "Swap {SwapId}: AcceptChainQuoteAsync 4xx'd but Boltz status is {Status} — " +
+                        "treating as renegotiated by a concurrent poll",
+                        swap.SwapId, currentStatus.Status);
+                    return true;
+                }
+            }
+            catch (Exception probeEx) when (probeEx is not OperationCanceledException)
+            {
+                _logger?.LogDebug(probeEx,
+                    "Swap {SwapId}: status probe after renegotiation failure also failed; falling back to refund",
+                    swap.SwapId);
+            }
+
+            _logger?.LogWarning(ex, "Swap {SwapId}: chain quote renegotiation refused by Boltz", swap.SwapId);
+            return false;
         }
     }
 
