@@ -91,6 +91,30 @@ public class ChainSwapRestoreTests
     }
 
     [Test]
+    public void RestorableSwap_MissingTypeDiscriminator_DefaultsToUtxo()
+    {
+        // Verified against a real Boltz instance: reverse/submarine swaps' claimDetails/
+        // refundDetails omit "type" entirely — only chain-swap legs reliably send it. The
+        // built-in [JsonPolymorphic] converter throws NotSupportedException on this; the
+        // custom SwapDetailsJsonConverter must default to UtxoSwapDetails instead.
+        const string json = """
+            {
+              "id": "swap-reverse", "type": "reverse", "status": "transaction.mempool", "createdAt": 1700000000,
+              "from": "BTC", "to": "ARK",
+              "claimDetails": {
+                "tree": { }, "keyIndex": 0,
+                "lockupAddress": "tark1qtest", "serverPublicKey": "aa", "timeoutBlockHeight": 100
+              }
+            }
+            """;
+
+        var restored = JsonSerializer.Deserialize<RestorableSwap>(json)!;
+
+        Assert.That(restored.ClaimDetails, Is.TypeOf<UtxoSwapDetails>());
+        Assert.That(((UtxoSwapDetails)restored.ClaimDetails!).LockupAddress, Is.EqualTo("tark1qtest"));
+    }
+
+    [Test]
     public void RestorableSwap_DeserializesEvmClaimDetails()
     {
         const string json = """
