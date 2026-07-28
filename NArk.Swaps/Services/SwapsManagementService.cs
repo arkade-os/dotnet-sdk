@@ -778,11 +778,14 @@ public class SwapsManagementService : IAsyncDisposable
                     metadata: new Dictionary<string, string> { ["Source"] = $"swap:{restored.Id}" },
                     cancellationToken: cancellationToken);
 
-                // Reverse swaps generated the preimage at create time via sign-and-hash of the
-                // receiver descriptor. On a fresh wallet that's rediscovering this swap via
+                // Reverse swaps, and ChainBtcToArk swaps (we're also the Ark-side VHTLC
+                // receiver there), generated the preimage at create time via sign-and-hash of
+                // the receiver descriptor. On a fresh wallet that's rediscovering this swap via
                 // /v2/swap/restore, re-derive and attach so the sweeper can claim the VHTLC
-                // before it expires. Submarine swaps don't apply — Boltz controls that preimage.
-                if (restored.IsReverseSwap && !string.IsNullOrEmpty(restored.PreimageHash))
+                // before it expires. Submarine and ChainArkToBtc swaps don't apply — Boltz
+                // controls that preimage since it's the VHTLC receiver on those.
+                var weAreVhtlcReceiver = restored.IsReverseSwap || swap.SwapType == ArkSwapType.ChainBtcToArk;
+                if (weAreVhtlcReceiver && !string.IsNullOrEmpty(restored.PreimageHash))
                 {
                     // index=0 is the only value used at create-time today. If a future scheme
                     // bump ships multi-preimage-per-descriptor, recovery should iterate
@@ -814,6 +817,9 @@ public class SwapsManagementService : IAsyncDisposable
 
     private ArkSwap? MapRestoredSwap(RestorableSwap restored, string walletId)
     {
+        if (restored.IsChainSwap)
+            return MapRestoredChainSwap(restored, walletId);
+
         var swapType = restored.Type switch
         {
             "reverse" => ArkSwapType.ReverseSubmarine,
@@ -824,8 +830,7 @@ public class SwapsManagementService : IAsyncDisposable
         if (swapType == null)
             return null;
 
-        var details = restored.Details;
-        if (details == null)
+        if (restored.Details is not UtxoSwapDetails details)
             return null;
 
         return new ArkSwap(
@@ -847,13 +852,106 @@ public class SwapsManagementService : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Maps a restored chain swap for the BTC↔Ark pair. Unlike reverse/submarine swaps, a
+    /// chain swap's <c>from</c>/<c>to</c> currency pair can be anything Boltz supports (e.g. an
+    /// EVM chain) — only the ARK/BTC pair is recognized here; anything else returns <c>null</c>
+    /// so a different, pair-aware discovery provider (e.g. an EVM chain-swap provider) can
+    /// classify it using <see cref="ReconstructChainVhtlcContract"/> directly.
+    /// </summary>
+    private static ArkSwap? MapRestoredChainSwap(RestorableSwap restored, string walletId)
+    {
+        var (swapType, route, weAreReceiver) = (restored.From, restored.To) switch
+        {
+            ("ARK", "BTC") => (ArkSwapType.ChainArkToBtc, new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain), false),
+            ("BTC", "ARK") => (ArkSwapType.ChainBtcToArk, new SwapRoute(SwapAsset.BtcOnchain, SwapAsset.ArkBtc), true),
+            _ => ((ArkSwapType?)null, (SwapRoute?)null, false)
+        };
+        if (swapType == null)
+            return null;
+
+        var utxoDetails = (weAreReceiver ? restored.ClaimDetails : restored.RefundDetails) as UtxoSwapDetails;
+        if (utxoDetails == null)
+            return null;
+
+        return new ArkSwap(
+            SwapId: restored.Id,
+            WalletId: walletId,
+            SwapType: swapType.Value,
+            Invoice: "",
+            ExpectedAmount: utxoDetails.Amount ?? 0,
+            ContractScript: "", // Will be updated after contract reconstruction
+            Address: utxoDetails.LockupAddress,
+            Status: BoltzSwapStatus.ToArkSwapStatus(restored.Status) ?? ArkSwapStatus.Pending,
+            FailReason: null,
+            CreatedAt: DateTimeOffset.FromUnixTimeSeconds(restored.CreatedAt),
+            UpdatedAt: DateTimeOffset.UtcNow,
+            Hash: restored.PreimageHash ?? ""
+        )
+        {
+            ProviderId = BoltzSwapProvider.Id,
+            Route = route
+        };
+    }
+
     private VHTLCContract? ReconstructContract(
         RestorableSwap restored,
         ArkServerInfo serverInfo,
         OutputDescriptor[] descriptors)
     {
-        var details = restored.Details;
-        if (details?.Tree == null)
+        bool weAreReceiver;
+        if (restored.IsChainSwap)
+        {
+            var direction = (restored.From, restored.To) switch
+            {
+                ("ARK", "BTC") => (bool?)false,
+                ("BTC", "ARK") => true,
+                _ => null
+            };
+            if (direction == null)
+                return null;
+            weAreReceiver = direction.Value;
+        }
+        else if (restored.IsReverseSwap)
+        {
+            weAreReceiver = true;
+        }
+        else if (restored.IsSubmarineSwap)
+        {
+            weAreReceiver = false;
+        }
+        else
+        {
+            return null;
+        }
+
+        return ReconstructChainVhtlcContract(restored, weAreReceiver, serverInfo, descriptors);
+    }
+
+    /// <summary>
+    /// Reconstructs the Ark-leg VHTLC contract for a restorable swap, given which of its two
+    /// polymorphic <c>claimDetails</c>/<c>refundDetails</c> legs is the Ark side. Exposed as a
+    /// reusable building block for other chain-swap providers (e.g. an EVM leg) that recognize
+    /// currency pairs this project doesn't know about and need to restore their own Ark-side
+    /// lockup from the same Boltz <c>/v2/swap/restore</c> data.
+    /// </summary>
+    /// <param name="restored">The restored swap returned by Boltz.</param>
+    /// <param name="weAreReceiver">
+    /// <c>true</c> if we claim this swap (the Ark leg is <see cref="RestorableSwap.ClaimDetails"/>
+    /// and we are the VHTLC receiver); <c>false</c> if we can refund it (the Ark leg is
+    /// <see cref="RestorableSwap.RefundDetails"/> and we are the VHTLC sender).
+    /// </param>
+    /// <param name="serverInfo">Current Arkade server info (network, signer key).</param>
+    /// <param name="descriptors">Candidate wallet descriptors to match the non-server side to.</param>
+    /// <returns>The reconstructed contract, or <c>null</c> if the Ark leg isn't UTXO-typed or reconstruction fails.</returns>
+    public static VHTLCContract? ReconstructChainVhtlcContract(
+        RestorableSwap restored,
+        bool weAreReceiver,
+        ArkServerInfo serverInfo,
+        OutputDescriptor[] descriptors)
+    {
+        var details = (weAreReceiver ? restored.ClaimDetails : restored.RefundDetails) as UtxoSwapDetails;
+        if (details == null)
             return null;
 
         try
@@ -887,19 +985,17 @@ public class SwapsManagementService : IAsyncDisposable
             if (hash == null)
                 return null;
 
-            // Determine sender and receiver based on swap type
+            // Determine sender and receiver based on which side we own
             OutputDescriptor sender;
             OutputDescriptor receiver;
 
-            if (restored.IsReverseSwap)
+            if (weAreReceiver)
             {
-                // Reverse swap: we are the receiver (claiming)
                 sender = Extensions.KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
                 receiver = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
             }
             else
             {
-                // Submarine swap: we are the sender (refunding)
                 sender = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
                 receiver = Extensions.KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
             }
@@ -923,7 +1019,7 @@ public class SwapsManagementService : IAsyncDisposable
 
     private static OutputDescriptor? FindMatchingDescriptor(
         OutputDescriptor[] descriptors,
-        SwapDetails details)
+        UtxoSwapDetails details)
     {
         // If keyIndex is provided, try to find the matching descriptor
         if (details.KeyIndex.HasValue && details.KeyIndex.Value < descriptors.Length)
