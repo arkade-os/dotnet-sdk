@@ -1,5 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
+using NArk.Abstractions.Recovery;
 using NArk.Swaps.Abstractions;
+using NArk.Swaps.Evm.Recovery;
 
 namespace NArk.Swaps.Evm.Hosting;
 
@@ -27,6 +29,7 @@ public static class EvmSwapServiceCollectionExtensions
         // which already talks to the same Boltz backend — see BoltzClient.HttpClient's doc.
         services.AddSingleton<EvmChainSwapProvider>();
         services.AddSingleton<ISwapProvider>(sp => sp.GetRequiredService<EvmChainSwapProvider>());
+        services.AddSingleton<IContractDiscoveryProvider, EvmChainSwapDiscoveryProvider>();
 
         return services;
     }
