@@ -23,10 +23,12 @@ public record DexSwapQuote(IReadOnlyList<Call> Calls, BigInteger MinAmountOut);
 /// the swap — Router's <c>Call[]</c> are arbitrary target+calldata, so swapping in a different
 /// quote/routing implementation later (or a mock for tests) never touches the signing code.
 /// </summary>
-// TODO: no production implementation yet (e.g. Uniswap V3's QuoterV2 + SwapRouter02) — that's a
-// separate follow-up (real on-chain quoting, path selection, slippage tolerance policy). Only
-// RouterDexHopTests.cs's MockERC20Dex-backed test double exists today, proving the Router/Permit2
-// plumbing works; nothing wires a real DEX into EvmChainSwapProvider yet.
+// Production implementation: NArk.Swaps.Evm.Dex.BoltzDexQuoteProvider, backed by Boltz's own
+// /v2/quote/{currency}/in+/encode endpoints (no separate DEX SDK/on-chain Quoter needed — see
+// that class's doc comment). RouterDexHopTests.cs's MockERC20Dex-backed test double remains for
+// proving the Router/Permit2 plumbing without a network round-trip.
+// TODO: still not wired into DI (EvmSwapServiceCollectionExtensions) — needs a decision on
+// Router contract address config and Web3 instance sharing with EvmChainClient first.
 public interface IDexQuoteProvider
 {
     Task<DexSwapQuote> GetSwapCallsAsync(
