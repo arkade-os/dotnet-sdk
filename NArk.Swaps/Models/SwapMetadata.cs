@@ -20,6 +20,15 @@ public static class SwapMetadata
     public const string RefundDestination = "refundDestination";
 
     /// <summary>
+    /// On-chain Bitcoin address (string form) of a derived boarding contract used as the
+    /// destination for BTC→ARK chain-swap refunds. Set the first time a BTC-side refund
+    /// derives a destination so subsequent poll retries reuse it instead of deriving fresh
+    /// boarding contracts. Distinct from <see cref="BtcAddress"/>, which for BTC→ARK swaps
+    /// holds the swap's own BTC lockup address, not a wallet-owned refund destination.
+    /// </summary>
+    public const string BtcRefundAddress = "btcRefundAddress";
+
+    /// <summary>
     /// Intent transaction ID of the in-flight refund-without-receiver batch intent.
     /// Set by <c>TryRefundWithoutReceiverAsync</c> after submitting the intent so
     /// subsequent poll ticks can query the intent state instead of re-generating it.
