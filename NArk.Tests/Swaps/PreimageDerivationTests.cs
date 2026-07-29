@@ -138,6 +138,43 @@ public class PreimageDerivationTests
     }
 
     /// <summary>
+    /// The scheme lives in <see cref="SwapPreimageDerivation"/> so out-of-assembly providers
+    /// (<c>NArk.Swaps.Evm</c>) and the restore path can reach it, while
+    /// <see cref="SwapsManagementService"/> keeps its internal shorthand. Both must produce the
+    /// same bytes — otherwise an EVM swap created via the public helper could never be recovered
+    /// by a restore going through the other, and vice versa.
+    /// </summary>
+    [Test]
+    public async Task PublicHelperAndServiceShorthand_AgreeOnTheSamePreimage()
+    {
+        var wallet = SimpleSeedWallet.CreateForSigning(AbandonMnemonic, Network.RegTest);
+        var walletProvider = new MockedSigningWalletProvider(wallet);
+        var svc = MakeService(walletProvider);
+        var descriptor = MakeDescriptor(AbandonMnemonic, Network.RegTest, index: 0);
+
+        var viaService = await svc.DerivePreimageAsync("wallet", descriptor, 0, CancellationToken.None);
+        var viaHelper = await SwapPreimageDerivation.DeriveAsync(
+            walletProvider, "wallet", descriptor, 0, CancellationToken.None);
+
+        Assert.That(viaHelper, Is.EqualTo(viaService));
+    }
+
+    /// <summary>
+    /// Same for the signed message — <see cref="SwapPreimageDerivation.BuildMessage"/> is what a
+    /// cross-SDK implementation reproduces, so it must stay byte-identical to the shorthand the
+    /// pinned fixture vectors were generated against.
+    /// </summary>
+    [Test]
+    public void PublicHelperAndServiceShorthand_AgreeOnTheSignedMessage()
+    {
+        var descriptor = MakeDescriptor(AbandonMnemonic, Network.RegTest, index: 0);
+
+        Assert.That(
+            SwapPreimageDerivation.BuildMessage(descriptor, index: 0),
+            Is.EqualTo(SwapsManagementService.BuildPreimageMessage(descriptor, index: 0)));
+    }
+
+    /// <summary>
     /// Prints a cross-SDK test vector to <see cref="TestContext.Out"/>.
     /// Run once to capture the expected hex and pin it in other SDK test suites.
     /// </summary>

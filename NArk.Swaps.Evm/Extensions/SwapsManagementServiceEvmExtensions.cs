@@ -81,14 +81,39 @@ public static class SwapsManagementServiceEvmExtensions
         }
         catch (Exception e)
         {
-            var swap = (await mgmt.SwapStorage.GetSwaps(swapIds: [result.Swap.Id], cancellationToken: ct)).Single();
-            await mgmt.SwapStorage.SaveSwap(walletId,
-                swap with { Status = ArkSwapStatus.Failed, FailReason = e.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
-                ct);
+            await MarkFailedIfNothingLockedAsync(mgmt, evm, walletId, result, e, ct);
             throw;
         }
 
         return result.Swap.Id;
+    }
+
+    /// <summary>
+    /// Marks the swap <see cref="ArkSwapStatus.Failed"/> only when the EVM leg provably holds
+    /// nothing — otherwise leaves it active for the poll loop.
+    /// </summary>
+    /// <remarks>
+    /// A throw out of the lock call does not mean the funds are safe. The broadcast and the
+    /// receipt wait are separate steps, so an RPC timeout, a dropped connection or a process
+    /// restart all surface as an exception <em>after</em> the tokens are already committed in
+    /// <c>ERC20Swap</c>. Marking such a swap Failed drops it out of
+    /// <c>RunPollLoopAsync</c>'s active set, and the poll loop is the only thing that would
+    /// ever refund it — so the funds would sit locked until the timelock expires with nobody
+    /// watching. When in doubt, stay active: a Pending swap that turns out to hold nothing
+    /// costs a few wasted poll ticks and gets marked Failed by
+    /// <c>TryRefundEvmLockupAsync</c> on expiry anyway.
+    /// </remarks>
+    private static async Task MarkFailedIfNothingLockedAsync(
+        SwapsManagementService mgmt, EvmChainSwapProvider evm, string walletId,
+        EvmChainSwapResult result, Exception cause, CancellationToken ct)
+    {
+        if (await evm.HasCommittedEvmLockupAsync(result, ct))
+            return;
+
+        var swap = (await mgmt.SwapStorage.GetSwaps(swapIds: [result.Swap.Id], cancellationToken: ct)).Single();
+        await mgmt.SwapStorage.SaveSwap(walletId,
+            swap with { Status = ArkSwapStatus.Failed, FailReason = cause.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
+            ct);
     }
 
     /// <summary>
@@ -117,10 +142,9 @@ public static class SwapsManagementServiceEvmExtensions
         }
         catch (Exception e)
         {
-            var swap = (await mgmt.SwapStorage.GetSwaps(swapIds: [result.Swap.Id], cancellationToken: ct)).Single();
-            await mgmt.SwapStorage.SaveSwap(walletId,
-                swap with { Status = ArkSwapStatus.Failed, FailReason = e.ToString(), UpdatedAt = DateTimeOffset.UtcNow },
-                ct);
+            // Same reasoning as the plain-tBTC path — the DEX-hop lock is one atomic transaction,
+            // so a lost receipt leaves tokens committed in ERC20Swap just the same.
+            await MarkFailedIfNothingLockedAsync(mgmt, evm, walletId, result, e, ct);
             throw;
         }
 

@@ -22,6 +22,15 @@
       <!-- tools/AbiGen.cs is a standalone .NET 10 file-based app (dotnet run tools/AbiGen.cs),
            not part of this project's build. -->
       <Compile Remove="tools/**" />
+
+      <!-- Bindings for throwaway fixtures (Test/** = TestERC20, TestFixtures/** = MockERC20Dex)
+           that only ever get deployed by the E2E suite against a local Anvil chain — nothing in
+           the production provider calls them. They stay here so the AbiGen/generate-bindings.sh
+           pipeline keeps emitting all bindings to one place, but are compiled into
+           NArk.Tests.End2End instead of shipping in this package (see that project's
+           <Compile Include> for the same globs). -->
+      <Compile Remove="Contracts/Generated/Test/**" />
+      <Compile Remove="Contracts/Generated/TestFixtures/**" />
     </ItemGroup>
 
     <ItemGroup>

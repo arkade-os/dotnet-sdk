@@ -69,8 +69,24 @@ public class EvmChainSwapDiscoveryProviderTests
         clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>()).Returns(serverInfo);
 
         return new EvmChainSwapDiscoveryProvider(
-            boltzClient, clientTransport, swapStorage, contractService,
+            boltzClient, clientTransport, new SignerlessWalletProvider(), swapStorage, contractService,
             Options.Create(new EvmSwapOptions { RpcUrl = "http://localhost", PrivateKey = new Key().ToHex(), PairCurrency = pairCurrency }));
+    }
+
+    /// <summary>
+    /// Wallet provider with no signer — the watch-only shape. Preimage re-derivation falls back
+    /// to a random value, whose hash then fails the check against Boltz's reported preimage hash,
+    /// so these tests exercise the "restored without a preimage" branch. That keeps them focused
+    /// on discovery/reconstruction; the derivation scheme itself is covered by
+    /// <see cref="PreimageDerivationTests"/>.
+    /// </summary>
+    private sealed class SignerlessWalletProvider : IWalletProvider
+    {
+        public Task<IArkadeWalletSigner?> GetSignerAsync(string identifier, CancellationToken cancellationToken = default)
+            => Task.FromResult<IArkadeWalletSigner?>(null);
+
+        public Task<IArkadeAddressProvider?> GetAddressProviderAsync(string identifier, CancellationToken cancellationToken = default)
+            => Task.FromResult<IArkadeAddressProvider?>(null);
     }
 
     private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler

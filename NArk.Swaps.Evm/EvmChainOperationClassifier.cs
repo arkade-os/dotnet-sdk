@@ -11,7 +11,7 @@ namespace NArk.Swaps.Evm;
 /// swap-type-agnostic) but is otherwise self-contained — see <see cref="EvmSwapAction"/> for
 /// why this isn't just added to the existing Boltz classifier.
 /// </summary>
-public static class EvmChainOperationClassifier
+internal static class EvmChainOperationClassifier
 {
     public static EvmSwapAction? Classify(ArkSwap swap, string boltzStatus)
     {

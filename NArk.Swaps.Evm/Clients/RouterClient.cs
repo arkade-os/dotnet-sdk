@@ -1,6 +1,7 @@
 using System.Numerics;
 using Nethereum.Web3;
 using NArk.Swaps.Evm.Contracts.Router;
+using NArk.Swaps.Evm.Dex;
 
 namespace NArk.Swaps.Evm;
 
@@ -18,14 +19,24 @@ namespace NArk.Swaps.Evm;
 public class RouterClient
 {
     private readonly Web3 _web3;
+    private readonly EvmNonceGuard _nonceGuard;
 
     /// <summary>Address of the deployed <c>Router</c> contract.</summary>
     public string RouterAddress { get; }
 
-    public RouterClient(Web3 web3, string routerAddress)
+    /// <param name="web3">Web3 instance carrying the signing account.</param>
+    /// <param name="routerAddress">Address of the deployed <c>Router</c> contract.</param>
+    /// <param name="nonceGuard">
+    /// Serialises broadcasts sharing this account's nonce. The DEX-hop path signs Router calls
+    /// with the same key <see cref="EvmChainClient"/> uses for plain lock/claim/refund, so both
+    /// must be given the <em>same</em> guard instance — separate guards leave the two clients
+    /// free to collide on a nonce. Defaults to a private guard.
+    /// </param>
+    public RouterClient(Web3 web3, string routerAddress, EvmNonceGuard? nonceGuard = null)
     {
         _web3 = web3;
         RouterAddress = routerAddress;
+        _nonceGuard = nonceGuard ?? new EvmNonceGuard();
     }
 
     public async Task<string> GetPermit2AddressAsync(CancellationToken ct = default) =>
@@ -66,10 +77,12 @@ public class RouterClient
     /// <paramref name="calls"/> (the DEX hop), then locks the resulting
     /// <paramref name="tokenAddress"/> balance into <c>ERC20Swap</c>.
     /// </summary>
-    public Task ExecuteAndLockErc20WithPermit2Async(
+    public async Task ExecuteAndLockErc20WithPermit2Async(
         byte[] preimageHash, string tokenAddress, string claimAddress, string refundAddress, BigInteger timelock,
-        List<Call> calls, PermitTransferFrom permit, string owner, byte[] signature, CancellationToken ct = default) =>
-        _web3.Eth.GetContractHandler(RouterAddress).SendRequestAndWaitForReceiptAsync(
+        List<Call> calls, PermitTransferFrom permit, string owner, byte[] signature, CancellationToken ct = default)
+    {
+        var txHash = await _nonceGuard.BroadcastAsync(
+            () => _web3.Eth.GetContractHandler(RouterAddress).SendRequestAsync(
             new ExecuteAndLockERC20WithPermit2Function
             {
                 PreimageHash = preimageHash,
@@ -81,7 +94,9 @@ public class RouterClient
                 Permit = permit,
                 Owner = owner,
                 Signature = signature,
-            });
+            }), ct);
+        await EvmReceipts.WaitAsync(_web3, txHash, ct, null, null);
+    }
 
     /// <summary>
     /// Claims an <c>ERC20Swap</c> lockup on the caller's behalf (via <paramref name="claim"/>'s
@@ -91,8 +106,13 @@ public class RouterClient
     /// key signed <paramref name="claim"/> — Router's msg.sender-gated overload, no separate
     /// EIP-712 authorization for the execute+sweep step itself.
     /// </summary>
-    public Task ClaimErc20ExecuteAsync(
-        Erc20Claim claim, List<Call> calls, string token, BigInteger minAmountOut, CancellationToken ct = default) =>
-        _web3.Eth.GetContractHandler(RouterAddress).SendRequestAndWaitForReceiptAsync(
-            new ClaimERC20ExecuteFunction { Claim = claim, Calls = calls, Token = token, MinAmountOut = minAmountOut });
+    public async Task ClaimErc20ExecuteAsync(
+        Erc20Claim claim, List<Call> calls, string token, BigInteger minAmountOut, CancellationToken ct = default)
+    {
+        var txHash = await _nonceGuard.BroadcastAsync(
+            () => _web3.Eth.GetContractHandler(RouterAddress).SendRequestAsync(
+                new ClaimERC20ExecuteFunction { Claim = claim, Calls = calls, Token = token, MinAmountOut = minAmountOut }),
+            ct);
+        await EvmReceipts.WaitAsync(_web3, txHash, ct, null, null);
+    }
 }

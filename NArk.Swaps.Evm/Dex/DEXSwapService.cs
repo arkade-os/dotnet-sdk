@@ -2,7 +2,7 @@ using System.Numerics;
 using Nethereum.Signer;
 using NArk.Swaps.Evm.Contracts.Router;
 
-namespace NArk.Swaps.Evm;
+namespace NArk.Swaps.Evm.Dex;
 
 /// <summary>
 /// Milestone 4's USDT/generic-ERC20 DEX-hop support: locks/claims an arbitrary ERC20 (instead of

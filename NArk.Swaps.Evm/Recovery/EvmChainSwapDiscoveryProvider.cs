@@ -12,6 +12,7 @@ using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models.Restore;
 using NArk.Swaps.Models;
 using NArk.Swaps.Services;
+using NBitcoin.Crypto;
 using NBitcoin.Scripting;
 
 namespace NArk.Swaps.Evm.Recovery;
@@ -30,17 +31,19 @@ namespace NArk.Swaps.Evm.Recovery;
 /// <see cref="SwapsManagementService.ReconstructChainVhtlcContract"/> — the currency-agnostic
 /// building block exposed for exactly this purpose.
 /// <para>
-/// One known gap carried over from swap creation: <see cref="EvmChainSwapProvider.CreateEvmToArkSwapAsync"/>
-/// generates a random (not deterministic) preimage, so a <c>ChainEvmToArk</c> swap restored here
-/// gets its Ark-leg contract/metadata back, but never its preimage — that was only ever in
-/// storage, and storage is exactly what a restore is recovering from. Until preimage generation
-/// there becomes deterministic (mirroring the reverse/ChainBtcToArk scheme), a restored
-/// <c>ChainEvmToArk</c> swap needs manual preimage enrichment before the sweeper can claim it.
+/// Restored swaps get their preimage back too: both directions derive it deterministically from
+/// the wallet's own key material via <see cref="SwapPreimageDerivation"/>, so
+/// <see cref="RederivePreimageMetadataAsync"/> can reproduce it here from the same descriptor
+/// Boltz matched the swap against — no manual enrichment needed before the sweeper can claim.
+/// Swaps created by an older build (or by a watch-only wallet) still carry a random preimage;
+/// those are detected by the preimage-hash check and left without one rather than being given a
+/// wrong value.
 /// </para>
 /// </remarks>
 public class EvmChainSwapDiscoveryProvider(
     BoltzClient boltzClient,
     IClientTransport clientTransport,
+    IWalletProvider walletProvider,
     ISwapStorage swapStorage,
     IContractService contractService,
     IOptions<EvmSwapOptions> options,
@@ -121,6 +124,8 @@ public class EvmChainSwapDiscoveryProvider(
             {
                 ProviderId = EvmChainSwapProvider.Id,
                 Route = route,
+                Metadata = await RederivePreimageMetadataAsync(
+                    wallet, userDescriptor, restoredSwap.PreimageHash, restoredSwap.Id, cancellationToken),
             };
 
             await contractService.ImportContract(
@@ -140,5 +145,63 @@ public class EvmChainSwapDiscoveryProvider(
         // Mirrors BoltzSwapDiscoveryProvider: contracts are already imported above with rich
         // Source=swap:<id> metadata, so return Used=true with no Contracts to avoid double-imports.
         return found ? new DiscoveryResult(true, []) : DiscoveryResult.NotFound;
+    }
+
+    /// <summary>
+    /// Re-derives the swap's preimage from the wallet's own key material and returns it as swap
+    /// metadata, or an empty dictionary when it can't be reproduced.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both directions derive their preimage from whichever descriptor is ours on the Arkade leg
+    /// (refund descriptor for <c>ChainArkToEvm</c>, claim descriptor for <c>ChainEvmToArk</c>) —
+    /// and that is exactly the descriptor Boltz matched this swap against, so
+    /// <paramref name="userDescriptor"/> reproduces it. <see cref="SwapPreimageDerivation"/>
+    /// anchors on the canonical x-only key rather than the descriptor string, so a reconstructed
+    /// bare descriptor derives the same value as the original signing descriptor.
+    /// </para>
+    /// <para>
+    /// The result is checked against the preimage hash Boltz reported before being stored. A
+    /// mismatch means this swap was created with a random preimage (pre-derivation SDK build, or
+    /// a watch-only wallet) — storing the derived value anyway would hand the sweeper a preimage
+    /// that fails on-chain and look like a successful recovery.
+    /// </para>
+    /// </remarks>
+    private async Task<Dictionary<string, string>> RederivePreimageMetadataAsync(
+        ArkWalletInfo wallet, OutputDescriptor userDescriptor, string? reportedPreimageHash, string swapId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(reportedPreimageHash))
+            return [];
+
+        try
+        {
+            var preimage = await SwapPreimageDerivation.DeriveAsync(
+                walletProvider, wallet.Id, userDescriptor, index: 0, cancellationToken);
+
+            var derivedHash = Convert.ToHexString(Hashes.SHA256(preimage)).ToLowerInvariant();
+            if (!string.Equals(derivedHash, reportedPreimageHash, StringComparison.OrdinalIgnoreCase))
+            {
+                logger?.LogWarning(
+                    "EvmChainSwapDiscoveryProvider: swap {SwapId} restored, but the re-derived preimage hashes to " +
+                    "{Derived} while Boltz reports {Reported} — created with a random preimage, so it cannot be " +
+                    "recovered from the seed alone",
+                    swapId, derivedHash, reportedPreimageHash);
+                return [];
+            }
+
+            logger?.LogInformation(
+                "EvmChainSwapDiscoveryProvider: re-derived preimage for restored swap {SwapId}", swapId);
+            return new Dictionary<string, string>
+            {
+                [SwapMetadata.Preimage] = Convert.ToHexString(preimage).ToLowerInvariant(),
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(ex,
+                "EvmChainSwapDiscoveryProvider: failed to re-derive the preimage for restored swap {SwapId}", swapId);
+            return [];
+        }
     }
 }

@@ -21,6 +21,7 @@ using NArk.Swaps.Evm.Contracts;
 using NArk.Swaps.Evm.Contracts.Erc20;
 using NArk.Swaps.Evm.Contracts.Router;
 using NArk.Swaps.Evm.Contracts.TestFixtures;
+using NArk.Swaps.Evm.Dex;
 using NArk.Swaps.Evm.Extensions;
 using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
@@ -134,6 +135,11 @@ public class EvmChainSwapTests
         {
             RpcUrl = SharedEvmInfrastructure.AnvilRpcUrl,
             PrivateKey = SharedEvmInfrastructure.DeployerPrivateKey,
+            // Anvil mines on demand rather than on a schedule, so converting an absolute timeout
+            // block into a wall-clock deadline (which is what timelock validation compares) has no
+            // meaningful answer here. Violations are still logged; enforcement belongs to
+            // environments with a real block cadence.
+            EnforceTimeoutValidation = false,
         });
 
         await using var evmProvider = new EvmChainSwapProvider(
@@ -224,6 +230,11 @@ public class EvmChainSwapTests
         {
             RpcUrl = SharedEvmInfrastructure.AnvilRpcUrl,
             PrivateKey = SharedEvmInfrastructure.DeployerPrivateKey,
+            // Anvil mines on demand rather than on a schedule, so converting an absolute timeout
+            // block into a wall-clock deadline (which is what timelock validation compares) has no
+            // meaningful answer here. Violations are still logged; enforcement belongs to
+            // environments with a real block cadence.
+            EnforceTimeoutValidation = false,
         });
 
         using var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
@@ -346,6 +357,11 @@ public class EvmChainSwapTests
         {
             RpcUrl = SharedEvmInfrastructure.AnvilRpcUrl,
             PrivateKey = SharedEvmInfrastructure.DeployerPrivateKey,
+            // Anvil mines on demand rather than on a schedule, so converting an absolute timeout
+            // block into a wall-clock deadline (which is what timelock validation compares) has no
+            // meaningful answer here. Violations are still logged; enforcement belongs to
+            // environments with a real block cadence.
+            EnforceTimeoutValidation = false,
         });
 
         var evmProvider = new EvmChainSwapProvider(
@@ -443,10 +459,18 @@ public class EvmChainSwapTests
         {
             RpcUrl = SharedEvmInfrastructure.AnvilRpcUrl,
             PrivateKey = SharedEvmInfrastructure.DeployerPrivateKey,
+            // Anvil mines on demand rather than on a schedule, so converting an absolute timeout
+            // block into a wall-clock deadline (which is what timelock validation compares) has no
+            // meaningful answer here. Violations are still logged; enforcement belongs to
+            // environments with a real block cadence.
+            EnforceTimeoutValidation = false,
         });
 
+        // One guard shared by RouterClient and the provider's own EvmChainClient: both sign with
+        // the deployer key, so separate guards would leave them free to collide on a nonce.
+        var nonceGuard = new EvmNonceGuard();
         var dexWeb3 = new Web3(new Account(SharedEvmInfrastructure.DeployerPrivateKey), SharedEvmInfrastructure.AnvilRpcUrl);
-        var routerClient = new RouterClient(dexWeb3, evmAddresses.RouterAddress);
+        var routerClient = new RouterClient(dexWeb3, evmAddresses.RouterAddress, nonceGuard);
         var dexQuoteProvider = new MockDexQuoteProvider(evmAddresses.MockDexAddress);
         var dexSwapService = new DEXSwapService(routerClient, dexQuoteProvider);
 
@@ -454,7 +478,7 @@ public class EvmChainSwapTests
             boltzClient, testingPrerequisite.clientTransport, testingPrerequisite.walletProvider, swapStorage,
             testingPrerequisite.contractService, testingPrerequisite.contracts, testingPrerequisite.vtxoStorage,
             testingPrerequisite.safetyService, intentStorage, chainTimeProvider, evmOptions,
-            dexSwapService: dexSwapService);
+            dexSwapService: dexSwapService, nonceGuard: nonceGuard);
 
         await using var swapMgr = new SwapsManagementService(
             new ISwapProvider[] { evmProvider }, spendingService,
@@ -591,6 +615,11 @@ public class EvmChainSwapTests
         {
             RpcUrl = SharedEvmInfrastructure.AnvilRpcUrl,
             PrivateKey = SharedEvmInfrastructure.DeployerPrivateKey,
+            // Anvil mines on demand rather than on a schedule, so converting an absolute timeout
+            // block into a wall-clock deadline (which is what timelock validation compares) has no
+            // meaningful answer here. Violations are still logged; enforcement belongs to
+            // environments with a real block cadence.
+            EnforceTimeoutValidation = false,
         });
 
         using var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));

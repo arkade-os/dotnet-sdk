@@ -147,38 +147,16 @@ public class SwapsManagementService : IAsyncDisposable
     // Tag is protocol+provider scoped (Arkade brand, Boltz provider), not SDK-scoped, so any
     // Arkade SDK implementing the same scheme produces the same preimage and can recover
     // swaps the .NET SDK created (and vice versa). Versioned ("-v1") for future scheme evolution.
-    private const string PreimageTag = "Arkade-Boltz-Preimage-v1";
-    private static readonly byte[] PreimageTagBytes = Encoding.UTF8.GetBytes(PreimageTag);
+    // The scheme itself lives in SwapPreimageDerivation — public, so NArk.Swaps.Evm (and any
+    // other out-of-assembly provider) derives preimages the same way instead of falling back to
+    // a random one that no restore can ever recover. These two stay as the in-service shorthand
+    // the swap-creation paths below already read cleanly with.
+    internal static byte[] BuildPreimageMessage(OutputDescriptor descriptor, uint index) =>
+        SwapPreimageDerivation.BuildMessage(descriptor, index);
 
-    // Builds the message that gets BIP-340-signed. Format (cross-SDK):
-    // PreimageTag || x-only pubkey (32B) || u32le(index). Anchoring on the canonical
-    // x-only key — not descriptor.ToString(), which is non-canonical and differs
-    // between a signing descriptor and a reconstructed bare receiver descriptor —
-    // keeps create-time and restore-time derivation identical and reproducible by any
-    // Arkade SDK.
-    internal static byte[] BuildPreimageMessage(OutputDescriptor descriptor, uint index)
-    {
-        var keyBytes = OutputDescriptorHelpers.Extract(descriptor).XOnlyPubKey.ToBytes();
-        var indexBytes = BitConverter.GetBytes(index);
-        if (!BitConverter.IsLittleEndian) Array.Reverse(indexBytes); // canonical u32 LE
-        var message = new byte[PreimageTagBytes.Length + keyBytes.Length + indexBytes.Length];
-        Buffer.BlockCopy(PreimageTagBytes, 0, message, 0, PreimageTagBytes.Length);
-        Buffer.BlockCopy(keyBytes, 0, message, PreimageTagBytes.Length, keyBytes.Length);
-        Buffer.BlockCopy(indexBytes, 0, message, PreimageTagBytes.Length + keyBytes.Length, indexBytes.Length);
-        return message;
-    }
-
-    internal async Task<byte[]> DerivePreimageAsync(
-        string walletId, OutputDescriptor descriptor, uint index, CancellationToken cancellationToken)
-    {
-        var signer = await _walletProvider.GetSignerAsync(walletId, cancellationToken);
-        if (signer is null)
-            return RandomUtils.GetBytes(32); // watch-only — no entropy floor to draw from
-
-        var messageHash = new uint256(SHA256.HashData(BuildPreimageMessage(descriptor, index)));
-        var (_, sig) = await signer.Sign(descriptor, messageHash, cancellationToken);
-        return SHA256.HashData(sig.ToBytes());
-    }
+    internal Task<byte[]> DerivePreimageAsync(
+        string walletId, OutputDescriptor descriptor, uint index, CancellationToken cancellationToken) =>
+        SwapPreimageDerivation.DeriveAsync(_walletProvider, walletId, descriptor, index, cancellationToken);
 
     // ─── Event Routing ─────────────────────────────────────────────
 

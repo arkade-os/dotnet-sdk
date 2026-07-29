@@ -11,6 +11,7 @@ using NArk.Swaps.Evm.Contracts.Erc20;
 using NArk.Swaps.Evm.Contracts.Permit2;
 using NArk.Swaps.Evm.Contracts.Router;
 using NArk.Swaps.Evm.Contracts.TestFixtures;
+using NArk.Swaps.Evm.Dex;
 using TestERC20Deployment = NArk.Swaps.Evm.Contracts.Test.TestERC20Deployment;
 using TypehashClaimFunction = NArk.Swaps.Evm.Contracts.TypehashClaimFunction;
 using TypehashClaimOutputDTO = NArk.Swaps.Evm.Contracts.TypehashClaimOutputDTO;
