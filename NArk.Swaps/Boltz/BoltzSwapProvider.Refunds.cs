@@ -17,9 +17,6 @@ namespace NArk.Swaps.Boltz;
 
 public partial class BoltzSwapProvider
 {
-    // The state transaction.lockupFailed is not final and changes to swap.expired after the swap expired;
-    // the failure reason will be kept and informs e.g. if the user sending too little or too much was the reason for the swap to fail. T
-    // he states invoice.failedToPay and swap.expired are final. Boltz is not monitoring user's refund transactions.
     internal async Task RequestSubmarineCoopRefund(ArkSwap swap, SwapStatusResponse swapStatus, CancellationToken cancellationToken = default)
     {
         if (swap.SwapType != ArkSwapType.Submarine)
@@ -45,60 +42,70 @@ public partial class BoltzSwapProvider
         _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}' is refundable, initiating cooperative refund",
             swap.SwapId, swapStatus.Status);
 
-        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
-        var matchedSwapContracts =
-            await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript],
-                cancellationToken: cancellationToken);
-
-        var matchedSwapContractForSwapWallet =
-            matchedSwapContracts.Single(entity => entity.Type == VHTLCContract.ContractType);
-
-        // Parse the VHTLC contract
-        if (ArkContractParser.Parse(matchedSwapContractForSwapWallet.Type,
-                matchedSwapContractForSwapWallet.AdditionalData, serverInfo.Network) is not VHTLCContract contract)
-        {
-            throw new InvalidOperationException("Failed to parse VHTLC contract for refund");
-        }
-
-        // Poll arkd directly for VTXOs at the swap script.
+        // The snapshot and includeSpent query cover the contract's complete history.
         await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
                            new HashSet<string> { swap.ContractScript }, cancellationToken))
         {
             await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
         }
 
-        // Get VTXOs for this contract
-        var vtxos = await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript],
+        var contractHistory = await _vtxoStorage.GetVtxos(
+            scripts: [swap.ContractScript],
+            includeSpent: true,
             cancellationToken: cancellationToken);
-        if (vtxos.Count == 0)
+        var canonicalHistory = contractHistory
+            .Where(v => (long)v.Amount == swap.ExpectedAmount)
+            .ToArray();
+        var vtxo = canonicalHistory.FirstOrDefault(v => !v.IsSpent());
+
+        if (vtxo is null)
         {
-            _logger?.LogWarning("Swap {SwapId}: no VTXOs found for cooperative refund — scheduling near-term retry", swap.SwapId);
-            ScheduleNearTermRetry(swap.SwapId, TimeSpan.FromSeconds(2));
+            if (canonicalHistory.Length > 0)
+            {
+                _logger?.LogInformation(
+                    "Swap {SwapId}: canonical lockup was funded but is already spent; refusing to classify it as unfunded",
+                    swap.SwapId);
+                return;
+            }
+
+            if (BoltzOperationClassifier.IsFinalSubmarineRefundStatus(swapStatus.Status))
+            {
+                var failedSwap = swap with
+                {
+                    Status = ArkSwapStatus.Failed,
+                    FailReason = $"Final Boltz status '{swapStatus.Status}' with no canonical lockup in contract history",
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+                await _swapsStorage.SaveSwap(failedSwap.WalletId, failedSwap, cancellationToken);
+                RaiseSwapStatusChanged(failedSwap, failedSwap.FailReason);
+                return;
+            }
+
+            _logger?.LogWarning(
+                "Swap {SwapId}: no canonical {ExpectedAmount}-sat lockup found in contract history",
+                swap.SwapId, swap.ExpectedAmount);
             return;
         }
 
-        // Boltz only cooperatively signs a refund for the canonical lockup
-        // VTXO it tracks for this swap (matches swap.ExpectedAmount). If the
-        // user accidentally double-funded the swap script (e.g., paid twice
-        // after a perceived stall), additional VTXOs sitting at the same
-        // script can only be recovered via the timelock path — which is
-        // exactly what SweeperService + SwapSweepPolicy handle once the
-        // refund CSV elapses. So here we narrow to the canonical VTXO and
-        // leave any extras for the sweeper.
-        var vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
-        if (vtxo is null)
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        var matchedSwapContracts =
+            await _contractStorage.GetContracts(walletIds: [swap.WalletId], scripts: [swap.ContractScript],
+                cancellationToken: cancellationToken);
+        var matchedSwapContractForSwapWallet =
+            matchedSwapContracts.Single(entity => entity.Type == VHTLCContract.ContractType);
+
+        if (ArkContractParser.Parse(matchedSwapContractForSwapWallet.Type,
+                matchedSwapContractForSwapWallet.AdditionalData, serverInfo.Network) is not VHTLCContract contract)
         {
-            _logger?.LogWarning(
-                "Swap {SwapId}: no unspent VTXO of expected amount {ExpectedAmount} found among {Total} VTXO(s) at swap script — scheduling near-term retry; if canonical lockup never arrives, SweeperService handles extras via timelock",
-                swap.SwapId, swap.ExpectedAmount, vtxos.Count);
-            ScheduleNearTermRetry(swap.SwapId, TimeSpan.FromSeconds(2));
-            return;
+            throw new InvalidOperationException("Failed to parse VHTLC contract for refund");
         }
-        if (vtxos.Count > 1)
+
+        var extraUnspentCount = contractHistory.Count(v => !v.IsSpent()) - 1;
+        if (extraUnspentCount > 0)
         {
             _logger?.LogInformation(
-                "Swap {SwapId}: swap script has {Total} VTXO(s); cooperatively refunding the canonical {ExpectedAmount}-sat lockup, leaving {Extras} extra(s) for SweeperService",
-                swap.SwapId, vtxos.Count, swap.ExpectedAmount, vtxos.Count - 1);
+                "Swap {SwapId}: refunding the canonical lockup and leaving {Extras} extra VTXO(s) for the sweeper",
+                swap.SwapId, extraUnspentCount);
         }
 
         var timeHeight = await _chainTimeProvider.GetChainTime(cancellationToken);
@@ -735,15 +742,11 @@ public partial class BoltzSwapProvider
         var intent = intents.FirstOrDefault();
         if (intent is null) return null;
 
-        // Re-arm the event trigger in case we restarted after saving the metadata.
-        _intentToSwapId.TryAdd(existingIntentTxId, swap.SwapId);
-
         if (intent.State == ArkIntentState.BatchSucceeded)
         {
             var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
             await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
             RaiseSwapStatusChanged(refunded);
-            _intentToSwapId.TryRemove(existingIntentTxId, out _);
             _logger?.LogInformation("Swap {SwapId}: refund-without-receiver batch succeeded", swap.SwapId);
             return true;
         }
@@ -760,7 +763,6 @@ public partial class BoltzSwapProvider
         _logger?.LogWarning(
             "Swap {SwapId}: refund intent {IntentTxId} reached terminal failure state {State} — re-submitting",
             swap.SwapId, existingIntentTxId, intent.State);
-        _intentToSwapId.TryRemove(existingIntentTxId, out _);
         return null;
     }
 
@@ -817,7 +819,6 @@ public partial class BoltzSwapProvider
 
             var spec = new ArkIntentSpec([arkCoin], [netOutput], DateTimeOffset.UtcNow, null);
             var intentTxId = await _intentGenerationService.GenerateManualIntent(swap.WalletId, spec, ct);
-            _intentToSwapId[intentTxId] = swap.SwapId;
 
             var updatedSwap = swap with
             {
