@@ -39,6 +39,10 @@ jobs:
   e2e-rotation:
     needs: build
     uses: ./.github/workflows/e2e-rotation.yml
+    
+  e2e-unilateral-exit:
+    needs: build
+    uses: ./.github/workflows/e2e-unilateral-exit.yml
 
   publish:
     name: Publish NuGet Packages

@@ -1,11 +1,11 @@
-name: E2E Core
+name: E2E Unilateral Exit
 
 on:
   workflow_call:
 
 jobs:
   test:
-    name: E2E Tests
+    name: E2E Unilateral Exit Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,10 +13,8 @@ jobs:
           submodules: true
           fetch-depth: 0
       - uses: ./.github/actions/e2e-setup
-      # Swap and recovery tests run in dedicated parallel workflows (e2e-swaps, e2e-recovery).
-      # Rotation tests run in e2e-rotation. Run everything else here.
-      - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery&TestCategory!=UnilateralExit"
+      - name: Run unilateral exit E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=UnilateralExit"
         timeout-minutes: 20
       - name: Collect docker logs on failure
         if: failure()
@@ -31,7 +29,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: docker-logs-core
+          name: docker-logs-swaps
           path: /tmp/*-logs.txt
       - name: Stop infrastructure
         if: always()
