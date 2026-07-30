@@ -53,6 +53,7 @@ namespace NArk.Tests.End2End.Core;
 /// chain past UnilateralExit blocks. We exercise that explicitly via
 /// DockerHelper.MineBlocks and ProgressExitsAsync polling.
 /// </summary>
+[Category("UnilateralExit")]
 public class UnilateralExitTests
 {
     private const int BoardingAmountSats = 100_000;
