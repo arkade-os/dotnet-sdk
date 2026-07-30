@@ -1,6 +1,6 @@
 # NArk .NET SDK
 
-A .NET SDK for building applications on [Arkade](https://arkadeos.com) — a Bitcoin virtual execution layer that enables instant, low-cost, programmable off-chain transactions using virtual UTXOs (VTXOs).
+A .NET SDK for building applications on [Arkade](https://arkadeos.com), an open execution engine for Bitcoin that enables instant, low-cost, programmable transactions using virtual UTXOs (VTXOs).
 
 [![NuGet](https://img.shields.io/nuget/v/NArk.svg)](https://www.nuget.org/packages/NArk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -332,7 +332,7 @@ var details = await transport.GetAssetDetailsAsync(assetId);
 
 ## Delegation
 
-Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batch rounds on your behalf, rolling VTXOs over before expiry.
+Delegation solves the VTXO liveness problem: VTXOs expire if not renewed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batches on your behalf, rolling VTXOs over before expiry.
 
 ### Automated Delegation
 
@@ -429,7 +429,7 @@ The `IntentProofHelper.CreateBip322Psbt` and `IntentProofHelper.SignBip322Proof`
 
 ## Boarding (On-chain → Arkade)
 
-Boarding lets users move on-chain Bitcoin UTXOs into the Arkade VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the boarding UTXO is automatically picked up by the intent/batch pipeline — no manual intervention needed.
+Boarding lets users move onchain Bitcoin UTXOs into the Arkade VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the intent/batch pipeline automatically picks up the boarding UTXO — no manual intervention needed.
 
 ### 1. Derive a Boarding Address
 
@@ -521,7 +521,7 @@ await sweepService.SweepExpiredUtxosAsync(ct);
 
 ## Unilateral Exit
 
-When the Ark server goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their VTXO leaf, waiting a CSV timelock, then claiming funds on-chain.
+If the Arkade server goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their VTXO leaf, waiting a CSV timelock, then claiming funds onchain.
 
 ### Setup
 
@@ -647,7 +647,7 @@ var contract = await contractService.DeriveContract(
 // The contract's script can be converted to an ArkAddress for display
 ```
 
-### Contract scope (on-chain / off-chain)
+### Contract scope (onchain / offchain)
 
 Every contract type declares which layer(s) its funds live on via
 `ArkContract.DefaultScope`, a `[Flags] ContractScope` (`Onchain`, `Offchain`, or
@@ -742,7 +742,7 @@ See [docs/articles/signer-rotation.md](docs/articles/signer-rotation.md) for the
 
 ## Pending Arkade Transaction Recovery
 
-Arkade off-chain transactions are a two-phase **Submit → Finalize** flow. If the process crashes between phases, the server holds the inputs as in-flight and only allows the original pending tx to be finalized — without recovery, those coins are stuck.
+Arkade offchain transactions are a two-phase **Submit → Finalize** flow. If the process crashes between phases, the server holds the inputs as in-flight. It only allows the original pending tx to finalize. Without recovery, those coins stay stuck.
 
 `PendingArkTransactionRecoveryService` reconciles this on every host startup. It pulls the server's view of pending transactions for each wallet, signs the checkpoint PSBTs locally, and finalizes them. It's registered automatically by `AddArkCoreServices` and wired into `ArkHostedLifecycle`, so the hands-off path requires no extra setup.
 
@@ -948,8 +948,8 @@ A **swap route** is a directional asset pair:
 
 ```csharp
 // Route = source asset → destination asset
-var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);  // Lightning → Ark
-var route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);    // Ark → BTC on-chain
+var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);  // Lightning → Arkade
+var route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);    // Arkade → BTC onchain
 
 // Arkade-issued assets
 var myToken = SwapAsset.ArkAsset("asset1abc...");
@@ -1044,7 +1044,7 @@ Either way the SDK stores the actual on-chain amount Boltz delivers as `ArkSwap.
 When a chain swap can't settle as originally quoted — user funds the lockup with the wrong amount, an LN invoice times out, or Boltz expires the swap — the SDK handles recovery automatically inside `BoltzSwapProvider.PollSwapState`. No manual call is needed.
 
 * **`transaction.lockupFailed`** → asks Boltz for a renegotiated quote via `GET/POST /v2/swap/chain/{id}/quote` and updates `ArkSwap.ExpectedAmount` if Boltz accepts.
-* **`swap.expired` / `transaction.failed` / `transaction.refunded`** → cooperative refund: BTC→Arkade refunds the BTC lockup with MuSig2 (`/v2/swap/chain/{id}/refund`); Arkade→BTC refunds the Ark VHTLC via `/v2/swap/chain/{id}/refund/ark`. Marks the swap `Refunded`.
+* **`swap.expired` / `transaction.failed` / `transaction.refunded`** → cooperative refund: BTC→Arkade refunds the BTC lockup with MuSig2 (`/v2/swap/chain/{id}/refund`); Arkade→BTC refunds the Arkade VHTLC via `/v2/swap/chain/{id}/refund/ark`. Marks the swap `Refunded`.
 * **`swap.expired` with no funds locked** → marked `Failed` (nothing to recover).
 
 Subscribe to `ISwapStorage.SwapsChanged` to observe transitions. To surface a "recovery available" indicator without committing to a refund, use the read-only inspectors:
