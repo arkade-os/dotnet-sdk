@@ -1,0 +1,166 @@
+name: EVM Bindings Drift Check
+
+on:
+  pull_request:
+
+jobs:
+  boltz-core-sync:
+    name: Check vendored boltz-core contracts match master
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch contracts from boltz-core master
+        run: |
+          FILES="ERC20Swap.sol TransferHelper.sol EtherSwap.sol Router.sol TestERC20.sol interfaces/OFT.sol interfaces/ITokenMessengerV2.sol"
+          for f in $FILES; do
+            mkdir -p "/tmp/boltz-core/$(dirname "$f")"
+            wget -q \
+              "https://raw.githubusercontent.com/BoltzExchange/boltz-core/master/contracts/${f}" \
+              -O "/tmp/boltz-core/${f}"
+          done
+
+      - name: Diff against vendored contract source
+        run: |
+          SOL_DIR="NArk.Swaps.Evm/Contracts/Sol"
+          FILES="ERC20Swap.sol TransferHelper.sol EtherSwap.sol Router.sol TestERC20.sol interfaces/OFT.sol interfaces/ITokenMessengerV2.sol"
+          failed=0
+          for f in $FILES; do
+            if ! diff -u "/tmp/boltz-core/${f}" "${SOL_DIR}/${f}"; then
+              echo "::error file=${SOL_DIR}/${f}::${f} is out of sync with boltz-core master"
+              failed=1
+            fi
+          done
+          if [ $failed -ne 0 ]; then
+            echo ""
+            echo "${SOL_DIR} is out of sync with BoltzExchange/boltz-core master."
+            echo "Pull the updated file(s), re-run NArk.Swaps.Evm/generate-bindings.sh, and"
+            echo "review/commit the resulting diff in NArk.Swaps.Evm/Contracts/Generated/."
+            exit 1
+          fi
+          echo "All vendored boltz-core contracts are in sync with master."
+
+  external-deps-sync:
+    name: Check vendored permit2/OpenZeppelin leaves match upstream
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch leaf interfaces from upstream
+        run: |
+          mkdir -p /tmp/ext/permit2/interfaces /tmp/ext/permit2/test/utils
+          for f in ISignatureTransfer.sol IEIP712.sol; do
+            wget -q "https://raw.githubusercontent.com/Uniswap/permit2/main/src/interfaces/${f}" \
+              -O "/tmp/ext/permit2/interfaces/${f}"
+          done
+          # DeployPermit2.sol carries Permit2's real canonical runtime bytecode (its
+          # deployPermit2() vm.etch()'s it at the real mainnet address) — tests deploy this
+          # same bytecode via Anvil's anvil_setCode instead of Foundry's cheatcode, but the
+          # bytecode itself must stay byte-for-byte what Uniswap publishes.
+          wget -q "https://raw.githubusercontent.com/Uniswap/permit2/main/test/utils/DeployPermit2.sol" \
+            -O "/tmp/ext/permit2/test/utils/DeployPermit2.sol"
+
+          OZ_FILES="token/ERC20/IERC20.sol token/ERC20/ERC20.sol token/ERC20/utils/SafeERC20.sol token/ERC20/extensions/IERC20Metadata.sol interfaces/IERC1363.sol interfaces/IERC20Metadata.sol interfaces/IERC20.sol interfaces/IERC165.sol interfaces/draft-IERC6093.sol utils/Context.sol utils/ReentrancyGuard.sol utils/StorageSlot.sol utils/introspection/IERC165.sol"
+          for f in $OZ_FILES; do
+            mkdir -p "/tmp/ext/@openzeppelin/contracts/$(dirname "$f")"
+            wget -q "https://raw.githubusercontent.com/OpenZeppelin/openzeppelin-contracts/master/contracts/${f}" \
+              -O "/tmp/ext/@openzeppelin/contracts/${f}"
+          done
+
+      - name: Diff against vendored copies
+        run: |
+          SOL_DIR="NArk.Swaps.Evm/Contracts/Sol"
+          FILES="permit2/interfaces/ISignatureTransfer.sol permit2/interfaces/IEIP712.sol permit2/test/utils/DeployPermit2.sol @openzeppelin/contracts/token/ERC20/IERC20.sol @openzeppelin/contracts/token/ERC20/ERC20.sol @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol @openzeppelin/contracts/interfaces/IERC1363.sol @openzeppelin/contracts/interfaces/IERC20Metadata.sol @openzeppelin/contracts/interfaces/IERC20.sol @openzeppelin/contracts/interfaces/IERC165.sol @openzeppelin/contracts/interfaces/draft-IERC6093.sol @openzeppelin/contracts/utils/Context.sol @openzeppelin/contracts/utils/ReentrancyGuard.sol @openzeppelin/contracts/utils/StorageSlot.sol @openzeppelin/contracts/utils/introspection/IERC165.sol"
+          failed=0
+          for f in $FILES; do
+            if ! diff -u "/tmp/ext/${f}" "${SOL_DIR}/${f}"; then
+              echo "::error file=${SOL_DIR}/${f}::${f} is out of sync with upstream"
+              failed=1
+            fi
+          done
+          if [ $failed -ne 0 ]; then
+            echo ""
+            echo "${SOL_DIR} permit2/OpenZeppelin leaves are out of sync with upstream."
+            echo "Pull the updated file(s), re-run NArk.Swaps.Evm/generate-bindings.sh, and"
+            echo "review/commit the resulting diff in NArk.Swaps.Evm/Contracts/Generated/Router/."
+            exit 1
+          fi
+          echo "All vendored permit2/OpenZeppelin leaves are in sync with upstream."
+
+  mock-dex-sync:
+    name: Check vendored MockERC20Dex test double matches boltz-core's own
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch RouterTestBase.sol and extract the MockERC20Dex contract block
+        run: |
+          wget -q "https://raw.githubusercontent.com/BoltzExchange/boltz-core/master/contracts/test/RouterTestBase.sol" \
+            -O /tmp/RouterTestBase.sol
+          sed -n '/^contract MockERC20Dex {/,/^}/p' /tmp/RouterTestBase.sol > /tmp/MockERC20Dex.extracted.sol
+          if [ ! -s /tmp/MockERC20Dex.extracted.sol ]; then
+            echo "::error::Could not find 'contract MockERC20Dex { ... }' in boltz-core master's RouterTestBase.sol — extraction pattern needs updating"
+            exit 1
+          fi
+
+      - name: Diff against our vendored copy's contract block
+        run: |
+          FILE="NArk.Swaps.Evm/Contracts/Sol/test-fixtures/MockErc20Dex.sol"
+          sed -n '/^contract MockERC20Dex {/,/^}/p' "$FILE" > /tmp/MockERC20Dex.vendored.sol
+          if ! diff -u /tmp/MockERC20Dex.extracted.sol /tmp/MockERC20Dex.vendored.sol; then
+            echo "::error file=${FILE}::MockERC20Dex's contract body is out of sync with boltz-core master's own test double (in contracts/test/RouterTestBase.sol)"
+            echo ""
+            echo "Pull the updated contract block, re-run NArk.Swaps.Evm/generate-bindings.sh, and"
+            echo "review/commit the resulting diff in NArk.Swaps.Evm/Contracts/Generated/TestFixtures/."
+            exit 1
+          fi
+          echo "MockERC20Dex is in sync with boltz-core master's own test double."
+
+  abigen-freshness:
+    name: Check generate-bindings.sh was re-run after Contracts/Sol changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check whether Contracts/Sol changed in this PR
+        id: sol-diff
+        run: |
+          CHANGED=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- NArk.Swaps.Evm/Contracts/Sol/)
+          if [ -z "$CHANGED" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Contracts/Sol/ untouched by this PR — skipping AbiGen freshness check."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Contracts/Sol/ changed:"
+            echo "$CHANGED"
+          fi
+
+      - name: Setup .NET
+        if: steps.sol-diff.outputs.changed == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Setup Node
+        if: steps.sol-diff.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Re-run generate-bindings.sh and check for a clean diff
+        if: steps.sol-diff.outputs.changed == 'true'
+        run: |
+          ./NArk.Swaps.Evm/generate-bindings.sh
+          if ! git diff --exit-code -- NArk.Swaps.Evm/Contracts/Generated/; then
+            echo ""
+            echo "::error::Contracts/Sol changed in this PR but Contracts/Generated/ doesn't match"
+            echo "what generate-bindings.sh produces. Re-run NArk.Swaps.Evm/generate-bindings.sh"
+            echo "locally and commit the result."
+            exit 1
+          fi
+          echo "Contracts/Generated/ is up to date with the Contracts/Sol changes in this PR."

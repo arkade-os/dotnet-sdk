@@ -26,6 +26,23 @@ public static class SwapMetadata
     /// </summary>
     public const string RefundIntentTxId = "refundIntentTxId";
 
+    // ── EVM leg transaction hashes.
+    // Recorded the moment the transaction is broadcast, BEFORE waiting for its receipt.
+    // The receipt wait is the fragile part (RPC timeout, process restart, dropped
+    // connection) and a lost receipt used to be indistinguishable from "never sent" —
+    // which made the caller mark a swap Failed while its funds were already locked
+    // on-chain, orphaning them. A recorded hash proves we broadcast, so the recovery
+    // path can leave the swap active for the poll loop to claim or refund.
+
+    /// <summary>Transaction hash of the <c>ERC20Swap.lock</c> broadcast for a <c>ChainEvmToArk</c> swap.</summary>
+    public const string EvmLockTxId = "evmLockTxId";
+
+    /// <summary>Transaction hash of the <c>ERC20Swap.claim</c> broadcast for a <c>ChainArkToEvm</c> swap.</summary>
+    public const string EvmClaimTxId = "evmClaimTxId";
+
+    /// <summary>Transaction hash of the <c>ERC20Swap.refund</c> broadcast for a <c>ChainEvmToArk</c> swap.</summary>
+    public const string EvmRefundTxId = "evmRefundTxId";
+
     // ── Persistence shim for the ProviderId / Route fields on ArkSwap.
     // These properties don't have dedicated columns on ArkSwapEntity (yet —
     // see issue #79 review), so EfCoreSwapStorage round-trips them through

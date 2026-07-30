@@ -100,6 +100,28 @@ public class SwapsManagementService : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<ISwapProvider> Providers => _providers;
 
+    // ─── Minimal passthroughs for provider-specific extension methods ──────
+    // Boltz's own swap-type-specific methods (InitiateBtcToArkChainSwap etc.) live directly on
+    // this class since NArk.Swaps already owns NArk.Swaps.Boltz. Other providers living in
+    // their own assembly (e.g. NArk.Swaps.Evm, which depends on NArk.Swaps — never the reverse)
+    // can't do that, so they add the equivalent convenience methods as extension methods on
+    // SwapsManagementService instead. These three passthroughs expose just enough of this
+    // class's private state (the same pieces InitiateBtcToArkChainSwap/InitiateArkToBtcChainSwap
+    // already use internally: derive a signing descriptor, fund a lockup, mark a swap Failed on
+    // error) for those extension methods to mirror that exact pattern without needing anything
+    // Boltz-specific from this class.
+
+    /// <summary>Wallet/descriptor access — for deriving refund/claim descriptors the same way
+    /// this class's own Initiate* methods do.</summary>
+    public IWalletProvider WalletProvider => _walletProvider;
+
+    /// <summary>Coin spending — for funding a swap's lockup, mirroring
+    /// <see cref="InitiateArkToBtcChainSwap"/>'s fund-then-mark-Failed-on-exception pattern.</summary>
+    public ISpendingService SpendingService => _spendingService;
+
+    /// <summary>Swap persistence — for the same mark-Failed-on-exception pattern.</summary>
+    public ISwapStorage SwapStorage => _swapsStorage;
+
     // BIP-340 sign+hash gives us a deterministic preimage rooted in the wallet's secret
     // material without leaking the key (signatures reveal nothing about the key). The signed
     // message bundles:
@@ -125,38 +147,16 @@ public class SwapsManagementService : IAsyncDisposable
     // Tag is protocol+provider scoped (Arkade brand, Boltz provider), not SDK-scoped, so any
     // Arkade SDK implementing the same scheme produces the same preimage and can recover
     // swaps the .NET SDK created (and vice versa). Versioned ("-v1") for future scheme evolution.
-    private const string PreimageTag = "Arkade-Boltz-Preimage-v1";
-    private static readonly byte[] PreimageTagBytes = Encoding.UTF8.GetBytes(PreimageTag);
+    // The scheme itself lives in SwapPreimageDerivation — public, so NArk.Swaps.Evm (and any
+    // other out-of-assembly provider) derives preimages the same way instead of falling back to
+    // a random one that no restore can ever recover. These two stay as the in-service shorthand
+    // the swap-creation paths below already read cleanly with.
+    internal static byte[] BuildPreimageMessage(OutputDescriptor descriptor, uint index) =>
+        SwapPreimageDerivation.BuildMessage(descriptor, index);
 
-    // Builds the message that gets BIP-340-signed. Format (cross-SDK):
-    // PreimageTag || x-only pubkey (32B) || u32le(index). Anchoring on the canonical
-    // x-only key — not descriptor.ToString(), which is non-canonical and differs
-    // between a signing descriptor and a reconstructed bare receiver descriptor —
-    // keeps create-time and restore-time derivation identical and reproducible by any
-    // Arkade SDK.
-    internal static byte[] BuildPreimageMessage(OutputDescriptor descriptor, uint index)
-    {
-        var keyBytes = OutputDescriptorHelpers.Extract(descriptor).XOnlyPubKey.ToBytes();
-        var indexBytes = BitConverter.GetBytes(index);
-        if (!BitConverter.IsLittleEndian) Array.Reverse(indexBytes); // canonical u32 LE
-        var message = new byte[PreimageTagBytes.Length + keyBytes.Length + indexBytes.Length];
-        Buffer.BlockCopy(PreimageTagBytes, 0, message, 0, PreimageTagBytes.Length);
-        Buffer.BlockCopy(keyBytes, 0, message, PreimageTagBytes.Length, keyBytes.Length);
-        Buffer.BlockCopy(indexBytes, 0, message, PreimageTagBytes.Length + keyBytes.Length, indexBytes.Length);
-        return message;
-    }
-
-    internal async Task<byte[]> DerivePreimageAsync(
-        string walletId, OutputDescriptor descriptor, uint index, CancellationToken cancellationToken)
-    {
-        var signer = await _walletProvider.GetSignerAsync(walletId, cancellationToken);
-        if (signer is null)
-            return RandomUtils.GetBytes(32); // watch-only — no entropy floor to draw from
-
-        var messageHash = new uint256(SHA256.HashData(BuildPreimageMessage(descriptor, index)));
-        var (_, sig) = await signer.Sign(descriptor, messageHash, cancellationToken);
-        return SHA256.HashData(sig.ToBytes());
-    }
+    internal Task<byte[]> DerivePreimageAsync(
+        string walletId, OutputDescriptor descriptor, uint index, CancellationToken cancellationToken) =>
+        SwapPreimageDerivation.DeriveAsync(_walletProvider, walletId, descriptor, index, cancellationToken);
 
     // ─── Event Routing ─────────────────────────────────────────────
 
@@ -756,11 +756,14 @@ public class SwapsManagementService : IAsyncDisposable
                     metadata: new Dictionary<string, string> { ["Source"] = $"swap:{restored.Id}" },
                     cancellationToken: cancellationToken);
 
-                // Reverse swaps generated the preimage at create time via sign-and-hash of the
-                // receiver descriptor. On a fresh wallet that's rediscovering this swap via
+                // Reverse swaps, and ChainBtcToArk swaps (we're also the Ark-side VHTLC
+                // receiver there), generated the preimage at create time via sign-and-hash of
+                // the receiver descriptor. On a fresh wallet that's rediscovering this swap via
                 // /v2/swap/restore, re-derive and attach so the sweeper can claim the VHTLC
-                // before it expires. Submarine swaps don't apply — Boltz controls that preimage.
-                if (restored.IsReverseSwap && !string.IsNullOrEmpty(restored.PreimageHash))
+                // before it expires. Submarine and ChainArkToBtc swaps don't apply — Boltz
+                // controls that preimage since it's the VHTLC receiver on those.
+                var weAreVhtlcReceiver = restored.IsReverseSwap || swap.SwapType == ArkSwapType.ChainBtcToArk;
+                if (weAreVhtlcReceiver && !string.IsNullOrEmpty(restored.PreimageHash))
                 {
                     // index=0 is the only value used at create-time today. If a future scheme
                     // bump ships multi-preimage-per-descriptor, recovery should iterate
@@ -792,6 +795,9 @@ public class SwapsManagementService : IAsyncDisposable
 
     private ArkSwap? MapRestoredSwap(RestorableSwap restored, string walletId)
     {
+        if (restored.IsChainSwap)
+            return MapRestoredChainSwap(restored, walletId);
+
         var swapType = restored.Type switch
         {
             "reverse" => ArkSwapType.ReverseSubmarine,
@@ -802,8 +808,7 @@ public class SwapsManagementService : IAsyncDisposable
         if (swapType == null)
             return null;
 
-        var details = restored.Details;
-        if (details == null)
+        if (restored.Details is not UtxoSwapDetails details)
             return null;
 
         return new ArkSwap(
@@ -825,13 +830,106 @@ public class SwapsManagementService : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Maps a restored chain swap for the BTC↔Ark pair. Unlike reverse/submarine swaps, a
+    /// chain swap's <c>from</c>/<c>to</c> currency pair can be anything Boltz supports (e.g. an
+    /// EVM chain) — only the ARK/BTC pair is recognized here; anything else returns <c>null</c>
+    /// so a different, pair-aware discovery provider (e.g. an EVM chain-swap provider) can
+    /// classify it using <see cref="ReconstructChainVhtlcContract"/> directly.
+    /// </summary>
+    private static ArkSwap? MapRestoredChainSwap(RestorableSwap restored, string walletId)
+    {
+        var (swapType, route, weAreReceiver) = (restored.From, restored.To) switch
+        {
+            ("ARK", "BTC") => (ArkSwapType.ChainArkToBtc, new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain), false),
+            ("BTC", "ARK") => (ArkSwapType.ChainBtcToArk, new SwapRoute(SwapAsset.BtcOnchain, SwapAsset.ArkBtc), true),
+            _ => ((ArkSwapType?)null, (SwapRoute?)null, false)
+        };
+        if (swapType == null)
+            return null;
+
+        var utxoDetails = (weAreReceiver ? restored.ClaimDetails : restored.RefundDetails) as UtxoSwapDetails;
+        if (utxoDetails == null)
+            return null;
+
+        return new ArkSwap(
+            SwapId: restored.Id,
+            WalletId: walletId,
+            SwapType: swapType.Value,
+            Invoice: "",
+            ExpectedAmount: utxoDetails.Amount ?? 0,
+            ContractScript: "", // Will be updated after contract reconstruction
+            Address: utxoDetails.LockupAddress,
+            Status: BoltzSwapStatus.ToArkSwapStatus(restored.Status) ?? ArkSwapStatus.Pending,
+            FailReason: null,
+            CreatedAt: DateTimeOffset.FromUnixTimeSeconds(restored.CreatedAt),
+            UpdatedAt: DateTimeOffset.UtcNow,
+            Hash: restored.PreimageHash ?? ""
+        )
+        {
+            ProviderId = BoltzSwapProvider.Id,
+            Route = route
+        };
+    }
+
     private VHTLCContract? ReconstructContract(
         RestorableSwap restored,
         ArkServerInfo serverInfo,
         OutputDescriptor[] descriptors)
     {
-        var details = restored.Details;
-        if (details?.Tree == null)
+        bool weAreReceiver;
+        if (restored.IsChainSwap)
+        {
+            var direction = (restored.From, restored.To) switch
+            {
+                ("ARK", "BTC") => (bool?)false,
+                ("BTC", "ARK") => true,
+                _ => null
+            };
+            if (direction == null)
+                return null;
+            weAreReceiver = direction.Value;
+        }
+        else if (restored.IsReverseSwap)
+        {
+            weAreReceiver = true;
+        }
+        else if (restored.IsSubmarineSwap)
+        {
+            weAreReceiver = false;
+        }
+        else
+        {
+            return null;
+        }
+
+        return ReconstructChainVhtlcContract(restored, weAreReceiver, serverInfo, descriptors);
+    }
+
+    /// <summary>
+    /// Reconstructs the Ark-leg VHTLC contract for a restorable swap, given which of its two
+    /// polymorphic <c>claimDetails</c>/<c>refundDetails</c> legs is the Ark side. Exposed as a
+    /// reusable building block for other chain-swap providers (e.g. an EVM leg) that recognize
+    /// currency pairs this project doesn't know about and need to restore their own Ark-side
+    /// lockup from the same Boltz <c>/v2/swap/restore</c> data.
+    /// </summary>
+    /// <param name="restored">The restored swap returned by Boltz.</param>
+    /// <param name="weAreReceiver">
+    /// <c>true</c> if we claim this swap (the Ark leg is <see cref="RestorableSwap.ClaimDetails"/>
+    /// and we are the VHTLC receiver); <c>false</c> if we can refund it (the Ark leg is
+    /// <see cref="RestorableSwap.RefundDetails"/> and we are the VHTLC sender).
+    /// </param>
+    /// <param name="serverInfo">Current Arkade server info (network, signer key).</param>
+    /// <param name="descriptors">Candidate wallet descriptors to match the non-server side to.</param>
+    /// <returns>The reconstructed contract, or <c>null</c> if the Ark leg isn't UTXO-typed or reconstruction fails.</returns>
+    public static VHTLCContract? ReconstructChainVhtlcContract(
+        RestorableSwap restored,
+        bool weAreReceiver,
+        ArkServerInfo serverInfo,
+        OutputDescriptor[] descriptors)
+    {
+        var details = (weAreReceiver ? restored.ClaimDetails : restored.RefundDetails) as UtxoSwapDetails;
+        if (details == null)
             return null;
 
         try
@@ -865,19 +963,17 @@ public class SwapsManagementService : IAsyncDisposable
             if (hash == null)
                 return null;
 
-            // Determine sender and receiver based on swap type
+            // Determine sender and receiver based on which side we own
             OutputDescriptor sender;
             OutputDescriptor receiver;
 
-            if (restored.IsReverseSwap)
+            if (weAreReceiver)
             {
-                // Reverse swap: we are the receiver (claiming)
                 sender = Extensions.KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
                 receiver = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
             }
             else
             {
-                // Submarine swap: we are the sender (refunding)
                 sender = FindMatchingDescriptor(descriptors, details) ?? descriptors[0];
                 receiver = Extensions.KeyExtensions.ParseOutputDescriptor(details.ServerPublicKey, serverInfo.Network);
             }
@@ -901,7 +997,7 @@ public class SwapsManagementService : IAsyncDisposable
 
     private static OutputDescriptor? FindMatchingDescriptor(
         OutputDescriptor[] descriptors,
-        SwapDetails details)
+        UtxoSwapDetails details)
     {
         // If keyIndex is provided, try to find the matching descriptor
         if (details.KeyIndex.HasValue && details.KeyIndex.Value < descriptors.Length)

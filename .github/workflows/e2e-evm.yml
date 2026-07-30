@@ -1,0 +1,48 @@
+name: E2E EVM
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: E2E EVM Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Start Anvil
+        run: nohup anvil > /tmp/anvil-logs.txt 2>&1 &
+        shell: bash
+      - name: Wait for Anvil
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' \
+                http://localhost:8545 > /dev/null; then
+              echo "Anvil is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Anvil did not start in time" >&2
+          exit 1
+      - name: Restore and build
+        run: dotnet build NArk.CI.slnf
+      - name: Run EVM E2E tests
+        # Excludes TestCategory=Swaps: those EVM tests (e.g. EvmChainSwapTests) need a real
+        # Boltz counterparty, not just bare Anvil, and already run under e2e-swaps.yml's
+        # full regtest stack (which pulls in the evm profile automatically).
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Evm&TestCategory!=Swaps"
+        timeout-minutes: 10
+      - name: Upload Anvil logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-logs
+          path: /tmp/anvil-logs.txt

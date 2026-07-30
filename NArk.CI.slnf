@@ -6,6 +6,7 @@
       "NArk.Core/NArk.Core.csproj",
       "NArk.Storage.EfCore/NArk.Storage.EfCore.csproj",
       "NArk.Swaps/NArk.Swaps.csproj",
+      "NArk.Swaps.Evm/NArk.Swaps.Evm.csproj",
       "NArk/NArk.csproj",
       "NArk.Tests/NArk.Tests.csproj",
       "NArk.Transport.GrpcClient.Tests/NArk.Transport.GrpcClient.Tests.csproj",

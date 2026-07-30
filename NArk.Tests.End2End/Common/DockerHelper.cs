@@ -203,6 +203,35 @@ public static class DockerHelper
             $"Could not locate regtest/regtest.mjs by walking up from {AppContext.BaseDirectory}");
     }
 
+    public record EvmAddresses(
+        string EtherSwapAddress, string Erc20SwapAddress, string TbtcAddress,
+        string UsdtAddress, string Permit2Address, string RouterAddress, string MockDexAddress);
+
+    /// <summary>
+    /// Reads <c>regtest/_build/evm-addresses.json</c> — written by
+    /// <c>lib/setup/evm.mjs</c>'s <c>setupEvm()</c> during <c>node regtest.mjs start --profile
+    /// ...,evm</c>, since Boltz itself never learns about Router/Permit2/USDT and so can't be
+    /// asked for these addresses the way <c>EvmChainClient.GetChainInfoAsync</c> gets tBTC's.
+    /// </summary>
+    public static EvmAddresses GetEvmAddresses()
+    {
+        var path = Path.Combine(FindRegtestRoot(), "regtest", "_build", "evm-addresses.json");
+        if (!File.Exists(path))
+            throw new InvalidOperationException(
+                $"{path} not found — start the EVM-enabled regtest stack first:\n" +
+                "  node regtest.mjs start --profile boltz,delegate,evm");
+
+        var json = JsonNode.Parse(File.ReadAllText(path))!;
+        return new EvmAddresses(
+            json["etherSwapAddress"]!.GetValue<string>(),
+            json["erc20SwapAddress"]!.GetValue<string>(),
+            json["tbtcAddress"]!.GetValue<string>(),
+            json["usdtAddress"]!.GetValue<string>(),
+            json["permit2Address"]!.GetValue<string>(),
+            json["routerAddress"]!.GetValue<string>(),
+            json["mockDexAddress"]!.GetValue<string>());
+    }
+
     /// <summary>
     /// Pays a BOLT11 invoice via the nigiri lnd node using lncli.
     /// </summary>
@@ -293,8 +322,7 @@ public static class DockerHelper
         var dbResult = await Cli.Wrap("docker")
             .WithArguments(["exec", Container.Postgres,
                 "psql", "-U", "postgres", "-d", "boltz",
-                "-v", $"sid={swapId}", "-v", $"status={status}",
-                "-c", "UPDATE \"chainSwaps\" SET status = :'status' WHERE id = :'sid'"])
+                "-c", $"UPDATE \"chainSwaps\" SET status = '{status}' WHERE id = '{swapId}'"])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
 

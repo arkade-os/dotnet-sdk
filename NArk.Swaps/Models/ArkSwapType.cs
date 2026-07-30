@@ -5,5 +5,7 @@ public enum ArkSwapType
     ReverseSubmarine,
     Submarine,
     ChainBtcToArk,
-    ChainArkToBtc
+    ChainArkToBtc,
+    ChainEvmToArk,
+    ChainArkToEvm
 }

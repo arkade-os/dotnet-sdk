@@ -36,10 +36,23 @@
     </ItemGroup>
 
     <ItemGroup>
+      <!-- Test-fixture contract bindings (TestERC20, MockERC20Dex). Generated alongside the
+           production bindings in NArk.Swaps.Evm/Contracts/Generated/, but excluded from that
+           project's compile items so they don't ship in the package — only the E2E suite
+           deploys these fixtures. Namespaces stay NArk.Swaps.Evm.Contracts.Test /
+           .Contracts.TestFixtures, so no using changes in the test files. -->
+      <Compile Include="..\NArk.Swaps.Evm\Contracts\Generated\Test\**\*.cs"
+               LinkBase="Evm\Contracts\Test" />
+      <Compile Include="..\NArk.Swaps.Evm\Contracts\Generated\TestFixtures\**\*.cs"
+               LinkBase="Evm\Contracts\TestFixtures" />
+    </ItemGroup>
+
+    <ItemGroup>
       <ProjectReference Include="..\NArk.Abstractions\NArk.Abstractions.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
       <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
+      <ProjectReference Include="..\NArk.Swaps.Evm\NArk.Swaps.Evm.csproj" />
       <ProjectReference Include="..\NArk.Tests\NArk.Tests.csproj" />
     </ItemGroup>
 

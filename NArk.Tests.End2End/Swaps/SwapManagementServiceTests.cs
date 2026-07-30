@@ -13,6 +13,7 @@ using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
+using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
 using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
@@ -769,6 +770,93 @@ public class SwapManagementServiceTests
         Assert.That(restoredSwap.Address, Is.Not.Empty);
 
         // Verify the swap is now in storage
+        var swapsAfterRestore = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
+        Assert.That(swapsAfterRestore, Has.Count.GreaterThanOrEqualTo(1));
+    }
+
+    /// <summary>
+    /// Chain-swap counterpart of <see cref="CanRestoreSwapsFromBoltz"/> — covers the
+    /// <c>"chain"</c> restore-type path (<see cref="SwapsManagementService.ReconstructChainVhtlcContract"/>
+    /// via <c>RestoreSwaps</c>'s internal chain-swap handling), which reverse/submarine restore
+    /// alone doesn't exercise since it never sets both <c>claimDetails</c> and <c>refundDetails</c>.
+    /// </summary>
+    [Test]
+    public async Task CanRestoreChainSwapFromBoltz()
+    {
+        var testingPrerequisite = await FundedWalletHelper.GetFundedWallet();
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+        var restoreStorage = new TestStorage(testingPrerequisite.safetyService);
+        var swapStorage = restoreStorage.SwapStorage;
+        var boltzClient = new BoltzClient(new HttpClient(),
+            new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions()
+            { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }));
+        var intentStorage = TestStorage.CreateIntentStorage();
+
+        var coinService = new CoinService(testingPrerequisite.clientTransport, testingPrerequisite.contracts,
+            [
+                new PaymentContractTransformer(testingPrerequisite.walletProvider),
+                new HashLockedContractTransformer(testingPrerequisite.walletProvider),
+                new VHTLCContractTransformer(testingPrerequisite.walletProvider, chainTimeProvider)
+            ]);
+
+        var spendingService = new SpendingService(testingPrerequisite.vtxoStorage, testingPrerequisite.contracts,
+                testingPrerequisite.walletProvider,
+                coinService,
+                testingPrerequisite.contractService, testingPrerequisite.clientTransport, new DefaultCoinSelector(),
+                testingPrerequisite.safetyService, intentStorage);
+        var boltzProvider = new BoltzSwapProvider(boltzClient, new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions() { BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(), WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString() }))),
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider, swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService,
+            testingPrerequisite.clientTransport, testingPrerequisite.vtxoStorage,
+            testingPrerequisite.walletProvider,
+            swapStorage, testingPrerequisite.contractService, testingPrerequisite.contracts,
+            testingPrerequisite.safetyService, intentStorage, chainTimeProvider);
+
+        await swapMgr.StartAsync(CancellationToken.None);
+
+        // Create a BTC->ARK chain swap (registers with Boltz + imports the VHTLC contract;
+        // doesn't require actually funding the BTC side for restore to see it).
+        var (_, swapId, _) = await FulmineLiquidityHelper.RetryWithSettle(() =>
+            swapMgr.InitiateBtcToArkChainSwap(
+                testingPrerequisite.walletIdentifier,
+                50_000,
+                CancellationToken.None
+            ));
+
+        var swapsBeforeClear = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
+        Assert.That(swapsBeforeClear, Has.Count.EqualTo(1));
+        Assert.That(swapsBeforeClear.First().SwapType, Is.EqualTo(ArkSwapType.ChainBtcToArk));
+
+        // Simulate data loss by clearing swap and contract storage.
+        await restoreStorage.ClearSwaps();
+
+        var swapsAfterClear = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
+        Assert.That(swapsAfterClear, Has.Count.EqualTo(0));
+
+        var testWallet = testingPrerequisite.walletProvider.GetTestWallet(testingPrerequisite.walletIdentifier);
+        Assert.That(testWallet, Is.Not.Null);
+        var descriptors = await testWallet!.GetUsedDescriptors();
+
+        var restoredSwaps = await swapMgr.RestoreSwaps(
+            testingPrerequisite.walletIdentifier,
+            descriptors,
+            CancellationToken.None
+        );
+
+        Assert.That(restoredSwaps, Has.Count.GreaterThanOrEqualTo(1));
+        var restoredSwap = restoredSwaps.First(s => s.SwapId == swapId);
+        Assert.That(restoredSwap.SwapType, Is.EqualTo(ArkSwapType.ChainBtcToArk));
+        Assert.That(restoredSwap.ContractScript, Is.Not.Empty,
+            "the Ark-side VHTLC contract should have been reconstructed and its script attached");
+        Assert.That(restoredSwap.Address, Is.Not.Empty);
+        Assert.That(restoredSwap.Get(SwapMetadata.Preimage), Is.Not.Null.And.Not.Empty,
+            "ChainBtcToArk restores the VHTLC receiver's preimage the same way reverse swaps do, " +
+            "so the sweeper can claim it");
+
         var swapsAfterRestore = await swapStorage.GetSwaps(walletIds: [testingPrerequisite.walletIdentifier]);
         Assert.That(swapsAfterRestore, Has.Count.GreaterThanOrEqualTo(1));
     }

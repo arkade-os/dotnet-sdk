@@ -5,4 +5,5 @@ public enum SwapNetwork
     Ark,
     BitcoinOnchain,
     Lightning,
+    EvmArbitrum,
 }

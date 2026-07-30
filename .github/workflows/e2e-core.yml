@@ -14,9 +14,11 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/e2e-setup
       # Swap and recovery tests run in dedicated parallel workflows (e2e-swaps, e2e-recovery).
-      # Rotation tests run in e2e-rotation. Run everything else here.
+      # Rotation tests run in e2e-rotation. Evm tests need Anvil (e2e-evm.yml) or the full
+      # Boltz+Anvil stack (e2e-swaps.yml, for Evm+Swaps dual-tagged tests) — this job's
+      # infra has neither. Run everything else here.
       - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery&TestCategory!=Evm"
         timeout-minutes: 20
       - name: Collect docker logs on failure
         if: failure()
