@@ -7,6 +7,7 @@ using NArk.Abstractions.Safety;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
 using NArk.Abstractions.Intents;
+using NArk.Arkade.Hosting;
 using NArk.Core.Services;
 using NArk.Core.Wallet;
 using NArk.Core.Payments;
@@ -48,6 +49,23 @@ builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.CachedBoltzClient>(sp =>
 });
 builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.BoltzClient>(sp =>
     sp.GetRequiredService<NArk.Swaps.Boltz.Client.CachedBoltzClient>());
+
+// ── Arkade asset swaps (covenant-based BTC⇄asset via the solver market) ──
+// The maker funds a covenant offer (TLV offer packet in the funding tx); a solver on the
+// public market fulfils it. Needs the network emulator (covenant co-signer whose key the
+// offer embeds) + solver-registry discovery. Emulator URL is per-network; Mutinynet's is:
+builder.Services.AddEmulatorClient(opts =>
+    opts.ServerUrl = networkConfig == ArkNetworkConfig.Mainnet
+        ? "https://emulator.arkade.sh"
+        : "https://emulator.mutinynet.arkade.sh");
+// SolverDiscoveryService has multiple ctors, so ActivatorUtilities (AddHttpClient<T>) can't pick one
+// in WASM — register explicitly with a plain HttpClient, mirroring the CachedBoltzClient registration.
+builder.Services.AddSingleton(sp => new NArk.ArkadeIntents.Services.SolverDiscoveryService(
+    new HttpClient(),
+    sp.GetService<ILogger<NArk.ArkadeIntents.Services.SolverDiscoveryService>>()));
+builder.Services.AddSingleton<NArk.ArkadeIntents.Services.ArkadeIntentManager>();
+// Watches pending swaps' covenant VTXOs and transitions their status (filled by a solver / cancelled).
+builder.Services.AddSingleton<NArk.ArkadeIntents.Services.ArkadeSwapIntentMonitoringService>();
 
 // ── SDK infrastructure ──
 builder.Services.Configure<NArk.Core.Models.Options.SimpleIntentSchedulerOptions>(opts =>

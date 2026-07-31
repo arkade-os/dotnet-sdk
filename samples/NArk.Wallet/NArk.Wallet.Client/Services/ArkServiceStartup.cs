@@ -46,6 +46,14 @@ public static class ArkServiceStartup
         }
         catch (Exception ex) { logger.LogWarning(ex, "SwapsManagementService failed to start"); }
 
+        // Start Arkade asset-swap monitoring (transitions covenant swaps: filled by a solver / cancelled).
+        try
+        {
+            var arkadeSwaps = services.GetRequiredService<NArk.ArkadeIntents.Services.ArkadeSwapIntentMonitoringService>();
+            await arkadeSwaps.StartAsync(cts.Token);
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "ArkadeSwapIntentMonitoringService failed to start"); }
+
         // Poll boarding UTXOs from the chain. Non-fatal if explorer is unavailable.
         try
         {

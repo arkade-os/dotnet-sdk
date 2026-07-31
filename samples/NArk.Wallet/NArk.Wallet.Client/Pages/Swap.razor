@@ -1,4 +1,10 @@
 @page "/swap"
+@implements IDisposable
+@inject ArkWalletService Ark
+@inject WalletState State
+@using NArk.Wallet.Client.Services
+@using NArk.ArkadeIntents.Models
+@using NArk.ArkadeIntents.SolverRegistry
 
 <div class="page-header">
     <a href="./" class="back-btn">
@@ -8,14 +14,261 @@
 </div>
 
 <div class="px-20">
-    <div style="text-align:center;padding:60px 20px;">
-        <div style="width:64px;height:64px;border-radius:50%;background:rgba(112,67,244,0.12);display:inline-flex;align-items:center;justify-content:center;margin-bottom:20px;">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--arkade-purple-light)" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+
+    @if (State.ActiveWalletId is null)
+    {
+        <p class="text-secondary" style="text-align:center;padding:40px 0;">No active wallet.</p>
+    }
+    else
+    {
+        <!-- ── Create swap ─────────────────────────────────────────── -->
+        <div class="glass-card mb-16">
+            <p style="font-size:14px;font-weight:600;margin-bottom:12px;">Buy an asset with BTC</p>
+
+            @if (_loadingMarkets)
+            {
+                <p class="text-secondary" style="font-size:13px;">Loading markets…</p>
+            }
+            else if (_markets.Count == 0)
+            {
+                <p class="text-secondary" style="font-size:13px;">
+                    No markets available on @Ark.SwapNetworkName. The solver registry may be unreachable.
+                </p>
+            }
+            else
+            {
+                <label class="input-label">Market</label>
+                <select class="input-field mb-12" @onchange="OnMarketChanged">
+                    @foreach (var m in _markets)
+                    {
+                        <option value="@m.Pair" selected="@(m.Pair == _selected?.Pair)">
+                            @m.Pair — via @m.Solver (@(m.FeeBps / 100.0)% fee)
+                        </option>
+                    }
+                </select>
+
+                @if (_selected is not null)
+                {
+                    <label class="input-label">You pay (BTC sats)</label>
+                    <input class="input-field mb-4" type="number" @bind="_depositSats" @bind:event="oninput" @bind:after="OnDepositEdited"
+                           min="@_selected.MinBaseAmount" max="@_selected.MaxBaseAmount" placeholder="e.g. 50000" />
+                    <p class="text-secondary" style="font-size:11px;margin:0 0 12px;">
+                        min @_selected.MinBaseAmount · max @_selected.MaxBaseAmount sats
+                        @if (_price is not null)
+                        {
+                            <span> · price ≈ @_price.Value.ToString("0.########") (atomic @(_selected.QuoteAsset.Ticker ?? "asset")/sat)</span>
+                        }
+                        @if (_suggestedWant > 0)
+                        {
+                            <br />
+                            <span>→ you receive ≈ </span>
+                            <button class="link-btn" @onclick="ApplySuggestedWant">@_suggestedWant @(_selected.QuoteAsset.Ticker ?? "units")</button>
+                            <span> (after @(_selected.FeeBps / 100.0)% fee)</span>
+                        }
+                    </p>
+
+                    <label class="input-label">You receive (@(_selected.QuoteAsset.Ticker ?? "asset") atomic units)</label>
+                    <input class="input-field mb-4" type="number" @bind="_wantAmount" @bind:event="oninput" @bind:after="OnWantEdited" placeholder="want amount" />
+                    <p class="text-secondary" style="font-size:11px;margin:0 0 12px;">
+                        @if (_suggestedDeposit > 0)
+                        {
+                            <span>→ you pay ≈ </span>
+                            <button class="link-btn" @onclick="ApplySuggestedDeposit">@_suggestedDeposit sats</button>
+                            <span> (incl. @(_selected.FeeBps / 100.0)% fee)</span>
+                        }
+                        else
+                        {
+                            <span>Enter how many atomic units of @(_selected.QuoteAsset.Ticker ?? "the asset") you want, or use the estimate above.</span>
+                        }
+                    </p>
+
+                    <button class="btn btn-primary" style="width:100%;" @onclick="CreateSwap"
+                            disabled="@(_busy || _depositSats <= 0 || _wantAmount <= 0)">
+                        @(_busy ? "Creating…" : "Create swap")
+                    </button>
+                }
+            }
+
+            @if (_error is not null)
+            {
+                <p style="color:var(--arkade-red,#e5484d);font-size:12px;margin-top:10px;">@_error</p>
+            }
         </div>
-        <p style="font-size:20px;font-weight:600;margin-bottom:8px;">Coming Soon</p>
-        <p class="text-secondary" style="font-size:14px;line-height:1.5;">
-            Lightning and on-chain swaps via Boltz are being integrated.
-            Use the <strong>Receive</strong> page to receive via Lightning or chain swap in the meantime.
-        </p>
-    </div>
+
+        <!-- ── Active / recent swaps ───────────────────────────────── -->
+        <p style="font-size:13px;font-weight:600;margin:4px 0 8px;">Your swaps</p>
+        @if (_swaps.Count == 0)
+        {
+            <p class="text-secondary" style="font-size:13px;">No swaps yet.</p>
+        }
+        else
+        {
+            @foreach (var s in _swaps)
+            {
+                <div class="glass-card mb-8" style="padding:12px 14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <p style="font-size:13px;font-weight:600;margin:0;">
+                                @s.OfferAmount.Satoshi sats → @s.WantAmount.Satoshi @ShortAsset(s.ToAssetId)
+                            </p>
+                            <p class="text-secondary" style="font-size:11px;margin:2px 0 0;">
+                                @StatusLabel(s.Status) · @s.CreatedAt.LocalDateTime.ToString("g")
+                            </p>
+                        </div>
+                        @if (s.Status == ArkadeSwapIntentStatus.Pending)
+                        {
+                            <button class="btn btn-sm btn-secondary" @onclick="() => Cancel(s.Id)" disabled="@_busy">Cancel</button>
+                        }
+                    </div>
+                </div>
+            }
+        }
+    }
 </div>
+
+@code {
+    private readonly List<IndexedMarket> _markets = new();
+    private readonly List<ArkadeSwapIntent> _swaps = new();
+    private IndexedMarket? _selected;
+    private long _depositSats;
+    private long _wantAmount;
+    private long _suggestedWant;      // ← quoted from the deposit ("you receive")
+    private long _suggestedDeposit;   // ← quoted from the want   ("you pay")
+    private decimal? _price;
+    private bool _loadingMarkets = true;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.OnChange += OnStateChanged;
+        await LoadMarkets();
+        await LoadSwaps();
+    }
+
+    private async Task LoadMarkets()
+    {
+        _loadingMarkets = true;
+        try
+        {
+            var markets = await Ark.GetSwapMarkets();
+            _markets.Clear();
+            // BTC-base markets only — this UI funds with BTC (base) and buys the quote asset.
+            _markets.AddRange(markets.Where(m => m.BaseAsset.Id == "btc"));
+            _selected = _markets.FirstOrDefault();
+            await RefreshPrice();
+        }
+        catch (Exception ex) { _error = $"Failed to load markets: {ex.Message}"; }
+        finally { _loadingMarkets = false; }
+    }
+
+    private async Task LoadSwaps()
+    {
+        if (State.ActiveWalletId is null) return;
+        try
+        {
+            var swaps = await Ark.GetAssetSwaps(State.ActiveWalletId);
+            _swaps.Clear();
+            _swaps.AddRange(swaps.OrderByDescending(s => s.CreatedAt));
+        }
+        catch { /* non-fatal */ }
+        StateHasChanged();
+    }
+
+    private async Task OnMarketChanged(ChangeEventArgs e)
+    {
+        _selected = _markets.FirstOrDefault(m => m.Pair == (string?)e.Value);
+        await RefreshPrice();
+    }
+
+    private async Task RefreshPrice()
+    {
+        _price = null;
+        _suggestedWant = 0;
+        _suggestedDeposit = 0;
+        if (_selected is null) return;
+        try
+        {
+            _price = await Ark.GetMarketPrice(_selected);
+            RecomputeSuggested();
+            RecomputeRequiredDeposit();
+        }
+        catch { _price = null; }
+        StateHasChanged();
+    }
+
+    // Two-way quote, mirroring the discovery-client's quoteOffer (name one side, get the other):
+    //   • edit the deposit  → quote how much asset you receive  (ComputeWantAmount, forward)
+    //   • edit the want      → quote how many sats you must pay  (ComputeRequiredDeposit, inverse)
+    // _price is the atomic quote-per-base price from the feed (FetchPriceAsync ≙ deriveAtomicPrice),
+    // so no extra decimal scaling is needed. Both concede feeBps + the default safety cushion, which
+    // keeps the resulting offer inside the solver's slippage band. Both stay editable.
+    private void RecomputeSuggested()
+    {
+        _suggestedWant = (_selected is null || _price is null || _depositSats <= 0)
+            ? 0
+            : NArk.ArkadeIntents.Services.SolverDiscoveryService.ComputeWantAmount(
+                _depositSats, _price.Value, _selected.FeeBps);
+    }
+
+    private void RecomputeRequiredDeposit()
+    {
+        _suggestedDeposit = (_selected is null || _price is null || _wantAmount <= 0)
+            ? 0
+            : NArk.ArkadeIntents.Services.SolverDiscoveryService.ComputeRequiredDeposit(
+                _wantAmount, _price.Value, _selected.FeeBps);
+    }
+
+    private void OnDepositEdited() => RecomputeSuggested();   // "you pay" changed → requote "you receive"
+    private void OnWantEdited() => RecomputeRequiredDeposit(); // "you receive" changed → requote "you pay"
+
+    private void ApplySuggestedWant()
+    {
+        if (_suggestedWant > 0) { _wantAmount = _suggestedWant; RecomputeRequiredDeposit(); }
+    }
+
+    private void ApplySuggestedDeposit()
+    {
+        if (_suggestedDeposit > 0) { _depositSats = _suggestedDeposit; RecomputeSuggested(); }
+    }
+
+    private async Task CreateSwap()
+    {
+        if (_selected is null || State.ActiveWalletId is null) return;
+        _busy = true; _error = null;
+        try
+        {
+            await Ark.CreateBtcToAssetSwap(State.ActiveWalletId, _selected, _depositSats, _wantAmount);
+            _depositSats = 0; _wantAmount = 0;
+            await LoadSwaps();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task Cancel(string swapId)
+    {
+        _busy = true; _error = null;
+        try
+        {
+            await Ark.CancelAssetSwap(swapId);
+            await LoadSwaps();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private static string StatusLabel(ArkadeSwapIntentStatus s) => s switch
+    {
+        ArkadeSwapIntentStatus.Pending => "Pending — waiting for a solver",
+        ArkadeSwapIntentStatus.Cancelling => "Cancelling…",
+        ArkadeSwapIntentStatus.Cancelled => "Cancelled",
+        _ => s.ToString(),
+    };
+
+    private static string ShortAsset(string? id) =>
+        string.IsNullOrEmpty(id) || id.Length <= 10 ? (id ?? "") : id[..8] + "…";
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() => State.OnChange -= OnStateChanged;
+}
