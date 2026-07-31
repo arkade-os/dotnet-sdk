@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Arkade.Covclaim;
+using NArk.Core.Contracts;
 
 namespace NArk.Arkade.Hosting;
 
@@ -13,6 +14,12 @@ public static class CovclaimdServiceCollectionExtensions
     /// <see cref="ICovclaimdClient"/>, configures <see cref="CovclaimdOptions"/>,
     /// and wires a typed <see cref="HttpClient"/> via <see cref="IHttpClientFactory"/>.
     /// </summary>
+    /// <remarks>
+    /// Also registers <see cref="CovclaimdCovenantClaimProvider"/> as the application's
+    /// <see cref="ICovenantClaimProvider"/>, which is what lets swap code opt into
+    /// covenant claims. Until this is called no provider exists, and every swap path
+    /// behaves exactly as it did before covenant claims were available.
+    /// </remarks>
     /// <param name="services">The DI service collection.</param>
     /// <param name="configure">
     /// Setter for <see cref="CovclaimdOptions"/>; at minimum
@@ -28,6 +35,7 @@ public static class CovclaimdServiceCollectionExtensions
         services.Configure(configure);
         services.AddHttpClient<CovclaimdClient>(CovclaimdOptions.HttpClientName);
         services.AddSingleton<ICovclaimdClient>(sp => sp.GetRequiredService<CovclaimdClient>());
+        services.AddSingleton<ICovenantClaimProvider, CovclaimdCovenantClaimProvider>();
         return services;
     }
 }
