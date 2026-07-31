@@ -7,6 +7,12 @@ jobs:
   test:
     name: Arkade E2E Tests
     runs-on: ubuntu-latest
+    env:
+      # solverd defaults to level 4 (info), which logs nothing once it is up — a swap the solver
+      # silently declines to fill is indistinguishable from one it never saw. Level 5 (debug) makes
+      # the fill decision visible in the solver logs collected below. A pre-set variable wins over
+      # regtest/.env.defaults (see lib/env.mjs), so this reaches the container.
+      SOLVER_LOG_LEVEL: '5'
     steps:
       - uses: actions/checkout@v4
         with:
