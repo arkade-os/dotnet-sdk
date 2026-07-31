@@ -7,13 +7,14 @@ namespace NArk.Arkade.Emulator;
 
 /// <summary>
 /// <see cref="IBatchSessionExtension"/> that drives emulator co-signing
-/// at the two PSBT-emitting points of a batch flow. Idempotent — passes
+/// at the PSBT-emitting points of a batch flow. Idempotent — passes
 /// PSBTs through unchanged when no input in the batch is arkade-bound.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Both phases route through the emulator's <c>POST /v1/tx</c> endpoint
-/// via <see cref="ArkadePsbtExtensions.CoSignWithEmulatorAsync"/>. The
+/// <see cref="BatchExtensionPhase.PostTreeSigning"/> routes through the
+/// emulator's <c>POST /v1/tx</c> endpoint via
+/// <see cref="ArkadePsbtExtensions.CoSignWithEmulatorAsync"/>. The
 /// emulator internally decides whether to sign each input (only those
 /// whose attached ArkadeScript validates against its tweaked key) and
 /// returns the union of the input PSBT and its own partial sigs. Inputs
@@ -22,13 +23,16 @@ namespace NArk.Arkade.Emulator;
 /// <see cref="ShouldHandleAsync"/>.
 /// </para>
 /// <para>
-/// The dedicated <c>POST /v1/finalization</c> endpoint (which carries a
-/// signed-intent envelope alongside forfeits and commitment tx) is not
-/// used here — that path requires threading the emulator-co-signed
-/// intent proof from intent-registration time, which lives upstream of
-/// <c>BatchSession</c>. Once that wire-up exists, this extension can
-/// switch <c>PreForfeitFinalization</c> to call <c>SubmitFinalizationAsync</c>
-/// instead.
+/// <see cref="BatchExtensionPhase.PreForfeitFinalization"/> is deliberately
+/// <em>not</em> implemented and throws. Forfeits are signed by the emulator's
+/// dedicated <c>POST /v1/finalization</c> endpoint, which "only signs if the
+/// signer's signature is found in the intent proof" and additionally requires
+/// the connector tree and commitment tx. <c>POST /v1/tx</c> carries none of
+/// that and does not sign forfeits, so routing this phase there would yield
+/// forfeits with an incomplete witness rather than an error. Wiring it up
+/// means threading the emulator-co-signed intent proof from
+/// intent-registration time, which lives upstream of <c>BatchSession</c>;
+/// until then, failing loudly beats silently producing unspendable forfeits.
 /// </para>
 /// </remarks>
 public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
@@ -36,6 +40,9 @@ public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
     private readonly IEmulatorProvider _emulator;
     private readonly ILogger<ArkadeBatchSessionExtension>? _logger;
 
+    /// <summary>Creates the extension over an emulator provider.</summary>
+    /// <param name="emulator">The emulator co-signing client.</param>
+    /// <param name="logger">Optional logger; co-signing is silent when omitted.</param>
     public ArkadeBatchSessionExtension(
         IEmulatorProvider emulator,
         ILogger<ArkadeBatchSessionExtension>? logger = null)
@@ -79,6 +86,19 @@ public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
             return psbts;
         }
 
+        // Forfeits need POST /v1/finalization (signed intent proof + connector tree +
+        // commitment tx), not POST /v1/tx. Sending them to /v1/tx returns a PSBT with no
+        // forfeit signature, which would look like success — refuse instead. See the
+        // class remarks for what wiring this up requires.
+        if (phase == BatchExtensionPhase.PreForfeitFinalization)
+        {
+            throw new NotSupportedException(
+                "ArkadeBatchSessionExtension cannot co-sign forfeits: the emulator signs those via " +
+                "POST /v1/finalization, which requires the emulator-co-signed intent proof from " +
+                "intent-registration time (plus the connector tree and commitment tx). Submitting " +
+                "them to POST /v1/tx would produce forfeits with an incomplete witness.");
+        }
+
         _logger?.LogInformation(
             "ArkadeBatchSessionExtension: co-signing {Count} PSBT(s) at {Phase}",
             psbts.Count, phase);
@@ -88,8 +108,7 @@ public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
         {
             try
             {
-                signed[i] = await psbts[i].CoSignWithEmulatorAsync(
-                    _emulator, checkpointTxs: null, cancellationToken);
+                signed[i] = await psbts[i].CoSignWithEmulatorAsync(_emulator, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

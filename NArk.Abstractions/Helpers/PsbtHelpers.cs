@@ -64,6 +64,8 @@ public static class PsbtHelpers
     /// an introspection opcode reads for this input. Stored under
     /// <c>[0xde]||"prevarktx"</c> (emulator <c>ArkFieldPrevArkTx</c>).
     /// </summary>
+    /// <param name="psbtInput">The PSBT input to write the field to.</param>
+    /// <param name="prevArkTx">The previous Arkade transaction to store.</param>
     public static void SetArkFieldPrevArkTx(this PSBTInput psbtInput, Transaction prevArkTx)
     {
         ArgumentNullException.ThrowIfNull(prevArkTx);
@@ -77,6 +79,8 @@ public static class PsbtHelpers
     /// <c>/v1/onchain-tx</c> path). Stored under <c>[0xde]||"prevouttx"</c>
     /// (emulator <c>ArkFieldPrevoutTx</c>).
     /// </summary>
+    /// <param name="psbtInput">The PSBT input to write the field to.</param>
+    /// <param name="prevoutTx">The previous output transaction to store.</param>
     public static void SetArkFieldPrevoutTx(this PSBTInput psbtInput, Transaction prevoutTx)
     {
         ArgumentNullException.ThrowIfNull(prevoutTx);
@@ -84,19 +88,46 @@ public static class PsbtHelpers
             prevoutTx.ToBytes();
     }
 
-    /// <summary>Reads the <c>prevarktx</c> ark field, or <c>null</c> if absent.</summary>
+    /// <summary>Reads the <c>prevarktx</c> ark field.</summary>
+    /// <param name="psbtInput">The PSBT input to read the field from.</param>
+    /// <param name="network">The network to deserialize the transaction against.</param>
+    /// <returns>
+    /// The previous Arkade transaction, or <c>null</c> if the field is absent or malformed.
+    /// </returns>
     public static Transaction? GetArkFieldPrevArkTx(this PSBTInput psbtInput, Network network) =>
         GetArkFieldTransaction(psbtInput, PrevArkTx, network);
 
-    /// <summary>Reads the <c>prevouttx</c> ark field, or <c>null</c> if absent.</summary>
+    /// <summary>Reads the <c>prevouttx</c> ark field.</summary>
+    /// <param name="psbtInput">The PSBT input to read the field from.</param>
+    /// <param name="network">The network to deserialize the transaction against.</param>
+    /// <returns>
+    /// The previous output transaction, or <c>null</c> if the field is absent or malformed.
+    /// </returns>
     public static Transaction? GetArkFieldPrevoutTx(this PSBTInput psbtInput, Network network) =>
         GetArkFieldTransaction(psbtInput, PrevoutTx, network);
 
     private static Transaction? GetArkFieldTransaction(PSBTInput psbtInput, string fieldName, Network network)
     {
+        ArgumentNullException.ThrowIfNull(psbtInput);
         ArgumentNullException.ThrowIfNull(network);
         var key = new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(fieldName)).ToArray();
-        return psbtInput.Unknown.TryGetValue(key, out var value) ? Transaction.Load(value, network) : null;
+        if (!psbtInput.Unknown.TryGetValue(key, out var value))
+            return null;
+
+        // These fields arrive from untrusted PSBT data (an emulator response or a remote
+        // counterparty) and Transaction.Load throws on truncated/corrupt bytes. A caller
+        // reading an optional field shouldn't have to guard against that, so a malformed
+        // field reads the same as an absent one.
+        try
+        {
+            return Transaction.Load(value, network);
+        }
+        catch (Exception ex) when (
+            ex is EndOfStreamException or FormatException or OverflowException
+                or ArgumentException or IndexOutOfRangeException)
+        {
+            return null;
+        }
     }
 
 

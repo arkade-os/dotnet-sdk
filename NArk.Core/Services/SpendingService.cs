@@ -267,11 +267,15 @@ public class SpendingService(
                         + ArkTxWeightEstimator.P2AOutputWu
                         + EstimateAssetPacketWu(assetRequirements, outputs);
         var inputWeightBudget = serverInfo.MaxTxWeight - ArkTxWeightEstimator.BaseTxWu - outputsWu;
-        var selectedCoins = assetRequirements.Count > 0
+        var selected = assetRequirements.Count > 0
             ? coinSelector.SelectCoins([.. coins], btcTarget, assetRequirements, serverInfo.Dust,
                 hasExplicitSubdustOutput, maxOpReturn, inputWeightBudget)
             : coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
                 hasExplicitSubdustOutput, maxOpReturn, inputWeightBudget);
+        // Materialize once, as a list: the asset and extension packets index the selected
+        // coins by position (index i == vin i on the resulting tx), and the selector's
+        // return type carries no ordering guarantee.
+        IReadOnlyList<ArkCoin> selectedCoins = [.. selected];
         logger?.LogDebug("Selected {SelectedCount} coins for spending", selectedCoins.Count);
 
         try
@@ -398,13 +402,12 @@ public class SpendingService(
     /// carrying. All packets share one OP_RETURN so the spend stays within the
     /// server's OP_RETURN-output limit.
     /// </summary>
-    private TxOut? BuildExtensionOutput(IReadOnlyCollection<ArkCoin> inputs, ArkTxOut[] outputs,
+    // Takes IReadOnlyList, not IReadOnlyCollection: the asset packet and the extension
+    // providers index this by position (index i == vin i on the resulting tx), and only
+    // a list type carries that ordering guarantee.
+    private TxOut? BuildExtensionOutput(IReadOnlyList<ArkCoin> coinsByVin, ArkTxOut[] outputs,
         IReadOnlyList<IExtensionPacket>? extensionPackets = null)
     {
-        // Materialize once so the asset packet and the providers index the same
-        // coin order (index i == vin i on the resulting tx).
-        var coinsByVin = inputs as IReadOnlyList<ArkCoin> ?? inputs.ToList();
-
         var packets = new List<IExtensionPacket>();
         if (BuildAssetPacket(coinsByVin, outputs) is { } assetPacket)
             packets.Add(assetPacket);
@@ -419,10 +422,9 @@ public class SpendingService(
         return packets.Count > 0 ? new Extension(packets).ToTxOut() : null;
     }
 
-    private static IExtensionPacket? BuildAssetPacket(IReadOnlyCollection<ArkCoin> inputs, ArkTxOut[] outputs)
+    private static IExtensionPacket? BuildAssetPacket(IReadOnlyList<ArkCoin> inputList, ArkTxOut[] outputs)
     {
         var assetInputTuples = new List<(string assetId, ushort vin, ulong amount)>();
-        var inputList = inputs.ToList();
         for (var i = 0; i < inputList.Count; i++)
         {
             if (inputList[i].Assets is not { Count: > 0 } assets) continue;

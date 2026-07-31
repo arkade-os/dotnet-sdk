@@ -22,6 +22,13 @@ public sealed class ArkadeProgramFunctionScriptBuilder : GenericTapScript, IArka
     /// <inheritdoc />
     public IReadOnlyList<TaprootPubKey> EmulatorKeys { get; }
 
+    /// <summary>Creates a script builder for one compiled program function.</summary>
+    /// <param name="ops">The tapscript ops for this function's leaf.</param>
+    /// <param name="arkadeScript">The ArkadeScript the emulator validates before co-signing.</param>
+    /// <param name="emulatorKey">The emulator's tweaked key for <paramref name="arkadeScript"/>.</param>
+    /// <param name="arkadeScriptWitness">
+    /// Optional call-time witness satisfying <paramref name="arkadeScript"/>.
+    /// </param>
     public ArkadeProgramFunctionScriptBuilder(
         IEnumerable<Op> ops, byte[] arkadeScript, TaprootPubKey emulatorKey, WitScript? arkadeScriptWitness = null)
         : base(ops)

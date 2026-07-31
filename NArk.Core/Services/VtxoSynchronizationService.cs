@@ -801,7 +801,7 @@ public class VtxoSynchronizationService : IAsyncDisposable
         {
             count++;
             _logger?.LogInformation("PollScriptsForVtxos: got VTXO {Outpoint} script={Script} spent={IsSpent}",
-                vtxo.OutPoint, vtxo.Script, vtxo.SpentByTransactionId != null);
+                vtxo.OutPoint, vtxo.Script, !string.IsNullOrEmpty(vtxo.SpentByTransactionId));
             await _vtxoStorage.UpsertVtxo(vtxo, cancellationToken);
         }
 

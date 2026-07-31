@@ -148,8 +148,10 @@ public class ArkadePsbtExtensionsTests
         var checkpoint = BuildEmptyPsbt(network, alice, bob);
 
         var emulator = Substitute.For<IEmulatorProvider>();
+        // A fully-submitted spend returns the ark tx plus one signed checkpoint per
+        // checkpoint submitted.
         emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(new EmulatorSubmitTxResult(arkTx.ToBase64(), [])));
+            .Returns(Task.FromResult(new EmulatorSubmitTxResult(arkTx.ToBase64(), [checkpoint.ToBase64()])));
 
         var submitter = new ArkadeEmulatorSpendSubmitter(emulator);
         await submitter.SubmitAsync([], arkTx, [checkpoint], CancellationToken.None);
@@ -158,6 +160,46 @@ public class ArkadePsbtExtensionsTests
             arkTx.ToBase64(),
             Arg.Is<IReadOnlyList<string>>(l => l.Count == 1 && l[0] == checkpoint.ToBase64()),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public void SpendSubmitter_PartialEmulatorResponse_Throws()
+    {
+        // POST /v1/tx forwards to arkd and finalizes only when this emulator is the last
+        // required non-arkd signer; otherwise it returns just its own signatures and the
+        // spend was never submitted. That must surface rather than look like success.
+        var network = Network.RegTest;
+        var (alice, bob, _) = MakeKeys();
+        var arkTx = BuildEmptyPsbt(network, alice, bob);
+        var checkpoint = BuildEmptyPsbt(network, alice, bob);
+
+        var emulator = Substitute.For<IEmulatorProvider>();
+        emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new EmulatorSubmitTxResult(arkTx.ToBase64(), [])));
+
+        var submitter = new ArkadeEmulatorSpendSubmitter(emulator);
+
+        Assert.That(
+            async () => await submitter.SubmitAsync([], arkTx, [checkpoint], CancellationToken.None),
+            Throws.InstanceOf<InvalidOperationException>());
+    }
+
+    [Test]
+    public void SpendSubmitter_EmptySignedArkTx_Throws()
+    {
+        var network = Network.RegTest;
+        var (alice, bob, _) = MakeKeys();
+        var arkTx = BuildEmptyPsbt(network, alice, bob);
+
+        var emulator = Substitute.For<IEmulatorProvider>();
+        emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new EmulatorSubmitTxResult(string.Empty, [])));
+
+        var submitter = new ArkadeEmulatorSpendSubmitter(emulator);
+
+        Assert.That(
+            async () => await submitter.SubmitAsync([], arkTx, [], CancellationToken.None),
+            Throws.InstanceOf<InvalidOperationException>());
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────

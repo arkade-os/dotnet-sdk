@@ -92,12 +92,17 @@ public static class ArkadePsbtExtensions
     /// </remarks>
     /// <param name="psbt">PSBT with user partial sigs already attached.</param>
     /// <param name="emulator">Provider client for the configured emulator instance.</param>
-    /// <param name="checkpointTxs">Optional checkpoint PSBTs; pass an empty list when not used.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The co-signed ark tx PSBT.</returns>
+    /// <remarks>
+    /// Deliberately carries no checkpoint parameter: it would only be able to return the
+    /// co-signed ark tx, silently dropping the emulator's <c>signed_checkpoint_txs</c>.
+    /// Callers that submit checkpoints — <see cref="ArkadeEmulatorSpendSubmitter"/> — call
+    /// <see cref="IEmulatorProvider.SubmitTxAsync"/> directly and consume both halves.
+    /// </remarks>
     public static async Task<PSBT> CoSignWithEmulatorAsync(
         this PSBT psbt,
         IEmulatorProvider emulator,
-        IReadOnlyList<string>? checkpointTxs = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(psbt);
@@ -105,7 +110,7 @@ public static class ArkadePsbtExtensions
 
         var resp = await emulator.SubmitTxAsync(
             psbt.ToBase64(),
-            checkpointTxs ?? Array.Empty<string>(),
+            Array.Empty<string>(),
             cancellationToken);
 
         // The emulator returns a PSBT that's the union of the input PSBT

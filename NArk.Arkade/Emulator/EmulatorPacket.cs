@@ -132,7 +132,7 @@ public sealed class EmulatorPacket : IExtensionPacket
                 throw new ArgumentException(
                     $"script for vin {entry.Vin} too long: {entry.Script.Length} > {MaxScriptLength}",
                     nameof(entries));
-            var witnessLength = EncodePushList(entry.Witness).Length;
+            var witnessLength = MeasurePushList(entry.Witness);
             if (witnessLength > MaxWitnessLength)
                 throw new ArgumentException(
                     $"witness for vin {entry.Vin} too long: {witnessLength} > {MaxWitnessLength}",
@@ -164,6 +164,30 @@ public sealed class EmulatorPacket : IExtensionPacket
         return ms.ToArray();
     }
 
+    /// <summary>
+    /// Encoded length of <see cref="EncodePushList"/> without building the blob.
+    /// <see cref="Validate"/> runs on untrusted input and only needs the length,
+    /// so measuring arithmetically avoids materializing up to
+    /// <see cref="MaxEntryCount"/> × <see cref="MaxWitnessLength"/> transient bytes
+    /// just to discard them.
+    /// </summary>
+    /// <param name="pushes">The stack pushes that would be encoded.</param>
+    /// <returns>The number of bytes <see cref="EncodePushList"/> would produce.</returns>
+    private static long MeasurePushList(IReadOnlyList<byte[]> pushes)
+    {
+        long total = CompactSizeLength((ulong)pushes.Count);
+        foreach (var push in pushes)
+        {
+            ArgumentNullException.ThrowIfNull(push);
+            total += CompactSizeLength((ulong)push.Length) + push.Length;
+        }
+        return total;
+    }
+
+    /// <summary>Byte length of <paramref name="value"/> under the compact-size encoding.</summary>
+    private static int CompactSizeLength(ulong value) =>
+        value < 0xfd ? 1 : value <= 0xffff ? 3 : value <= 0xffffffff ? 5 : 9;
+
     /// <summary>Inverse of <see cref="EncodePushList"/>.</summary>
     public static IReadOnlyList<byte[]> DecodePushList(byte[] witness)
     {
@@ -172,8 +196,15 @@ public sealed class EmulatorPacket : IExtensionPacket
         var pos = 0;
 
         var count = ReadCompactSize(span, ref pos);
-        if (count > int.MaxValue)
-            throw new FormatException($"witness push count too large: {count}");
+        // Every push costs at least one byte (its own compact-size length prefix), so a
+        // count exceeding the bytes left cannot be satisfiable. Rejecting it here stops a
+        // 5-byte blob declaring 0x7fffffff pushes from pre-sizing a ~2^31-entry list and
+        // throwing OutOfMemoryException — reachable from untrusted input via
+        // FromTransaction → ParseEntries → DecodePushList.
+        var remaining = (ulong)(span.Length - pos);
+        if (count > remaining)
+            throw new FormatException(
+                $"witness push count {count} exceeds remaining {remaining} bytes");
 
         var pushes = new List<byte[]>((int)count);
         for (var i = 0UL; i < count; i++)

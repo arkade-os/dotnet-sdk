@@ -52,6 +52,28 @@ public class PsbtHelpersPrevTxTests
         Assert.That(SingleInputPsbt().Inputs[0].GetArkFieldPrevoutTx(Network.RegTest), Is.Null);
     }
 
+    [Test]
+    [TestCase("prevouttx")]
+    [TestCase("prevarktx")]
+    public void GetPrevTx_MalformedField_ReturnsNull_DoesNotThrow(string fieldName)
+    {
+        // The field arrives from untrusted PSBT data (an emulator response or a remote
+        // counterparty), so a truncated/corrupt value must read as absent rather than
+        // throwing out of an accessor documented to return null.
+        var input = SingleInputPsbt().Inputs[0];
+        var key = new byte[] { 0xde }.Concat(Encoding.UTF8.GetBytes(fieldName)).ToArray();
+        input.Unknown[key] = SampleTx(Money.Coins(1)).ToBytes()[..8]; // truncated mid-transaction
+
+        Assert.That(() => fieldName == "prevouttx"
+                ? input.GetArkFieldPrevoutTx(Network.RegTest)
+                : input.GetArkFieldPrevArkTx(Network.RegTest),
+            Throws.Nothing);
+
+        Assert.That(fieldName == "prevouttx"
+            ? input.GetArkFieldPrevoutTx(Network.RegTest)
+            : input.GetArkFieldPrevArkTx(Network.RegTest), Is.Null);
+    }
+
     private static Transaction SampleTx(Money amount)
     {
         var tx = Transaction.Create(Network.RegTest);

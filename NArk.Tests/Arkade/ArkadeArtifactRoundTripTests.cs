@@ -196,4 +196,31 @@ public class ArkadeArtifactRoundTripTests
         Assert.That(covenant.Asm, Is.EqualTo(new AsmToken[] { "OP_TXID" }));
         Assert.That(covenant.Witness, Is.Null);
     }
+
+    [Test]
+    public void Tokens_AreHashable_ForEveryKind()
+    {
+        // Text is null on Number and Bytes tokens, so hashing them exercises
+        // HashCode.Add(null, StringComparer.Ordinal). That overload is specified as
+        // `value is null ? 0 : comparer.GetHashCode(value)`, so a null Text hashes to 0
+        // rather than throwing — which is what lets these tokens be used as dictionary
+        // keys or run through Distinct().
+        var tokens = new[]
+        {
+            AsmToken.FromText("OP_TXID"),
+            AsmToken.FromNumber(BigInteger.Parse("123456789012345678901234567890")),
+            AsmToken.FromNumber(BigInteger.Zero),
+            AsmToken.FromBytes(Convert.FromHexString("deadbeef")),
+        };
+
+        Assert.That(() => tokens.Select(t => t.GetHashCode()).ToArray(), Throws.Nothing);
+        Assert.That(() => new HashSet<AsmToken>(tokens), Throws.Nothing);
+        Assert.That(tokens.Distinct().Count(), Is.EqualTo(4));
+
+        // Equal tokens must agree on their hash, or dictionary lookups miss.
+        Assert.That(AsmToken.FromBytes(Convert.FromHexString("deadbeef")).GetHashCode(),
+            Is.EqualTo(AsmToken.FromBytes(Convert.FromHexString("deadbeef")).GetHashCode()));
+        Assert.That(AsmToken.FromNumber(BigInteger.One).GetHashCode(),
+            Is.EqualTo(AsmToken.FromNumber(BigInteger.One).GetHashCode()));
+    }
 }

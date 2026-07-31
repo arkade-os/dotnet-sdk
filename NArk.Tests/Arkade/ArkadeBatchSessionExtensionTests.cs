@@ -59,7 +59,6 @@ public class ArkadeBatchSessionExtensionTests
     }
 
     [TestCase(BatchExtensionPhase.PostTreeSigning)]
-    [TestCase(BatchExtensionPhase.PreForfeitFinalization)]
     public async Task CoSign_DispatchesEachPsbtToEmulator(BatchExtensionPhase phase)
     {
         var coins = new[] { MakeCoin(MakeArkadeBuilder()) };
@@ -77,6 +76,23 @@ public class ArkadeBatchSessionExtensionTests
         Assert.That(signed, Has.Count.EqualTo(psbts.Length));
         await _emulator.Received(psbts.Length).SubmitTxAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public void CoSign_RefusesForfeits_RatherThanRoutingThemToSubmitTx()
+    {
+        // The emulator signs forfeits via POST /v1/finalization, which additionally needs
+        // the signed intent proof, connector tree and commitment tx. POST /v1/tx does not
+        // sign forfeits, so routing this phase there would return an unsigned-forfeit PSBT
+        // that reads as success. Until the intent proof is threaded through from
+        // registration time, refuse loudly.
+        var coins = new[] { MakeCoin(MakeArkadeBuilder()) };
+        var psbts = new[] { BuildEmptyPsbt() };
+
+        Assert.That(
+            async () => await _sut.CoSignAsync(
+                BatchExtensionPhase.PreForfeitFinalization, psbts, coins, CancellationToken.None),
+            Throws.InstanceOf<NotSupportedException>());
     }
 
     [Test]

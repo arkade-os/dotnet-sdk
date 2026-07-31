@@ -42,9 +42,31 @@ public sealed class ArkadeEmulatorSpendSubmitter(
             "ArkadeEmulatorSpendSubmitter: submitting covenant spend with {Count} checkpoint(s) to the emulator",
             checkpoints.Count);
 
-        await emulator.SubmitTxAsync(
+        var response = await emulator.SubmitTxAsync(
             arkTx.ToBase64(),
             [.. checkpoints.Select(c => c.ToBase64())],
             cancellationToken);
+
+        // POST /v1/tx forwards to arkd and finalizes only when this emulator is the last
+        // required non-arkd signer; otherwise it returns just its own signatures and the
+        // spend was never submitted. Discarding the response makes those two outcomes
+        // indistinguishable, so assert the shape this handler's contract depends on
+        // instead of assuming it.
+        if (string.IsNullOrEmpty(response.SignedArkTx))
+        {
+            throw new InvalidOperationException(
+                "Emulator returned no signed ark tx for a covenant spend — the spend was not submitted.");
+        }
+
+        if (checkpoints.Count > 0 && response.SignedCheckpointTxs.Count != checkpoints.Count)
+        {
+            throw new InvalidOperationException(
+                $"Emulator returned {response.SignedCheckpointTxs.Count} signed checkpoint(s) for " +
+                $"{checkpoints.Count} submitted — the covenant spend was not fully co-signed.");
+        }
+
+        logger?.LogDebug(
+            "ArkadeEmulatorSpendSubmitter: emulator returned a signed ark tx and {Count} signed checkpoint(s)",
+            response.SignedCheckpointTxs.Count);
     }
 }

@@ -23,6 +23,7 @@ public static class EmulatorServiceCollectionExtensions
     /// Setter for <see cref="EmulatorClientOptions"/>; at minimum the
     /// <see cref="EmulatorClientOptions.ServerUrl"/> must be set.
     /// </param>
+    /// <returns>The same <paramref name="services"/> instance, for chaining.</returns>
     public static IServiceCollection AddEmulatorClient(
         this IServiceCollection services,
         Action<EmulatorClientOptions> configure)
@@ -31,7 +32,23 @@ public static class EmulatorServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configure);
 
         services.Configure(configure);
-        services.AddHttpClient<EmulatorClient>();
+
+        // AddHttpClient registers EmulatorClient as a transient typed client, but the
+        // consumers below (batch extension, packet provider, submit handler) are
+        // singletons, so the client — and its HttpMessageHandler — is captured for the
+        // application's lifetime either way. Registering IEmulatorProvider as transient
+        // would only move the capture, not remove it. Instead, pin the handler and give
+        // it a pooled connection lifetime: connections recycle on their own schedule, so
+        // DNS changes are still picked up without relying on factory handler rotation.
+        // (See "Guidelines for using HttpClient" — long-lived clients + SocketsHttpHandler
+        // with PooledConnectionLifetime.)
+        services.AddHttpClient<EmulatorClient>()
+            .ConfigurePrimaryHttpMessageHandler(static () => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            })
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan);
+
         services.AddSingleton<IEmulatorProvider>(
             sp => sp.GetRequiredService<EmulatorClient>());
         return services;
@@ -43,6 +60,12 @@ public static class EmulatorServiceCollectionExtensions
     /// arkade-bound inputs automatically gets emulator co-signing.
     /// Use when you don't care about wiring the two pieces separately.
     /// </summary>
+    /// <param name="services">The DI service collection.</param>
+    /// <param name="configure">
+    /// Setter for <see cref="EmulatorClientOptions"/>; at minimum the
+    /// <see cref="EmulatorClientOptions.ServerUrl"/> must be set.
+    /// </param>
+    /// <returns>The same <paramref name="services"/> instance, for chaining.</returns>
     public static IServiceCollection AddArkadeEmulator(
         this IServiceCollection services,
         Action<EmulatorClientOptions> configure)

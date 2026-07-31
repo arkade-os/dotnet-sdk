@@ -32,6 +32,17 @@ public sealed class ArkProgramContract : ArkContract
     private readonly ECXOnlyPubKey? _emulatorKey;
     private readonly IReadOnlyList<CompiledArkadeFunction> _compiled;
 
+    /// <summary>Compiles an Arkade program into a spendable contract.</summary>
+    /// <param name="server">Output descriptor for the Ark server's key, bound as <c>$server</c>.</param>
+    /// <param name="program">The parsed program artifact to compile.</param>
+    /// <param name="args">Values for the program's declared params, by name.</param>
+    /// <param name="user">
+    /// Optional descriptor for the wallet's own key, bound as <c>$user</c> when the program declares it.
+    /// </param>
+    /// <param name="emulatorKey">
+    /// Optional emulator signer key; required for functions carrying an ArkadeScript, since the
+    /// emulator's per-script tweaked key becomes a required signer on that leaf.
+    /// </param>
     public ArkProgramContract(
         OutputDescriptor server,
         ArkadeProgram program,
@@ -91,6 +102,7 @@ public sealed class ArkProgramContract : ArkContract
         return augmented ?? args;
     }
 
+    /// <inheritdoc />
     public override string Type => ContractType;
 
     /// <summary>Output descriptor for the wallet's own key, bound as the <c>$user</c> param when the program declares it.</summary>
@@ -103,6 +115,8 @@ public sealed class ArkProgramContract : ArkContract
     public IReadOnlyList<CompiledArkadeFunction> CompiledFunctions => _compiled;
 
     /// <summary>The compiled spending path with the given function name, if any.</summary>
+    /// <param name="name">The function name as declared in the program artifact.</param>
+    /// <returns>The compiled function, or <c>null</c> when the program declares no such function.</returns>
     public CompiledArkadeFunction? FunctionByName(string name)
         => _compiled.FirstOrDefault(f => f.Name == name);
 
@@ -123,6 +137,9 @@ public sealed class ArkProgramContract : ArkContract
     }
 
     /// <summary>Rebuilds a contract from persisted <see cref="ArkContract.GetContractData"/> output.</summary>
+    /// <param name="contractData">The persisted key/value data produced by <c>GetContractData</c>.</param>
+    /// <param name="network">The network to parse descriptors and keys against.</param>
+    /// <returns>The rebuilt contract, compiled against the persisted program and args.</returns>
     public static ArkProgramContract Parse(Dictionary<string, string> contractData, Network network)
     {
         var server = KeyExtensions.ParseOutputDescriptor(contractData["server"], network);
