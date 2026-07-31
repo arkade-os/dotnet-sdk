@@ -1,6 +1,12 @@
 name: E2E Setup
 description: Configure .NET + Node, start regtest infrastructure, build. Requires checkout to have already run.
 
+inputs:
+  profile:
+    description: regtest compose profile(s) to start, comma-separated (e.g. "boltz,delegate" or "solver,boltz").
+    required: false
+    default: boltz,delegate
+
 runs:
   using: composite
   steps:
@@ -12,7 +18,7 @@ runs:
         node-version: '20'
     - name: Start regtest infrastructure
       shell: bash
-      run: node regtest/regtest.mjs start --profile boltz,delegate
+      run: node regtest/regtest.mjs start --profile ${{ inputs.profile }}
     - name: Restore and build
       shell: bash
       run: dotnet build NArk.CI.slnf

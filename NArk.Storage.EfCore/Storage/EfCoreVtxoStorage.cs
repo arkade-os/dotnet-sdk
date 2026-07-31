@@ -70,8 +70,8 @@ public class EfCoreVtxoStorage : IVtxoStorage
                 $"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}",
                 vtxo.Script,
                 vtxo.Amount,
-                vtxo.SpentByTransactionId is not null,
-                vtxo.SettledByTransactionId is not null);
+                !String.IsNullOrEmpty(vtxo.SpentByTransactionId),
+                !String.IsNullOrEmpty(vtxo.SettledByTransactionId));
             VtxosChanged?.Invoke(this, vtxo);
             // Intentionally NOT firing ActiveScriptsChanged here. VTXOs only ever arrive
             // on scripts we already know about (we poll scripts of known contracts), so
