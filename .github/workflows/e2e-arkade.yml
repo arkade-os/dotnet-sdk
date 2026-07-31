@@ -27,7 +27,10 @@ jobs:
           profile: solver,boltz
       - name: Run Arkade E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=ArkadeScript"
-        timeout-minutes: 15
+        # Headroom for the solver-fill polls: a fill normally lands in ~1-3s, but each of the
+        # three swap tests can wait up to SolverFillTimeout when its offer queues behind a
+        # solver settlement round.
+        timeout-minutes: 25
       - name: Collect docker logs on failure
         if: failure()
         run: |

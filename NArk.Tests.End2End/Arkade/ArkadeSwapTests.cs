@@ -129,7 +129,7 @@ public class ArkadeSwapTests
         var makerScript = Convert.ToHexString(
             OfferCodec.Decode(Convert.FromHexString(intent.OfferHex)).MakerPkScript).ToLowerInvariant();
 
-        var filled = await Poll(() => HasAssetVtxo(ctx, makerScript, assetIdHex), TimeSpan.FromSeconds(90));
+        var filled = await Poll(() => HasAssetVtxo(ctx, makerScript, assetIdHex), SolverFillTimeout);
         Assert.That(filled, Is.True, "solver should fulfill the offer — asset VTXO at the maker's address");
     }
 
@@ -175,7 +175,7 @@ public class ArkadeSwapTests
             var fulfilled = await Poll(async () =>
                     (await ctx.IntentStorage.GetArkadeSwapIntents())
                         .FirstOrDefault(s => s.Id == intent.Id)?.Status == ArkadeSwapIntentStatus.Fulfilled,
-                TimeSpan.FromSeconds(90));
+                SolverFillTimeout);
 
             Assert.That(fulfilled, Is.True,
                 "the monitor should transition the intent to Fulfilled once the solver spends the covenant VTXO");
@@ -271,7 +271,7 @@ public class ArkadeSwapTests
                 ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, deposit1, want1, asset));
             var maker1 = Convert.ToHexString(
                 OfferCodec.Decode(Convert.FromHexString(leg1.OfferHex)).MakerPkScript).ToLowerInvariant();
-            if (!await Poll(() => HasAssetVtxo(ctx, maker1, assetIdHex), TimeSpan.FromSeconds(90)))
+            if (!await Poll(() => HasAssetVtxo(ctx, maker1, assetIdHex), SolverFillTimeout))
                 Assert.Ignore("first leg (BTC→asset) did not fill — cannot exercise the reverse");
 
             // Leg 2 — the reverse: deposit half the asset we now hold, want BTC back.
@@ -283,7 +283,7 @@ public class ArkadeSwapTests
             var fulfilled = await Poll(async () =>
                     (await ctx.IntentStorage.GetArkadeSwapIntents())
                         .FirstOrDefault(s => s.Id == leg2.Id)?.Status == ArkadeSwapIntentStatus.Fulfilled,
-                TimeSpan.FromSeconds(90));
+                SolverFillTimeout);
 
             Assert.That(fulfilled, Is.True,
                 "the monitor should transition the asset→BTC intent to Fulfilled once the solver fills it");
@@ -296,6 +296,20 @@ public class ArkadeSwapTests
 
     // ─── Setup + helpers ──────────────────────────────────────────────
 
+    /// <summary>
+    /// How long to wait for the solver to fill an offer.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately far above the ~1–3s a healthy fill takes. The solver interleaves fills
+    /// with its own scheduled settlement rounds, and an offer published just before one lands
+    /// is not filled until that batch completes. Observed in CI: an asset→BTC offer published
+    /// at 14:13:20 sat behind a settlement that ran 14:14:30–14:14:33 and was filled at
+    /// 14:14:51 — 91s, losing a 90s deadline by one second. Solver settlement schedules were
+    /// 70–162s apart in the same run, so any bound near 90s races that cadence rather than
+    /// testing the swap. <see cref="Poll"/> returns as soon as the condition holds, so raising
+    /// the ceiling costs nothing when the fill is prompt.
+    /// </remarks>
+    private static readonly TimeSpan SolverFillTimeout = TimeSpan.FromMinutes(4);
 
     private static async Task<bool> Poll(Func<Task<bool>> condition, TimeSpan timeout)
     {
