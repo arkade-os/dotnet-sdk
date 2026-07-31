@@ -1,0 +1,321 @@
+using System.Buffers.Binary;
+using NArk.Core.Assets;
+using NBitcoin;
+
+namespace NArk.Arkade.Emulator;
+
+/// <summary>
+/// TLV record (type tag <c>0x01</c>) carried inside the same
+/// <see cref="Extension"/> OP_RETURN envelope the asset packet uses, binding
+/// ArkadeScript bytecode + a witness stack to specific transaction inputs
+/// for emulator co-signing.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Wire format inside the TLV payload:
+/// <code>
+/// compactSize(entry_count) +
+///   per entry: u16_le(vin) +
+///              compactSize(script_len) + script_bytes +
+///              compactSize(witness_payload_len) + witness_payload
+/// </code>
+/// where <c>witness_payload</c> is the standard
+/// <c>compactSize(num_pushes) + [compactSize(len)+bytes]*</c> shape produced
+/// by Bitcoin's <c>WriteTxWitness</c> (matching the Go reference's
+/// <c>wire.TxWitness</c>).
+/// </para>
+/// <para>
+/// 1:1 with <c>arkade-os/emulator pkg/arkade/emulator_packet.go</c>
+/// and the ts-sdk's <c>extension/emulator/packet.ts</c>. Fixtures are
+/// vendored verbatim from the emulator's
+/// <c>testdata/emulator_packet.json</c>.
+/// </para>
+/// </remarks>
+public sealed class EmulatorPacket : IExtensionPacket
+{
+    /// <summary>The 1-byte TLV type tag the Extension envelope uses for an Emulator Packet.</summary>
+    public const byte PacketTypeId = 0x01;
+
+    /// <summary>Maximum number of entries in a packet (emulator <c>MaxEntryCount</c>).</summary>
+    public const int MaxEntryCount = 1000;
+
+    /// <summary>Maximum ArkadeScript length per entry, in bytes (emulator <c>MaxScriptLength</c>).</summary>
+    public const int MaxScriptLength = 10_000;
+
+    /// <summary>Maximum encoded witness-blob length per entry, in bytes (emulator <c>MaxWitnessLength</c>).</summary>
+    public const int MaxWitnessLength = 1_000_000;
+
+    /// <summary>Validated, immutable list of entries.</summary>
+    public IReadOnlyList<EmulatorEntry> Entries { get; }
+
+    /// <summary>
+    /// Construct from a list of entries — validates the packet against the
+    /// emulator's rules: 1–<see cref="MaxEntryCount"/> entries, each script
+    /// 1–<see cref="MaxScriptLength"/> bytes, each encoded witness blob
+    /// ≤ <see cref="MaxWitnessLength"/> bytes, and unique <c>Vin</c> values.
+    /// </summary>
+    public EmulatorPacket(IReadOnlyList<EmulatorEntry> entries)
+    {
+        Entries = Validate(entries);
+    }
+
+    byte IExtensionPacket.PacketType => PacketTypeId;
+    /// <inheritdoc cref="IExtensionPacket.SerializePacketData"/>
+    public byte[] SerializePacketData() => SerializeEntries(Entries);
+
+    /// <summary>
+    /// Parse the inner TLV payload bytes into an <see cref="EmulatorPacket"/>.
+    /// Throws <see cref="FormatException"/> on truncated input or trailing
+    /// data; <see cref="ArgumentException"/> on validation rule violations.
+    /// </summary>
+    public static EmulatorPacket FromBytes(byte[] payload) => new(ParseEntries(payload));
+
+    /// <summary>
+    /// Look up the emulator packet riding alongside other packets in an
+    /// already-parsed <see cref="Extension"/>. Returns <c>null</c> when
+    /// the extension carries no emulator record. Re-parses the
+    /// underlying <see cref="UnknownPacket"/> bytes — <see cref="Extension"/>
+    /// itself doesn't know the emulator type natively (different package).
+    /// </summary>
+    public static EmulatorPacket? FromExtension(Extension extension)
+    {
+        ArgumentNullException.ThrowIfNull(extension);
+        foreach (var p in extension.Packets)
+        {
+            switch (p)
+            {
+                case EmulatorPacket already: return already;
+                case UnknownPacket u when u.PacketType == PacketTypeId:
+                    return FromBytes(u.Data);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Convenience: search a transaction's outputs for an Extension OP_RETURN
+    /// and return its embedded emulator packet, or <c>null</c>.
+    /// </summary>
+    public static EmulatorPacket? FromTransaction(Transaction tx)
+    {
+        var ext = Extension.FromTransaction(tx);
+        return ext is null ? null : FromExtension(ext);
+    }
+
+    // ─── Validation rules (matches the emulator reference) ────────
+
+    /// <summary>
+    /// Apply the emulator's validation rules: 1–<see cref="MaxEntryCount"/>
+    /// entries, each script 1–<see cref="MaxScriptLength"/> bytes, each encoded
+    /// witness blob ≤ <see cref="MaxWitnessLength"/> bytes, and unique
+    /// <c>Vin</c>s. Returns a defensive copy on success; throws
+    /// <see cref="ArgumentException"/> on violation.
+    /// </summary>
+    public static IReadOnlyList<EmulatorEntry> Validate(IReadOnlyList<EmulatorEntry> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        if (entries.Count == 0)
+            throw new ArgumentException("empty emulator packet", nameof(entries));
+        if (entries.Count > MaxEntryCount)
+            throw new ArgumentException(
+                $"too many entries: {entries.Count} > {MaxEntryCount}", nameof(entries));
+
+        var seen = new HashSet<ushort>();
+        foreach (var entry in entries)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            ArgumentNullException.ThrowIfNull(entry.Script);
+            ArgumentNullException.ThrowIfNull(entry.Witness);
+            if (entry.Script.Length == 0)
+                throw new ArgumentException($"empty script for vin {entry.Vin}", nameof(entries));
+            if (entry.Script.Length > MaxScriptLength)
+                throw new ArgumentException(
+                    $"script for vin {entry.Vin} too long: {entry.Script.Length} > {MaxScriptLength}",
+                    nameof(entries));
+            var witnessLength = EncodePushList(entry.Witness).Length;
+            if (witnessLength > MaxWitnessLength)
+                throw new ArgumentException(
+                    $"witness for vin {entry.Vin} too long: {witnessLength} > {MaxWitnessLength}",
+                    nameof(entries));
+            if (!seen.Add(entry.Vin))
+                throw new ArgumentException($"duplicate vin {entry.Vin}", nameof(entries));
+        }
+        return entries.ToArray();
+    }
+
+    // ─── Witness "list of pushes" sub-encoding (public for callers
+    //     that want to roundtrip the witness blob outside the packet) ──
+
+    /// <summary>
+    /// Encode a list of stack pushes in the standard
+    /// <c>compactSize(num) + [compactSize(len)+bytes]*</c> shape — matches
+    /// Bitcoin's <c>WriteTxWitness</c>.
+    /// </summary>
+    public static byte[] EncodePushList(IReadOnlyList<byte[]> pushes)
+    {
+        ArgumentNullException.ThrowIfNull(pushes);
+        using var ms = new MemoryStream();
+        WriteCompactSize(ms, (ulong)pushes.Count);
+        foreach (var push in pushes)
+        {
+            ArgumentNullException.ThrowIfNull(push);
+            WriteCompactSlice(ms, push);
+        }
+        return ms.ToArray();
+    }
+
+    /// <summary>Inverse of <see cref="EncodePushList"/>.</summary>
+    public static IReadOnlyList<byte[]> DecodePushList(byte[] witness)
+    {
+        ArgumentNullException.ThrowIfNull(witness);
+        var span = (ReadOnlySpan<byte>)witness;
+        var pos = 0;
+
+        var count = ReadCompactSize(span, ref pos);
+        if (count > int.MaxValue)
+            throw new FormatException($"witness push count too large: {count}");
+
+        var pushes = new List<byte[]>((int)count);
+        for (var i = 0UL; i < count; i++)
+            pushes.Add(ReadCompactSlice(span, ref pos));
+
+        if (pos != span.Length)
+            throw new FormatException($"unexpected {span.Length - pos} trailing bytes in push list");
+
+        return pushes;
+    }
+
+    // ─── Entry list (TLV payload, no envelope) codec ──────────────────
+
+    private static byte[] SerializeEntries(IReadOnlyList<EmulatorEntry> entries)
+    {
+        using var ms = new MemoryStream();
+        WriteCompactSize(ms, (ulong)entries.Count);
+        foreach (var entry in entries)
+        {
+            WriteUInt16Le(ms, entry.Vin);
+            WriteCompactSlice(ms, entry.Script);
+            WriteCompactSlice(ms, EncodePushList(entry.Witness));
+        }
+        return ms.ToArray();
+    }
+
+    private static IReadOnlyList<EmulatorEntry> ParseEntries(byte[] payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        var span = (ReadOnlySpan<byte>)payload;
+        var pos = 0;
+
+        var count = ReadCompactSize(span, ref pos);
+        if (count > (ulong)MaxEntryCount)
+            throw new FormatException($"emulator packet entry count {count} exceeds max {MaxEntryCount}");
+
+        var entries = new List<EmulatorEntry>((int)count);
+        for (var i = 0UL; i < count; i++)
+        {
+            var vin = ReadUInt16Le(span, ref pos);
+            var script = ReadCompactSlice(span, ref pos, MaxScriptLength, "script");
+            var witnessBytes = ReadCompactSlice(span, ref pos, MaxWitnessLength, "witness");
+            var witness = DecodePushList(witnessBytes);
+            entries.Add(new EmulatorEntry(vin, script, witness));
+        }
+
+        if (pos != span.Length)
+            throw new FormatException($"unexpected {span.Length - pos} trailing bytes");
+
+        return Validate(entries);
+    }
+
+    // ─── compactSize / u16 LE / length-prefixed slice helpers ─────────
+
+    private static void WriteCompactSize(Stream s, ulong value)
+    {
+        if (value < 0xfd)
+        {
+            s.WriteByte((byte)value);
+        }
+        else if (value <= 0xffff)
+        {
+            s.WriteByte(0xfd);
+            Span<byte> b = stackalloc byte[2];
+            BinaryPrimitives.WriteUInt16LittleEndian(b, (ushort)value);
+            s.Write(b);
+        }
+        else if (value <= 0xffffffff)
+        {
+            s.WriteByte(0xfe);
+            Span<byte> b = stackalloc byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(b, (uint)value);
+            s.Write(b);
+        }
+        else
+        {
+            s.WriteByte(0xff);
+            Span<byte> b = stackalloc byte[8];
+            BinaryPrimitives.WriteUInt64LittleEndian(b, value);
+            s.Write(b);
+        }
+    }
+
+    private static ulong ReadCompactSize(ReadOnlySpan<byte> span, ref int pos)
+    {
+        if (pos + 1 > span.Length) throw new FormatException("compactSize: unexpected end of stream");
+        var first = span[pos++];
+        return first switch
+        {
+            < 0xfd => first,
+            0xfd => ReadUInt16Le(span, ref pos),
+            0xfe => ReadUInt32Le(span, ref pos),
+            _ /* 0xff */ => ReadUInt64Le(span, ref pos),
+        };
+    }
+
+    private static void WriteUInt16Le(Stream s, ushort value)
+    {
+        Span<byte> b = stackalloc byte[2];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, value);
+        s.Write(b);
+    }
+
+    private static ushort ReadUInt16Le(ReadOnlySpan<byte> span, ref int pos)
+    {
+        if (pos + 2 > span.Length) throw new FormatException("u16: unexpected end of stream");
+        var value = BinaryPrimitives.ReadUInt16LittleEndian(span[pos..]);
+        pos += 2;
+        return value;
+    }
+
+    private static uint ReadUInt32Le(ReadOnlySpan<byte> span, ref int pos)
+    {
+        if (pos + 4 > span.Length) throw new FormatException("u32: unexpected end of stream");
+        var value = BinaryPrimitives.ReadUInt32LittleEndian(span[pos..]);
+        pos += 4;
+        return value;
+    }
+
+    private static ulong ReadUInt64Le(ReadOnlySpan<byte> span, ref int pos)
+    {
+        if (pos + 8 > span.Length) throw new FormatException("u64: unexpected end of stream");
+        var value = BinaryPrimitives.ReadUInt64LittleEndian(span[pos..]);
+        pos += 8;
+        return value;
+    }
+
+    private static void WriteCompactSlice(Stream s, byte[] data)
+    {
+        WriteCompactSize(s, (ulong)data.Length);
+        s.Write(data, 0, data.Length);
+    }
+
+    private static byte[] ReadCompactSlice(
+        ReadOnlySpan<byte> span, ref int pos, int maxLen = int.MaxValue, string field = "slice")
+    {
+        var len = ReadCompactSize(span, ref pos);
+        if (len > (ulong)maxLen) throw new FormatException($"{field} length {len} exceeds max {maxLen}");
+        var size = (int)len;
+        if (pos + size > span.Length) throw new FormatException($"{field}: unexpected end of stream");
+        var bytes = span.Slice(pos, size).ToArray();
+        pos += size;
+        return bytes;
+    }
+}

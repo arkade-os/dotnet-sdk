@@ -1,0 +1,38 @@
+name: Arkade E2E Tests (emulator)
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Arkade E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      # `emulator` pulls in `ark` (arkd) and starts the emulator co-signing overlay on :7073.
+      # `boltz` adds fulmine (:7003) — the funding endpoint the shared test harness uses to top up
+      # wallets. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
+      - uses: ./.github/actions/e2e-setup
+        with:
+          profile: emulator,boltz
+      - name: Run Arkade E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade"
+        timeout-minutes: 15
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arkade-docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true

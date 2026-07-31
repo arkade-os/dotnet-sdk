@@ -16,6 +16,8 @@ public static class PsbtHelpers
     private const string VtxoTreeExpiry = "expiry";
     private const string Cosigner = "cosigner";
     private const string ConditionWitness = "condition";
+    private const string PrevArkTx = "prevarktx";
+    private const string PrevoutTx = "prevouttx";
     private const byte ArkPsbtFieldKeyType = 222;
 
     /// <summary>
@@ -56,6 +58,46 @@ public static class PsbtHelpers
     public static void SetArkFieldTapTree(this PSBTInput psbtInput, TapScript[] leaves) =>
         psbtInput.Unknown[new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(VtxoTaprootTree)).ToArray()] =
             EncodeTaprootTree(leaves);
+
+    /// <summary>
+    /// Sets the <c>prevarktx</c> ark field — the raw previous Arkade transaction
+    /// an introspection opcode reads for this input. Stored under
+    /// <c>[0xde]||"prevarktx"</c> (emulator <c>ArkFieldPrevArkTx</c>).
+    /// </summary>
+    public static void SetArkFieldPrevArkTx(this PSBTInput psbtInput, Transaction prevArkTx)
+    {
+        ArgumentNullException.ThrowIfNull(prevArkTx);
+        psbtInput.Unknown[new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(PrevArkTx)).ToArray()] =
+            prevArkTx.ToBytes();
+    }
+
+    /// <summary>
+    /// Sets the <c>prevouttx</c> ark field — the raw previous output transaction
+    /// an introspection opcode reads for this input (e.g. on the emulator's
+    /// <c>/v1/onchain-tx</c> path). Stored under <c>[0xde]||"prevouttx"</c>
+    /// (emulator <c>ArkFieldPrevoutTx</c>).
+    /// </summary>
+    public static void SetArkFieldPrevoutTx(this PSBTInput psbtInput, Transaction prevoutTx)
+    {
+        ArgumentNullException.ThrowIfNull(prevoutTx);
+        psbtInput.Unknown[new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(PrevoutTx)).ToArray()] =
+            prevoutTx.ToBytes();
+    }
+
+    /// <summary>Reads the <c>prevarktx</c> ark field, or <c>null</c> if absent.</summary>
+    public static Transaction? GetArkFieldPrevArkTx(this PSBTInput psbtInput, Network network) =>
+        GetArkFieldTransaction(psbtInput, PrevArkTx, network);
+
+    /// <summary>Reads the <c>prevouttx</c> ark field, or <c>null</c> if absent.</summary>
+    public static Transaction? GetArkFieldPrevoutTx(this PSBTInput psbtInput, Network network) =>
+        GetArkFieldTransaction(psbtInput, PrevoutTx, network);
+
+    private static Transaction? GetArkFieldTransaction(PSBTInput psbtInput, string fieldName, Network network)
+    {
+        ArgumentNullException.ThrowIfNull(network);
+        var key = new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(fieldName)).ToArray();
+        return psbtInput.Unknown.TryGetValue(key, out var value) ? Transaction.Load(value, network) : null;
+    }
 
 
     // Encodes taproot script leaves per PSBT spec: {depth version script_length script}* (no leaf count prefix).

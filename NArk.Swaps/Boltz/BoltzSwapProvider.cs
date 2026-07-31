@@ -217,7 +217,7 @@ public partial class BoltzSwapProvider : ISwapProvider
             {
                 _logger?.LogInformation(
                     "NotifyVtxoChanged: VTXO {Outpoint} on swap {SwapId}'s contract script (amount={Amount}, spent={Spent}) — triggering status poll",
-                    vtxo.OutPoint, id, vtxo.Amount, vtxo.SpentByTransactionId is not null);
+                    vtxo.OutPoint, id, vtxo.Amount, !String.IsNullOrEmpty(vtxo.SpentByTransactionId));
                 _triggerChannel.Writer.TryWrite($"id:{id}");
             }
             else
