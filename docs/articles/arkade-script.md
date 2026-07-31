@@ -38,6 +38,8 @@ var onchn  = await emulator.SubmitOnchainTxAsync(...);    // POST /v1/onchain-tx
 ```csharp
 using NArk.Arkade.Crypto;
 using NArk.Arkade.Scripts;
+using NBitcoin;
+using NBitcoin.Secp256k1;
 
 var bytes = ArkadeScript.AsmToBytes(
     "OP_0 OP_INSPECTOUTPUTSCRIPTPUBKEY 1 OP_EQUALVERIFY deadbeef OP_EQUAL");
@@ -68,8 +70,10 @@ protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
 Rather than hand-assembling leaves, a **program artifact** (the same JSON the TypeScript and Go SDKs consume) declares typed params and one function per spending path. `ArkProgramContract` compiles it into a contract:
 
 ```csharp
+using System.Text.Json.Nodes;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Program;
+using NArk.Arkade.Program.Models;
 
 var program  = new ArkadeArtifactParser().ParseArtifact(JsonNode.Parse(artifactJson)!.AsObject());
 var contract = new ArkProgramContract(
@@ -100,10 +104,10 @@ await spendingService.Spend(walletId, [coin], [payout], cancellationToken);
 
 Spending a covenant VTXO differs from an ordinary spend in two places, both wired by `AddArkadeEmulator`:
 
-1. `ArkadeEmulatorPacketProvider` attaches an `EmulatorPacket` to the spend's single Extension `OP_RETURN`, carrying each arkade-bound input's script and witness so the emulator can validate them. This shares the output with the asset packet, and must be attached before signing since signatures commit to the output set.
+1. `ArkadeEmulatorPacketProvider` attaches an `EmulatorPacket` to the spend's single Extension `OP_RETURN`, carrying each Arkade-bound input's script and witness so the emulator can validate them. This shares the output with the asset packet, and must be attached before signing since signatures commit to the output set.
 2. `ArkadeEmulatorSpendSubmitter` routes the signed transaction to the emulator instead of arkd. The emulator validates, co-signs, forwards to arkd and finalizes.
 
-Spends with no arkade-bound input are untouched and follow the normal arkd flow.
+Spends with no Arkade-bound input are untouched and follow the normal arkd flow.
 
 ## Notes and current limits
 
