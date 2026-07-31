@@ -300,16 +300,14 @@ public class ArkadeSwapTests
     /// How long to wait for the solver to fill an offer.
     /// </summary>
     /// <remarks>
-    /// Deliberately far above the ~1–3s a healthy fill takes. The solver interleaves fills
-    /// with its own scheduled settlement rounds, and an offer published just before one lands
-    /// is not filled until that batch completes. Observed in CI: an asset→BTC offer published
-    /// at 14:13:20 sat behind a settlement that ran 14:14:30–14:14:33 and was filled at
-    /// 14:14:51 — 91s, losing a 90s deadline by one second. Solver settlement schedules were
-    /// 70–162s apart in the same run, so any bound near 90s races that cadence rather than
-    /// testing the swap. <see cref="Poll"/> returns as soon as the condition holds, so raising
-    /// the ceiling costs nothing when the fill is prompt.
+    /// A healthy fill lands in ~1–3s, so this is headroom for jitter rather than a budget to be
+    /// spent. It is not sized to wait out a solver settlement round: an offer the solver cannot
+    /// fund is delayed by however many settlement cycles it takes to free the funds — measured
+    /// at 91s once and just over 4 minutes on another run — which no fixed timeout can bound
+    /// safely. <see cref="SolverLiquidityHelper"/> instead hands the solver its own unencumbered
+    /// BTC VTXO so the asset→BTC direction has a counterparty that can pay out immediately.
     /// </remarks>
-    private static readonly TimeSpan SolverFillTimeout = TimeSpan.FromMinutes(4);
+    private static readonly TimeSpan SolverFillTimeout = TimeSpan.FromMinutes(2);
 
     private static async Task<bool> Poll(Func<Task<bool>> condition, TimeSpan timeout)
     {
