@@ -81,6 +81,17 @@ internal static class SolverLiquidityHelper
             funder.vtxoStorage, funder.contracts, funder.walletProvider, coinService, funder.contractService,
             funder.clientTransport, new DefaultCoinSelector(), funder.safetyService, intentStorage);
 
+        // Both outputs go out in ONE spend. Two back-to-back Spend calls race the safety
+        // service's VTXO lock — the funder's coin is still held by the first when the second
+        // selects coins, which throws AlreadyLockedVtxoException.
+        //
+        // The second output is the solver's BTC float. The asset→BTC direction needs the solver
+        // to pay *sats* out, and unlike its asset inventory nothing in the test tops that up:
+        // solver-init seeds SOLVER_INIT_BTC once, and by the time a reverse leg runs those sats
+        // are bound up in VTXOs the solver is settling. In CI an asset→BTC offer published at
+        // 14:26:17 was not filled until 14:30:17, sitting through two full settlement rounds,
+        // while every BTC→asset offer in the same run filled in 1–3s (those pay from asset
+        // inventory). Its own unencumbered BTC VTXO removes that dependency.
         var solverArkAddress = ArkAddress.Parse(solverAddress);
         await spending.Spend(funder.walletIdentifier,
         [
@@ -88,19 +99,6 @@ internal static class SolverLiquidityHelper
             {
                 Assets = [new ArkTxOutAsset(assetId, inventory)],
             },
-        ], ct);
-
-        // 2b. Hand the solver a dedicated BTC VTXO.
-        //
-        // The asset→BTC direction needs the solver to pay *sats* out, and unlike its asset
-        // inventory nothing in the test tops that up. solver-init seeds SOLVER_INIT_BTC once, but
-        // by the time a reverse leg runs the solver's sats are bound up in VTXOs it is settling:
-        // in CI an asset→BTC offer published at 14:26:17 was not filled until 14:30:17, sitting
-        // through two full settlement rounds, while every BTC→asset offer in the same run filled
-        // in 1–3s (those pay from asset inventory). Giving the solver its own unencumbered BTC
-        // VTXO removes the dependency on its settlement schedule.
-        await spending.Spend(funder.walletIdentifier,
-        [
             new ArkTxOut(ArkTxOutType.Vtxo, NBitcoin.Money.Satoshis(btcLiquidity), solverArkAddress),
         ], ct);
 
