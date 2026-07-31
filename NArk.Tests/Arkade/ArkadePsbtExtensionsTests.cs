@@ -148,7 +148,7 @@ public class ArkadePsbtExtensionsTests
         var checkpoint = BuildEmptyPsbt(network, alice, bob);
 
         var emulator = Substitute.For<IEmulatorProvider>();
-        // A fully-submitted spend returns the ark tx plus one signed checkpoint per
+        // A fully-submitted spend returns the Arkade transaction plus one signed checkpoint per
         // checkpoint submitted.
         emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new EmulatorSubmitTxResult(arkTx.ToBase64(), [checkpoint.ToBase64()])));

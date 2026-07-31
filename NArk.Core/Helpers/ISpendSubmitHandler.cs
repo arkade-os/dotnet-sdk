@@ -13,7 +13,7 @@ namespace NArk.Core.Helpers;
 /// <para>
 /// <see cref="ShouldHandle"/> is a cheap per-spend gate (typically "is any input
 /// arkade-bound?"). When it returns <c>true</c>, <c>TransactionHelpers</c> user-signs
-/// the checkpoint inputs and hands the fully user-signed ark tx + checkpoints to
+/// the checkpoint inputs and hands the fully user-signed Arkade transaction + checkpoints to
 /// <see cref="SubmitAsync"/>, which owns the rest (co-sign + submit + finalize); the
 /// normal arkd cooperative submit is skipped. When no registered handler engages,
 /// the spend follows the unchanged arkd flow.
@@ -26,7 +26,7 @@ public interface ISpendSubmitHandler
 
     /// <summary>
     /// Fully submit the spend: co-sign, forward to arkd and finalize. Called only
-    /// when <see cref="ShouldHandle"/> returned <c>true</c>. The ark tx and every
+    /// when <see cref="ShouldHandle"/> returned <c>true</c>. The Arkade transaction and every
     /// checkpoint already carry the wallet's own signatures.
     /// </summary>
     /// <param name="coins">The spend inputs, in transaction-input order.</param>

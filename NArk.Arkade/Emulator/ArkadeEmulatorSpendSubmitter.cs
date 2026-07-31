@@ -14,7 +14,7 @@ namespace NArk.Arkade.Emulator;
 /// <remarks>
 /// Engages only when at least one input is arkade-bound
 /// (<see cref="ArkadePsbtExtensions.RequiresEmulatorCoSigning"/>); every other spend
-/// falls through to the unchanged arkd cooperative flow. The ark tx and checkpoints
+/// falls through to the unchanged arkd cooperative flow. The Arkade transaction and checkpoints
 /// arrive already user-signed — this handler only adds the emulator round-trip.
 /// </remarks>
 public sealed class ArkadeEmulatorSpendSubmitter(
@@ -55,7 +55,7 @@ public sealed class ArkadeEmulatorSpendSubmitter(
         if (string.IsNullOrEmpty(response.SignedArkTx))
         {
             throw new InvalidOperationException(
-                "Emulator returned no signed ark tx for a covenant spend — the spend was not submitted.");
+                "Emulator returned no signed Arkade transaction for a covenant spend — the spend was not submitted.");
         }
 
         if (checkpoints.Count > 0 && response.SignedCheckpointTxs.Count != checkpoints.Count)
@@ -66,7 +66,7 @@ public sealed class ArkadeEmulatorSpendSubmitter(
         }
 
         logger?.LogDebug(
-            "ArkadeEmulatorSpendSubmitter: emulator returned a signed ark tx and {Count} signed checkpoint(s)",
+            "ArkadeEmulatorSpendSubmitter: emulator returned a signed Arkade transaction and {Count} signed checkpoint(s)",
             response.SignedCheckpointTxs.Count);
     }
 }

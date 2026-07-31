@@ -51,7 +51,7 @@ public interface IBatchSessionExtension
 public enum BatchExtensionPhase
 {
     /// <summary>
-    /// After tree signing aggregates a partially-signed Ark tx tree, before
+    /// After tree signing aggregates a partially-signed Arkade transaction tree, before
     /// the signatures are submitted upstream. Extension co-signs leaves whose
     /// inputs need additional signatures (emulator for arkade-bound
     /// inputs, etc.).

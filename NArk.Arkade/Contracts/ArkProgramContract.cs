@@ -33,7 +33,7 @@ public sealed class ArkProgramContract : ArkContract
     private readonly IReadOnlyList<CompiledArkadeFunction> _compiled;
 
     /// <summary>Compiles an Arkade program into a spendable contract.</summary>
-    /// <param name="server">Output descriptor for the Ark server's key, bound as <c>$server</c>.</param>
+    /// <param name="server">Output descriptor for the Arkade server's key, bound as <c>$server</c>.</param>
     /// <param name="program">The parsed program artifact to compile.</param>
     /// <param name="args">Values for the program's declared params, by name.</param>
     /// <param name="user">

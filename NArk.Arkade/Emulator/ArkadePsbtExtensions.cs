@@ -84,22 +84,27 @@ public static class ArkadePsbtExtensions
     /// return the PSBT with the emulator's signatures merged in.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The emulator signs only inputs whose attached scripts pass its
     /// validation; non-arkade inputs are passed through untouched. The
     /// returned PSBT is the union of (input PSBT) + (emulator partial
     /// sigs) — assembled server-side, so this method is a thin wrapper over
     /// <see cref="IEmulatorProvider.SubmitTxAsync"/>.
+    /// </para>
+    /// <para>
+    /// Deliberately carries no checkpoint parameter: it would only be able to return the
+    /// co-signed Arkade transaction, silently dropping the emulator's <c>signed_checkpoint_txs</c>.
+    /// Callers that submit checkpoints — <see cref="ArkadeEmulatorSpendSubmitter"/> — call
+    /// <see cref="IEmulatorProvider.SubmitTxAsync"/> directly and consume both halves.
+    /// </para>
     /// </remarks>
     /// <param name="psbt">PSBT with user partial sigs already attached.</param>
     /// <param name="emulator">Provider client for the configured emulator instance.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The co-signed ark tx PSBT.</returns>
-    /// <remarks>
-    /// Deliberately carries no checkpoint parameter: it would only be able to return the
-    /// co-signed ark tx, silently dropping the emulator's <c>signed_checkpoint_txs</c>.
-    /// Callers that submit checkpoints — <see cref="ArkadeEmulatorSpendSubmitter"/> — call
-    /// <see cref="IEmulatorProvider.SubmitTxAsync"/> directly and consume both halves.
-    /// </remarks>
+    /// <returns>The co-signed Arkade transaction PSBT.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The emulator returned no signed Arkade transaction, so the input was not co-signed.
+    /// </exception>
     public static async Task<PSBT> CoSignWithEmulatorAsync(
         this PSBT psbt,
         IEmulatorProvider emulator,
@@ -112,6 +117,15 @@ public static class ArkadePsbtExtensions
             psbt.ToBase64(),
             Array.Empty<string>(),
             cancellationToken);
+
+        // Same guard as ArkadeEmulatorSpendSubmitter: an empty response means the input was
+        // not co-signed. Without it PSBT.Parse throws a bare FormatException that says nothing
+        // about which call failed or why.
+        if (string.IsNullOrEmpty(resp.SignedArkTx))
+        {
+            throw new InvalidOperationException(
+                "Emulator returned no signed Arkade transaction — the input was not co-signed.");
+        }
 
         // The emulator returns a PSBT that's the union of the input PSBT
         // (so user sigs are preserved) plus its own partial sigs. We can take
