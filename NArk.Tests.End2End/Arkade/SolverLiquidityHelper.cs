@@ -5,6 +5,7 @@ using NArk.Abstractions;
 using NArk.Abstractions.Assets;
 using NArk.Core.CoinSelector;
 using NArk.Core.Services;
+using NArk.Core.Transport;
 using NArk.Tests.End2End.Common;
 
 namespace NArk.Tests.End2End.Arkade;
@@ -37,15 +38,20 @@ internal static class SolverLiquidityHelper
     /// <param name="inventory">Asset units to mint and hand to the solver. Each 0-decimals unit is
     /// backed by a sat carrier, so the throwaway wallet is funded with <paramref name="inventory"/>
     /// plus headroom for fees.</param>
+    /// <param name="btcLiquidity">
+    /// Sats to hand the solver as a dedicated, unencumbered VTXO so it can pay out the
+    /// <c>asset→BTC</c> direction. See the remarks on why this is separate from the asset send.
+    /// </param>
     internal static async Task<string> EnsureAssetMarket(
         Uri solverEndpoint,
         ulong inventory = 500_000,
+        ulong btcLiquidity = 1_000_000,
         CancellationToken ct = default)
     {
         // A dedicated funder wallet (not the test's maker) — it needs enough BTC to back every asset
-        // unit's sat carrier plus fees.
+        // unit's sat carrier, the solver's BTC float, plus fees.
         var funder = await FundedWalletHelper.GetFundedWallet(
-            vtxoCount: 1, amountSatsPerVtxo: checked((int)(inventory + 500_000)));
+            vtxoCount: 1, amountSatsPerVtxo: checked((int)(inventory + btcLiquidity + 500_000)));
 
         var (assetManager, coinService, intentStorage) = AssetTestHelpers.CreateAssetServices(funder);
 
@@ -75,33 +81,69 @@ internal static class SolverLiquidityHelper
             funder.vtxoStorage, funder.contracts, funder.walletProvider, coinService, funder.contractService,
             funder.clientTransport, new DefaultCoinSelector(), funder.safetyService, intentStorage);
 
+        var solverArkAddress = ArkAddress.Parse(solverAddress);
         await spending.Spend(funder.walletIdentifier,
         [
-            new ArkTxOut(ArkTxOutType.Vtxo, serverInfo.Dust, ArkAddress.Parse(solverAddress))
+            new ArkTxOut(ArkTxOutType.Vtxo, serverInfo.Dust, solverArkAddress)
             {
                 Assets = [new ArkTxOutAsset(assetId, inventory)],
             },
+        ], ct);
+
+        // 2b. Hand the solver a dedicated BTC VTXO.
+        //
+        // The asset→BTC direction needs the solver to pay *sats* out, and unlike its asset
+        // inventory nothing in the test tops that up. solver-init seeds SOLVER_INIT_BTC once, but
+        // by the time a reverse leg runs the solver's sats are bound up in VTXOs it is settling:
+        // in CI an asset→BTC offer published at 14:26:17 was not filled until 14:30:17, sitting
+        // through two full settlement rounds, while every BTC→asset offer in the same run filled
+        // in 1–3s (those pay from asset inventory). Giving the solver its own unencumbered BTC
+        // VTXO removes the dependency on its settlement schedule.
+        await spending.Spend(funder.walletIdentifier,
+        [
+            new ArkTxOut(ArkTxOutType.Vtxo, NBitcoin.Money.Satoshis(btcLiquidity), solverArkAddress),
         ], ct);
 
         // 3. Register both directions on the existing mock feed.
         await RegisterPair(http, $"BTC/{assetId}", $"{PriceFeedBase}/btc-asset", ct);
         await RegisterPair(http, $"{assetId}/BTC", $"{PriceFeedBase}/asset-btc", ct);
 
-        // 4. Wait until the solver actually reports the inventory — this is what proves the send landed
-        //    AND that the decimals reached it (a rejected send/pair never shows up here).
+        // 4. Wait until both sends have landed. The asset side is proved by the solver's own
+        //    balance API — that also proves the decimals reached it, since a rejected send or a
+        //    mis-decimalled pair never shows up there. The solver reports no sat balance
+        //    (`/v1/balance` returns asset_balances only), so the BTC side is proved from arkd:
+        //    an unspent VTXO of the expected size on the solver's own address.
+        var solverScript = solverArkAddress.ScriptPubKey.ToHex();
         var solver = new SolverClient(solverEndpoint);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(90);
         while (DateTimeOffset.UtcNow < deadline)
         {
             var held = (await solver.GetAssetBalancesAsync(ct)).GetValueOrDefault(assetId);
-            if (held >= inventory - inventory / 10) // allow ≤10% for round/dust accounting
+            if (held >= inventory - inventory / 10 // allow ≤10% for round/dust accounting
+                && await HasSpendableSats(funder.clientTransport, solverScript, btcLiquidity, ct))
+            {
                 return assetId;
+            }
             await Task.Delay(1000, ct);
         }
 
         throw new TimeoutException(
-            $"solver did not report inventory for freshly-funded asset {assetId} within 90s " +
-            "(check the send confirmed and the pair registered with the right decimals)");
+            $"solver did not report inventory for freshly-funded asset {assetId} plus a spendable " +
+            $"{btcLiquidity}-sat VTXO within 90s (check the sends confirmed and the pair registered " +
+            "with the right decimals)");
+    }
+
+    /// <summary>True once the solver's address holds an unspent, unswept VTXO of at least <paramref name="sats"/>.</summary>
+    private static async Task<bool> HasSpendableSats(
+        IClientTransport transport, string scriptHex, ulong sats, CancellationToken ct)
+    {
+        await foreach (var v in transport.GetVtxoByScriptsAsSnapshot(
+                           new HashSet<string> { scriptHex }, cancellationToken: ct))
+        {
+            if (!string.IsNullOrEmpty(v.SpentByTransactionId) || v.Swept) continue;
+            if (v.Amount >= sats) return true;
+        }
+        return false;
     }
 
     private static async Task RegisterPair(HttpClient http, string pair, string priceFeed, CancellationToken ct)
