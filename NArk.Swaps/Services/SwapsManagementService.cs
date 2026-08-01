@@ -475,8 +475,14 @@ public class SwapsManagementService : IAsyncDisposable
         var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
         var preimage = await DerivePreimageAsync(walletId, claimDescriptor, index: 0, cancellationToken);
 
+        // Same destination rule as reverse swaps: the payment contract on the VHTLC's
+        // own receiver descriptor, which is what a normal sweep recycles into anyway.
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        var claimAddress = new ArkPaymentContract(
+            serverInfo.SignerKey, serverInfo.UnilateralExit, claimDescriptor).GetArkAddress();
+
         var result = await boltz.BoltzService.CreateBtcToArkSwapAsync(
-            amountSats, claimDescriptor, preimage, cancellationToken);
+            amountSats, claimDescriptor, preimage, claimAddress, cancellationToken);
 
         var btcAddress = result.Swap.LockupDetails?.LockupAddress
             ?? throw new InvalidOperationException("Missing BTC lockup address");
@@ -488,6 +494,10 @@ public class SwapsManagementService : IAsyncDisposable
             metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
             cancellationToken: cancellationToken);
         var contractScript = contract.GetArkAddress().ScriptPubKey.ToHex();
+
+        await RegisterCovenantClaimAsync(contract, contract.GetArkAddress().ToString(
+                isMainnet: serverInfo.Network == Network.Main),
+            preimage, claimAddress, cancellationToken);
 
         var swap = new ArkSwap(
             result.Swap.Id,

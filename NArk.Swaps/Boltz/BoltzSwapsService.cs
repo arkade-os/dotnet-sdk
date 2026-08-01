@@ -275,6 +275,7 @@ internal class BoltzSwapService(
         long amountSats,
         OutputDescriptor claimDescriptor,
         byte[]? preimage = null,
+        ArkAddress? nonInteractiveClaimAddress = null,
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
@@ -286,6 +287,12 @@ internal class BoltzSwapService(
         var preimageHash = Hashes.SHA256(preimage);
         var ephemeralKey = new Key();
 
+        // Same ordering constraint as reverse swaps: the key changes the VHTLC address,
+        // so it has to exist before Boltz derives its own copy of that address.
+        var covenantClaimKey = nonInteractiveClaimAddress is not null && SupportsCovenantClaims
+            ? await GetCovenantClaimKeyAsync(nonInteractiveClaimAddress, ct)
+            : null;
+
         var request = new ChainRequest
         {
             From = "BTC",
@@ -295,6 +302,13 @@ internal class BoltzSwapService(
             RefundPublicKey = Encoders.Hex.EncodeData(ephemeralKey.PubKey.ToBytes()),
             ServerLockAmount = amountSats,
             ReferralId = boltzClient.ReferralId,
+            NonInteractiveClaim = covenantClaimKey is null
+                ? null
+                : new NonInteractiveClaimRequest
+                {
+                    ClaimAddress = nonInteractiveClaimAddress!.ToString(
+                        isMainnet: operatorTerms.Network == Network.Main),
+                },
         };
 
         var response = await boltzClient.CreateChainSwapAsync(request, ct);
@@ -330,7 +344,8 @@ internal class BoltzSwapService(
             refundLocktime: new LockTime(timeouts.Refund),
             unilateralClaimDelay: ParseSequence(timeouts.UnilateralClaim),
             unilateralRefundDelay: ParseSequence(timeouts.UnilateralRefund),
-            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver)
+            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver),
+            covenantClaimKey: covenantClaimKey
         );
 
         // Validate address match

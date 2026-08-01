@@ -39,4 +39,13 @@ public class ChainRequest
     [JsonPropertyName("referralId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ReferralId { get; set; }
+
+    /// <summary>
+    /// Opt into a non-interactive claim leaf on the Arkade VHTLC. Only valid when
+    /// Boltz is the one sending Arkade — i.e. <c>to == "ARK"</c>. Omitted from the
+    /// wire when null.
+    /// </summary>
+    [JsonPropertyName("nonInteractiveClaim")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NonInteractiveClaimRequest? NonInteractiveClaim { get; set; }
 }

@@ -150,6 +150,76 @@ public class CovenantClaimSwapTests
             "covclaimd should have swept the VHTLC while the wallet stayed offline");
     }
 
+    /// <summary>
+    /// The other direction Boltz sends Arkade on. Worth covering separately because the
+    /// VHTLC is reconstructed from different response fields — the sender key comes from
+    /// <c>claimDetails.serverPublicKey</c> rather than a refund key — so the address
+    /// check exercises a code path the reverse-swap test never touches.
+    /// </summary>
+    /// <remarks>
+    /// Stops at the address/leaf assertions rather than funding the BTC side: driving an
+    /// on-chain lockup adds a confirmation wait without testing anything new about the
+    /// covenant path, which the reverse-swap test already takes all the way to a claim.
+    /// </remarks>
+    [Test]
+    public async Task BtcToArkChainSwapBuildsCovenantClaimContract()
+    {
+        var prereq = await FundedWalletHelper.GetFundedWallet();
+        var swapStorage = TestStorage.CreateSwapStorage();
+        var intentStorage = TestStorage.CreateIntentStorage();
+        var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+
+        var boltzOptions = new OptionsWrapper<BoltzClientOptions>(new BoltzClientOptions
+        {
+            BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString(),
+            WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString(),
+        });
+        var covenantClaimProvider = new CovclaimdCovenantClaimProvider(CreateCovclaimdClient());
+
+        var boltzProvider = new BoltzSwapProvider(
+            new BoltzClient(new HttpClient(), boltzOptions),
+            new BoltzLimitsValidator(new CachedBoltzClient(new HttpClient(), boltzOptions)),
+            prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider, swapStorage,
+            prereq.contractService, prereq.contracts, prereq.safetyService, intentStorage,
+            chainTimeProvider,
+            covenantClaimProvider: covenantClaimProvider);
+
+        await using var swapMgr = new SwapsManagementService(
+            new ISwapProvider[] { boltzProvider },
+            spendingService: null!,
+            prereq.clientTransport, prereq.vtxoStorage, prereq.walletProvider,
+            swapStorage, prereq.contractService, prereq.contracts, prereq.safetyService,
+            intentStorage, chainTimeProvider,
+            logger: new TestOutputLogger<SwapsManagementService>(),
+            covenantClaimProvider: covenantClaimProvider);
+
+        await swapMgr.StartAsync(CancellationToken.None);
+
+        var (_, swapId, _) = await swapMgr.InitiateBtcToArkChainSwap(
+            prereq.walletIdentifier, 100_000, CancellationToken.None);
+
+        var swap = (await swapStorage.GetSwaps(
+            walletIds: [prereq.walletIdentifier], swapIds: [swapId])).Single();
+
+        var storedContract = (await prereq.contracts.GetContracts(
+            walletIds: [prereq.walletIdentifier], scripts: [swap.ContractScript])).Single();
+        var contract = (VHTLCContract)ArkContractParser.Parse(
+            storedContract.Type, storedContract.AdditionalData, Network.RegTest)!;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(contract.CovenantClaimKey, Is.Not.Null,
+                "chain swap contract should carry a covenant claim key");
+            Assert.That(contract.GetTapScriptList(), Has.Length.EqualTo(7),
+                "covenant chain swap should have the extra leaf");
+        });
+
+        // CreateBtcToArkSwapAsync throws on a mismatch, so reaching here already proves
+        // our seven-leaf reconstruction equals the address Boltz published. Asserted
+        // explicitly so a future refactor that drops that check still fails loudly.
+        Assert.That(contract.GetArkAddress().ScriptPubKey.ToHex(), Is.EqualTo(swap.ContractScript));
+    }
+
     /// <summary>Minimal logger that routes straight to the NUnit test output.</summary>
     private sealed class TestOutputLogger<T> : ILogger<T>
     {
