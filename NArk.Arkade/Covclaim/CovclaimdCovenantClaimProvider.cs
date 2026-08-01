@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using NArk.Arkade.Crypto;
 using NArk.Core.Contracts;
 using NBitcoin;
@@ -20,11 +21,19 @@ public sealed class CovclaimdCovenantClaimProvider : ICovenantClaimProvider
     private readonly ICovclaimdClient _client;
 
     /// <param name="client">Client for the claim daemon that will perform the claims.</param>
-    public CovclaimdCovenantClaimProvider(ICovclaimdClient client)
+    /// <param name="options">
+    /// Supplies <see cref="CovclaimdOptions.RegistrationTtl"/>. Optional so the provider
+    /// stays usable without a configured container; the default matches covclaimd's own TTL.
+    /// </param>
+    public CovclaimdCovenantClaimProvider(ICovclaimdClient client, IOptions<CovclaimdOptions>? options = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         _client = client;
+        RegistrationLifetime = (options?.Value ?? new CovclaimdOptions()).RegistrationTtl;
     }
+
+    /// <inheritdoc />
+    public TimeSpan RegistrationLifetime { get; }
 
     /// <inheritdoc />
     public async Task<TaprootPubKey> GetCovenantClaimKeyAsync(

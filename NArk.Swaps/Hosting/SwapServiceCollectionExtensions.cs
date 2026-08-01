@@ -32,6 +32,9 @@ public static class SwapServiceCollectionExtensions
         services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
         services.AddSingleton<IContractTransformer, VHTLCContractTransformer>();
         services.AddHostedService<NArk.Swaps.Hosting.SwapHostedLifecycle>();
+        // Self-disabling when no ICovenantClaimProvider is registered, so this is safe
+        // to wire unconditionally.
+        services.AddHostedService<CovenantClaimRenewalService>();
 
         // Boltz provider
         services.AddBoltzProvider();

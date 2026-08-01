@@ -24,6 +24,17 @@ namespace NArk.Core.Contracts;
 public interface ICovenantClaimProvider
 {
     /// <summary>
+    /// How long an authorisation from <see cref="RegisterAsync"/> stays valid.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so callers can pace renewals off the real value instead of duplicating
+    /// the backend's constant. A registration may still be dropped early — a signer
+    /// that restarts loses everything it was holding — so this is an upper bound, not
+    /// a guarantee.
+    /// </remarks>
+    TimeSpan RegistrationLifetime { get; }
+
+    /// <summary>
     /// Returns the co-signer key for a covenant-claim leaf that may only pay
     /// <paramref name="claimDestination"/>, ready to pass as
     /// <see cref="VHTLCContract.CovenantClaimKey"/>.
