@@ -25,6 +25,12 @@ namespace NArk.Core.Services;
 /// Hosted service that monitors VTXO changes and automatically delegates
 /// new VTXOs at delegate contracts to the configured delegator service.
 /// </summary>
+/// <remarks>
+/// A VTXO whose value cannot cover the operator's intent fee and still leave at least the
+/// server dust threshold is skipped (the delegation would be rejected with AMOUNT_TOO_LOW);
+/// it is re-evaluated on its next storage notification. Stopping the service cancels any
+/// delegation still in flight and waits for it to unwind.
+/// </remarks>
 public class DelegationMonitorService(
     IVtxoStorage vtxoStorage,
     IContractStorage contractStorage,
@@ -37,30 +43,65 @@ public class DelegationMonitorService(
 {
     private readonly HashSet<OutPoint> _delegatedOutpoints = new();
     private readonly SemaphoreSlim _processingLock = new(1, 1);
+    private CancellationTokenSource? _shutdownCts;
     private ECPubKey? _delegatePubkey;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        _shutdownCts = new CancellationTokenSource();
         vtxoStorage.VtxosChanged += OnVtxosChanged;
         logger?.LogInformation("DelegationMonitorService started");
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         vtxoStorage.VtxosChanged -= OnVtxosChanged;
+
+        // Cancel any delegation already in flight (it may be blocked on a gRPC call to the
+        // delegator or the operator) and then drain: acquiring the processing lock guarantees
+        // the handler has unwound before the host considers this service stopped.
+        if (_shutdownCts is { } cts)
+        {
+            await cts.CancelAsync();
+            try
+            {
+                await _processingLock.WaitAsync(cancellationToken);
+                _processingLock.Release();
+            }
+            catch (OperationCanceledException)
+            {
+                logger?.LogWarning("Timed out draining in-flight delegation during shutdown");
+            }
+        }
+
         logger?.LogInformation("DelegationMonitorService stopped");
-        return Task.CompletedTask;
     }
 
     private async void OnVtxosChanged(object? sender, ArkVtxo vtxo)
     {
+        // Dispose() may have raced this handler; a disposed CTS throws on .Token.
+        CancellationToken cancellationToken;
+        try
+        {
+            cancellationToken = _shutdownCts?.Token ?? CancellationToken.None;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
         try
         {
             if (vtxo.IsSpent())
                 return;
 
-            await ProcessVtxoAsync(vtxo);
+            await ProcessVtxoAsync(vtxo, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            logger?.LogInformation("Delegation of VTXO {Outpoint} cancelled by shutdown",
+                $"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}");
         }
         catch (Exception ex)
         {
@@ -69,9 +110,9 @@ public class DelegationMonitorService(
         }
     }
 
-    private async Task ProcessVtxoAsync(ArkVtxo vtxo)
+    private async Task ProcessVtxoAsync(ArkVtxo vtxo, CancellationToken cancellationToken)
     {
-        await _processingLock.WaitAsync();
+        await _processingLock.WaitAsync(cancellationToken);
         try
         {
             var outpoint = new OutPoint(uint256.Parse(vtxo.TransactionId), vtxo.TransactionOutputIndex);
@@ -79,19 +120,19 @@ public class DelegationMonitorService(
             if (_delegatedOutpoints.Contains(outpoint))
                 return;
 
-            var contracts = await contractStorage.GetContracts(scripts: [vtxo.Script]);
+            var contracts = await contractStorage.GetContracts(scripts: [vtxo.Script], cancellationToken: cancellationToken);
             var contract = contracts.FirstOrDefault();
             if (contract is null)
                 return;
 
             var walletId = contract.WalletIdentifier;
             using var _walletScope = logger?.BeginScope(("WalletId", walletId));
-            var serverInfo = await clientTransport.GetServerInfoAsync();
+            var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
             var parsed = ArkContractParser.Parse(contract.Type, contract.AdditionalData, serverInfo.Network);
             if (parsed is null)
                 return;
 
-            var delegatePubkey = await GetDelegatePubkeyAsync();
+            var delegatePubkey = await GetDelegatePubkeyAsync(cancellationToken);
 
             IDelegationTransformer? matchingTransformer = null;
             foreach (var transformer in transformers)
@@ -109,7 +150,11 @@ public class DelegationMonitorService(
             logger?.LogInformation("Delegating VTXO {Outpoint} from wallet {WalletId}", outpoint, walletId);
 
             var (intentScript, forfeitScript) = matchingTransformer.GetDelegationScriptBuilders(parsed);
-            await BuildAndSendDelegationAsync(walletId, parsed, vtxo, outpoint, intentScript, forfeitScript, serverInfo);
+            var delegated = await BuildAndSendDelegationAsync(
+                walletId, parsed, vtxo, outpoint, intentScript, forfeitScript, serverInfo, cancellationToken);
+
+            if (!delegated)
+                return;
 
             _delegatedOutpoints.Add(outpoint);
             logger?.LogInformation("Successfully delegated VTXO {Outpoint}", outpoint);
@@ -120,14 +165,19 @@ public class DelegationMonitorService(
         }
     }
 
-    private async Task BuildAndSendDelegationAsync(
+    /// <returns>
+    /// <c>true</c> when the delegation was sent to the delegator; <c>false</c> when the VTXO
+    /// was skipped because it cannot fund the intent fee (see the dust guard below).
+    /// </returns>
+    private async Task<bool> BuildAndSendDelegationAsync(
         string walletId,
         ArkContract contract,
         ArkVtxo vtxo,
         OutPoint outpoint,
         ScriptBuilder intentScriptBuilder,
         ScriptBuilder forfeitScriptBuilder,
-        ArkServerInfo serverInfo)
+        ArkServerInfo serverInfo,
+        CancellationToken cancellationToken)
     {
         // Get signing descriptor from the contract's user key
         var signerDescriptor = contract switch
@@ -136,8 +186,8 @@ public class DelegationMonitorService(
             _ => throw new InvalidOperationException($"Unsupported contract type for delegation: {contract.Type}")
         };
 
-        var (signer, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(walletId, signerDescriptor);
-        var delegatePubkey = await GetDelegatePubkeyAsync();
+        var (signer, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(walletId, signerDescriptor, cancellationToken);
+        var delegatePubkey = await GetDelegatePubkeyAsync(cancellationToken);
 
         // Build the intent message. Field names must be snake_case (Messages.RegisterIntentMessage's
         // JsonPropertyName values) to match arkd/Fulmine's Go RegisterMessage struct tags — a
@@ -167,19 +217,36 @@ public class DelegationMonitorService(
             outpoint, vtxo.TxOut, signerDescriptor, intentScriptBuilder,
             null, null, null, vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
 
-        var intentPsbt = IntentProofHelper.CreateBip322Psbt(intentMessage, serverInfo.Network, intentCoin);
-
-        // CreateBip322Psbt leaves a bare 0-value OP_RETURN placeholder output (the base BIP322
-        // proof shape). Replace it with the real send-to-self destination — same script as the
-        // original VTXO, minus the operator's intent fee (arkd's INTENT_INSUFFICIENT_FEE rejects
-        // a same-amount send-to-self as paying zero fee) — mirroring
-        // IntentGenerationService.CreateIntent's Outputs.RemoveAt(0)/AddRange(outputs).
+        // The send-to-self destination is the same script as the original VTXO, minus the
+        // operator's intent fee (arkd's INTENT_INSUFFICIENT_FEE rejects a same-amount
+        // send-to-self as paying zero fee).
         var destinationAddress = vtxo.TxOut.ScriptPubKey.GetDestinationAddress(serverInfo.Network)
             ?? throw new InvalidOperationException($"Cannot derive destination address for script {vtxo.Script}");
         var destinationOutput = new ArkTxOut(ArkTxOutType.Vtxo, vtxo.TxOut.Value, destinationAddress);
-        var fee = await feeEstimator.EstimateFeeAsync([intentCoin], [destinationOutput]);
+        var fee = await feeEstimator.EstimateFeeAsync([intentCoin], [destinationOutput], cancellationToken);
         var destinationAmount = vtxo.TxOut.Value - Money.Satoshis(fee);
 
+        // A VTXO that cannot cover the intent fee has nothing to delegate: a fee at or above
+        // its value builds a zero/negative TxOut that NBitcoin rejects outright, and anything
+        // under the operator's dust threshold is rejected by arkd with AMOUNT_TOO_LOW. Skip it
+        // instead of sending a doomed delegation — bare-dust VTXOs (typically asset VTXOs)
+        // must be consolidated with a larger VTXO before they can be delegated. The outpoint is
+        // deliberately not recorded as delegated, so a later fee-estimate drop can still make it
+        // eligible on the next notification.
+        if (destinationAmount <= Money.Zero || destinationAmount < serverInfo.Dust)
+        {
+            logger?.LogWarning(
+                "Skipping delegation of VTXO {Outpoint}: value {Value} sat minus intent fee {Fee} sat leaves " +
+                "{Remaining} sat, below the operator dust threshold of {Dust} sat",
+                outpoint, vtxo.TxOut.Value.Satoshi, fee, destinationAmount.Satoshi, serverInfo.Dust.Satoshi);
+            return false;
+        }
+
+        var intentPsbt = IntentProofHelper.CreateBip322Psbt(intentMessage, serverInfo.Network, intentCoin);
+
+        // CreateBip322Psbt leaves a bare 0-value OP_RETURN placeholder output (the base BIP322
+        // proof shape). Replace it with the real send-to-self destination, mirroring
+        // IntentGenerationService.CreateIntent's Outputs.RemoveAt(0)/AddRange(outputs).
         var proofGtx = intentPsbt.GetGlobalTransaction();
         proofGtx.Outputs.RemoveAt(0);
         proofGtx.Outputs.Add(new TxOut(destinationAmount, vtxo.TxOut.ScriptPubKey));
@@ -200,7 +267,8 @@ public class DelegationMonitorService(
             }
         }
 
-        intentPsbt = await IntentProofHelper.SignBip322Proof(intentPsbt, intentCoin, signer, serverInfo.Network);
+        intentPsbt = await IntentProofHelper.SignBip322Proof(
+            intentPsbt, intentCoin, signer, serverInfo.Network, cancellationToken);
 
         // Build forfeit tx using the delegate path, signed with SIGHASH_ALL|ANYONECANPAY
         var forfeitCoin = new ArkCoin(
@@ -213,12 +281,15 @@ public class DelegationMonitorService(
             .PrecomputeTransactionData([forfeitCoin.TxOut]);
 
         await PsbtHelpers.SignAndFillPsbt(signer, forfeitCoin, forfeitTx, forfeitPrecomputed,
-            TaprootSigHash.All | TaprootSigHash.AnyoneCanPay, CancellationToken.None);
+            TaprootSigHash.All | TaprootSigHash.AnyoneCanPay, cancellationToken);
 
         await delegatorProvider.DelegateAsync(
             intentMessage,
             intentPsbt.ToBase64(),
-            [forfeitTx.ToBase64()]);
+            [forfeitTx.ToBase64()],
+            cancellationToken: cancellationToken);
+
+        return true;
     }
 
     private static PSBT CreateForfeitTransaction(ArkServerInfo serverInfo, ArkCoin coin)
@@ -247,12 +318,12 @@ public class DelegationMonitorService(
         return forfeitTx;
     }
 
-    private async Task<ECPubKey> GetDelegatePubkeyAsync()
+    private async Task<ECPubKey> GetDelegatePubkeyAsync(CancellationToken cancellationToken)
     {
         if (_delegatePubkey is not null)
             return _delegatePubkey;
 
-        var info = await delegatorProvider.GetDelegatorInfoAsync();
+        var info = await delegatorProvider.GetDelegatorInfoAsync(cancellationToken);
         _delegatePubkey = ECPubKey.Create(Convert.FromHexString(info.Pubkey));
         return _delegatePubkey;
     }
@@ -260,6 +331,8 @@ public class DelegationMonitorService(
     public void Dispose()
     {
         vtxoStorage.VtxosChanged -= OnVtxosChanged;
+        _shutdownCts?.Cancel();
+        _shutdownCts?.Dispose();
         _processingLock.Dispose();
     }
 }

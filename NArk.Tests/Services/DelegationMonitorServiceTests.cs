@@ -262,6 +262,101 @@ public class DelegationMonitorServiceTests
     }
 
     [Test]
+    public async Task SkipsDelegation_WhenAmountAfterFeeIsBelowDust_AndRetriesWhenFeeDrops()
+    {
+        var contract = CreateDelegateContract();
+        SeedContract(contract);
+        var vtxo = CreateVtxo(contract);
+
+        // 10_000 sat VTXO, 9_500 sat intent fee: 500 sat left, under the 1_000 sat dust
+        // threshold. arkd would reject this with AMOUNT_TOO_LOW, so nothing must be sent.
+        _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(9_500L));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, vtxo);
+        await Task.Delay(300);
+
+        await _delegatorProvider.DidNotReceive().DelegateAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+
+        // The skip must not blacklist the outpoint: once the fee estimate drops, the same
+        // VTXO becomes delegable on the next notification.
+        _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(100L));
+
+        _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, vtxo);
+        await _delegateCalled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await _delegatorProvider.Received(1).DelegateAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task SkipsDelegation_WhenFeeExceedsVtxoValue()
+    {
+        var contract = CreateDelegateContract();
+        SeedContract(contract);
+        var vtxo = CreateVtxo(contract);
+
+        // Fee above the VTXO value would build a negative-value TxOut.
+        _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(20_000L));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, vtxo);
+        await Task.Delay(300);
+
+        await _delegatorProvider.DidNotReceive().DelegateAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_CancelsInFlightDelegation()
+    {
+        var contract = CreateDelegateContract();
+        SeedContract(contract);
+        var vtxo = CreateVtxo(contract);
+
+        var delegationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task BlockUntilCancelled(CancellationToken token)
+        {
+            delegationEntered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, token);
+            }
+            catch (OperationCanceledException)
+            {
+                cancellationObserved.TrySetResult();
+                throw;
+            }
+        }
+
+        _delegatorProvider
+            .DelegateAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(call => BlockUntilCancelled(call.Arg<CancellationToken>()));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, vtxo);
+        await delegationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // StopAsync must cancel the in-flight call and only return once it has unwound,
+        // rather than leaving the handler blocked on the delegator past host shutdown.
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
     public async Task StopAsync_UnsubscribesFromVtxosChanged()
     {
         var contract = CreateDelegateContract();

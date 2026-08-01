@@ -68,7 +68,7 @@ arkd's indexer subscription is a long-lived stream whose watched script set can 
 
 A few subsystems are intentionally not registered by `AddArkCoreServices` because they need consumer-supplied configuration:
 
-- **Delegation** — `AddArkDelegation(delegatorUri)` registers `IDelegatorProvider`, `DelegationService`, `DelegateContractTransformer`, and `DelegationMonitorService` (hosted). Wraps `IWalletProvider` to produce `ArkDelegateContract`s for HD wallets.
+- **Delegation** — `AddArkDelegation(delegatorUri)` registers `IDelegatorProvider`, `DelegationService`, `DelegateContractTransformer`, and `DelegationMonitorService` (hosted). Wraps `IWalletProvider` to produce `ArkDelegateContract`s for HD wallets. The monitor skips VTXOs that cannot cover the intent fee above the server dust threshold, and cancels in-flight delegations on host shutdown.
 - **Payment tracking** — `AddArkPaymentTracking()` registers `IPaymentStorage`, `IPaymentRequestStorage`, and `PaymentTrackingService` (hosted). Requires `modelBuilder.ConfigureArkPaymentEntities()` in your `DbContext`.
 - **Swaps** — `AddArkSwapServices()` registers `SwapsManagementService` and the Boltz client. Configured via `ArkNetworkConfig.BoltzUri`.
 

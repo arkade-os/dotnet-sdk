@@ -443,7 +443,8 @@ public class DelegationTests
         // AssetManager mints the asset carrier at exactly serverInfo.Dust (330 sats here) with
         // no headroom. arkd requires every offchain output to be >= dust, so once delegation's
         // intent fee (offchainInputFee, ~1% here) is deducted, a bare-dust renewal output always
-        // falls under that floor — AMOUNT_TOO_LOW is unavoidable for this VTXO as issued. Consolidate
+        // falls under that floor — AMOUNT_TOO_LOW is unavoidable for this VTXO as issued, which is
+        // exactly what DelegationMonitorService's dust guard skips rather than sending. Consolidate
         // it with the wallet's plain BTC funding VTXO into one delegate-contract output so the
         // renewal has room to pay the fee and still clear dust.
         var vtxosBeforeConsolidation = await wallet.vtxoStorage.GetVtxos(includeSpent: false);
