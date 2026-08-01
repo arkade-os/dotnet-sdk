@@ -1,10 +1,12 @@
 using System.Text.Json;
 using BTCPayServer.Lightning;
+using NArk.Abstractions;
 using NArk.Abstractions.Extensions;
 using NArk.Core.Contracts;
 using NArk.Core.Extensions;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
+using NArk.Swaps.Boltz.Models.Swaps;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
@@ -18,12 +20,36 @@ using KeyExtensions = NArk.Swaps.Extensions.KeyExtensions;
 
 namespace NArk.Swaps.Boltz;
 
-internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport clientTransport, BoltzLimitsValidator limitsValidator)
+internal class BoltzSwapService(
+    BoltzClient boltzClient,
+    IClientTransport clientTransport,
+    BoltzLimitsValidator limitsValidator,
+    ICovenantClaimProvider? covenantClaimProvider = null)
 {
     private static Sequence ParseSequence(long val)
     {
         return val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
     }
+
+    /// <summary>
+    /// Whether non-interactive claims are available — i.e. an implementation was
+    /// registered. When false every swap keeps its original six-leaf VHTLC.
+    /// </summary>
+    internal bool SupportsCovenantClaims => covenantClaimProvider is not null;
+
+    /// <summary>
+    /// Resolves the covenant-claim co-signer key committing a claim to
+    /// <paramref name="claimAddress"/>.
+    /// </summary>
+    /// <remarks>
+    /// Must run before the VHTLC is built: the key adds a seventh leaf and therefore
+    /// changes the contract's address. Boltz derives the same address independently
+    /// from the <c>nonInteractiveClaim.claimAddress</c> we send, so a mismatch here
+    /// surfaces at the address check right after creation rather than at funding time.
+    /// </remarks>
+    private Task<TaprootPubKey> GetCovenantClaimKeyAsync(
+        ArkAddress claimAddress, CancellationToken cancellationToken) =>
+        covenantClaimProvider!.GetCovenantClaimKeyAsync(claimAddress.ScriptPubKey, cancellationToken);
 
     // Submarine Swaps
 
@@ -72,16 +98,28 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
 
     // Reverse Swaps
 
+    /// <param name="nonInteractiveClaimAddress">
+    /// When set (and a covenant claim provider is registered), asks Boltz for a VHTLC
+    /// carrying a non-interactive claim leaf paying this address, so a claim daemon
+    /// can sweep the swap while this wallet is offline. Null keeps the plain swap.
+    /// </param>
     public async Task<ReverseSwapResult> CreateReverseSwap(CreateInvoiceParams createInvoiceRequest,
         OutputDescriptor receiver,
         byte[]? preimage = null,
         ReverseSwapFeePayer feePayer = ReverseSwapFeePayer.Recipient,
+        ArkAddress? nonInteractiveClaimAddress = null,
         CancellationToken cancellationToken = default)
     {
         var extractedReceiver = receiver.Extract();
 
         // Get operator terms
         var operatorTerms = await clientTransport.GetServerInfoAsync(cancellationToken);
+
+        // Resolved before the request so Boltz and we commit to the same leaf: it sends
+        // the address, we hold the co-signer key that makes the leaf spendable.
+        var covenantClaimKey = nonInteractiveClaimAddress is not null && SupportsCovenantClaims
+            ? await GetCovenantClaimKeyAsync(nonInteractiveClaimAddress, cancellationToken)
+            : null;
 
         // Caller-supplied preimage enables deterministic derivation (so restored wallets can
         // re-derive and claim outstanding swaps); null falls back to random for watch-only or
@@ -110,6 +148,13 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             Description = createInvoiceRequest.Description,
             InvoiceExpirySeconds = Convert.ToInt32(createInvoiceRequest.Expiry.TotalSeconds),
             ReferralId = boltzClient.ReferralId,
+            NonInteractiveClaim = covenantClaimKey is null
+                ? null
+                : new NonInteractiveClaimRequest
+                {
+                    ClaimAddress = nonInteractiveClaimAddress!.ToString(
+                        isMainnet: operatorTerms.Network == Network.Main),
+                },
         };
 
         var response = await boltzClient.CreateReverseSwapAsync(request, cancellationToken);
@@ -144,6 +189,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             server: operatorTerms.SignerKey,
             sender: KeyExtensions.ParseOutputDescriptor(response.RefundPublicKey, operatorTerms.Network),
             receiver: receiver,
+            covenantClaimKey: covenantClaimKey,
             preimage: preimage,
             refundLocktime: new LockTime(response.TimeoutBlockHeights.Refund),
             unilateralClaimDelay: ParseSequence(response.TimeoutBlockHeights.UnilateralClaim),

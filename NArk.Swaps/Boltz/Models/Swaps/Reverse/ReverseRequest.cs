@@ -2,6 +2,8 @@ using System.Text.Json.Serialization;
 
 namespace NArk.Swaps.Boltz.Models.Swaps.Reverse;
 
+// NonInteractiveClaimRequest lives one namespace up: it is shared with chain swaps.
+
 public class ReverseRequest
 {
     [JsonPropertyName("from")]
@@ -37,5 +39,13 @@ public class ReverseRequest
     public string? Description { get; set; }
     [JsonPropertyName("descriptionHash")]
     public string? DescriptionHash { get; set; }
+
+    /// <summary>
+    /// Opt into a non-interactive claim leaf on the VHTLC. Omitted from the wire when
+    /// null, so existing callers keep getting the plain six-leaf swap.
+    /// </summary>
+    [JsonPropertyName("nonInteractiveClaim")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NonInteractiveClaimRequest? NonInteractiveClaim { get; set; }
 
 }
