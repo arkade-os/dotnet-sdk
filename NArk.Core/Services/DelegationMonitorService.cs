@@ -186,7 +186,7 @@ public class DelegationMonitorService(
             _ => throw new InvalidOperationException($"Unsupported contract type for delegation: {contract.Type}")
         };
 
-        var (signer, signerPubKey) = await walletProvider.GetSignerAndPubKeyAsync(walletId, signerDescriptor, cancellationToken);
+        var signer = await walletProvider.GetSignerOrThrowAsync(walletId, cancellationToken);
         var delegatePubkey = await GetDelegatePubkeyAsync(cancellationToken);
 
         // Build the intent message. Field names must be snake_case (Messages.RegisterIntentMessage's
