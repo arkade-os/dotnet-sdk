@@ -49,6 +49,12 @@ public sealed class CovclaimdClient : ICovclaimdClient
         _httpClient.BaseAddress ??= _options.BaseAddress
             ?? throw new InvalidOperationException(
                 $"{nameof(CovclaimdOptions)}.{nameof(CovclaimdOptions.BaseAddress)} must be set.");
+
+        // Claim registration runs inline during swap creation, so a daemon that is down
+        // must fail fast rather than hold the swap open for HttpClient's 100 second
+        // default. Set here rather than only in the DI extension so hand-built clients
+        // get the same bound.
+        _httpClient.Timeout = _options.RequestTimeout;
     }
 
     /// <inheritdoc />

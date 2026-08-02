@@ -65,14 +65,20 @@ public class CovenantClaimRenewalServiceTests
 
     private static (CovenantClaimRenewalService service, ICovenantClaimProvider provider) Build(
         VHTLCContract? contract, ArkSwapStatus status = ArkSwapStatus.Pending,
-        ICovenantClaimProvider? provider = null)
+        ICovenantClaimProvider? provider = null,
+        CovenantClaimRenewalOptions? options = null)
     {
         var swapStorage = Substitute.For<ISwapStorage>();
         var contractStorage = Substitute.For<IContractStorage>();
         var transport = Substitute.For<IClientTransport>();
 
-        provider ??= Substitute.For<ICovenantClaimProvider>();
-        provider.RegistrationLifetime.Returns(TimeSpan.FromMinutes(15));
+        // Only stub the lifetime for a provider we created; a caller-supplied one is
+        // configured by the test and must not be overwritten here.
+        if (provider is null)
+        {
+            provider = Substitute.For<ICovenantClaimProvider>();
+            provider.RegistrationLifetime.Returns(TimeSpan.FromMinutes(15));
+        }
 
         var server = KeyExtensions.ParseOutputDescriptor(ServerKeyHex, Network.RegTest);
         transport.GetServerInfoAsync(Arg.Any<CancellationToken>()).Returns(
@@ -102,7 +108,10 @@ public class CovenantClaimRenewalServiceTests
                 .ReturnsForAnyArgs([contract.ToEntity("wallet-1", null, null, ContractActivityState.Active)]);
         }
 
-        return (new CovenantClaimRenewalService(swapStorage, contractStorage, transport, provider), provider);
+        return (new CovenantClaimRenewalService(
+            swapStorage, contractStorage, transport, provider,
+            new Microsoft.Extensions.Options.OptionsWrapper<CovenantClaimRenewalOptions>(
+                options ?? new CovenantClaimRenewalOptions())), provider);
     }
 
     [Test]
@@ -190,15 +199,58 @@ public class CovenantClaimRenewalServiceTests
     }
 
     /// <summary>
-    /// Half the advertised lifetime, so one missed pass still leaves the authorisation
-    /// valid rather than opening a gap.
+    /// By default the cadence follows whatever lifetime the backend advertises, so a
+    /// signer with a different TTL is tracked without retuning anything.
     /// </summary>
     [Test]
-    public void RenewalIntervalIsHalfTheRegistrationLifetime()
+    public void RenewalIntervalDefaultsToThreeQuartersOfTheRegistrationLifetime()
     {
         var (service, _) = Build(BuildContract(withCovenant: true));
 
+        Assert.That(service.RenewalInterval, Is.EqualTo(TimeSpan.FromMinutes(11.25)));
+    }
+
+    [Test]
+    public void RenewalFractionIsConfigurable()
+    {
+        var (service, _) = Build(BuildContract(withCovenant: true),
+            options: new CovenantClaimRenewalOptions { RenewalFraction = 0.5 });
+
         Assert.That(service.RenewalInterval, Is.EqualTo(TimeSpan.FromMinutes(7.5)));
+    }
+
+    [Test]
+    public void ExplicitIntervalOverridesTheBackendLifetime()
+    {
+        var (service, _) = Build(BuildContract(withCovenant: true),
+            options: new CovenantClaimRenewalOptions { Interval = TimeSpan.FromMinutes(3) });
+
+        Assert.That(service.RenewalInterval, Is.EqualTo(TimeSpan.FromMinutes(3)));
+    }
+
+    /// <summary>
+    /// A backend advertising an implausibly short lifetime must not turn the loop into a
+    /// hot loop against storage and the network.
+    /// </summary>
+    [Test]
+    public void IntervalIsFlooredByMinimumInterval()
+    {
+        var provider = Substitute.For<ICovenantClaimProvider>();
+        provider.RegistrationLifetime.Returns(TimeSpan.FromSeconds(4));
+
+        var (service, _) = Build(BuildContract(withCovenant: true), provider: provider);
+
+        Assert.That(service.RenewalInterval, Is.EqualTo(TimeSpan.FromMinutes(1)));
+    }
+
+    [TestCase(0d)]
+    [TestCase(-0.5d)]
+    [TestCase(1.5d)]
+    [TestCase(double.NaN)]
+    public void RenewalFractionRejectsValuesOutsideZeroToOne(double fraction)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new CovenantClaimRenewalOptions { RenewalFraction = fraction });
     }
 
     /// <summary>

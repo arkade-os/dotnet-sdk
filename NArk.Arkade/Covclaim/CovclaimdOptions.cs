@@ -27,6 +27,18 @@ public sealed class CovclaimdOptions
     public TimeSpan RegistrationTtl { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
+    /// Per-request timeout. Defaults to 10 seconds.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately far below <see cref="System.Net.Http.HttpClient"/>'s 100 second
+    /// default. Registering a claim happens inline while a swap is being created, so an
+    /// unreachable daemon would otherwise stall swap initiation for a minute and a half
+    /// — and the caller treats registration failures as non-fatal precisely because the
+    /// swap should not depend on the daemon being up.
+    /// </remarks>
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// Whether the daemon's keys may be cached for the lifetime of the client.
     /// They are static per daemon instance, so this is on by default; turn it off
     /// if a deployment rotates them without restarting consumers.

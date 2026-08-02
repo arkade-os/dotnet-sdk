@@ -146,6 +146,28 @@ public class VHtlcCovenantClaimTests
         });
     }
 
+    /// <summary>
+    /// A corrupt stored key must fail where the bad data is, not later inside script
+    /// building where nothing points back at the contract row that caused it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TaprootPubKey"/> only checks the length, so without an explicit check
+    /// a truncated or off-curve value survives parsing.
+    /// </remarks>
+    [TestCase("zzzz", Description = "not hex")]
+    [TestCase("77a2e768588b5ced39c389e2ce803041bf9a70d503b34b49edf5970d912dc", Description = "truncated")]
+    [TestCase("0000000000000000000000000000000000000000000000000000000000000000", Description = "not a point")]
+    public void Parse_RejectsMalformedCovenantClaimKey(string covenantKeyHex)
+    {
+        var data = ContractDataFor(WithCovenant());
+        data["covenantClaimKey"] = covenantKeyHex;
+
+        Assert.Throws<FormatException>(() => VHTLCContract.Parse(data, Network.RegTest));
+    }
+
+    private static Dictionary<string, string> ContractDataFor(VHTLCContract contract) =>
+        IArkContractParser.GetContractData(contract.ToString());
+
     [Test]
     public void Create_WithoutCovenantKey_MatchesConstructor()
     {

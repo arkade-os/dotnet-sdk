@@ -239,7 +239,7 @@ public class VHTLCContract : ArkContract
         // Absent on every contract written before covenant claims existed, so its
         // absence must keep parsing to exactly the contract those bytes described.
         var covenantClaimKey = contractData.TryGetValue("covenantClaimKey", out var covenantKeyHex)
-            ? new TaprootPubKey(Convert.FromHexString(covenantKeyHex))
+            ? ParseCovenantClaimKey(covenantKeyHex)
             : null;
 
         if (contractData.TryGetValue("preimage", out var preimage))
@@ -253,6 +253,37 @@ public class VHTLCContract : ArkContract
         }
 
         return new VHTLCContract(server, senderDescriptor, receiverDescriptor, hash, refundLocktime, unilateralClaimDelay, unilateralRefundDelay, unilateralRefundWithoutReceiverDelay, covenantClaimKey);
+    }
+
+    /// <summary>
+    /// Parses a persisted covenant claim key, rejecting anything that is not a valid
+    /// x-only point.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TaprootPubKey"/> only checks the length, so a truncated or corrupted
+    /// stored value would survive until <see cref="CreateCovenantClaimScript"/> tried to
+    /// use it — surfacing as an opaque failure deep in script building, with nothing
+    /// pointing back at the contract row that caused it. Failing here keeps the error
+    /// attached to the data that is actually wrong.
+    /// </remarks>
+    /// <exception cref="FormatException">The value is not a valid x-only public key.</exception>
+    private static TaprootPubKey ParseCovenantClaimKey(string hex)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromHexString(hex);
+        }
+        catch (FormatException ex)
+        {
+            throw new FormatException("covenantClaimKey is not valid hex", ex);
+        }
+
+        if (bytes.Length != 32 || !ECXOnlyPubKey.TryCreate(bytes, Context.Instance, out _))
+            throw new FormatException(
+                $"covenantClaimKey is not a valid x-only public key ({bytes.Length} bytes)");
+
+        return new TaprootPubKey(bytes);
     }
 
     public ScriptBuilder CreateClaimScript()

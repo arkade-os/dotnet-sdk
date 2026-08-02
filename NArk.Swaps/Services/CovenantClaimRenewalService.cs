@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Core;
@@ -34,13 +35,11 @@ namespace NArk.Swaps.Services;
 /// </remarks>
 public class CovenantClaimRenewalService : IHostedService, IAsyncDisposable
 {
-    /// <summary>Never poll faster than this, however short the signer's TTL is.</summary>
-    private static readonly TimeSpan MinimumInterval = TimeSpan.FromMinutes(1);
-
     private readonly ISwapStorage _swapStorage;
     private readonly IContractStorage _contractStorage;
     private readonly IClientTransport _clientTransport;
     private readonly ICovenantClaimProvider? _covenantClaimProvider;
+    private readonly CovenantClaimRenewalOptions _options;
     private readonly ILogger<CovenantClaimRenewalService>? _logger;
 
     private CancellationTokenSource? _cts;
@@ -50,29 +49,42 @@ public class CovenantClaimRenewalService : IHostedService, IAsyncDisposable
     /// <param name="contractStorage">Used to reload each swap's stored VHTLC.</param>
     /// <param name="clientTransport">Supplies the server key and network for reconstruction.</param>
     /// <param name="covenantClaimProvider">Null when covenant claims are not configured.</param>
+    /// <param name="options">Renewal cadence; defaults are used when not configured.</param>
     /// <param name="logger">Optional logger.</param>
     public CovenantClaimRenewalService(
         ISwapStorage swapStorage,
         IContractStorage contractStorage,
         IClientTransport clientTransport,
         ICovenantClaimProvider? covenantClaimProvider = null,
+        IOptions<CovenantClaimRenewalOptions>? options = null,
         ILogger<CovenantClaimRenewalService>? logger = null)
     {
         _swapStorage = swapStorage;
         _contractStorage = contractStorage;
         _clientTransport = clientTransport;
         _covenantClaimProvider = covenantClaimProvider;
+        _options = options?.Value ?? new CovenantClaimRenewalOptions();
         _logger = logger;
     }
 
     /// <summary>
-    /// Half the signer's advertised lifetime, so a single missed pass still leaves the
-    /// authorisation valid.
+    /// A configured fraction of the backend's advertised lifetime, or an explicit
+    /// override, floored by <see cref="CovenantClaimRenewalOptions.MinimumInterval"/>.
     /// </summary>
-    internal TimeSpan RenewalInterval =>
-        _covenantClaimProvider is null
-            ? MinimumInterval
-            : Max(_covenantClaimProvider.RegistrationLifetime / 2, MinimumInterval);
+    internal TimeSpan RenewalInterval
+    {
+        get
+        {
+            if (_options.Interval is { } fixedInterval)
+                return Max(fixedInterval, _options.MinimumInterval);
+
+            if (_covenantClaimProvider is null)
+                return _options.MinimumInterval;
+
+            var derived = _covenantClaimProvider.RegistrationLifetime * _options.RenewalFraction;
+            return Max(derived, _options.MinimumInterval);
+        }
+    }
 
     private static TimeSpan Max(TimeSpan a, TimeSpan b) => a > b ? a : b;
 
