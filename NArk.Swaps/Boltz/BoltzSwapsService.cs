@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using BTCPayServer.Lightning;
 using NArk.Abstractions;
 using NArk.Abstractions.Extensions;
@@ -24,7 +25,8 @@ internal class BoltzSwapService(
     BoltzClient boltzClient,
     IClientTransport clientTransport,
     BoltzLimitsValidator limitsValidator,
-    ICovenantClaimProvider? covenantClaimProvider = null)
+    ICovenantClaimProvider? covenantClaimProvider = null,
+    ILogger? logger = null)
 {
     private static Sequence ParseSequence(long val)
     {
@@ -42,14 +44,39 @@ internal class BoltzSwapService(
     /// <paramref name="claimAddress"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Must run before the VHTLC is built: the key adds a seventh leaf and therefore
     /// changes the contract's address. Boltz derives the same address independently
     /// from the <c>nonInteractiveClaim.claimAddress</c> we send, so a mismatch here
     /// surfaces at the address check right after creation rather than at funding time.
+    /// </para>
+    /// <para>
+    /// Returns null when the covenant backend cannot be reached, degrading to a plain
+    /// six-leaf swap. A covenant claim is redundancy layered on top of the wallet's own
+    /// claim path — letting an unreachable daemon abort the swap would trade an optional
+    /// improvement for a hard dependency, and make every swap fail during an outage.
+    /// This matches the failure policy of the registration call that follows it.
+    /// </para>
     /// </remarks>
-    private Task<TaprootPubKey> GetCovenantClaimKeyAsync(
-        ArkAddress claimAddress, CancellationToken cancellationToken) =>
-        covenantClaimProvider!.GetCovenantClaimKeyAsync(claimAddress.ScriptPubKey, cancellationToken);
+    private async Task<TaprootPubKey?> TryGetCovenantClaimKeyAsync(
+        ArkAddress? claimAddress, CancellationToken cancellationToken)
+    {
+        if (claimAddress is null || !SupportsCovenantClaims)
+            return null;
+
+        try
+        {
+            return await covenantClaimProvider!.GetCovenantClaimKeyAsync(
+                claimAddress.ScriptPubKey, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(ex,
+                "Could not resolve a covenant claim key; continuing without offline claim " +
+                "cover for this swap");
+            return null;
+        }
+    }
 
     // Submarine Swaps
 
@@ -117,9 +144,8 @@ internal class BoltzSwapService(
 
         // Resolved before the request so Boltz and we commit to the same leaf: it sends
         // the address, we hold the co-signer key that makes the leaf spendable.
-        var covenantClaimKey = nonInteractiveClaimAddress is not null && SupportsCovenantClaims
-            ? await GetCovenantClaimKeyAsync(nonInteractiveClaimAddress, cancellationToken)
-            : null;
+        var covenantClaimKey =
+            await TryGetCovenantClaimKeyAsync(nonInteractiveClaimAddress, cancellationToken);
 
         // Caller-supplied preimage enables deterministic derivation (so restored wallets can
         // re-derive and claim outstanding swaps); null falls back to random for watch-only or
@@ -289,9 +315,7 @@ internal class BoltzSwapService(
 
         // Same ordering constraint as reverse swaps: the key changes the VHTLC address,
         // so it has to exist before Boltz derives its own copy of that address.
-        var covenantClaimKey = nonInteractiveClaimAddress is not null && SupportsCovenantClaims
-            ? await GetCovenantClaimKeyAsync(nonInteractiveClaimAddress, ct)
-            : null;
+        var covenantClaimKey = await TryGetCovenantClaimKeyAsync(nonInteractiveClaimAddress, ct);
 
         var request = new ChainRequest
         {
