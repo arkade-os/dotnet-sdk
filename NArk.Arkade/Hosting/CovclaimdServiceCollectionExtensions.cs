@@ -1,4 +1,8 @@
+using System.Net;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NArk.Arkade.Covclaim;
 using NArk.Core.Contracts;
 
@@ -33,9 +37,27 @@ public static class CovclaimdServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configure);
 
         services.Configure(configure);
-        services.AddHttpClient<CovclaimdClient>(CovclaimdOptions.HttpClientName);
-        services.AddSingleton<ICovclaimdClient>(sp => sp.GetRequiredService<CovclaimdClient>());
-        services.AddSingleton<ICovenantClaimProvider, CovclaimdCovenantClaimProvider>();
+
+        // The client is a singleton (it caches the daemon's keys), so it must not hold a
+        // handler that the factory intends to rotate — a captured typed client would pin
+        // one handler for the lifetime of the app and never pick up DNS changes. Taking a
+        // named client from the factory at resolve time, with connection lifetime managed
+        // on the handler instead of by rotation, keeps both properties.
+        services.AddHttpClient(CovclaimdOptions.HttpClientName)
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            });
+
+        services.TryAddSingleton<ICovclaimdClient>(sp => new CovclaimdClient(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(CovclaimdOptions.HttpClientName),
+            sp.GetRequiredService<IOptions<CovclaimdOptions>>(),
+            sp.GetService<ILogger<CovclaimdClient>>()));
+
+        // TryAdd so calling this twice does not stack duplicate providers, which would
+        // make swap code pick an arbitrary one.
+        services.TryAddSingleton<ICovenantClaimProvider, CovclaimdCovenantClaimProvider>();
         return services;
     }
 }

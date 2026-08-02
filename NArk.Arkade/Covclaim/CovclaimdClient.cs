@@ -49,12 +49,52 @@ public sealed class CovclaimdClient : ICovclaimdClient
         _httpClient.BaseAddress ??= _options.BaseAddress
             ?? throw new InvalidOperationException(
                 $"{nameof(CovclaimdOptions)}.{nameof(CovclaimdOptions.BaseAddress)} must be set.");
+    }
 
-        // Claim registration runs inline during swap creation, so a daemon that is down
-        // must fail fast rather than hold the swap open for HttpClient's 100 second
-        // default. Set here rather than only in the DI extension so hand-built clients
-        // get the same bound.
-        _httpClient.Timeout = _options.RequestTimeout;
+    /// <summary>
+    /// Runs <paramref name="send"/> under
+    /// <see cref="CovclaimdOptions.RequestTimeout"/>, translating transport failures into
+    /// <see cref="CovclaimdException"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The bound is applied per request rather than by setting
+    /// <see cref="HttpClient.Timeout"/>, because that property throws once the client has
+    /// issued a request and the instance may be shared — a client this type does not own
+    /// is not ours to reconfigure. Claim registration runs inline while a swap is being
+    /// created, so the bound matters: without it an unreachable daemon would stall swap
+    /// creation for HttpClient's 100 second default.
+    /// </para>
+    /// <para>
+    /// A cancellation coming from <paramref name="cancellationToken"/> is rethrown as-is;
+    /// only our own timeout is reported as a failure, so callers can still distinguish
+    /// "the caller gave up" from "the daemon did not answer".
+    /// </para>
+    /// </remarks>
+    private async Task<T> SendAsync<T>(
+        Func<CancellationToken, Task<T>> send, string operation, CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_options.RequestTimeout);
+
+        try
+        {
+            return await send(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            throw new CovclaimdException(
+                $"covclaimd did not respond within {_options.RequestTimeout.TotalSeconds:0.#}s " +
+                $"while trying to {operation}.", null, ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new CovclaimdException($"covclaimd is unreachable: could not {operation}.", null, ex);
+        }
     }
 
     /// <inheritdoc />
@@ -69,10 +109,12 @@ public sealed class CovclaimdClient : ICovclaimdClient
             if (_options.CacheKeys && _cachedKeys is { } raced)
                 return raced;
 
-            using var response = await _httpClient.GetAsync(KeysPath, cancellationToken);
-            await EnsureSuccessAsync(response, "fetch daemon keys", cancellationToken);
-
-            var body = await response.Content.ReadFromJsonAsync<CovclaimdKeysResponse>(cancellationToken)
+            var body = await SendAsync(async ct =>
+            {
+                using var response = await _httpClient.GetAsync(KeysPath, ct);
+                await EnsureSuccessAsync(response, "fetch daemon keys", ct);
+                return await response.Content.ReadFromJsonAsync<CovclaimdKeysResponse>(ct);
+            }, "fetch daemon keys", cancellationToken)
                 ?? throw new CovclaimdException("Daemon returned an empty key response.");
 
             var keys = new CovclaimdKeys(
@@ -127,8 +169,12 @@ public sealed class CovclaimdClient : ICovclaimdClient
             Taptree = Convert.ToHexString(PsbtHelpers.EncodeTaprootTree(taptree)).ToLowerInvariant(),
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(RevealPath, request, cancellationToken);
-        await EnsureSuccessAsync(response, $"register claim for {swapAddress}", cancellationToken);
+        await SendAsync<object?>(async ct =>
+        {
+            using var response = await _httpClient.PostAsJsonAsync(RevealPath, request, ct);
+            await EnsureSuccessAsync(response, $"register claim for {swapAddress}", ct);
+            return null;
+        }, $"register claim for {swapAddress}", cancellationToken);
 
         _logger?.LogInformation(
             "Registered covclaimd claim for swap address {SwapAddress} ({LeafCount} taptree leaves)",

@@ -27,12 +27,20 @@ public interface ICovenantClaimProvider
     /// How long an authorisation from <see cref="RegisterAsync"/> stays valid.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Exposed so callers can pace renewals off the real value instead of duplicating
     /// the backend's constant. A registration may still be dropped early — a signer
     /// that restarts loses everything it was holding — so this is an upper bound, not
     /// a guarantee.
+    /// </para>
+    /// <para>
+    /// Defaulted rather than abstract so adding it does not break implementations that
+    /// predate it. The default matches covclaimd's own TTL; override it whenever the
+    /// backend behind an implementation expires registrations on a different schedule,
+    /// or renewals will be paced against a number that does not apply.
+    /// </para>
     /// </remarks>
-    TimeSpan RegistrationLifetime { get; }
+    TimeSpan RegistrationLifetime => TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Returns the co-signer key for a covenant-claim leaf that may only pay

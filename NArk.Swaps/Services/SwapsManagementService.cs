@@ -196,7 +196,7 @@ public class SwapsManagementService : IAsyncDisposable
             _logger?.LogInformation(
                 "Registered covenant claim for swap lockup {LockupAddress}", lockupAddress);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger?.LogWarning(ex,
                 "Could not register covenant claim for {LockupAddress}; the swap is still " +
@@ -496,7 +496,7 @@ public class SwapsManagementService : IAsyncDisposable
         var contractScript = contract.GetArkAddress().ScriptPubKey.ToHex();
 
         await RegisterCovenantClaimAsync(contract, contract.GetArkAddress().ToString(
-                isMainnet: serverInfo.Network == Network.Main),
+                isMainnet: serverInfo.Network.ChainName == ChainName.Mainnet),
             preimage, claimAddress, cancellationToken);
 
         var swap = new ArkSwap(

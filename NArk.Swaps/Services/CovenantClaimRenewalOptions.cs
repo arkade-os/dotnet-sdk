@@ -53,5 +53,17 @@ public sealed class CovenantClaimRenewalOptions
     /// Guards against a backend advertising an implausibly short lifetime turning the
     /// renewal loop into a hot loop against storage and the network.
     /// </remarks>
-    public TimeSpan MinimumInterval { get; set; } = TimeSpan.FromMinutes(1);
+    public TimeSpan MinimumInterval
+    {
+        get => _minimumInterval;
+        set
+        {
+            if (value <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(value),
+                    "Minimum interval must be greater than zero.");
+            _minimumInterval = value;
+        }
+    }
+
+    private TimeSpan _minimumInterval = TimeSpan.FromMinutes(1);
 }

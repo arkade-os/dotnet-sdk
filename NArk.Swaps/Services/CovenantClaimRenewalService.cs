@@ -129,11 +129,20 @@ public class CovenantClaimRenewalService : IHostedService, IAsyncDisposable
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(RenewalInterval);
+
+        // Renew immediately rather than after a full interval. On startup the signer may
+        // have just restarted and dropped everything it was holding, and swaps created by
+        // a previous run of this process have no live registration at all — waiting out
+        // the first tick would leave them uncovered for no reason.
+        var first = true;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await timer.WaitForNextTickAsync(cancellationToken);
+                if (!first)
+                    await timer.WaitForNextTickAsync(cancellationToken);
+                first = false;
+
                 await RenewAllAsync(cancellationToken);
             }
             catch (OperationCanceledException)
@@ -163,16 +172,31 @@ public class CovenantClaimRenewalService : IHostedService, IAsyncDisposable
             return;
 
         var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
-        var isMainnet = serverInfo.Network == Network.Main;
+        var isMainnet = serverInfo.Network.ChainName == ChainName.Mainnet;
         var renewed = 0;
+
+        // One query for the whole pass rather than one per swap: a wallet with many
+        // outstanding swaps would otherwise hit storage once per swap on every tick.
+        var contracts = (await _contractStorage.GetContracts(
+                walletIds: pending.Select(s => s.WalletId).Distinct().ToArray(),
+                scripts: pending.Select(s => s.ContractScript).Distinct().ToArray(),
+                cancellationToken: cancellationToken))
+            .ToLookup(c => (c.WalletIdentifier, c.Script));
 
         foreach (var swap in pending)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                if (await RenewAsync(swap, serverInfo, isMainnet, cancellationToken))
+                var stored = contracts[(swap.WalletId, swap.ContractScript)].FirstOrDefault();
+                if (stored is not null && await RenewAsync(swap, stored, serverInfo, isMainnet, cancellationToken))
                     renewed++;
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown, not a renewal failure. Reported as one it would log a bogus
+                // warning per pending swap on every clean stop and bury the real cause.
+                throw;
             }
             catch (Exception ex)
             {
@@ -190,17 +214,11 @@ public class CovenantClaimRenewalService : IHostedService, IAsyncDisposable
     /// Renews a single swap, or returns false when it has no covenant claim to renew.
     /// </summary>
     private async Task<bool> RenewAsync(
-        ArkSwap swap, ArkServerInfo serverInfo, bool isMainnet, CancellationToken cancellationToken)
+        ArkSwap swap, ArkContractEntity stored, ArkServerInfo serverInfo, bool isMainnet,
+        CancellationToken cancellationToken)
     {
-        var stored = (await _contractStorage.GetContracts(
-                walletIds: [swap.WalletId],
-                scripts: [swap.ContractScript],
-                cancellationToken: cancellationToken))
-            .FirstOrDefault();
-
-        if (stored is null ||
-            ArkContractParser.Parse(stored.Type, stored.AdditionalData, serverInfo.Network)
-                is not VHTLCContract contract)
+        if (ArkContractParser.Parse(stored.Type, stored.AdditionalData, serverInfo.Network)
+            is not VHTLCContract contract)
             return false;
 
         // No leaf means nothing to authorise; no preimage means we could not tell the

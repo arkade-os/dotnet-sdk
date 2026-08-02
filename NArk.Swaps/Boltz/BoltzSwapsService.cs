@@ -179,7 +179,7 @@ internal class BoltzSwapService(
                 : new NonInteractiveClaimRequest
                 {
                     ClaimAddress = nonInteractiveClaimAddress!.ToString(
-                        isMainnet: operatorTerms.Network == Network.Main),
+                        isMainnet: operatorTerms.Network.ChainName == ChainName.Mainnet),
                 },
         };
 
@@ -331,7 +331,7 @@ internal class BoltzSwapService(
                 : new NonInteractiveClaimRequest
                 {
                     ClaimAddress = nonInteractiveClaimAddress!.ToString(
-                        isMainnet: operatorTerms.Network == Network.Main),
+                        isMainnet: operatorTerms.Network.ChainName == ChainName.Mainnet),
                 },
         };
 
