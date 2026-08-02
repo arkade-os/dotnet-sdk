@@ -51,15 +51,23 @@ public static class CovclaimEcies
         var ephemeralPubKey = ephemeral.CreatePubKey().ToBytes(compressed: true);
 
         var symmetricKey = DeriveSymmetricKey(ephemeral, recipient, salt: ephemeralPubKey);
+        try
+        {
+            var nonce = RandomNumberGenerator.GetBytes(NonceLength);
+            var ciphertext = new byte[plaintext.Length];
+            var tag = new byte[TagLength];
 
-        var nonce = RandomNumberGenerator.GetBytes(NonceLength);
-        var ciphertext = new byte[plaintext.Length];
-        var tag = new byte[TagLength];
+            using var aead = new AesGcm(symmetricKey, TagLength);
+            aead.Encrypt(nonce, plaintext, ciphertext, tag, associatedData: ephemeralPubKey);
 
-        using var aead = new AesGcm(symmetricKey, TagLength);
-        aead.Encrypt(nonce, plaintext, ciphertext, tag, associatedData: ephemeralPubKey);
-
-        return [.. ephemeralPubKey, .. nonce, .. ciphertext, .. tag];
+            return [.. ephemeralPubKey, .. nonce, .. ciphertext, .. tag];
+        }
+        finally
+        {
+            // The key can decrypt the preimage, so it should not outlive the operation
+            // in a buffer waiting to be reused or paged out.
+            CryptographicOperations.ZeroMemory(symmetricKey);
+        }
     }
 
     /// <summary>
@@ -86,11 +94,17 @@ public static class CovclaimEcies
         var tag = sealedBytes[^TagLength..];
 
         var symmetricKey = DeriveSymmetricKey(recipientKey, ephemeralPubKey, salt: ephemeralPubKeyBytes);
-
-        var plaintext = new byte[ciphertext.Length];
-        using var aead = new AesGcm(symmetricKey, TagLength);
-        aead.Decrypt(nonce, ciphertext, tag, plaintext, associatedData: ephemeralPubKeyBytes);
-        return plaintext;
+        try
+        {
+            var plaintext = new byte[ciphertext.Length];
+            using var aead = new AesGcm(symmetricKey, TagLength);
+            aead.Decrypt(nonce, ciphertext, tag, plaintext, associatedData: ephemeralPubKeyBytes);
+            return plaintext;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(symmetricKey);
+        }
     }
 
     /// <summary>
@@ -104,12 +118,22 @@ public static class CovclaimEcies
         var sharedPoint = peer.GetSharedPubkey(key);
         var sharedSecret = sharedPoint.ToBytes(compressed: true)[1..];
 
-        return HKDF.DeriveKey(
-            HashAlgorithmName.SHA256,
-            ikm: sharedSecret,
-            outputLength: 32,
-            salt: salt,
-            info: System.Text.Encoding.ASCII.GetBytes(HkdfInfo));
+        try
+        {
+            return HKDF.DeriveKey(
+                HashAlgorithmName.SHA256,
+                ikm: sharedSecret,
+                outputLength: 32,
+                salt: salt,
+                info: System.Text.Encoding.ASCII.GetBytes(HkdfInfo));
+        }
+        finally
+        {
+            // The ECDH x-coordinate reproduces the AES key for anyone who also has the
+            // ephemeral pubkey, which travels in the clear — so it is as sensitive as the
+            // key itself and should not linger past the derivation.
+            CryptographicOperations.ZeroMemory(sharedSecret);
+        }
     }
 
     private static ECPrivKey CreateEphemeralKey()

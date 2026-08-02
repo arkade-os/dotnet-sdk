@@ -105,6 +105,13 @@ public class CovenantClaimScriptTests
     [TestCase("5121c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee501",
         Description = "wrong length")]
     [TestCase("", Description = "empty")]
+    // Right length, wrong witness version — the only case that reaches the prefix check
+    // rather than being rejected on length first.
+    [TestCase("522079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        Description = "34 bytes but OP_2, not OP_1")]
+    // Right length and version, but a non-minimal push opcode where OP_DATA_32 belongs.
+    [TestCase("514c2079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817",
+        Description = "34 bytes but PUSHDATA1, not OP_DATA_32")]
     public void EnforcePayTo_RejectsNonP2trDestination(string scriptPubKeyHex)
     {
         var scriptPubKey = new Script(Convert.FromHexString(scriptPubKeyHex));

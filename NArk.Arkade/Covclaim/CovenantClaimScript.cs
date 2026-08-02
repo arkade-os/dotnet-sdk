@@ -58,7 +58,8 @@ public static class CovenantClaimScript
     public static byte[] EnforcePayTo(Script receiverScriptPubKey)
     {
         ArgumentNullException.ThrowIfNull(receiverScriptPubKey);
-        var witnessProgram = ExtractP2trWitnessProgram(receiverScriptPubKey.ToBytes());
+        var witnessProgram = ExtractP2trWitnessProgram(
+            receiverScriptPubKey.ToBytes(), nameof(receiverScriptPubKey));
 
         return ArkadeScript.Encode(
         [
@@ -80,17 +81,22 @@ public static class CovenantClaimScript
     /// Validates that <paramref name="scriptPubKey"/> is a P2TR script and returns
     /// its 32-byte witness program.
     /// </summary>
-    private static byte[] ExtractP2trWitnessProgram(byte[] scriptPubKey)
+    /// <param name="scriptPubKey">Candidate scriptPubKey bytes.</param>
+    /// <param name="paramName">
+    /// Name of the caller's parameter, so a rejection points at the argument the caller
+    /// actually passed rather than at this private helper's local.
+    /// </param>
+    private static byte[] ExtractP2trWitnessProgram(byte[] scriptPubKey, string paramName)
     {
         if (scriptPubKey.Length != P2trScriptLength)
             throw new ArgumentException(
                 $"Expected a {P2trScriptLength}-byte P2TR scriptPubKey, got {scriptPubKey.Length}.",
-                nameof(scriptPubKey));
+                paramName);
 
         if (scriptPubKey[0] != (byte)OpcodeType.OP_1 || scriptPubKey[1] != OpData32)
             throw new ArgumentException(
                 $"Not a P2TR scriptPubKey: prefix {scriptPubKey[0]:x2} {scriptPubKey[1]:x2}.",
-                nameof(scriptPubKey));
+                paramName);
 
         return scriptPubKey[2..];
     }

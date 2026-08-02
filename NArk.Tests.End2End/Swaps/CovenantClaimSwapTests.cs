@@ -61,7 +61,14 @@ namespace NArk.Tests.End2End.Swaps;
 [Category("Covclaim")]
 public class CovenantClaimSwapTests
 {
-    private static readonly Uri CovclaimdEndpoint = new("http://localhost:7271");
+    /// <summary>
+    /// Where covclaimd's REST gateway is listening. Sourced from the environment so a
+    /// harness that remaps the port is honoured; the literal is only the default the
+    /// regtest compose file uses.
+    /// </summary>
+    private static Uri CovclaimdEndpoint =>
+        new(Environment.GetEnvironmentVariable("COVCLAIMD_URL")
+            ?? $"http://localhost:{Environment.GetEnvironmentVariable("COVCLAIMD_HTTP_PORT") ?? "7271"}");
 
     private static CovclaimdClient CreateCovclaimdClient() =>
         new(new HttpClient(),
@@ -250,17 +257,27 @@ public class CovenantClaimSwapTests
     private static async Task<bool> WaitForClaimAsync(
         IClientTransport transport, string contractScript, TimeSpan timeout)
     {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (DateTimeOffset.UtcNow < deadline)
+        // Bound the indexer enumeration too, not just the loop: a stalled snapshot would
+        // otherwise hang past the timeout and the caller would wait indefinitely for a
+        // helper that promises to give up.
+        using var cts = new CancellationTokenSource(timeout);
+        try
         {
-            await foreach (var vtxo in transport.GetVtxoByScriptsAsSnapshot(
-                               new HashSet<string> { contractScript }))
+            while (!cts.IsCancellationRequested)
             {
-                if (vtxo.IsSpent())
-                    return true;
-            }
+                await foreach (var vtxo in transport.GetVtxoByScriptsAsSnapshot(
+                                   new HashSet<string> { contractScript }, cts.Token))
+                {
+                    if (vtxo.IsSpent())
+                        return true;
+                }
 
-            await Task.Delay(TimeSpan.FromSeconds(3));
+                await Task.Delay(TimeSpan.FromSeconds(3), cts.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Timed out; reported as "no claim observed" rather than as an error.
         }
 
         return false;
