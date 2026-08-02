@@ -57,7 +57,6 @@ namespace NArk.Tests.End2End.Swaps;
 /// <c>COVCLAIMD_IMAGE</c> is empty.
 /// </para>
 /// </remarks>
-[Category("Swaps")]
 [Category("Covclaim")]
 public class CovenantClaimSwapTests
 {

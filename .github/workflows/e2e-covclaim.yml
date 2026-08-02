@@ -1,0 +1,62 @@
+name: E2E Covclaim
+
+on:
+  workflow_call:
+
+# Non-interactive claims need a pairing that no other suite can run on:
+#   - fulmine v0.4.0-rc.4 is what actually builds the claim leaf, but it drops the
+#     fulmine.v1.DelegateService gRPC API the delegate e2e tests depend on
+#   - Boltz must be a build carrying BoltzExchange/boltz-backend#1467, and it has to
+#     match fulmine's major version or it returns an empty claimDetails.serverPublicKey
+# Process env wins over .env.regtest, so scoping the overrides to this job keeps every
+# other workflow on the released images.
+#
+# All three images are previews from unmerged work (boltz-backend#1467, ts-sdk#613) and
+# altaf4n/boltz is a fork build — expect this to need repinning once they land.
+env:
+  FULMINE_IMAGE: ghcr.io/arklabshq/fulmine:v0.4.0-rc.4
+  BOLTZ_IMAGE: altaf4n/boltz:fulmine-v4-support
+  COVCLAIMD_IMAGE: ghcr.io/arkade-os/covclaimd:v0.0.1-rc.2
+  # arkd reads locktimes by magnitude — under the BIP68 boundary of 512 they are blocks.
+  # A swap e2e run mines more than the default 180 on its own, expiring VTXOs mid-run,
+  # and the auto-miner would keep advancing the tip between tests.
+  ARKD_VTXO_TREE_EXPIRY: '511'
+  AUTOMINE_INTERVAL: '0'
+
+jobs:
+  test:
+    name: E2E Covclaim Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: ./.github/actions/e2e-setup
+        with:
+          # covclaimd pulls in ark + emulator; regtest.mjs skips the profile entirely
+          # when COVCLAIMD_IMAGE is empty, which is why it is set above.
+          profile: boltz,covclaimd
+      - name: Run covclaim E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=Covclaim"
+        timeout-minutes: 20
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
+          docker logs boltz-fulmine > /tmp/fulmine-logs.txt 2>&1 || true
+          docker logs covclaimd > /tmp/covclaimd-logs.txt 2>&1 || true
+          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+          docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
+          docker logs boltz-lnd > /tmp/boltz-lnd-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-covclaim
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
