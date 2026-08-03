@@ -7,30 +7,28 @@ jobs:
   test:
     name: E2E Signer Rotation Tests
     runs-on: ubuntu-latest
+    # The stack start moved into e2e-setup, and composite-action steps cannot carry
+    # `timeout-minutes` — so this job-level bound is what keeps a wedged run off GitHub's 360m
+    # default. A healthy start is under 10m, so 3 attempts + build + the 15m test step fit with
+    # room to spare. It is a backstop, not a budget.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 9.0.x
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
       # The committed .env.regtest pins a fixed operator signer (S2) plus a pre-deprecated
       # signer (S1) for the main suite's sweeper test. That pin overrides the key
       # rotate-signer generates, so the rotation never takes effect (arkd keeps reporting
       # the pinned signer and the command times out). Drop both pins for this isolated job
       # so the stack boots on the compose default key, which is exactly the key
       # rotate-signer's DEFAULT_SIGNER_KEY expects to deprecate on the first rotation.
+      # This must happen before e2e-setup, which boots the stack off this file.
       - name: Unpin operator signer so rotate-signer can manage it
         run: sed -i -E '/^ARKD_WALLET_(SIGNER_KEY|DEPRECATED_SIGNER_KEYS)=/d' .env.regtest
-      - name: Start regtest infrastructure
-        run: node regtest/regtest.mjs start --profile boltz,delegate
-        timeout-minutes: 20
-      - name: Restore and build
-        run: dotnet build NArk.CI.slnf
+      - uses: ./.github/actions/e2e-setup
+        with:
+          profile: boltz,delegate
       - name: Run signer-rotation E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=RealRotation"
         timeout-minutes: 15
