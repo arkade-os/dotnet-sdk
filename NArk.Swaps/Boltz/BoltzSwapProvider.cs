@@ -7,6 +7,7 @@ using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core.Contracts;
 using NArk.Core.Helpers;
 using NArk.Core.Services;
 using NArk.Core.Transport;
@@ -138,7 +139,8 @@ public partial class BoltzSwapProvider : ISwapProvider
         IIntentStorage intentStorage,
         IBitcoinBlockchain chainTimeProvider,
         IIntentGenerationService? intentGenerationService = null,
-        ILogger<BoltzSwapProvider>? logger = null)
+        ILogger<BoltzSwapProvider>? logger = null,
+        ICovenantClaimProvider? covenantClaimProvider = null)
     {
         _boltzClient = boltzClient;
         _limitsValidator = limitsValidator;
@@ -152,7 +154,8 @@ public partial class BoltzSwapProvider : ISwapProvider
         _intentStorage = intentStorage;
         _intentGenerationService = intentGenerationService;
         _logger = logger;
-        _boltzService = new BoltzSwapService(boltzClient, clientTransport, limitsValidator);
+        _boltzService = new BoltzSwapService(
+            boltzClient, clientTransport, limitsValidator, covenantClaimProvider, logger);
         _chainSwapMusig = new ChainSwapMusigSession(boltzClient);
         _transactionBuilder = new TransactionHelpers.ArkTransactionBuilder(
             clientTransport, safetyService, walletProvider, intentStorage);

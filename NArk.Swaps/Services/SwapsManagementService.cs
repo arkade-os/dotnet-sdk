@@ -40,6 +40,12 @@ public class SwapsManagementService : IAsyncDisposable
     private readonly ILogger<SwapsManagementService>? _logger;
     private readonly IReadOnlyList<ISwapProvider> _providers;
 
+    /// <summary>
+    /// Null unless the host registered one, in which case swaps this wallet claims
+    /// gain a covenant claim leaf and are registered with the daemon behind it.
+    /// </summary>
+    private readonly ICovenantClaimProvider? _covenantClaimProvider;
+
     // Convenience accessor for backward-compatible Boltz-specific methods
     private readonly BoltzSwapProvider? _boltzProvider;
 
@@ -55,8 +61,10 @@ public class SwapsManagementService : IAsyncDisposable
         ISafetyService safetyService,
         IIntentStorage intentStorage,
         IBitcoinBlockchain chainTimeProvider,
-        ILogger<SwapsManagementService>? logger = null)
+        ILogger<SwapsManagementService>? logger = null,
+        ICovenantClaimProvider? covenantClaimProvider = null)
     {
+        _covenantClaimProvider = covenantClaimProvider;
         _providers = providers.ToList();
         _spendingService = spendingService;
         _clientTransport = clientTransport;
@@ -156,6 +164,44 @@ public class SwapsManagementService : IAsyncDisposable
         var messageHash = new uint256(SHA256.HashData(BuildPreimageMessage(descriptor, index)));
         var (_, sig) = await signer.Sign(descriptor, messageHash, cancellationToken);
         return SHA256.HashData(sig.ToBytes());
+    }
+
+    /// <summary>
+    /// Hands the preimage to the covenant claim daemon so it can sweep this swap while
+    /// the wallet is offline. No-ops unless the contract actually carries a covenant
+    /// claim leaf, which only happens when a provider is registered.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately non-fatal. The daemon is redundancy layered on top of the wallet's
+    /// own claim path, so failing to register costs us the offline safety net but
+    /// leaves a perfectly claimable swap — aborting here would turn an optional
+    /// improvement into a new way for swaps to fail.
+    /// </remarks>
+    private async Task RegisterCovenantClaimAsync(
+        VHTLCContract contract,
+        string lockupAddress,
+        byte[] preimage,
+        ArkAddress claimAddress,
+        CancellationToken cancellationToken)
+    {
+        if (_covenantClaimProvider is null || contract.CovenantClaimKey is null)
+            return;
+
+        try
+        {
+            await _covenantClaimProvider.RegisterAsync(
+                lockupAddress, preimage, claimAddress.ScriptPubKey,
+                contract.GetTapScriptList(), cancellationToken);
+
+            _logger?.LogInformation(
+                "Registered covenant claim for swap lockup {LockupAddress}", lockupAddress);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex,
+                "Could not register covenant claim for {LockupAddress}; the swap is still " +
+                "claimable by this wallet, but not while it is offline", lockupAddress);
+        }
     }
 
     // ─── Event Routing ─────────────────────────────────────────────
@@ -351,12 +397,23 @@ public class SwapsManagementService : IAsyncDisposable
         var addressProvider = await _walletProvider.GetAddressProviderAsync(walletId, cancellationToken);
         var destinationDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
         var preimage = await DerivePreimageAsync(walletId, destinationDescriptor, index: 0, cancellationToken);
+
+        // Where a covenant claim would pay. Deliberately the payment contract on the
+        // VHTLC's own receiver descriptor: that is exactly what the wallet's sweep
+        // recycles this VHTLC into (see TryGetRecyclableDescriptor), so a claim daemon
+        // and the wallet racing each other land the funds on the same script — and no
+        // extra HD index is consumed. Ignored unless a covenant provider is registered.
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        var claimAddress = new ArkPaymentContract(
+            serverInfo.SignerKey, serverInfo.UnilateralExit, destinationDescriptor).GetArkAddress();
+
         var revSwap =
             await boltz.BoltzService.CreateReverseSwap(
                 invoiceParams,
                 destinationDescriptor,
                 preimage,
                 feePayer,
+                claimAddress,
                 cancellationToken
             );
 
@@ -369,6 +426,10 @@ public class SwapsManagementService : IAsyncDisposable
             ContractActivityState.AwaitingFundsBeforeDeactivate,
             metadata: new Dictionary<string, string> { ["Source"] = $"swap:{revSwap.Swap.Id}" },
             cancellationToken: cancellationToken);
+
+        await RegisterCovenantClaimAsync(revSwap.Contract, revSwap.Swap.LockupAddress, preimage,
+            claimAddress, cancellationToken);
+
         await _swapsStorage.SaveSwap(
             walletId,
             new ArkSwap(
@@ -414,8 +475,14 @@ public class SwapsManagementService : IAsyncDisposable
         var claimDescriptor = await addressProvider!.GetNextSigningDescriptor(cancellationToken);
         var preimage = await DerivePreimageAsync(walletId, claimDescriptor, index: 0, cancellationToken);
 
+        // Same destination rule as reverse swaps: the payment contract on the VHTLC's
+        // own receiver descriptor, which is what a normal sweep recycles into anyway.
+        var serverInfo = await _clientTransport.GetServerInfoAsync(cancellationToken);
+        var claimAddress = new ArkPaymentContract(
+            serverInfo.SignerKey, serverInfo.UnilateralExit, claimDescriptor).GetArkAddress();
+
         var result = await boltz.BoltzService.CreateBtcToArkSwapAsync(
-            amountSats, claimDescriptor, preimage, cancellationToken);
+            amountSats, claimDescriptor, preimage, claimAddress, cancellationToken);
 
         var btcAddress = result.Swap.LockupDetails?.LockupAddress
             ?? throw new InvalidOperationException("Missing BTC lockup address");
@@ -427,6 +494,10 @@ public class SwapsManagementService : IAsyncDisposable
             metadata: new Dictionary<string, string> { ["Source"] = $"swap:{result.Swap.Id}" },
             cancellationToken: cancellationToken);
         var contractScript = contract.GetArkAddress().ScriptPubKey.ToHex();
+
+        await RegisterCovenantClaimAsync(contract, contract.GetArkAddress().ToString(
+                isMainnet: serverInfo.Network.ChainName == ChainName.Mainnet),
+            preimage, claimAddress, cancellationToken);
 
         var swap = new ArkSwap(
             result.Swap.Id,

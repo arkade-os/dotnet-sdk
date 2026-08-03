@@ -131,10 +131,19 @@ public static class PsbtHelpers
     }
 
 
-    // Encodes taproot script leaves per PSBT spec: {depth version script_length script}* (no leaf count prefix).
-    // Param: leaves — array of tapscript byte arrays.
-    /// <returns>Encoded taproot tree as byte array</returns>
-    private static byte[] EncodeTaprootTree(TapScript[] leaves)
+    /// <summary>
+    /// Encodes taproot script leaves per PSBT spec (BIP-371):
+    /// <c>{depth version script_length script}*</c>, with no leaf-count prefix.
+    /// </summary>
+    /// <remarks>
+    /// Public because the same encoding is the interchange format for a VTXO's
+    /// script tree wherever it travels outside a PSBT — e.g. the hex taptree an
+    /// Arkade claim daemon needs in order to verify an output's script tree hashes
+    /// to the address it was registered against.
+    /// </remarks>
+    /// <param name="leaves">The tapscript leaves to encode.</param>
+    /// <returns>Encoded taproot tree as byte array.</returns>
+    public static byte[] EncodeTaprootTree(TapScript[] leaves)
     {
         return leaves.SelectMany(EncodeLeaf).ToArray();
 

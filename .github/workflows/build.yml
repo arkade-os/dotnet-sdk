@@ -48,9 +48,16 @@ jobs:
     needs: build
     uses: ./.github/workflows/e2e-arkade.yml
 
+  e2e-covclaim:
+    needs: build
+    uses: ./.github/workflows/e2e-covclaim.yml
+
   publish:
     name: Publish NuGet Packages
     runs-on: ubuntu-latest
+    # Deliberately not gated on e2e-covclaim: that job runs against a fork build and an
+    # RC image from unmerged upstream work. If one of those becomes unavailable it must
+    # not block publishing unrelated fixes. Add it back once the upstream PRs ship.
     needs: [build, e2e, e2e-swaps, e2e-recovery, e2e-rotation, e2e-unilateral-exit, arkade-e2e]
     if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
     permissions:

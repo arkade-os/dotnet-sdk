@@ -1,10 +1,13 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using BTCPayServer.Lightning;
+using NArk.Abstractions;
 using NArk.Abstractions.Extensions;
 using NArk.Core.Contracts;
 using NArk.Core.Extensions;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
+using NArk.Swaps.Boltz.Models.Swaps;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
@@ -18,11 +21,61 @@ using KeyExtensions = NArk.Swaps.Extensions.KeyExtensions;
 
 namespace NArk.Swaps.Boltz;
 
-internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport clientTransport, BoltzLimitsValidator limitsValidator)
+internal class BoltzSwapService(
+    BoltzClient boltzClient,
+    IClientTransport clientTransport,
+    BoltzLimitsValidator limitsValidator,
+    ICovenantClaimProvider? covenantClaimProvider = null,
+    ILogger? logger = null)
 {
     private static Sequence ParseSequence(long val)
     {
         return val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
+    }
+
+    /// <summary>
+    /// Whether non-interactive claims are available — i.e. an implementation was
+    /// registered. When false every swap keeps its original six-leaf VHTLC.
+    /// </summary>
+    internal bool SupportsCovenantClaims => covenantClaimProvider is not null;
+
+    /// <summary>
+    /// Resolves the covenant-claim co-signer key committing a claim to
+    /// <paramref name="claimAddress"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Must run before the VHTLC is built: the key adds a seventh leaf and therefore
+    /// changes the contract's address. Boltz derives the same address independently
+    /// from the <c>nonInteractiveClaim.claimAddress</c> we send, so a mismatch here
+    /// surfaces at the address check right after creation rather than at funding time.
+    /// </para>
+    /// <para>
+    /// Returns null when the covenant backend cannot be reached, degrading to a plain
+    /// six-leaf swap. A covenant claim is redundancy layered on top of the wallet's own
+    /// claim path — letting an unreachable daemon abort the swap would trade an optional
+    /// improvement for a hard dependency, and make every swap fail during an outage.
+    /// This matches the failure policy of the registration call that follows it.
+    /// </para>
+    /// </remarks>
+    private async Task<TaprootPubKey?> TryGetCovenantClaimKeyAsync(
+        ArkAddress? claimAddress, CancellationToken cancellationToken)
+    {
+        if (claimAddress is null || !SupportsCovenantClaims)
+            return null;
+
+        try
+        {
+            return await covenantClaimProvider!.GetCovenantClaimKeyAsync(
+                claimAddress.ScriptPubKey, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(ex,
+                "Could not resolve a covenant claim key; continuing without offline claim " +
+                "cover for this swap");
+            return null;
+        }
     }
 
     // Submarine Swaps
@@ -72,16 +125,27 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
 
     // Reverse Swaps
 
+    /// <param name="nonInteractiveClaimAddress">
+    /// When set (and a covenant claim provider is registered), asks Boltz for a VHTLC
+    /// carrying a non-interactive claim leaf paying this address, so a claim daemon
+    /// can sweep the swap while this wallet is offline. Null keeps the plain swap.
+    /// </param>
     public async Task<ReverseSwapResult> CreateReverseSwap(CreateInvoiceParams createInvoiceRequest,
         OutputDescriptor receiver,
         byte[]? preimage = null,
         ReverseSwapFeePayer feePayer = ReverseSwapFeePayer.Recipient,
+        ArkAddress? nonInteractiveClaimAddress = null,
         CancellationToken cancellationToken = default)
     {
         var extractedReceiver = receiver.Extract();
 
         // Get operator terms
         var operatorTerms = await clientTransport.GetServerInfoAsync(cancellationToken);
+
+        // Resolved before the request so Boltz and we commit to the same leaf: it sends
+        // the address, we hold the co-signer key that makes the leaf spendable.
+        var covenantClaimKey =
+            await TryGetCovenantClaimKeyAsync(nonInteractiveClaimAddress, cancellationToken);
 
         // Caller-supplied preimage enables deterministic derivation (so restored wallets can
         // re-derive and claim outstanding swaps); null falls back to random for watch-only or
@@ -110,6 +174,13 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             Description = createInvoiceRequest.Description,
             InvoiceExpirySeconds = Convert.ToInt32(createInvoiceRequest.Expiry.TotalSeconds),
             ReferralId = boltzClient.ReferralId,
+            NonInteractiveClaim = covenantClaimKey is null
+                ? null
+                : new NonInteractiveClaimRequest
+                {
+                    ClaimAddress = nonInteractiveClaimAddress!.ToString(
+                        isMainnet: operatorTerms.Network.ChainName == ChainName.Mainnet),
+                },
         };
 
         var response = await boltzClient.CreateReverseSwapAsync(request, cancellationToken);
@@ -144,6 +215,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             server: operatorTerms.SignerKey,
             sender: KeyExtensions.ParseOutputDescriptor(response.RefundPublicKey, operatorTerms.Network),
             receiver: receiver,
+            covenantClaimKey: covenantClaimKey,
             preimage: preimage,
             refundLocktime: new LockTime(response.TimeoutBlockHeights.Refund),
             unilateralClaimDelay: ParseSequence(response.TimeoutBlockHeights.UnilateralClaim),
@@ -229,6 +301,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         long amountSats,
         OutputDescriptor claimDescriptor,
         byte[]? preimage = null,
+        ArkAddress? nonInteractiveClaimAddress = null,
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
@@ -240,6 +313,10 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         var preimageHash = Hashes.SHA256(preimage);
         var ephemeralKey = new Key();
 
+        // Same ordering constraint as reverse swaps: the key changes the VHTLC address,
+        // so it has to exist before Boltz derives its own copy of that address.
+        var covenantClaimKey = await TryGetCovenantClaimKeyAsync(nonInteractiveClaimAddress, ct);
+
         var request = new ChainRequest
         {
             From = "BTC",
@@ -249,6 +326,13 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             RefundPublicKey = Encoders.Hex.EncodeData(ephemeralKey.PubKey.ToBytes()),
             ServerLockAmount = amountSats,
             ReferralId = boltzClient.ReferralId,
+            NonInteractiveClaim = covenantClaimKey is null
+                ? null
+                : new NonInteractiveClaimRequest
+                {
+                    ClaimAddress = nonInteractiveClaimAddress!.ToString(
+                        isMainnet: operatorTerms.Network.ChainName == ChainName.Mainnet),
+                },
         };
 
         var response = await boltzClient.CreateChainSwapAsync(request, ct);
@@ -284,7 +368,8 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             refundLocktime: new LockTime(timeouts.Refund),
             unilateralClaimDelay: ParseSequence(timeouts.UnilateralClaim),
             unilateralRefundDelay: ParseSequence(timeouts.UnilateralRefund),
-            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver)
+            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver),
+            covenantClaimKey: covenantClaimKey
         );
 
         // Validate address match
