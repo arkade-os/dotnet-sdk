@@ -13,10 +13,16 @@ on:
 #
 # All three images are previews from unmerged work (boltz-backend#1467, ts-sdk#613) and
 # altaf4n/boltz is a fork build — expect this to need repinning once they land.
+# Digest-pinned, not tag-pinned. Two of these are moving targets — a fork build and an
+# RC — and a tag that gets re-pushed would silently swap the binary under CI without any
+# change here to show for it. Repin (and prefer released tags) once the upstream PRs land.
 env:
-  FULMINE_IMAGE: ghcr.io/arklabshq/fulmine:v0.4.0-rc.4
-  BOLTZ_IMAGE: altaf4n/boltz:fulmine-v4-support
-  COVCLAIMD_IMAGE: ghcr.io/arkade-os/covclaimd:v0.0.1-rc.2
+  # ghcr.io/arklabshq/fulmine:v0.4.0-rc.4
+  FULMINE_IMAGE: ghcr.io/arklabshq/fulmine@sha256:0e07bb6e4d99e43f6d03d9eded00bc25984b0731fb6e9cbd7fd31423d926c210
+  # altaf4n/boltz:fulmine-v4-support — fork build of BoltzExchange/boltz-backend#1467
+  BOLTZ_IMAGE: altaf4n/boltz@sha256:0083b3aaf76162b9320c2045579d1335ab74243aff372423a638297e52394e7f
+  # ghcr.io/arkade-os/covclaimd:v0.0.1-rc.2
+  COVCLAIMD_IMAGE: ghcr.io/arkade-os/covclaimd@sha256:e2b7d76a5c6dadbed8fb789ef09993da1e0c5e68435c852f5bf0ff403c1fab2d
   # arkd reads locktimes by magnitude — under the BIP68 boundary of 512 they are blocks.
   # A swap e2e run mines more than the default 180 on its own, expiring VTXOs mid-run,
   # and the auto-miner would keep advancing the tip between tests.
