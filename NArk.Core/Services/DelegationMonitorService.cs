@@ -45,6 +45,7 @@ public class DelegationMonitorService(
     private readonly SemaphoreSlim _processingLock = new(1, 1);
     private CancellationTokenSource? _shutdownCts;
     private ECPubKey? _delegatePubkey;
+    private int _disposed;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -61,17 +62,23 @@ public class DelegationMonitorService(
         // Cancel any delegation already in flight (it may be blocked on a gRPC call to the
         // delegator or the operator) and then drain: acquiring the processing lock guarantees
         // the handler has unwound before the host considers this service stopped.
+        // _shutdownCts is null once Dispose has run, which is a legal ordering for a host that
+        // disposes the container before (or without) stopping the service.
         if (_shutdownCts is { } cts)
         {
-            await cts.CancelAsync();
             try
             {
+                await cts.CancelAsync();
                 await _processingLock.WaitAsync(cancellationToken);
                 _processingLock.Release();
             }
             catch (OperationCanceledException)
             {
                 logger?.LogWarning("Timed out draining in-flight delegation during shutdown");
+            }
+            catch (ObjectDisposedException)
+            {
+                // Raced with Dispose; nothing left to drain.
             }
         }
 
@@ -328,11 +335,22 @@ public class DelegationMonitorService(
         return _delegatePubkey;
     }
 
+    /// <summary>
+    /// Unsubscribes from VTXO notifications and tears down the shutdown token source.
+    /// Idempotent: a host that disposes the container and the service scope both end up here.
+    /// </summary>
     public void Dispose()
     {
+        // Guard rather than null-check the CTS: a second Dispose (Host.Dispose after the DI
+        // scope already disposed this service) must not touch the disposed token source.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         vtxoStorage.VtxosChanged -= OnVtxosChanged;
-        _shutdownCts?.Cancel();
-        _shutdownCts?.Dispose();
+
+        var cts = Interlocked.Exchange(ref _shutdownCts, null);
+        cts?.Cancel();
+        cts?.Dispose();
         _processingLock.Dispose();
     }
 }

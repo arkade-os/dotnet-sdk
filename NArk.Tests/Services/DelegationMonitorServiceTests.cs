@@ -357,6 +357,19 @@ public class DelegationMonitorServiceTests
     }
 
     [Test]
+    public async Task Dispose_IsIdempotent_AndSurvivesStopAsyncAfterwards()
+    {
+        // Generic Host disposes the DI scope and then itself, so Dispose can land twice; a
+        // second call must not throw on the already-disposed shutdown token source.
+        var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        service.Dispose();
+        Assert.DoesNotThrow(() => service.Dispose());
+        Assert.DoesNotThrowAsync(() => service.StopAsync(CancellationToken.None));
+    }
+
+    [Test]
     public async Task StopAsync_UnsubscribesFromVtxosChanged()
     {
         var contract = CreateDelegateContract();
