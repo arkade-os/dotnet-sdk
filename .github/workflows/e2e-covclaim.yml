@@ -38,6 +38,20 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
+      # The regtest harness is version-coupled to fulmine, not just configured for it:
+      # v0.4 returns a `mnemonic` from /wallet/genseed where v0.3 returned an `nsec`, and
+      # the committed submodule's setup script only speaks v0.3 ("failed to generate
+      # seed" otherwise). So overriding FULMINE_IMAGE alone is not enough — this job
+      # needs the branch whose harness matches.
+      #
+      # It cannot be the repo-wide pin either: fulmine v0.4 drops the
+      # fulmine.v1.DelegateService gRPC API that the delegate e2e tests call. Until
+      # upstream regtest supports both, one job moves and the rest stay put.
+      - name: Point regtest at the fulmine v4 harness
+        run: |
+          git -C regtest fetch --depth 1 origin bump-fulmine
+          git -C regtest checkout FETCH_HEAD
+          git -C regtest log --oneline -1
       - uses: ./.github/actions/e2e-setup
         with:
           # covclaimd pulls in ark + emulator; regtest.mjs skips the profile entirely
