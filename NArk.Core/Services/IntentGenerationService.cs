@@ -290,6 +290,7 @@ public class IntentGenerationService(
         await using var walletLock = await safetyService.LockKeyAsync($"intent-generation::{walletId}", token);
 
         ArkServerInfo serverInfo = await clientTransport.GetServerInfoAsync(token);
+        ValidateOnchainOutputBounds(serverInfo, intentSpec.Outputs);
         var outputsSum = intentSpec.Outputs.Sum(o => o.Value);
         var inputsSum = intentSpec.Coins.Sum(c => c.Amount);
         var fee = await feeEstimator.EstimateFeeAsync(intentSpec, token);
@@ -365,6 +366,51 @@ public class IntentGenerationService(
 
         logger?.LogInformation("Generated intent {IntentTxId} for wallet {WalletId}", intentTxId, walletId);
         return intentTxId;
+    }
+
+    /// <summary>
+    /// Maps the on-chain outputs of an intent to their positions in the register proof tx's
+    /// output list, which is what <c>onchain_output_indexes</c> refers to.
+    /// </summary>
+    /// <remarks>
+    /// The original index is captured before filtering. Re-indexing the filtered sequence would
+    /// report 0..n-1 instead, so the operator would treat the first n outputs as on-chain —
+    /// rejecting the intent when the server disallows on-chain outputs, or settling the wrong
+    /// output on-chain when it allows them.
+    /// </remarks>
+    internal static int[] ComputeOnchainOutputIndexes(IReadOnlyCollection<ArkTxOut>? outs) =>
+        outs?
+            .Select((output, index) => (Output: output, Index: index))
+            .Where(o => o.Output.Type == ArkTxOutType.Onchain)
+            .Select(o => o.Index)
+            .ToArray() ?? [];
+
+    /// <summary>
+    /// Validates on-chain (collaborative exit) outputs against the server's UTXO amount bounds
+    /// before the intent is registered, so the caller gets an actionable error instead of the
+    /// operator's opaque AMOUNT_TOO_HIGH / AMOUNT_TOO_LOW rejection at registration time.
+    /// A <c>UtxoMaxAmount</c> of zero means the operator has on-chain outputs disabled entirely.
+    /// </summary>
+    internal static void ValidateOnchainOutputBounds(ArkServerInfo serverInfo, IReadOnlyCollection<ArkTxOut> outputs)
+    {
+        foreach (var output in outputs)
+        {
+            if (output.Type != ArkTxOutType.Onchain)
+                continue;
+
+            if (!serverInfo.BoardingAllowed)
+                throw new InvalidOperationException(
+                    "The Arkade server has on-chain outputs disabled (utxo max amount is 0), so this intent " +
+                    "cannot include a collaborative exit output. Send to an Arkade address instead.");
+
+            if (serverInfo.UtxoMinAmount is { } utxoMin && utxoMin > Money.Zero && output.Value < utxoMin)
+                throw new InvalidOperationException(
+                    $"On-chain output value {output.Value} is below the server minimum UTXO amount of {utxoMin}.");
+
+            if (serverInfo.UtxoMaxAmount is { } utxoMax && output.Value > utxoMax)
+                throw new InvalidOperationException(
+                    $"On-chain output value {output.Value} exceeds the server maximum UTXO amount of {utxoMax}.");
+        }
     }
 
     private async Task<PSBT> CreateIntent(string message, Network network, ArkCoin[] inputs,
@@ -480,7 +526,7 @@ public class IntentGenerationService(
         var msg = new Messages.RegisterIntentMessage
         {
             Type = "register",
-            OnchainOutputsIndexes = outs?.Select((x, i) => (x, i)).Where(o => o.x.Type == ArkTxOutType.Onchain).Select((_, i) => i).ToArray() ?? [],
+            OnchainOutputsIndexes = ComputeOnchainOutputIndexes(outs),
             ValidAt = validAt?.ToUnixTimeSeconds() ?? 0,
             ExpireAt = expireAt?.ToUnixTimeSeconds() ?? 0,
             CosignersPublicKeys = cosigners.Select(c => c.ToBytes().ToHexStringLower()).ToArray()

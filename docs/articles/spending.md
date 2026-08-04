@@ -58,3 +58,13 @@ var txId = await spendingService.Spend(
     [new ArkTxOut(ArkTxOutType.Onchain, Money.Satoshis(100_000), onchainAddress)],
     cancellationToken);
 ```
+
+On-chain outputs force the intent through a batch, and the operator bounds them with
+`utxo_min_amount` / `utxo_max_amount`. The SDK checks those bounds before registering the
+intent and throws `InvalidOperationException` rather than letting arkd reject it with an
+opaque `AMOUNT_TOO_HIGH` / `AMOUNT_TOO_LOW`.
+
+A `utxo_max_amount` of `0` means the operator has on-chain outputs disabled altogether —
+`ArkServerInfo.BoardingAllowed` is then `false`, and any intent carrying an
+`ArkTxOutType.Onchain` output is rejected up front. Check it before offering a withdrawal
+path in your UI.
