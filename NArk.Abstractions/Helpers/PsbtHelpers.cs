@@ -221,6 +221,36 @@ public static class PsbtHelpers
     }
 
     /// <summary>
+    /// Reads back the taproot script-spend signature (PSBT_IN_TAP_SCRIPT_SIG, <c>0x14</c>)
+    /// for one specific key + leaf pair — the exact counterpart of
+    /// <see cref="SetTaprootScriptSpendSignature"/>. Unlike
+    /// <see cref="GetTaprootScriptSpendSignatures"/> this also matches the leaf hash, so a
+    /// signature made for a different tapscript leaf is not returned.
+    /// </summary>
+    /// <param name="input">The PSBT input to read from.</param>
+    /// <param name="key">The x-only public key the signature is expected from.</param>
+    /// <param name="leafHash">The tapscript leaf hash the signature is expected to cover.</param>
+    /// <param name="signature">The raw signature bytes; empty when none is present.</param>
+    /// <returns><c>true</c> when the input carries a signature for that key + leaf.</returns>
+    public static bool TryGetTaprootScriptSpendSignature(this PSBTInput input, ECXOnlyPubKey key,
+        uint256 leafHash, out byte[] signature)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(leafHash);
+
+        byte[] keyBytes = [PsbtInTapScriptSig, .. key.ToBytes(), .. leafHash.ToBytes()];
+        if (input.Unknown.TryGetValue(keyBytes, out var value))
+        {
+            signature = value;
+            return true;
+        }
+
+        signature = [];
+        return false;
+    }
+
+    /// <summary>
     /// Reads the Arkade condition-witness field set by
     /// <see cref="SetArkFieldConditionWitness"/>, or <c>null</c> when absent.
     /// </summary>

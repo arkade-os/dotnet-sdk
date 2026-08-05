@@ -756,6 +756,8 @@ foreach (var txId in finalizedTxIds)
     Console.WriteLine($"Recovered & finalized pending tx {txId}");
 ```
 
+A pending transaction comes entirely from the server, so it is authorized locally **before anything is signed**: every checkpoint must pay the spent input's full value into the checkpoint contract this wallet would itself have built, and the accompanying final ark tx must spend exactly those checkpoint outputs while still carrying this wallet's own signature over it. Anything else is rejected with `UnauthorizedPendingArkTransactionException` and never signed, so recovery only ever completes a spend the wallet itself built and signed.
+
 Per-tx failures are logged + raised on `RecoveryFailed` and the loop continues — one bad pending tx never blocks the rest, and the next host start retries any leftovers. Subscribe to surface a banner or telemetry:
 
 ```csharp

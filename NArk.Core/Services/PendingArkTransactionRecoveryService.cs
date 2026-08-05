@@ -1,11 +1,14 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core.Contracts;
 using NArk.Core.Helpers;
 using NArk.Core.Transport;
 using NBitcoin;
+using NBitcoin.Secp256k1;
 
 namespace NArk.Core.Services;
 
@@ -24,6 +27,16 @@ namespace NArk.Core.Services;
 /// ownership — this service authenticates with proofs derived from each wallet's known
 /// VTXOs, retrieves any pending transactions the server is holding, signs the checkpoint
 /// PSBTs with the wallet's signer, and finalizes them.
+/// </para>
+/// <para>
+/// <b>What gets signed:</b> a pending transaction arrives entirely from the server, so it
+/// is authorized against locally reconstructed expectations before anything is signed.
+/// Each checkpoint must pay the spent input's full value into the checkpoint contract this
+/// wallet would itself have built, and the accompanying final Arkade transaction must
+/// spend exactly those checkpoint outputs while still carrying this wallet's own signature
+/// over it. A pending transaction failing either check is outside what the wallet ever
+/// authorized: it is rejected with
+/// <see cref="UnauthorizedPendingArkTransactionException"/> and never signed.
 /// </para>
 /// <para>
 /// Runs once on host startup across every wallet known to
@@ -110,6 +123,12 @@ public class PendingArkTransactionRecoveryService(
     /// you want deterministic timing; the BackgroundService startup hook covers the
     /// hands-off case.
     /// </summary>
+    /// <remarks>
+    /// Pending transactions that fail local authorization (see the type-level
+    /// "what gets signed" note) are rejected without being signed, reported on
+    /// <see cref="RecoveryFailed"/> with an
+    /// <see cref="UnauthorizedPendingArkTransactionException"/>, and left out of the result.
+    /// </remarks>
     /// <returns>The arkTxIds that were successfully finalized during this call.</returns>
     public async Task<IReadOnlyList<string>> FinalizePendingArkTransactionsAsync(string walletId,
         CancellationToken cancellationToken = default)
@@ -199,7 +218,7 @@ public class PendingArkTransactionRecoveryService(
 
                 try
                 {
-                    await FinalizePendingTxAsync(walletId, pending, network, signer, cancellationToken);
+                    await FinalizePendingTxAsync(walletId, pending, serverInfo, signer, cancellationToken);
                     finalized.Add(pending.ArkTxId);
                     logger?.LogInformation(
                         "Pending-tx recovery: finalized {ArkTxId} for wallet {WalletId}",
@@ -216,34 +235,266 @@ public class PendingArkTransactionRecoveryService(
     }
 
     private async Task FinalizePendingTxAsync(string walletId, Transport.Models.PendingArkTransaction pending,
-        Network network, IArkadeWalletSigner signer, CancellationToken cancellationToken)
+        ArkServerInfo serverInfo, IArkadeWalletSigner signer, CancellationToken cancellationToken)
     {
-        var finalCheckpoints = new List<string>(pending.SignedCheckpointTxs.Length);
+        var network = serverInfo.Network;
+
+        // Everything in a pending tx comes from the server, so the whole set is validated
+        // against locally reconstructed expectations BEFORE a single signature is produced —
+        // a signature over a fabricated checkpoint cannot be taken back.
+        var validated = new List<ValidatedCheckpoint>(pending.SignedCheckpointTxs.Length);
 
         foreach (var checkpointBase64 in pending.SignedCheckpointTxs)
         {
-            var checkpoint = PSBT.Parse(checkpointBase64, network);
+            PSBT checkpoint;
+            try
+            {
+                checkpoint = PSBT.Parse(checkpointBase64, network);
+            }
+            catch (Exception ex) when (ex is FormatException or ArgumentException)
+            {
+                throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                    $"checkpoint PSBT could not be parsed ({ex.Message})");
+            }
 
             // Each checkpoint has exactly one input (the original VTXO outpoint) —
-            // see arkd's checkpoint construction (one-input-per-spent-VTXO). Guard the
-            // invariant explicitly: a malformed server response should fail this one tx
-            // with an actionable message rather than a bare InvalidOperationException
-            // from Single().
+            // see arkd's checkpoint construction (one-input-per-spent-VTXO).
             if (checkpoint.Inputs.Count != 1)
             {
-                throw new InvalidOperationException(
-                    $"Pending-tx recovery: expected exactly 1 input on checkpoint PSBT for {pending.ArkTxId}, " +
-                    $"got {checkpoint.Inputs.Count}. Server-side protocol violation or stale SDK.");
+                throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                    $"checkpoint PSBT has {checkpoint.Inputs.Count} inputs, expected exactly 1");
             }
+
             var inputPrevOut = checkpoint.Inputs[0].PrevOut;
             var coin = await ResolveCheckpointInputAsync(walletId, inputPrevOut, cancellationToken);
+            var checkpointCoin = VerifyCheckpointOutput(pending.ArkTxId, coin, checkpoint, serverInfo);
 
-            await SignCheckpointAsync(coin, checkpoint, signer, cancellationToken);
+            validated.Add(new ValidatedCheckpoint(coin, checkpointCoin, checkpoint));
+        }
 
-            finalCheckpoints.Add(checkpoint.ToBase64());
+        if (validated.Count == 0)
+        {
+            throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                "server returned no checkpoint transactions");
+        }
+
+        VerifyFinalArkTxWasSignedByWallet(pending, validated, network);
+
+        var finalCheckpoints = new List<string>(validated.Count);
+        foreach (var entry in validated)
+        {
+            await SignCheckpointAsync(entry.Coin, entry.Checkpoint, signer, cancellationToken);
+            finalCheckpoints.Add(entry.Checkpoint.ToBase64());
         }
 
         await clientTransport.FinalizeTx(pending.ArkTxId, [.. finalCheckpoints], cancellationToken);
+    }
+
+    /// <summary>A server checkpoint that has been matched against a locally rebuilt expectation.</summary>
+    /// <param name="Coin">The wallet coin the checkpoint spends.</param>
+    /// <param name="CheckpointCoin">The checkpoint's own output, as a spendable coin (what the ark tx spends).</param>
+    /// <param name="Checkpoint">The server-supplied checkpoint PSBT.</param>
+    private sealed record ValidatedCheckpoint(ArkCoin Coin, ArkCoin CheckpointCoin, PSBT Checkpoint);
+
+    /// <summary>
+    /// Rebuilds the checkpoint output this wallet would itself have produced for
+    /// <paramref name="coin"/> and rejects the server's checkpoint unless it matches exactly.
+    /// </summary>
+    /// <remarks>
+    /// The signature this service is about to produce uses <c>SIGHASH_DEFAULT</c>, which commits
+    /// to every output of the checkpoint, and the server holds the other half of the collaborative
+    /// 2-of-2 — so a checkpoint is only signed once its outputs are known to be the ones this
+    /// wallet asked for. The expectation is reconstructed exactly as
+    /// <c>ArkTransactionBuilder.ConstructArkTransaction</c> builds it: the input's full value paid
+    /// into a checkpoint contract of (this coin's spending leaf, the server unroll path), plus a
+    /// zero-value P2A anchor.
+    /// </remarks>
+    /// <returns>The checkpoint's own output as an <see cref="ArkCoin"/>, for binding the ark tx.</returns>
+    private static ArkCoin VerifyCheckpointOutput(string arkTxId, ArkCoin coin, PSBT checkpoint,
+        ArkServerInfo serverInfo)
+    {
+        if (coin.Contract.Server is null)
+        {
+            throw new UnauthorizedPendingArkTransactionException(arkTxId,
+                $"input {coin.Outpoint} resolves to a contract with no server key, so the expected " +
+                "checkpoint output cannot be reconstructed");
+        }
+
+        // Mirrors ArkTransactionBuilder.CreateCheckpointContract.
+        var checkpointContract = new GenericArkContract(coin.Contract.Server,
+            [coin.SpendingScriptBuilder, serverInfo.CheckpointTapScript]);
+        var expectedScriptPubKey = checkpointContract.GetScriptPubKey();
+
+        var gtx = checkpoint.GetGlobalTransaction();
+        if (gtx.Outputs.Count != 2)
+        {
+            throw new UnauthorizedPendingArkTransactionException(arkTxId,
+                $"checkpoint for input {coin.Outpoint} has {gtx.Outputs.Count} outputs, expected exactly 2 " +
+                "(checkpoint output + P2A anchor)");
+        }
+
+        var anchorIndex = -1;
+        var payloadIndex = -1;
+        for (var i = 0; i < gtx.Outputs.Count; i++)
+        {
+            if (gtx.Outputs[i].ScriptPubKey == Constants.ArkP2A)
+                anchorIndex = i;
+            else
+                payloadIndex = i;
+        }
+
+        if (anchorIndex < 0 || payloadIndex < 0)
+        {
+            throw new UnauthorizedPendingArkTransactionException(arkTxId,
+                $"checkpoint for input {coin.Outpoint} must have exactly one P2A anchor output and one " +
+                "checkpoint output");
+        }
+
+        if (gtx.Outputs[anchorIndex].Value != Money.Zero)
+        {
+            throw new UnauthorizedPendingArkTransactionException(arkTxId,
+                $"checkpoint for input {coin.Outpoint} funds its P2A anchor with " +
+                $"{gtx.Outputs[anchorIndex].Value}, expected zero");
+        }
+
+        var payload = gtx.Outputs[payloadIndex];
+        if (payload.ScriptPubKey != expectedScriptPubKey)
+        {
+            throw new UnauthorizedPendingArkTransactionException(arkTxId,
+                $"checkpoint for input {coin.Outpoint} pays to {payload.ScriptPubKey} instead of this " +
+                $"wallet's checkpoint contract {expectedScriptPubKey}");
+        }
+
+        if (payload.Value != coin.Amount)
+        {
+            throw new UnauthorizedPendingArkTransactionException(arkTxId,
+                $"checkpoint for input {coin.Outpoint} pays {payload.Value} into the checkpoint contract " +
+                $"instead of the input's full {coin.Amount}");
+        }
+
+        return new ArkCoin(
+            coin.WalletIdentifier,
+            checkpointContract,
+            coin.Birth,
+            coin.ExpiresAt,
+            coin.ExpiresAtHeight,
+            new OutPoint(gtx, (uint)payloadIndex),
+            payload,
+            coin.SignerDescriptor,
+            coin.SpendingScriptBuilder,
+            coin.SpendingConditionWitness,
+            coin.LockTime,
+            coin.Sequence,
+            coin.Swept,
+            coin.Unrolled);
+    }
+
+    /// <summary>
+    /// Binds the checkpoints to the Arkade transaction the wallet actually authorised: the final
+    /// ark tx must spend exactly the validated checkpoint outputs, and every input must still
+    /// carry this wallet's own signature over it.
+    /// </summary>
+    /// <remarks>
+    /// A checkpoint output is a 2-of-2 with the server plus a server-only unroll path that opens
+    /// after a relative timeout, so a correctly shaped checkpoint on its own does not say where
+    /// the funds end up. The wallet's signature on the ark tx is what pins the destination — it
+    /// commits (SIGHASH_DEFAULT) to the ark tx's outputs and to all of its prevouts, and only the
+    /// wallet's key can produce it. Verifying it here means recovery only ever completes a spend
+    /// this wallet built and signed itself.
+    /// </remarks>
+    private static void VerifyFinalArkTxWasSignedByWallet(Transport.Models.PendingArkTransaction pending,
+        IReadOnlyList<ValidatedCheckpoint> validated, Network network)
+    {
+        PSBT arkTx;
+        try
+        {
+            arkTx = PSBT.Parse(pending.FinalArkTx, network);
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException)
+        {
+            throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                $"final Arkade transaction could not be parsed ({ex.Message})");
+        }
+
+        var gtx = arkTx.GetGlobalTransaction();
+        if (!string.Equals(gtx.GetHash().ToString(), pending.ArkTxId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                $"final Arkade transaction hashes to {gtx.GetHash()}, which is not the advertised id");
+        }
+
+        if (gtx.Inputs.Count != validated.Count)
+        {
+            throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                $"final Arkade transaction spends {gtx.Inputs.Count} inputs but {validated.Count} " +
+                "checkpoint(s) were returned");
+        }
+
+        var byOutpoint = new Dictionary<OutPoint, ValidatedCheckpoint>();
+        foreach (var entry in validated)
+        {
+            if (!byOutpoint.TryAdd(entry.CheckpointCoin.Outpoint, entry))
+            {
+                throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                    $"two checkpoints produce the same output {entry.CheckpointCoin.Outpoint}");
+            }
+        }
+
+        var ordered = new ValidatedCheckpoint[gtx.Inputs.Count];
+        var prevouts = new TxOut[gtx.Inputs.Count];
+        for (var i = 0; i < gtx.Inputs.Count; i++)
+        {
+            if (!byOutpoint.TryGetValue(gtx.Inputs[i].PrevOut, out var match))
+            {
+                throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                    $"final Arkade transaction spends {gtx.Inputs[i].PrevOut}, which is not one of the " +
+                    "checkpoint outputs");
+            }
+
+            ordered[i] = match;
+            prevouts[i] = match.CheckpointCoin.TxOut;
+        }
+
+        var precomputed = gtx.PrecomputeTransactionData(prevouts);
+        for (var i = 0; i < ordered.Length; i++)
+        {
+            var checkpointCoin = ordered[i].CheckpointCoin;
+
+            // Covenant leaves (e.g. an emulator-cosigned HTLC claim) name no wallet key: the
+            // wallet never signs the ark tx for those inputs, so there is nothing to verify.
+            if (checkpointCoin.SignerDescriptor is null)
+                continue;
+
+            var walletKey = checkpointCoin.SignerDescriptor.ToXOnlyPubKey();
+            var leafHash = checkpointCoin.SpendingScript.LeafHash;
+
+            if (!arkTx.Inputs[i].TryGetTaprootScriptSpendSignature(walletKey, leafHash, out var signatureBytes))
+            {
+                throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                    $"final Arkade transaction carries no wallet signature for checkpoint input " +
+                    $"{checkpointCoin.Outpoint}");
+            }
+
+            // 64 bytes == SIGHASH_DEFAULT. A 65-byte signature carries an explicit sighash flag,
+            // which would mean the wallet's signature does not commit to the ark tx's outputs.
+            if (signatureBytes.Length != 64 || !SecpSchnorrSignature.TryCreate(signatureBytes, out var signature)
+                || signature is null)
+            {
+                throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                    $"final Arkade transaction carries a malformed or non-default-sighash wallet signature " +
+                    $"for checkpoint input {checkpointCoin.Outpoint}");
+            }
+
+            var sigHash = gtx.GetSignatureHashTaproot(precomputed,
+                new TaprootExecutionData(i, leafHash) { SigHash = TaprootSigHash.Default });
+
+            if (!walletKey.SigVerifyBIP340(signature, sigHash.ToBytes()))
+            {
+                throw new UnauthorizedPendingArkTransactionException(pending.ArkTxId,
+                    $"this wallet's signature on the final Arkade transaction does not verify for " +
+                    $"checkpoint input {checkpointCoin.Outpoint}; it is not the transaction the wallet signed");
+            }
+        }
     }
 
     /// <summary>
