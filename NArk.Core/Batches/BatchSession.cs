@@ -22,7 +22,10 @@ using NBitcoin.Secp256k1.Musig;
 namespace NArk.Core.Batches;
 
 /// <summary>
-/// Handles participation in a batch settlement round for a specific intent
+/// Handles participation in a batch settlement for a specific intent.
+/// Events are followed in the order the operator drives them — tree nodes, tree signing,
+/// nonce aggregation, finalization — and forfeits are only signed once the commitment
+/// transaction is shown to carry the outputs the intent asked for.
 /// </summary>
 public class BatchSession(
     IClientTransport clientTransport,
@@ -42,6 +45,9 @@ public class BatchSession(
     private readonly List<TxTreeNode> _vtxoChunks = [];
     private readonly List<TxTreeNode> _connectorsChunks = [];
     private uint256? _sweepTapTreeRoot;
+    private BatchSessionPhase _phase = BatchSessionPhase.Started;
+    private TxTree? _validatedVtxoGraph;
+    private uint256? _validatedCommitmentTxId;
 
     /// <summary>
     /// Initialize the batch session (call this before processing events)
@@ -70,10 +76,14 @@ public class BatchSession(
         {
             switch (eventResponse)
             {
-                case TreeTxEvent treeTx:
+                case TreeTxEvent treeTx when treeTx.Id == _batchId:
                     HandleTreeTxEvent(treeTx, _vtxoChunks, _connectorsChunks);
                     break;
-                case TreeSigningStartedEvent treeSigningStartedEvent:
+
+                case TreeSigningStartedEvent treeSigningStartedEvent when treeSigningStartedEvent.Id == _batchId:
+                    if (!InPhase(treeSigningStartedEvent, BatchSessionPhase.Started))
+                        break;
+
                     if (_vtxoChunks.Count > 0)
                     {
                         _signingSession = await HandleTreeSigningStartedAsync(
@@ -82,9 +92,14 @@ public class BatchSession(
                             _vtxoChunks,
                             cancellationToken);
                     }
+
+                    _phase = BatchSessionPhase.TreeSigningStarted;
                     break;
 
-                case TreeNoncesEvent treeNoncesEvent:
+                case TreeNoncesEvent treeNoncesEvent when treeNoncesEvent.Id == _batchId:
+                    if (!InPhase(treeNoncesEvent, BatchSessionPhase.TreeSigningStarted))
+                        break;
+
                     if (_signingSession != null)
                     {
                         var val = treeNoncesEvent.Nonces.Values.Select(s =>
@@ -94,7 +109,11 @@ public class BatchSession(
                     }
 
                     break;
-                case TreeNoncesAggregatedEvent treeNoncesAggregatedEvent:
+
+                case TreeNoncesAggregatedEvent treeNoncesAggregatedEvent when treeNoncesAggregatedEvent.Id == _batchId:
+                    if (!InPhase(treeNoncesAggregatedEvent, BatchSessionPhase.TreeSigningStarted))
+                        break;
+
                     if (_signingSession != null)
                     {
                         await HandleAggregatedTreeNoncesEventAsync(
@@ -102,9 +121,16 @@ public class BatchSession(
                             _signingSession,
                             cancellationToken);
                     }
+
+                    _phase = BatchSessionPhase.TreeNoncesAggregated;
                     break;
 
-                case BatchFinalizationEvent batchFinalizationEvent:
+                case BatchFinalizationEvent batchFinalizationEvent when batchFinalizationEvent.Id == _batchId:
+                    if (!InPhase(batchFinalizationEvent, BatchSessionPhase.Started, BatchSessionPhase.TreeSigningStarted,
+                            BatchSessionPhase.TreeNoncesAggregated))
+                        break;
+
+                    _phase = BatchSessionPhase.Finalizing;
                     await HandleBatchFinalizationAsync(
                         batchFinalizationEvent,
                         _connectorsChunks,
@@ -142,6 +168,20 @@ public class BatchSession(
     /// </summary>
     public bool IsComplete { get; private set; }
 
+    /// <summary>
+    /// The operator drives the event sequence, so a handler only runs in the phase(s)
+    /// that can legitimately produce its event; anything out of order is dropped.
+    /// </summary>
+    private bool InPhase(BatchEvent eventResponse, params BatchSessionPhase[] phases)
+    {
+        if (phases.Contains(_phase))
+            return true;
+
+        logger?.LogDebug("Ignoring {Event} for batch {BatchId} received in phase {Phase}",
+            eventResponse.GetType().Name, _batchId, _phase);
+        return false;
+    }
+
     private async Task<TreeSignerSession> HandleTreeSigningStartedAsync(
         TreeSigningStartedEvent signingEvent,
         uint256 sweepTapTreeRoot,
@@ -158,6 +198,11 @@ public class BatchSession(
 
         // Validate that all intent outputs exist in the correct locations
         ValidateIntentOutputs(vtxoGraph, commitmentTx);
+
+        // Pin what we validated: finalization is checked against this tree and must
+        // present the same commitment tx, not a replacement built afterwards.
+        _validatedVtxoGraph = vtxoGraph;
+        _validatedCommitmentTxId = commitmentTx.GetGlobalTransaction().GetHash();
 
         // Get shared output amount
         var sharedOutput = commitmentTx.Outputs[0];
@@ -224,12 +269,27 @@ public class BatchSession(
         List<TxTreeNode> connectorsChunks,
         CancellationToken cancellationToken)
     {
+        var commitmentPsbt = PSBT.Parse(finalizationEvent.CommitmentTx, network);
+
+        // A forfeit hands a VTXO to the operator, so nothing is signed until the commitment
+        // tx on the table is the one we co-signed the tree for, and until it pays out every
+        // output the intent asked for. Offchain outputs need a VTXO tree that reached the
+        // signing phase; an intent with only onchain outputs (collaborative exit) has none,
+        // and is settled by the commitment tx alone.
+        if (_validatedCommitmentTxId != null &&
+            commitmentPsbt.GetGlobalTransaction().GetHash() != _validatedCommitmentTxId)
+        {
+            throw new InvalidOperationException(
+                "Finalization commitment transaction differs from the one signed during tree signing");
+        }
+
+        ValidateIntentOutputs(_validatedVtxoGraph, commitmentPsbt);
+
         // Build and validate connectors graph if present
         TxTree? connectorsGraph = null;
         if (connectorsChunks.Count > 0)
         {
             connectorsGraph = TxTree.Create(connectorsChunks);
-            var commitmentPsbt = PSBT.Parse(finalizationEvent.CommitmentTx, network);
             TreeValidator.ValidateConnectorsTxGraph(commitmentPsbt, connectorsGraph);
         }
 
@@ -294,8 +354,6 @@ public class BatchSession(
         var boardingCoins = ins.Where(c => c.Unrolled).ToArray();
         if (boardingCoins.Length > 0)
         {
-            var commitmentPsbt = PSBT.Parse(finalizationEvent.CommitmentTx, network);
-
             foreach (var boardingCoin in boardingCoins)
             {
                 var psbtInput = boardingCoin.FillPsbtInput(commitmentPsbt);
@@ -332,8 +390,10 @@ public class BatchSession(
     /// Validates that all outputs specified in the intent exist in the correct locations:
     /// - Onchain outputs must exist in the commitment transaction
     /// - Offchain outputs (VTXOs) must exist as leaves in the VTXO tree
+    /// A null <paramref name="vtxoGraph"/> means no tree was validated, so any offchain
+    /// output the intent declares is missing.
     /// </summary>
-    private void ValidateIntentOutputs(TxTree vtxoGraph, PSBT commitmentTx)
+    private void ValidateIntentOutputs(TxTree? vtxoGraph, PSBT commitmentTx)
     {
         if (_intentParameters == null)
         {
@@ -350,7 +410,7 @@ public class BatchSession(
         var onchainIndexes = new HashSet<int>(_intentParameters.OnchainOutputsIndexes ?? []);
 
         // Get all VTXO leaf outputs for validation
-        var vtxoLeaves = vtxoGraph.Leaves().ToList();
+        var vtxoLeaves = vtxoGraph?.Leaves().ToList() ?? [];
         var vtxoLeafOutputs = vtxoLeaves
             .SelectMany(leaf => leaf.GetGlobalTransaction().Outputs
                 .Select((output, idx) => new { Output = output, Tx = leaf, Index = idx }))
@@ -490,6 +550,14 @@ public class BatchSession(
 
     private void HandleTreeTxEvent(TreeTxEvent treeTxEvent, List<TxTreeNode> vtxoChunks, List<TxTreeNode> connectorsChunks)
     {
+        // The VTXO tree is frozen once signing starts — nodes arriving afterwards are not
+        // covered by the signatures we produced. Connector nodes legitimately keep arriving.
+        if (treeTxEvent.BatchIndex == 0 && _phase != BatchSessionPhase.Started)
+        {
+            logger?.LogDebug("Ignoring VTXO tree node {TxId} received in phase {Phase}", treeTxEvent.TxId, _phase);
+            return;
+        }
+
         var txNode = new TxTreeNode(
             PSBT.Parse(treeTxEvent.Tx, network),
             treeTxEvent.Children.ToDictionary(kvp => (int)kvp.Key, kvp => uint256.Parse(kvp.Value))
