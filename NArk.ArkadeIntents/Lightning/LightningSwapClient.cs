@@ -7,8 +7,10 @@ using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
-using NArk.ArkadeIntents.Lightning.Rfq;
+using NArk.ArkadeIntents.Rfq;
+using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NArk.ArkadeIntents.Models;
+using NArk.ArkadeIntents.Rfq;
 using NArk.Core;
 using NArk.Core.Services;
 using NArk.Core.Transport;
@@ -27,7 +29,7 @@ namespace NArk.ArkadeIntents.Lightning;
 /// <param name="FundingTxid">The Arkade transaction that funded the lockup.</param>
 public sealed record FundedLightningSwap(
     string RfqId,
-    RfqQuote Quote,
+    RfqQuote<LightningSendQuoteProfile> Quote,
     string LockupAddress,
     string LockupPkScript,
     string RefundAddress,
@@ -140,8 +142,9 @@ public sealed class LightningSwapClient
         var refundPkScript = refundArkAddress.ScriptPubKey.ToBytes();
         var refundAddress = refundArkAddress.ToString(serverInfo.Network == Network.Main);
 
-        var request = RfqRequest.ForSend(invoice, refundAddress);
-        var quote = await rfqTransport.RequestQuoteAsync(request, cancellationToken);
+        var request = LightningSendProfile.Request(invoice, refundAddress);
+        var quote = await rfqTransport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(
+            request, cancellationToken);
 
         var contract = await DeriveLockupAsync(quote, decoded, refundPkScript, serverInfo, cancellationToken);
         var lockupArkAddress = contract.GetArkAddress();
@@ -328,7 +331,7 @@ public sealed class LightningSwapClient
     /// <param name="cancellationToken">Cancels the emulator fetch.</param>
     /// <returns>The compiled contract.</returns>
     private async Task<ArkProgramContract> DeriveLockupAsync(
-        RfqQuote quote,
+        RfqQuote<LightningSendQuoteProfile> quote,
         BOLT11PaymentRequest invoice,
         byte[] refundPkScript,
         ArkServerInfo serverInfo,

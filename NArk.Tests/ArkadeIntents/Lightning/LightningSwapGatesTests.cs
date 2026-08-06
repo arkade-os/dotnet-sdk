@@ -1,5 +1,6 @@
 using NArk.ArkadeIntents.Lightning;
-using NArk.ArkadeIntents.Lightning.Rfq;
+using NArk.ArkadeIntents.Rfq;
+using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 
 namespace NArk.Tests.ArkadeIntents.Lightning;
 
@@ -149,7 +150,7 @@ public class LightningSwapGatesTests
             LightningSwapGates.VerifyLockupAddress(quote, "ark1qlockup"));
     }
 
-    private static RfqQuote Quote(
+    private static RfqQuote<LightningSendQuoteProfile> Quote(
         long? validUntil = null,
         long? refundLocktime = null,
         long? fromAmount = null,
@@ -157,12 +158,12 @@ public class LightningSwapGatesTests
         string? lockupAddress = "ark1qlockup") => new()
     {
         RfqId = "9f2c00000000000000000000000000000000000000000000000000000000a1b2",
-        Pair = RfqProtocol.SendPair,
+        Pair = LightningSendProfile.Pair,
         SolverPubkey = "ae75000000000000000000000000000000000000000000000000000000000009",
         ValidUntil = validUntil ?? Now + 900,
         RefundLocktime = refundLocktime ?? Now + 605_184,
         FromAmount = fromAmount ?? InvoiceAmount,
         ToAmount = toAmount ?? InvoiceAmount,
-        Profile = new RfqQuoteProfile { LockupAddress = lockupAddress },
+        Profile = new LightningSendQuoteProfile { LockupAddress = lockupAddress },
     };
 }
