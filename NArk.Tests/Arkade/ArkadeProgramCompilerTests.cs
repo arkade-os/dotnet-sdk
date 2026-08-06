@@ -250,8 +250,13 @@ public class ArkadeProgramCompilerTests
             program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server }));
     }
 
+    /// <summary>
+    /// A condition combined with a CSV delay is a legal leaf (the ts-sdk's
+    /// <c>ConditionCSVMultisigTapscript</c>) — a hashlocked path that also waits out a relative
+    /// delay, as the Lightning swap script's unilateral-claim leaf does.
+    /// </summary>
     [Test]
-    public void AsmAndCsvTogether_Throws()
+    public void AsmAndCsvTogether_GateTheConditionThenTheDelay()
     {
         var (server, _, _) = GenerateThreeKeys();
         var program = new ArkadeProgram
@@ -271,8 +276,48 @@ public class ArkadeProgramCompilerTests
             },
         };
 
+        var compiled = ArkadeProgramCompiler.Compile(
+            program, ServerArgs(server), new ArkadeProgramKeys { ServerKey = server });
+
+        // <condition> VERIFY <delay> CSV DROP <server> CHECKSIG — the order is consensus-visible.
+        var ops = ArkadeScript.Decode(compiled[0].LeafScript);
+        Assert.That(ops[0].Code, Is.EqualTo(OpcodeType.OP_1));
+        Assert.That(ops[1].Code, Is.EqualTo(OpcodeType.OP_VERIFY));
+        Assert.That(ops[2].ToBytes(), Is.EqualTo(Op.GetPushOp(new Sequence(1).Value).ToBytes()));
+        Assert.That(ops[3].Code, Is.EqualTo(OpcodeType.OP_CHECKSEQUENCEVERIFY));
+        Assert.That(ops[4].Code, Is.EqualTo(OpcodeType.OP_DROP));
+        Assert.That(ops[5].ToBytes(), Is.EqualTo(Op.GetPushOp(server.ToBytes()).ToBytes()));
+        Assert.That(ops[6].Code, Is.EqualTo(OpcodeType.OP_CHECKSIG));
+    }
+
+    [Test]
+    public void CltvWithAnyOtherForm_Throws()
+    {
+        var (server, _, _) = GenerateThreeKeys();
+
+        ArkadeProgram WithTapscript(TapscriptSegment tapscript) => new()
+        {
+            Version = ArkadeProgram.SupportedVersion,
+            Functions = new Dictionary<string, ArkadeFunction> { ["refund"] = new() { Tapscript = tapscript } },
+        };
+
+        var withAsm = WithTapscript(new TapscriptSegment
+        {
+            Signers = [AsmToken.FromText("$server")],
+            Asm = [AsmToken.FromText("OP_1")],
+            Cltv = new LockTime(500_000_001),
+        });
+        var withCsv = WithTapscript(new TapscriptSegment
+        {
+            Signers = [AsmToken.FromText("$server")],
+            Csv = new Sequence(1),
+            Cltv = new LockTime(500_000_001),
+        });
+
         Assert.Throws<InvalidOperationException>(() => ArkadeProgramCompiler.Compile(
-            program, new Dictionary<string, AsmToken>(), new ArkadeProgramKeys { ServerKey = server }));
+            withAsm, ServerArgs(server), new ArkadeProgramKeys { ServerKey = server }));
+        Assert.Throws<InvalidOperationException>(() => ArkadeProgramCompiler.Compile(
+            withCsv, ServerArgs(server), new ArkadeProgramKeys { ServerKey = server }));
     }
 
     /// <summary>Args map pre-bound with the conventional <c>$server</c> param (plus any extras).</summary>
