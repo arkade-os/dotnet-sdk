@@ -58,6 +58,30 @@ public class BatchSession(
         var terms = await clientTransport.GetServerInfoAsync(cancellationToken);
         var sweepTapScript = new UnilateralPathArkTapScript(batchStartedEvent.BatchExpiry, new NofNMultisigTapScript([terms.ForfeitPubKey])); ;
         _sweepTapTreeRoot = sweepTapScript.Build().LeafHash;
+
+        // An intent paying only onchain has no VTXO tree branch to co-sign, so the signing
+        // phases never run for it: start where they would have ended, the way the Go client
+        // skips to treeNoncesAggregated when it has nothing to sign.
+        if (IsOnchainOnlyIntent())
+            _phase = BatchSessionPhase.TreeNoncesAggregated;
+    }
+
+    /// <summary>
+    /// Whether every output the intent declares is paid by the commitment transaction itself.
+    /// An intent we cannot read is not treated as onchain-only: the session then stays in the
+    /// signing sequence, where the finalization gate refuses to sign anything for it.
+    /// </summary>
+    private bool IsOnchainOnlyIntent()
+    {
+        if (_intentParameters == null)
+            return false;
+
+        var onchainIndexes = new HashSet<int>(_intentParameters.OnchainOutputsIndexes ?? []);
+        var intentOutputs = ParseIntentOutputs();
+
+        return intentOutputs.Count > 0 && intentOutputs
+            .Select((output, index) => (output, index))
+            .All(o => o.output.ScriptPubKey.IsUnspendable || onchainIndexes.Contains(o.index));
     }
 
     /// <summary>
@@ -126,8 +150,7 @@ public class BatchSession(
                     break;
 
                 case BatchFinalizationEvent batchFinalizationEvent when batchFinalizationEvent.Id == _batchId:
-                    if (!InPhase(batchFinalizationEvent, BatchSessionPhase.Started, BatchSessionPhase.TreeSigningStarted,
-                            BatchSessionPhase.TreeNoncesAggregated))
+                    if (!InPhase(batchFinalizationEvent, BatchSessionPhase.TreeNoncesAggregated))
                         break;
 
                     _phase = BatchSessionPhase.Finalizing;
@@ -395,16 +418,20 @@ public class BatchSession(
     /// </summary>
     private void ValidateIntentOutputs(TxTree? vtxoGraph, PSBT commitmentTx)
     {
+        // Everything we sign in a batch is only worth signing if the intent's outputs come
+        // back to us, so an intent we cannot read is a refusal, not a pass.
         if (_intentParameters == null)
         {
-            return;
+            throw new InvalidOperationException(
+                $"Intent {arkIntent.IntentId} has no readable registration message; batch outputs cannot be verified");
         }
 
         // Parse the intent to get the outputs
         var intentOutputs = ParseIntentOutputs();
         if (intentOutputs.Count == 0)
         {
-            return;
+            throw new InvalidOperationException(
+                $"Intent {arkIntent.IntentId} declares no readable outputs; batch outputs cannot be verified");
         }
 
         var onchainIndexes = new HashSet<int>(_intentParameters.OnchainOutputsIndexes ?? []);
@@ -533,6 +560,8 @@ public class BatchSession(
     /// Parses the intent outputs from the register proof transaction.
     /// The outputs are embedded directly in the BIP322 signature transaction
     /// (deviation from standard BIP322 to declare outputs).
+    /// Returns an empty list if the proof cannot be read, which callers treat as
+    /// "the intent's outputs are unknown", never as "the intent has no outputs".
     /// </summary>
     private List<TxOut> ParseIntentOutputs()
     {
@@ -542,8 +571,9 @@ public class BatchSession(
 
             return registerProof.GetGlobalTransaction().Outputs;
         }
-        catch
+        catch (Exception e)
         {
+            logger?.LogWarning(e, "Could not parse the registration proof of intent {IntentId}", arkIntent.IntentId);
             return [];
         }
     }
