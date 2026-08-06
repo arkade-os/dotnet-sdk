@@ -45,6 +45,12 @@
         fails CI on both sides.
       -->
       <Content Include="Arkade\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+      <!--
+        Lightning covenant-swap vectors, generated from the solver side's own
+        derivation so a drift in either implementation fails the maker's
+        derivation test here.
+      -->
+      <Content Include="ArkadeIntents\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>
