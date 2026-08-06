@@ -1,6 +1,8 @@
 using BTCPayServer.Lightning;
 using NArk.Abstractions;
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
@@ -60,7 +62,11 @@ public sealed class LightningSwapClient
     private readonly IContractService _contractService;
     private readonly ISpendingService _spendingService;
     private readonly IArkadeIntentStorage _intentStorage;
+    private readonly IContractStorage _contractStorage;
+    private readonly IVtxoStorage _vtxoStorage;
+    private readonly IWalletProvider _walletProvider;
     private readonly TimeProvider _time;
+    private readonly ILogger<LightningSwapClient>? _logger;
 
     /// <summary>Creates the client.</summary>
     /// <param name="transport">The Arkade connection — the source of the server key and its exit delay.</param>
@@ -68,21 +74,33 @@ public sealed class LightningSwapClient
     /// <param name="contractService">Derives the maker's own receive address for the refund destination.</param>
     /// <param name="spendingService">Funds the lockup.</param>
     /// <param name="intentStorage">Records the swap so it survives a restart.</param>
-    /// <param name="time">Clock for the funding gates; defaults to the system clock.</param>
+    /// <param name="contractStorage">Source of the imported lockup contract, for the refund path.</param>
+    /// <param name="vtxoStorage">Source of the lockup VTXO to refund.</param>
+    /// <param name="walletProvider">Needed by the program transformer on the refund path.</param>
+    /// <param name="time">Clock for the funding and refund gates; defaults to the system clock.</param>
+    /// <param name="logger">Optional logger.</param>
     public LightningSwapClient(
         IClientTransport transport,
         IEmulatorProvider emulator,
         IContractService contractService,
         ISpendingService spendingService,
         IArkadeIntentStorage intentStorage,
-        TimeProvider? time = null)
+        IContractStorage contractStorage,
+        IVtxoStorage vtxoStorage,
+        IWalletProvider walletProvider,
+        TimeProvider? time = null,
+        ILogger<LightningSwapClient>? logger = null)
     {
         _transport = transport;
         _emulator = emulator;
         _contractService = contractService;
         _spendingService = spendingService;
         _intentStorage = intentStorage;
+        _contractStorage = contractStorage;
+        _vtxoStorage = vtxoStorage;
+        _walletProvider = walletProvider;
         _time = time ?? TimeProvider.System;
+        _logger = logger;
     }
 
     /// <summary>
@@ -186,6 +204,118 @@ public sealed class LightningSwapClient
             PaymentHash: decoded.PaymentHash.ToString(),
             FundedSats: quote.FromAmount,
             FundingTxid: txid.ToString());
+    }
+
+    /// <summary>
+    /// Reclaim the deposit of a swap the solver never filled.
+    /// </summary>
+    /// <param name="swapId">The swap's id (its RFQ correlation id).</param>
+    /// <param name="cancellationToken">Cancels before the spend.</param>
+    /// <returns>The swap, moved to <see cref="ArkadeSwapIntentStatus.Cancelled"/>.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The swap is unknown, is not a Lightning swap, is not awaiting a refund, or its deadline has
+    /// not passed.
+    /// </exception>
+    /// <remarks>
+    /// The swap moves to <see cref="ArkadeSwapIntentStatus.Cancelling"/> before the spend so the
+    /// monitor cannot read our own refund as something the solver did, and rolls back on failure.
+    /// </remarks>
+    public async Task<ArkadeSwapIntent> RefundSwap(string swapId, CancellationToken cancellationToken = default)
+    {
+        var intent = (await _intentStorage.GetArkadeSwapIntents(cancellationToken: cancellationToken))
+                         .FirstOrDefault(s => s.Id == swapId)
+                     ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
+
+        if (intent.Type != ArkadeSwapIntentType.BtcToLightning)
+            throw new InvalidOperationException($"Swap '{swapId}' is not a Lightning swap ({intent.Type}).");
+        if (intent.Status is not (ArkadeSwapIntentStatus.Refundable or ArkadeSwapIntentStatus.Pending))
+            throw new InvalidOperationException($"Swap '{swapId}' is not awaiting a refund (status {intent.Status}).");
+        if (intent.RefundLocktime is not { } locktime)
+            throw new InvalidOperationException($"Swap '{swapId}' has no refund locktime recorded.");
+
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
+        if (now < locktime)
+        {
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' cannot be refunded for another {locktime - now}s.");
+        }
+
+        var previousStatus = intent.Status;
+        intent.Status = ArkadeSwapIntentStatus.Cancelling;
+        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+        try
+        {
+            var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
+            var contract = await LoadContract(intent, serverInfo.Network, cancellationToken);
+
+            var vtxos = await _vtxoStorage.GetVtxos(
+                scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
+            var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept)
+                ?? throw new InvalidOperationException("no unspent VTXO at the swap address");
+
+            var coin = await new ArkProgramContractTransformer(_walletProvider)
+                .Transform(intent.WalletId, contract, vtxo, "refund");
+
+            // The covenant pins the payout: output 0 must pay the script committed at funding time,
+            // for at least the input's value. So the destination is read back out of the contract —
+            // not chosen now — and the whole amount goes out, with no fee taken from it.
+            var destination = RefundAddressOf(contract, serverInfo.SignerKey.ToXOnlyPubKey());
+            var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)vtxo.Amount), destination);
+
+            var txid = await _spendingService.Spend(intent.WalletId, [coin], [output], cancellationToken);
+
+            intent.Status = ArkadeSwapIntentStatus.Cancelled;
+            intent.SpentTxid = txid.ToString();
+            await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+            _logger?.LogInformation("Refunded Lightning swap {SwapId} in {Txid}", swapId, txid);
+            return intent;
+        }
+        catch
+        {
+            // Roll back so a later attempt — ours or anyone else's — is still possible.
+            intent.Status = previousStatus;
+            await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>Rebuild the funded contract from the one imported before the lockup was paid.</summary>
+    private async Task<ArkProgramContract> LoadContract(
+        ArkadeSwapIntent intent, Network network, CancellationToken cancellationToken)
+    {
+        var contracts = await _contractStorage.GetContracts(
+            scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
+        var entity = contracts.FirstOrDefault()
+            ?? throw new InvalidOperationException(
+                $"the lockup contract for swap '{intent.Id}' is not in the contract store — " +
+                "without it the funded script cannot be rebuilt");
+
+        return ArkProgramContract.Parse(entity.AdditionalData, network);
+    }
+
+    /// <summary>
+    /// Recover the covenant's pinned payout address from the contract's own args — the one place a
+    /// refund can ever pay, whoever pushes it.
+    /// </summary>
+    /// <param name="contract">The rebuilt lockup contract.</param>
+    /// <param name="serverKey">The Arkade server key the address is derived against.</param>
+    /// <returns>The address the covenant will accept as the refund's output.</returns>
+    /// <remarks>
+    /// The covenant commits to the x-only witness program alone; the <c>0x5120</c> P2TR prefix is
+    /// re-added here, mirroring how the introspection opcode reconstructs the output script.
+    /// </remarks>
+    public static ArkAddress RefundAddressOf(ArkProgramContract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey)
+    {
+        if (!contract.Args.TryGetValue("refundKey", out var refundKey) || refundKey.Bytes is not { Length: 32 } program)
+        {
+            throw new InvalidOperationException(
+                "the lockup contract carries no 32-byte refundKey arg — it is not a Lightning swap covenant");
+        }
+
+        var pkScript = new Script(Op.GetPushOp(1), Op.GetPushOp(program));
+        return ArkAddress.FromScriptPubKey(pkScript, serverKey);
     }
 
     /// <summary>
