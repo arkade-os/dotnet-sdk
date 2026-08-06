@@ -2,7 +2,8 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using NArk.ArkadeIntents.Lightning.Rfq;
+using NArk.ArkadeIntents.Rfq;
+using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 
 namespace NArk.Tests.ArkadeIntents.Lightning;
 
@@ -25,7 +26,7 @@ public class HttpRfqTransportTests
     [Test]
     public void SendRequest_SerializesExactlyTheStrictShape()
     {
-        var request = RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId);
+        var request = LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId);
 
         var json = JsonNode.Parse(JsonSerializer.Serialize(request, RfqProtocol.Json))!.AsObject();
 
@@ -34,7 +35,7 @@ public class HttpRfqTransportTests
             Assert.That(json["v"]!.GetValue<int>(), Is.EqualTo(1));
             Assert.That(json["type"]!.GetValue<string>(), Is.EqualTo("rfq_request"));
             Assert.That(json["rfq_id"]!.GetValue<string>(), Is.EqualTo(RfqId));
-            Assert.That(json["pair"]!.GetValue<string>(), Is.EqualTo("arkade:BTC->lightning:BTC"));
+            Assert.That(json["pair"]!.GetValue<string>(), Is.EqualTo(LightningSendProfile.Pair));
             // A BOLT11 profile is exact-out: the invoice fixes what the solver must pay.
             Assert.That(json["amount_side"]!.GetValue<string>(), Is.EqualTo("to"));
             // Omitted, not null: sending an amount that disagrees with the invoice is a refusal,
@@ -62,7 +63,7 @@ public class HttpRfqTransportTests
     {
         var transport = TransportReturning(HttpStatusCode.Created, Quote());
 
-        var quote = await transport.RequestQuoteAsync(RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId));
+        var quote = await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId));
 
         Assert.Multiple(() =>
         {
@@ -85,7 +86,7 @@ public class HttpRfqTransportTests
         quote["profile"]!["another_one"] = 42;
         var transport = TransportReturning(HttpStatusCode.Created, quote);
 
-        var parsed = await transport.RequestQuoteAsync(RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId));
+        var parsed = await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId));
 
         Assert.That(parsed.SolverPubkey, Is.Not.Null);
     }
@@ -101,7 +102,7 @@ public class HttpRfqTransportTests
         });
 
         var ex = Assert.ThrowsAsync<RfqRefusedException>(() =>
-            transport.RequestQuoteAsync(RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
 
         Assert.That(ex!.Reason, Is.EqualTo(RfqRefusalReason.ExposureCap));
         Assert.That(ex.RfqId, Is.EqualTo(RfqId));
@@ -117,7 +118,7 @@ public class HttpRfqTransportTests
         });
 
         var ex = Assert.ThrowsAsync<RfqRefusedException>(() =>
-            transport.RequestQuoteAsync(RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
 
         Assert.That(ex!.Reason, Is.EqualTo(RfqRefusalReason.Unknown));
     }
@@ -131,7 +132,7 @@ public class HttpRfqTransportTests
         var transport = TransportReturning(HttpStatusCode.Created, quote);
 
         var ex = Assert.ThrowsAsync<InvalidOperationException>(() =>
-            transport.RequestQuoteAsync(RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
 
         Assert.That(ex!.Message, Does.Contain(RfqId));
     }
@@ -142,7 +143,7 @@ public class HttpRfqTransportTests
         var transport = TransportReturning(HttpStatusCode.OK, new JsonObject { ["v"] = 1, ["type"] = "not_found" });
 
         Assert.ThrowsAsync<InvalidOperationException>(() =>
-            transport.RequestQuoteAsync(RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
     }
 
     [Test]
@@ -151,7 +152,7 @@ public class HttpRfqTransportTests
         var transport = TransportReturning(HttpStatusCode.NotFound,
             new JsonObject { ["v"] = 1, ["type"] = "not_found" });
 
-        Assert.That(await transport.GetStatusAsync(RfqId), Is.Null);
+        Assert.That(await transport.GetStatusAsync<LightningSendStatusProfile>(RfqId), Is.Null);
     }
 
     [Test]
@@ -167,7 +168,7 @@ public class HttpRfqTransportTests
             ["profile"] = new JsonObject { ["preimage"] = "00ff", ["payment_hash"] = "abcd" },
         });
 
-        var status = await transport.GetStatusAsync(RfqId);
+        var status = await transport.GetStatusAsync<LightningSendStatusProfile>(RfqId);
 
         Assert.That(status!.State, Is.EqualTo(RfqState.Settled));
         Assert.That(status.State.IsTerminal(), Is.True);
@@ -183,7 +184,7 @@ public class HttpRfqTransportTests
             ["v"] = 1, ["type"] = "rfq_status", ["rfq_id"] = RfqId, ["state"] = "reticulating_splines",
         });
 
-        var status = await transport.GetStatusAsync(RfqId);
+        var status = await transport.GetStatusAsync<LightningSendStatusProfile>(RfqId);
 
         Assert.That(status!.State, Is.EqualTo(RfqState.Unknown));
         Assert.That(status.State.IsTerminal(), Is.False);
@@ -196,7 +197,7 @@ public class HttpRfqTransportTests
         var handler = new StubHandler(HttpStatusCode.Created, Quote());
         var transport = new HttpRfqTransport(new HttpClient(handler), new Uri("http://gateway.test/solver"));
 
-        await transport.RequestQuoteAsync(RfqRequest.ForSend("lnbcrt1...", "ark1qexample", RfqId));
+        await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId));
 
         Assert.That(handler.LastRequestUri!.AbsolutePath, Is.EqualTo("/solver/v1/swap"));
     }

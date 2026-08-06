@@ -1,4 +1,5 @@
-using NArk.ArkadeIntents.Lightning.Rfq;
+using NArk.ArkadeIntents.Rfq;
+using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 
 namespace NArk.ArkadeIntents.Lightning;
 
@@ -82,7 +83,7 @@ public static class LightningSwapGates
     /// <param name="invoiceExpiresAt">The invoice's absolute expiry, unix seconds.</param>
     /// <param name="now">The current time, unix seconds.</param>
     /// <exception cref="LightningSwapNotFundableException">A gate refused.</exception>
-    public static void AssertFundable(RfqQuote quote, long invoiceAmountSats, long invoiceExpiresAt, long now)
+    public static void AssertFundable(RfqQuote<LightningSendQuoteProfile> quote, long invoiceAmountSats, long invoiceExpiresAt, long now)
     {
         if (now >= invoiceExpiresAt)
         {
@@ -129,7 +130,7 @@ public static class LightningSwapGates
     /// <param name="derivedAddress">The address the maker derived locally.</param>
     /// <returns><paramref name="derivedAddress"/>, so calls can chain.</returns>
     /// <exception cref="LockupAddressMismatchException">The two disagree.</exception>
-    public static string VerifyLockupAddress(RfqQuote quote, string derivedAddress)
+    public static string VerifyLockupAddress(RfqQuote<LightningSendQuoteProfile> quote, string derivedAddress)
     {
         var quoted = quote.Profile?.LockupAddress;
         if (!string.Equals(derivedAddress, quoted, StringComparison.Ordinal))
