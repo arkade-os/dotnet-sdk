@@ -6,6 +6,7 @@ using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Lightning.Rfq;
+using NArk.ArkadeIntents.Models;
 using NArk.Core;
 using NArk.Core.Services;
 using NArk.Core.Transport;
@@ -58,6 +59,7 @@ public sealed class LightningSwapClient
     private readonly IEmulatorProvider _emulator;
     private readonly IContractService _contractService;
     private readonly ISpendingService _spendingService;
+    private readonly IArkadeIntentStorage _intentStorage;
     private readonly TimeProvider _time;
 
     /// <summary>Creates the client.</summary>
@@ -65,18 +67,21 @@ public sealed class LightningSwapClient
     /// <param name="emulator">The covenant co-signer, fetched from the maker's own endpoint.</param>
     /// <param name="contractService">Derives the maker's own receive address for the refund destination.</param>
     /// <param name="spendingService">Funds the lockup.</param>
+    /// <param name="intentStorage">Records the swap so it survives a restart.</param>
     /// <param name="time">Clock for the funding gates; defaults to the system clock.</param>
     public LightningSwapClient(
         IClientTransport transport,
         IEmulatorProvider emulator,
         IContractService contractService,
         ISpendingService spendingService,
+        IArkadeIntentStorage intentStorage,
         TimeProvider? time = null)
     {
         _transport = transport;
         _emulator = emulator;
         _contractService = contractService;
         _spendingService = spendingService;
+        _intentStorage = intentStorage;
         _time = time ?? TimeProvider.System;
     }
 
@@ -133,10 +138,44 @@ public sealed class LightningSwapClient
             decoded.ExpiryDate.ToUnixTimeSeconds(),
             _time.GetUtcNow().ToUnixTimeSeconds());
 
+        // Imported BEFORE funding. This is the only place the funded script is persisted in a
+        // rebuildable form — the contract's serialized program and args carry the solver key, both
+        // timelocks, the emulator key and the refund destination, which is what the refund path
+        // reconstructs itself from. (Watching does not depend on it: the intent row saved below is
+        // itself an IActiveScriptsProvider.) Importing after the spend would leave a window where
+        // the money is out and the only record of how to refund it does not exist yet.
+        await _contractService.ImportContract(
+            walletId,
+            contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"lightning-swap:{request.RfqId}" },
+            cancellationToken: cancellationToken);
+
         var txid = await _spendingService.Spend(
             walletId,
             [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(quote.FromAmount), lockupArkAddress)],
             cancellationToken);
+
+        await _intentStorage.SaveArkadeSwapIntent(new ArkadeSwapIntent
+        {
+            Id = request.RfqId,
+            WalletId = walletId,
+            Type = ArkadeSwapIntentType.BtcToLightning,
+            OfferAmount = Money.Satoshis(quote.FromAmount),
+            WantAmount = Money.Satoshis(quote.ToAmount),
+            Status = ArkadeSwapIntentStatus.Pending,
+            CreatedAt = _time.GetUtcNow(),
+            SwapPkScript = lockupArkAddress.ScriptPubKey.ToHex(),
+            SwapAddress = lockupAddress,
+            // No offer TLV: this direction is negotiated by RFQ, and the covenant is rebuilt from
+            // the imported contract rather than from a wire offer.
+            OfferHex = "",
+            FromAssetId = "btc",
+            ToAssetId = "lightning:btc",
+            Invoice = invoice,
+            PaymentHash = decoded.PaymentHash.ToString(),
+            RefundLocktime = quote.RefundLocktime,
+        }, cancellationToken);
 
         return new FundedLightningSwap(
             RfqId: request.RfqId,

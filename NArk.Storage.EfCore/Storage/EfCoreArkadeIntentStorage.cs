@@ -69,9 +69,13 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var set = db.Set<ArkadeSwapIntentEntity>();
 
-        // Race guard lives here: only a pending swap on this script transitions.
+        // Race guard lives here: only a swap still in flight on this script transitions. Refundable
+        // counts as in flight — its deposit is unspent and the refund has yet to be pushed — so a
+        // Lightning swap that passes its deadline can still record the spend that ends it.
         var entity = await set.FirstOrDefaultAsync(
-            x => x.SwapPkScript == swapPkScript && x.Status == ArkadeSwapIntentStatus.Pending,
+            x => x.SwapPkScript == swapPkScript
+                 && (x.Status == ArkadeSwapIntentStatus.Pending
+                     || x.Status == ArkadeSwapIntentStatus.Refundable),
             cancellationToken);
         if (entity is null)
             return false;
@@ -106,6 +110,9 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         MakerDescriptor = e.MakerDescriptor,
         FromAssetId = e.FromAssetId,
         ToAssetId = e.ToAssetId,
+        Invoice = e.Invoice,
+        PaymentHash = e.PaymentHash,
+        RefundLocktime = e.RefundLocktime,
         SpentTxid = e.SpentTxid,
     };
 
@@ -130,6 +137,9 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         e.MakerDescriptor = i.MakerDescriptor;
         e.FromAssetId = i.FromAssetId;
         e.ToAssetId = i.ToAssetId;
+        e.Invoice = i.Invoice;
+        e.PaymentHash = i.PaymentHash;
+        e.RefundLocktime = i.RefundLocktime;
         e.SpentTxid = i.SpentTxid;
     }
 }

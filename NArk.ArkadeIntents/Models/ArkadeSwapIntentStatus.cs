@@ -20,4 +20,18 @@ public enum ArkadeSwapIntentStatus
 
     /// <summary>The covenant VTXO expired/was swept without a fill; the deposit is recoverable on-chain.</summary>
     Recoverable,
+
+    /// <summary>
+    /// The refund deadline passed with the deposit still unspent (<see cref="ArkadeSwapIntentType.BtcToLightning"/>
+    /// only). Anyone may now push the covenant refund, which can pay nowhere but the maker's own address.
+    /// </summary>
+    Refundable,
+
+    /// <summary>
+    /// The covenant VTXO was spent once both the fill and refund paths were live
+    /// (<see cref="ArkadeSwapIntentType.BtcToLightning"/> only), so which one it was is decidable
+    /// only from the spending witness — a preimage there means the solver filled. Either way the
+    /// maker's exposure is over.
+    /// </summary>
+    Resolved,
 }
