@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace NArk.ArkadeIntents.Lightning.Rfq;
+namespace NArk.ArkadeIntents.Rfq;
 
 /// <summary>
 /// The HTTP transport: <c>POST /v1/swap</c> for quotes, <c>GET /v1/rfq/{rfq_id}</c> for status.
@@ -11,7 +11,7 @@ namespace NArk.ArkadeIntents.Lightning.Rfq;
 /// <remarks>
 /// The payload is the contract and the HTTP envelope is not, so replies are dispatched on the
 /// body's <c>type</c> rather than the status code — a refusal is a refusal whether it arrives as
-/// 400 or 422. Unknown members are ignored throughout, per the spec's tolerant-responses rule.
+/// 400 or 422. Unknown members are ignored throughout, per the tolerant-responses rule.
 /// </remarks>
 public sealed class HttpRfqTransport : IRfqTransport
 {
@@ -36,7 +36,9 @@ public sealed class HttpRfqTransport : IRfqTransport
     }
 
     /// <inheritdoc />
-    public async Task<RfqQuote> RequestQuoteAsync(RfqRequest request, CancellationToken cancellationToken = default)
+    public async Task<RfqQuote<TQuoteProfile>> RequestQuoteAsync<TRequestProfile, TQuoteProfile>(
+        RfqRequest<TRequestProfile> request,
+        CancellationToken cancellationToken = default)
     {
         var response = await _http.PostAsJsonAsync(
             new Uri(_baseAddress, "v1/swap"), request, RfqProtocol.Json, cancellationToken);
@@ -45,18 +47,20 @@ public sealed class HttpRfqTransport : IRfqTransport
             ?? throw new InvalidOperationException(
                 $"solver returned {(int)response.StatusCode} with no RFQ payload");
 
-        return ExpectQuote(payload, request.RfqId);
+        return ExpectQuote<TQuoteProfile>(payload, request.RfqId);
     }
 
     /// <inheritdoc />
-    public async Task<RfqStatus?> GetStatusAsync(string rfqId, CancellationToken cancellationToken = default)
+    public async Task<RfqStatus<TStatusProfile>?> GetStatusAsync<TStatusProfile>(
+        string rfqId,
+        CancellationToken cancellationToken = default)
     {
         var response = await _http.GetAsync(new Uri(_baseAddress, $"v1/rfq/{rfqId}"), cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
 
         var payload = await ReadPayloadAsync(response, cancellationToken);
         return TypeOf(payload) == "rfq_status"
-            ? payload.Deserialize<RfqStatus>(RfqProtocol.Json)
+            ? payload.Deserialize<RfqStatus<TStatusProfile>>(RfqProtocol.Json)
             : null;
     }
 
@@ -65,12 +69,13 @@ public sealed class HttpRfqTransport : IRfqTransport
     /// for a different negotiation — matching the correlation id is what stops a stale or
     /// misrouted reply being funded.
     /// </summary>
+    /// <typeparam name="TQuoteProfile">The corridor's quote-profile shape.</typeparam>
     /// <param name="payload">The reply payload.</param>
     /// <param name="rfqId">The correlation id of the request.</param>
     /// <returns>The quote.</returns>
     /// <exception cref="RfqRefusedException">The reply was a refusal.</exception>
     /// <exception cref="InvalidOperationException">The reply was not a quote for this negotiation.</exception>
-    internal static RfqQuote ExpectQuote(JsonNode payload, string rfqId)
+    internal static RfqQuote<TQuoteProfile> ExpectQuote<TQuoteProfile>(JsonNode payload, string rfqId)
     {
         if (TypeOf(payload) == "rfq_refusal")
         {
@@ -83,7 +88,7 @@ public sealed class HttpRfqTransport : IRfqTransport
             throw new InvalidOperationException($"unexpected reply type '{TypeOf(payload) ?? "(none)"}'");
         }
 
-        var quote = payload.Deserialize<RfqQuote>(RfqProtocol.Json)!;
+        var quote = payload.Deserialize<RfqQuote<TQuoteProfile>>(RfqProtocol.Json)!;
         if (quote.RfqId != rfqId)
         {
             throw new InvalidOperationException(
