@@ -27,10 +27,11 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Transition the <b>pending</b> swap on the given covenant script to <paramref name="status"/>
-    /// (recording <paramref name="spentTxid"/> when fulfilled). Only pending swaps are touched — so a
-    /// swap already moved to <see cref="ArkadeSwapIntentStatus.Cancelling"/> is never read as a fill (the
-    /// race guard). Returns <c>false</c> when no pending swap matches.
+    /// Transition the <b>in-flight</b> swap on the given covenant script to <paramref name="status"/>
+    /// (recording <paramref name="spentTxid"/> when spent). Only swaps that are still
+    /// <see cref="ArkadeSwapIntentStatus.Pending"/> or <see cref="ArkadeSwapIntentStatus.Refundable"/>
+    /// are touched — so a swap already moved to <see cref="ArkadeSwapIntentStatus.Cancelling"/> is never
+    /// read as a fill (the race guard). Returns <c>false</c> when no in-flight swap matches.
     /// </summary>
     Task<bool> UpdateStatus(
         string swapPkScript,
@@ -38,9 +39,20 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
         string? spentTxid = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>The covenant scripts of pending swaps — the set the sync service watches.</summary>
+    /// <summary>The covenant scripts of swaps still in flight — the set the sync service watches.</summary>
+    /// <param name="cancellationToken">Cancels the queries.</param>
+    /// <returns>The scripts to watch.</returns>
+    /// <remarks>
+    /// Refundable swaps stay watched: their deposit is still sitting in the covenant, and the refund
+    /// that ends them is observable on the very same script.
+    /// </remarks>
     async Task<HashSet<string>> IActiveScriptsProvider.GetActiveScripts(CancellationToken cancellationToken)
-        => (await GetArkadeSwapIntents(status: ArkadeSwapIntentStatus.Pending, cancellationToken: cancellationToken))
-            .Select(s => s.SwapPkScript)
-            .ToHashSet();
+    {
+        var pending = await GetArkadeSwapIntents(
+            status: ArkadeSwapIntentStatus.Pending, cancellationToken: cancellationToken);
+        var refundable = await GetArkadeSwapIntents(
+            status: ArkadeSwapIntentStatus.Refundable, cancellationToken: cancellationToken);
+
+        return pending.Concat(refundable).Select(s => s.SwapPkScript).ToHashSet();
+    }
 }
