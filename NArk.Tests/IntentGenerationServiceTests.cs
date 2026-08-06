@@ -227,6 +227,26 @@ public class IntentGenerationServiceTests
     }
 
     [Test]
+    public void ValidateOnchainOutputBounds_DoesNotThrow_WhenOnchainOutputIsWithinBounds()
+    {
+        var serverInfo = ServerInfoWithUtxoBounds(utxoMin: Money.Satoshis(10_000), utxoMax: Money.Satoshis(100_000));
+
+        // The bounds are inclusive: only strictly below the min or strictly above the max is rejected.
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 10_000)]));
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 100_000)]));
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 50_000)]));
+
+        // Mixed intent: the VTXO output is not subject to the on-chain bounds.
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(
+                serverInfo,
+                [Out(ArkTxOutType.Vtxo, 1), Out(ArkTxOutType.Onchain, 50_000)]));
+    }
+
+    [Test]
     public void ValidateOnchainOutputBounds_IgnoresVtxoOutputs_WhenOnchainIsDisabled()
     {
         var serverInfo = ServerInfoWithUtxoBounds(utxoMin: Money.Zero, utxoMax: Money.Zero);
