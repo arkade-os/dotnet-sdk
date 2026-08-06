@@ -228,7 +228,13 @@ public static class PsbtHelpers
     /// signature made for a different tapscript leaf is not returned.
     /// </summary>
     /// <param name="input">The PSBT input to read from.</param>
-    /// <param name="key">The x-only public key the signature is expected from.</param>
+    /// <param name="key">
+    /// The x-only public key the signature is expected from. The field is keyed by whatever
+    /// <see cref="IArkadeWalletSigner.Sign"/> returned when the signature was written, which is
+    /// required to be the key named by the signing descriptor — so callers looking up a wallet's
+    /// own signature pass <c>coin.SignerDescriptor.ToXOnlyPubKey()</c>. A signer that returned a
+    /// derived or rotated key instead would not be found here.
+    /// </param>
     /// <param name="leafHash">The tapscript leaf hash the signature is expected to cover.</param>
     /// <param name="signature">The raw signature bytes; empty when none is present.</param>
     /// <returns><c>true</c> when the input carries a signature for that key + leaf.</returns>

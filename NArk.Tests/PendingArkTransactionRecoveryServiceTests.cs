@@ -198,6 +198,105 @@ public class PendingArkTransactionRecoveryServiceTests
     }
 
     [Test]
+    public async Task FinalizePending_CheckpointWithExtraInput_IsRejectedUnsigned()
+    {
+        // arkd builds one checkpoint per spent VTXO, so a multi-input checkpoint is not a
+        // shape this wallet ever asked for: the extra input is unaccounted for and the
+        // signature would commit to spending it alongside ours.
+        var wallet = CreateWalletCoin();
+        SetUpVtxoAndCoin(wallet);
+
+        var pending = wallet.BuildPendingTx(extraCheckpointInput: true);
+        StubPendingTxs(pending);
+
+        var service = CreateRecordingService();
+        var failures = new List<PendingTxRecoveryFailureEventArgs>();
+        service.RecoveryFailed += (_, e) => failures.Add(e);
+
+        var result = await service.FinalizePendingArkTransactionsAsync(WalletId);
+
+        Assert.That(result, Is.Empty);
+        Assert.That(service.SignedCheckpoints, Is.Zero);
+        Assert.That(failures.Single().Exception, Is.InstanceOf<UnauthorizedPendingArkTransactionException>()
+            .With.Property("Reason").Contains("expected exactly 1"));
+        await _clientTransport.DidNotReceiveWithAnyArgs().FinalizeTx(default!, default!, default);
+    }
+
+    [Test]
+    public async Task FinalizePending_CoinWithNoServerKey_FailsAsLocalStateNotAsUnauthorized()
+    {
+        // No server key on the contract means no expected checkpoint output can be rebuilt.
+        // That is a local-state problem — the server is not implicated — so it must NOT be
+        // reported as an authorization failure, which consumers treat as an attack signal.
+        var wallet = CreateWalletCoin(withServerKey: false);
+        SetUpVtxoAndCoin(wallet);
+
+        StubPendingTxs(wallet.BuildPendingTx());
+
+        var service = CreateRecordingService();
+        var failures = new List<PendingTxRecoveryFailureEventArgs>();
+        service.RecoveryFailed += (_, e) => failures.Add(e);
+
+        var result = await service.FinalizePendingArkTransactionsAsync(WalletId);
+
+        Assert.That(result, Is.Empty);
+        Assert.That(service.SignedCheckpoints, Is.Zero);
+        Assert.That(failures.Single().Exception, Is.InstanceOf<InvalidOperationException>());
+        Assert.That(failures.Single().Exception,
+            Is.Not.InstanceOf<UnauthorizedPendingArkTransactionException>(),
+            "a contract with no server key is local state, not an unauthorized server response");
+        await _clientTransport.DidNotReceiveWithAnyArgs().FinalizeTx(default!, default!, default);
+    }
+
+    [Test]
+    public async Task FinalizePending_CovenantCoinWithNoWalletKey_SkipsSignatureCheckAndFinalizes()
+    {
+        // Covenant leaves (an emulator-cosigned HTLC claim and friends) name no wallet key, so
+        // the ark tx carries no wallet signature to verify. The checkpoint is still validated in
+        // full; the pending tx must go through rather than be rejected for a missing signature.
+        var wallet = CreateWalletCoin(withWalletKey: false);
+        SetUpVtxoAndCoin(wallet);
+
+        var pending = wallet.BuildPendingTx(signArkTx: false);
+        StubPendingTxs(pending);
+
+        var service = CreateRecordingService();
+        var failures = new List<PendingTxRecoveryFailureEventArgs>();
+        service.RecoveryFailed += (_, e) => failures.Add(e);
+
+        var result = await service.FinalizePendingArkTransactionsAsync(WalletId);
+
+        Assert.That(failures, Is.Empty);
+        Assert.That(result, Is.EquivalentTo(new[] { pending.ArkTxId }));
+        Assert.That(service.SignedCheckpoints, Is.EqualTo(1));
+        await _clientTransport.Received(1).FinalizeTx(pending.ArkTxId,
+            Arg.Is<string[]>(arr => arr.Length == 1),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task FinalizePending_CovenantCoinWithForeignCheckpoint_IsStillRejected()
+    {
+        // The covenant skip is scoped to the ark-tx signature check only — the checkpoint
+        // itself is still rebuilt and compared, so a covenant coin is not a bypass.
+        var wallet = CreateWalletCoin(withWalletKey: false);
+        SetUpVtxoAndCoin(wallet);
+
+        StubPendingTxs(wallet.BuildPendingTx(signArkTx: false, checkpointDestination: NewTaprootScript()));
+
+        var service = CreateRecordingService();
+        var failures = new List<PendingTxRecoveryFailureEventArgs>();
+        service.RecoveryFailed += (_, e) => failures.Add(e);
+
+        var result = await service.FinalizePendingArkTransactionsAsync(WalletId);
+
+        Assert.That(result, Is.Empty);
+        Assert.That(service.SignedCheckpoints, Is.Zero);
+        Assert.That(failures.Single().Exception, Is.InstanceOf<UnauthorizedPendingArkTransactionException>()
+            .With.Property("Reason").Contains("instead of this wallet's checkpoint contract"));
+    }
+
+    [Test]
     public async Task FinalizePending_ArkTxNotSignedByWallet_IsRejectedUnsigned()
     {
         // Checkpoint shape is correct, but the wallet never authorised the onward spend.
@@ -449,10 +548,33 @@ public class PendingArkTransactionRecoveryServiceTests
     /// A real payment-contract VTXO owned by a real key, so checkpoint contracts and ark tx
     /// signatures can be produced exactly the way the SDK produces them on the spending path.
     /// </summary>
-    private WalletCoin CreateWalletCoin()
+    /// <param name="withWalletKey">
+    /// <c>false</c> models a covenant coin (e.g. an emulator-cosigned HTLC claim): the spending
+    /// leaf names no wallet key, so the wallet never signs the ark tx for it.
+    /// </param>
+    /// <param name="withServerKey">
+    /// <c>false</c> models a coin whose contract carries no server key, so no expected checkpoint
+    /// output can be reconstructed for it at all.
+    /// </param>
+    private WalletCoin CreateWalletCoin(bool withWalletKey = true, bool withServerKey = true)
     {
         var userKey = ECPrivKey.Create(RandomUtils.GetBytes(32));
-        var contract = new ArkPaymentContract(_serverInfo.SignerKey, new Sequence(144), DescriptorFor(userKey));
+        var userDescriptor = DescriptorFor(userKey);
+
+        ArkContract contract;
+        ScriptBuilder spendingScriptBuilder;
+        if (withServerKey)
+        {
+            var payment = new ArkPaymentContract(_serverInfo.SignerKey, new Sequence(144), userDescriptor);
+            contract = payment;
+            spendingScriptBuilder = payment.CollaborativePath();
+        }
+        else
+        {
+            spendingScriptBuilder = new NofNMultisigTapScript([userDescriptor.ToXOnlyPubKey()]);
+            contract = new GenericArkContract(null!, [spendingScriptBuilder]);
+        }
+
         var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
         var txOut = new TxOut(Money.Satoshis(50_000), contract.GetScriptPubKey());
 
@@ -464,8 +586,8 @@ public class PendingArkTransactionRecoveryServiceTests
             expiresAtHeight: null,
             outPoint: outpoint,
             txOut: txOut,
-            signerDescriptor: contract.User,
-            spendingScriptBuilder: contract.CollaborativePath(),
+            signerDescriptor: withWalletKey ? userDescriptor : null,
+            spendingScriptBuilder: spendingScriptBuilder,
             spendingConditionWitness: null,
             lockTime: null,
             sequence: null,
@@ -486,17 +608,23 @@ public class PendingArkTransactionRecoveryServiceTests
             Script? checkpointDestination = null,
             Money? checkpointAmount = null,
             TxOut? extraCheckpointOutput = null,
+            bool extraCheckpointInput = false,
             Script? arkTxDestination = null,
             bool signArkTx = true,
             bool replaceArkTxDestinationAfterSigning = false,
             bool arkTxSpendsForeignOutpoint = false)
         {
-            var checkpointContract = new GenericArkContract(Coin.Contract.Server!,
+            // Server key falls back to the server's own so a serverless-contract coin still
+            // produces a well-formed checkpoint — validation rejects it before the outputs
+            // are ever looked at.
+            var checkpointContract = new GenericArkContract(Coin.Contract.Server ?? ServerInfo.SignerKey,
                 [Coin.SpendingScriptBuilder, ServerInfo.CheckpointTapScript]);
 
             var checkpointTx = Net.CreateTransaction();
             checkpointTx.Version = 3;
             checkpointTx.Inputs.Add(new TxIn(Coin.Outpoint));
+            if (extraCheckpointInput)
+                checkpointTx.Inputs.Add(new TxIn(new OutPoint(RandomUtils.GetUInt256(), 0)));
             checkpointTx.Outputs.Add(new TxOut(checkpointAmount ?? Coin.Amount,
                 checkpointDestination ?? checkpointContract.GetScriptPubKey()));
             checkpointTx.Outputs.Add(new TxOut(Money.Zero, P2A));
@@ -550,6 +678,13 @@ public class PendingArkTransactionRecoveryServiceTests
         // Real ArkServerInfo construction in tests requires too many primitives; the
         // RecoveryService only consumes Network, SignerKey and CheckpointTapScript, so the
         // simplest stub is an uninitialized record with those three filled in.
+        //
+        // Caveat: this bypasses the record constructor, so every other member is left at its
+        // default (null for reference types). It holds only while the service reads exactly
+        // those three. If ArkServerInfo grows a member with a non-trivial invariant, or the
+        // service starts reading a fourth field, build a real instance here instead of
+        // widening the reflection below — a NullReferenceException from an uninitialized
+        // field is a confusing way to find that out.
         var info = (ArkServerInfo)System.Runtime.CompilerServices.RuntimeHelpers
             .GetUninitializedObject(typeof(ArkServerInfo));
 

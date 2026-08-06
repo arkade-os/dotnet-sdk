@@ -20,6 +20,15 @@ namespace NArk.Core.Services;
 /// the next pending transaction. No signature has been produced for the rejected
 /// transaction, and none will be on subsequent runs while it still fails validation.
 /// </para>
+/// <para>
+/// <b>This type means the server presented something the wallet did not authorize</b>, and
+/// nothing else — it is a persistent mismatch worth investigating rather than a transient
+/// error. Failures rooted in <em>local</em> state, where no expectation could be rebuilt to
+/// compare the server's response against (a checkpoint input with no matching local VTXO, or a
+/// coin whose contract names no server key), surface as <see cref="InvalidOperationException"/>
+/// on the same event instead. Those imply nothing about the server's behaviour: treat them as
+/// "this wallet cannot currently recover this transaction", not as evidence of an attack.
+/// </para>
 /// </remarks>
 public sealed class UnauthorizedPendingArkTransactionException : Exception
 {

@@ -310,14 +310,26 @@ public class PendingArkTransactionRecoveryService(
     /// zero-value P2A anchor.
     /// </remarks>
     /// <returns>The checkpoint's own output as an <see cref="ArkCoin"/>, for binding the ark tx.</returns>
+    /// <exception cref="UnauthorizedPendingArkTransactionException">
+    /// The server's checkpoint does not match the one this wallet would have built.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Local state cannot produce an expectation to compare against (the resolved coin's contract
+    /// names no server key). This says nothing about the server's behaviour.
+    /// </exception>
     private static ArkCoin VerifyCheckpointOutput(string arkTxId, ArkCoin coin, PSBT checkpoint,
         ArkServerInfo serverInfo)
     {
+        // Not an authorization failure: a coin on a contract that names no server key (a covenant
+        // contract, or a misconfigured coin) leaves the wallet with nothing to rebuild the expected
+        // checkpoint from. Nothing about the server's response is implicated, so this must not be
+        // reported as the server presenting an unauthorized transaction.
         if (coin.Contract.Server is null)
         {
-            throw new UnauthorizedPendingArkTransactionException(arkTxId,
-                $"input {coin.Outpoint} resolves to a contract with no server key, so the expected " +
-                "checkpoint output cannot be reconstructed");
+            throw new InvalidOperationException(
+                $"Pending-tx recovery: cannot authorize pending Arkade transaction {arkTxId} — input " +
+                $"{coin.Outpoint} resolves to a contract with no server key, so the expected checkpoint " +
+                "output cannot be reconstructed.");
         }
 
         // Mirrors ArkTransactionBuilder.CreateCheckpointContract.
