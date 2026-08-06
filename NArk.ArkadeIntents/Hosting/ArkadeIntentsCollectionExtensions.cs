@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Services;
 
 namespace NArk.ArkadeIntents.Hosting;
@@ -6,7 +7,8 @@ namespace NArk.ArkadeIntents.Hosting;
 public static class ArkadeIntentsCollectionExtensions
 {
     /// <summary>
-    /// Registers the Arkade non-interactive swap services: solver discovery, the intent manager and
+    /// Registers the Arkade non-interactive swap services: solver discovery, the intent manager, the
+    /// Arkade → Lightning maker client, and
     /// the covenant-VTXO monitor (a hosted service that transitions swap status via
     /// <see cref="IArkadeIntentStorage"/>). The <see cref="IArkadeIntentStorage"/> itself is provided
     /// by the storage layer (e.g. the EF Core registration), which also exposes it as an
@@ -17,6 +19,7 @@ public static class ArkadeIntentsCollectionExtensions
     {
         services.AddHttpClient<SolverDiscoveryService>();
         services.AddSingleton<ArkadeIntentManager>();
+        services.AddSingleton<LightningSwapClient>();
         services.AddHostedService<ArkadeSwapIntentMonitoringService>();
         return services;
     }

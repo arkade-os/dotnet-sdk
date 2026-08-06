@@ -23,15 +23,18 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
 {
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IArkadeIntentStorage _intentStorage;
+    private readonly TimeProvider _time;
     private readonly ILogger<ArkadeSwapIntentMonitoringService>? _logger;
 
     public ArkadeSwapIntentMonitoringService(
         IVtxoStorage vtxoStorage,
         IArkadeIntentStorage intentStorage,
+        TimeProvider? time = null,
         ILogger<ArkadeSwapIntentMonitoringService>? logger = null)
     {
         _vtxoStorage = vtxoStorage;
         _intentStorage = intentStorage;
+        _time = time ?? TimeProvider.System;
         _logger = logger;
     }
 
@@ -55,16 +58,49 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
         return null;
     }
 
+    /// <summary>
+    /// Map a Lightning swap's lockup VTXO to its status, given when the covenant refund opens.
+    /// </summary>
+    /// <param name="vtxo">The lockup VTXO.</param>
+    /// <param name="refundLocktime">Unix seconds at which the refund path opens.</param>
+    /// <param name="now">Current time, unix seconds.</param>
+    /// <returns>The status to move to, or <c>null</c> while nothing has changed.</returns>
+    /// <remarks>
+    /// Unlike the asset directions, a spent lockup here is not automatically a fill: this covenant
+    /// carries a refund leaf that anyone may spend once its CLTV matures. Before that deadline the
+    /// refund is unspendable, so a spend can only be the solver claiming with the preimage and the
+    /// swap is <see cref="ArkadeSwapIntentStatus.Fulfilled"/>. At or after it both leaves are live, so
+    /// the outcome is reported as <see cref="ArkadeSwapIntentStatus.Resolved"/> rather than guessed —
+    /// attributing it needs the spending witness, where a preimage means the solver filled.
+    /// </remarks>
+    public static ArkadeSwapIntentStatus? ResolveLightningStatus(ArkVtxo vtxo, long refundLocktime, long now)
+    {
+        if (vtxo.IsSpent())
+        {
+            return now < refundLocktime
+                ? ArkadeSwapIntentStatus.Fulfilled
+                : ArkadeSwapIntentStatus.Resolved;
+        }
+        if (vtxo.Swept) return ArkadeSwapIntentStatus.Recoverable;
+        if (now >= refundLocktime) return ArkadeSwapIntentStatus.Refundable;
+        return null;
+    }
+
     private async void OnVtxoChanged(object? sender, ArkVtxo vtxo)
     {
         try
         {
-            var status = ResolveTerminalStatus(vtxo);
-            if (status is null) return;
+            var swap = (await _intentStorage.GetArkadeSwapIntents(swapPkScript: vtxo.Script)).FirstOrDefault();
 
-            var spentTxid = status == ArkadeSwapIntentStatus.Fulfilled
-                ? vtxo.ArkTxid ?? vtxo.SpentByTransactionId
-                : null;
+            // A Lightning swap's covenant has a refund leaf, so the same VTXO state means different
+            // things either side of its deadline; the asset directions have no such leaf.
+            var status = swap is { Type: ArkadeSwapIntentType.BtcToLightning, RefundLocktime: { } locktime }
+                ? ResolveLightningStatus(vtxo, locktime, _time.GetUtcNow().ToUnixTimeSeconds())
+                : ResolveTerminalStatus(vtxo);
+
+            if (status is null || status == swap?.Status) return;
+
+            var spentTxid = vtxo.IsSpent() ? vtxo.ArkTxid ?? vtxo.SpentByTransactionId : null;
 
             // Only pending swaps on this script transition — the storage enforces the race guard.
             if (await _intentStorage.UpdateStatus(vtxo.Script, status.Value, spentTxid))

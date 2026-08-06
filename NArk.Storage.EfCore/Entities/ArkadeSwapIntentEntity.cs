@@ -38,6 +38,16 @@ public class ArkadeSwapIntentEntity
     public string? FromAssetId { get; set; }
     public string? ToAssetId { get; set; }
 
+
+    /// <summary>The BOLT11 paid by a Lightning swap; unrecoverable from the covenant, which commits to a one-way hash.</summary>
+    public string? Invoice { get; set; }
+
+    /// <summary>The invoice's payment hash (hex) — a solver's natural key for the negotiation.</summary>
+    public string? PaymentHash { get; set; }
+
+    /// <summary>Unix seconds at which a Lightning swap's covenant refund path opens.</summary>
+    public long? RefundLocktime { get; set; }
+
     /// <summary>The ark tx that fulfilled the swap; set once fulfilled.</summary>
     public string? SpentTxid { get; set; }
 
@@ -48,5 +58,7 @@ public class ArkadeSwapIntentEntity
         builder.Property(x => x.SwapPkScript).IsRequired();
         builder.HasIndex(x => x.SwapPkScript);
         builder.HasIndex(x => new { x.WalletId, x.Status });
+        // A solver dedupes a Lightning negotiation on the payment hash, so we look swaps up by it.
+        builder.HasIndex(x => x.PaymentHash);
     }
 }

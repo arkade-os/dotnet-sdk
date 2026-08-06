@@ -44,6 +44,24 @@ public class ArkadeSwapIntent
     /// <summary>Asset id received.</summary>
     public string? ToAssetId { get; set; }
 
+
+    /// <summary>
+    /// The BOLT11 this swap pays (<see cref="ArkadeSwapIntentType.BtcToLightning"/> only). Kept because
+    /// it is unrecoverable from anything else: the covenant commits to <c>ripemd160(sha256(P))</c>,
+    /// which is one-way and is not even the invoice's own payment hash.
+    /// </summary>
+    public string? Invoice { get; set; }
+
+    /// <summary>The invoice's payment hash (hex) — the natural key a solver dedupes a negotiation on.</summary>
+    public string? PaymentHash { get; set; }
+
+    /// <summary>
+    /// Unix seconds at which the covenant refund path opens (<see cref="ArkadeSwapIntentType.BtcToLightning"/>
+    /// only). The monitor needs it to tell a spend that can only be a fill from one that might be a
+    /// refund.
+    /// </summary>
+    public long? RefundLocktime { get; set; }
+
     /// <summary>The ark tx that fulfilled the swap (spent the covenant VTXO); set once <see cref="ArkadeSwapIntentStatus.Fulfilled"/>.</summary>
     public string? SpentTxid { get; set; }
 }
