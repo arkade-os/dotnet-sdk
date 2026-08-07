@@ -150,8 +150,7 @@ public partial class RestClientTransport
 
             var expiry = GetInt64Flexible(bs.GetPropInvariantCase("batch_expiry"));
 
-            // BatchExpiryPolicy.Encode, not ParseSequence: it applies the same BIP-68 rule but
-            // rejects unencodable values with a typed error instead of ArgumentOutOfRangeException.
+            // Encode, not ParseSequence: same BIP-68 rule, typed error on unencodable values.
             return new BatchStartedEvent(
                 bs.GetProperty("id").GetString()!,
                 BatchExpiryPolicy.Encode(expiry),

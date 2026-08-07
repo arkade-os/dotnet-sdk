@@ -79,8 +79,7 @@ public partial class GrpcClientTransport
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.None:
                     break;
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.BatchStarted:
-                    // BatchExpiryPolicy.Encode, not ParseSequence: it applies the same BIP-68 rule but
-                    // rejects unencodable values with a typed error instead of ArgumentOutOfRangeException.
+                    // Encode, not ParseSequence: same BIP-68 rule, typed error on unencodable values.
                     yield return new BatchStartedEvent(e.BatchStarted.Id,
                         BatchExpiryPolicy.Encode(e.BatchStarted.BatchExpiry),
                         e.BatchStarted.IntentIdHashes, e.BatchStarted.BatchExpiry);

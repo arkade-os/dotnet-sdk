@@ -54,11 +54,10 @@ public class BatchSession(
     /// Initialize the batch session (call this before processing events)
     /// </summary>
     /// <remarks>
-    /// Bounds the operator-declared batch expiry before deriving the sweep tap tree from it. The
-    /// sweep leaf is the operator's only unilateral path out of the batch output, and the tree
-    /// validation performed later can only prove the tree is consistent with whatever expiry was
-    /// supplied — so this is the one place the value itself is checked. Callers must invoke this
-    /// before confirming registration, so a rejected batch is never confirmed.
+    /// Bounds the operator-declared batch expiry before deriving the sweep tap tree from it — the one
+    /// place that value is checked, since later tree validation only proves the tree matches whatever
+    /// expiry was supplied. Call this before confirming registration, so a rejected batch is never
+    /// confirmed.
     /// </remarks>
     /// <exception cref="InvalidBatchExpiryException">
     /// The operator declared a batch expiry outside the bounds of <see cref="BatchExpiryPolicy"/>.

@@ -13,7 +13,7 @@ public class BatchExpiryOptions
 {
     /// <summary>
     /// Shortest seconds-typed batch expiry this client will accept. Defaults to 24 hours, or
-    /// 512 seconds on regtest. Must be greater than zero when set.
+    /// 512 seconds on regtest.
     /// </summary>
     /// <remarks>
     /// BIP-68 encodes seconds in units of 512, so the floor is itself rounded down to a multiple of
@@ -24,8 +24,7 @@ public class BatchExpiryOptions
 
     /// <summary>
     /// Shortest block-typed batch expiry this client will accept, in blocks. Only consulted when
-    /// block-typed expiries are allowed at all. Defaults to 10 on regtest. Must be greater than
-    /// zero when set.
+    /// block-typed expiries are allowed at all. Defaults to 10 on regtest.
     /// </summary>
     public int? MinimumExpiryBlocks { get; set; }
 

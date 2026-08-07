@@ -1051,51 +1051,28 @@ services.AddArkNetwork(new ArkNetworkConfig(
 
 ## Batch Expiry Validation
 
-When an Arkade server opens a batch it declares a **batch expiry**, which becomes the timelock on the
-sweep leaf of the batch output — the operator's only unilateral path out of the shared output.
-Everything else in that output is an N-of-N aggregate that includes your key. Batch tree validation
-checks each output against a sweep root derived from the operator's own expiry, so it proves the tree
-is self-consistent and says nothing about whether the expiry is safe: an operator declaring a
-one-block expiry could sweep the batch output before anyone could unilaterally exit, and the tree
-would still validate.
-
-The SDK therefore bounds the declared expiry itself, **on by default**, before confirming
-registration or initialising any signing state. A rejected batch fails the intent with
-`InvalidBatchExpiryException` and is never confirmed.
+The batch expiry an Arkade server declares becomes the timelock on the sweep leaf — the operator's
+only unilateral path out of the batch output. Tree validation can't vouch for it, since the sweep root
+it checks against is derived from that same expiry. The SDK bounds it directly, **on by default**,
+before confirming registration; a rejected batch fails the intent with `InvalidBatchExpiryException`.
 
 | | Mainnet / testnet / signet | Regtest |
 | --- | --- | --- |
 | Block-typed expiry | rejected | allowed, minimum 10 blocks |
 | Seconds-typed expiry | minimum 24 hours | minimum 512 seconds |
 
-Block-typed expiries are regtest-only because that mirrors arkd, and because they bound the
-operator's sweep in blocks rather than wall-clock time.
-
-You only need to configure this if you talk to a server whose configuration the defaults reject:
+Configure only if a server's expiry is legitimately below these:
 
 ```csharp
-// Fluent builder
 builder.AddArk().ConfigureBatchExpiry(options =>
-{
-    options.MinimumExpiry = TimeSpan.FromHours(6);
-});
-
-// IServiceCollection
-services.Configure<BatchExpiryOptions>(options =>
 {
     options.MinimumExpiry = TimeSpan.FromHours(6);
 });
 ```
 
-The floors can be lowered but not disabled — a floor of zero or less throws rather than silently
-turning the check off. `AllowBlockTypedExpiry = true` opts a non-regtest network into block-typed
-expiries; only set it for a server you know is configured that way.
-
-BIP-68 encodes seconds in units of 512, so both the declared expiry and the floor are rounded down to
-a multiple of 512 before comparison — a 24-hour floor accepts `86016` (168 × 512). A declared value
-that is not a multiple of 512 is accepted with a warning naming the value actually committed to the
-leaf, since a server that rounds differently would otherwise surface as an opaque tree-validation
-failure.
+Floors can be lowered but not disabled — zero or less throws at startup. See
+[Batch Expiry Validation](docs/articles/batch-expiry.md) for the attack it prevents, the
+`AllowBlockTypedExpiry` escape hatch, and BIP-68 granularity.
 
 ## Swaps
 
