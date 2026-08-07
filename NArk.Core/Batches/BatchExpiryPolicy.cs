@@ -9,18 +9,10 @@ namespace NArk.Core.Batches;
 /// commits to it.
 /// </summary>
 /// <remarks>
-/// <para>
-/// The expiry becomes the timelock of the sweep leaf in the batch output's tap tree — the operator's
-/// only unilateral path out of the shared output. Everything else in that output is an N-of-N
-/// aggregate that includes this client's key. Tree validation checks each output against a sweep
-/// root the client derives from the operator's own expiry, so it proves the tree is self-consistent
-/// and says nothing about whether the expiry is safe. A one-block expiry would let the operator
-/// sweep the shared output before anyone could unilaterally exit, and the tree would still validate.
-/// </para>
-/// <para>
-/// This policy is therefore the only check on that value, and it runs before the client confirms
-/// registration or initialises any signing state.
-/// </para>
+/// The expiry becomes the timelock of the sweep leaf — the operator's only unilateral path out of the
+/// batch output. Tree validation cannot vouch for it, because the sweep root it checks against is
+/// derived from that same expiry, so this policy is the only check on the value. See the
+/// "Batch Expiry Validation" article for the attack it prevents.
 /// </remarks>
 public sealed record BatchExpiryPolicy
 {
@@ -75,9 +67,9 @@ public sealed record BatchExpiryPolicy
     /// <returns>The policy to enforce.</returns>
     /// <remarks>
     /// Regtest allows a block-typed expiry with a 10-block floor, mirroring arkd, whose block-typed
-    /// VTXO tree expiry is regtest-only. Every other network requires a seconds-typed expiry of at
-    /// least 24 hours. Note that a server advertising "mutinynet" resolves to
-    /// <see cref="Network.TestNet"/> and so gets the strict policy.
+    /// VTXO tree expiry is regtest-only; every other network requires a seconds-typed expiry of at
+    /// least 24 hours. A server advertising "mutinynet" resolves to <see cref="Network.TestNet"/>, so
+    /// it gets the strict policy.
     /// </remarks>
     public static BatchExpiryPolicy ForNetwork(Network network, BatchExpiryOptions? options = null)
     {

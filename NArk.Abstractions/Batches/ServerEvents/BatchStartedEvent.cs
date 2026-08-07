@@ -7,10 +7,9 @@ namespace NArk.Abstractions.Batches.ServerEvents;
 /// <param name="BatchExpiry">Sequence value encoding when the batch closes.</param>
 /// <param name="IntentIdHashes">SHA256 hashes of the included intent IDs (hex-encoded).</param>
 /// <param name="RawBatchExpiry">
-/// The expiry exactly as the Arkade server declared it, before BIP-68 encoding: a block count when
-/// below 512, otherwise a number of seconds. <paramref name="BatchExpiry"/> is lossy — seconds are
-/// floored to a multiple of 512 — so this value is what validation and diagnostics report.
-/// Transport implementations must supply the undecoded value.
+/// The expiry as the Arkade server declared it, before BIP-68 encoding: a block count when below 512,
+/// otherwise seconds. Transports must supply this — <paramref name="BatchExpiry"/> floors seconds to a
+/// multiple of 512, so only the raw value can be validated and reported faithfully.
 /// </param>
 public record BatchStartedEvent(
     string Id,
