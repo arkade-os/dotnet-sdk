@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
@@ -16,6 +17,7 @@ using NArk.Core.Enums;
 using NArk.Core.Events;
 using NArk.Core.Helpers;
 using NArk.Core.Models;
+using NArk.Core.Models.Options;
 using NArk.Core.Transport;
 using NArk.Core.Extensions;
 using NBitcoin.Crypto;
@@ -35,7 +37,8 @@ public class BatchManagementService(
     ICoinService coinService,
     ISafetyService safetyService,
     IEnumerable<IEventHandler<PostBatchSessionEvent>> eventHandlers,
-    ILogger<BatchManagementService>? logger = null)
+    ILogger<BatchManagementService>? logger = null,
+    IOptions<BatchExpiryOptions>? batchExpiryOptions = null)
     : IAsyncDisposable
 {
     private record Connection(
@@ -522,8 +525,11 @@ public class BatchManagementService(
                 intent,
                 spendableCoins.ToArray(),
                 batchEvent,
-                logger);
+                logger,
+                BatchExpiryPolicy.ForNetwork(serverInfo.Network, batchExpiryOptions?.Value));
 
+            // Bounds the operator-declared batch expiry. Deliberately before ConfirmRegistrationAsync
+            // below, so a batch we reject is never confirmed and no signing state is initialised.
             await session.InitializeAsync(cancellationToken);
 
             // Register session before confirming — events arrive on the single stream immediately

@@ -144,6 +144,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IIntentGenerationService>(s => s.GetRequiredService<IntentGenerationService>());
         services.AddSingleton<IntentSynchronizationService>();
         services.AddSingleton<BatchManagementService>();
+
+        services.AddBatchExpiryValidation();
         services.AddSingleton<IOnchainService, OnchainService>();
         services.AddSingleton<SweeperService>();
         services.AddSingleton<ContractReconciliationService>();
@@ -288,6 +290,26 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<DelegationMonitorService>();
         services.AddHostedService(sp => sp.GetRequiredService<DelegationMonitorService>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Rejects a <see cref="BatchExpiryOptions"/> override that would disable a batch expiry floor
+    /// rather than lower it. Registered with <c>ValidateOnStart</c> so the failure surfaces at startup:
+    /// a bad floor would otherwise only appear as every intent failing once a batch opened, which
+    /// reads as a server problem rather than a configuration one.
+    /// </summary>
+    internal static IServiceCollection AddBatchExpiryValidation(this IServiceCollection services)
+    {
+        services.AddOptions<BatchExpiryOptions>()
+            .Validate(o => o.MinimumExpiry is not { } minimum || minimum > TimeSpan.Zero,
+                $"{nameof(BatchExpiryOptions)}.{nameof(BatchExpiryOptions.MinimumExpiry)} must be greater than zero. " +
+                "The batch expiry floor can be lowered but not disabled.")
+            .Validate(o => o.MinimumExpiryBlocks is not { } blocks || blocks > 0,
+                $"{nameof(BatchExpiryOptions)}.{nameof(BatchExpiryOptions.MinimumExpiryBlocks)} must be greater than zero. " +
+                "The batch expiry floor can be lowered but not disabled.")
+            .ValidateOnStart();
 
         return services;
     }
