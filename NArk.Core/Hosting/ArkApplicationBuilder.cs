@@ -119,6 +119,18 @@ public static class AppExtensions
             return this;
         }
 
+        /// <summary>
+        /// Configures the bounds applied to the batch expiry an Arkade server declares when it opens a
+        /// batch. Validation is on by default with network-specific floors; use this only to adjust them
+        /// for a server whose configuration the defaults reject.
+        /// </summary>
+        /// <param name="configureOptions">Action to configure the expiry bounds.</param>
+        public ArkApplicationBuilder ConfigureBatchExpiry(Action<BatchExpiryOptions> configureOptions)
+        {
+            _hostBuilder.ConfigureServices(services => services.Configure(configureOptions));
+            return this;
+        }
+
         public ArkApplicationBuilder OnMainnet()
         {
             _hostBuilder.ConfigureServices(services => services.AddArkNetwork(ArkNetworkConfig.Mainnet));

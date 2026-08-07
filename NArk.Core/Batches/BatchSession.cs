@@ -35,7 +35,8 @@ public class BatchSession(
     ArkIntent arkIntent,
     ArkCoin[] ins,
     BatchStartedEvent batchStartedEvent,
-    ILogger? logger = null)
+    ILogger? logger = null,
+    BatchExpiryPolicy? batchExpiryPolicy = null)
 {
     private readonly OutputDescriptor _outputDescriptor = OutputDescriptor.Parse(arkIntent.SignerDescriptor, network);
     private readonly string _batchId = batchStartedEvent.Id;
@@ -52,11 +53,26 @@ public class BatchSession(
     /// <summary>
     /// Initialize the batch session (call this before processing events)
     /// </summary>
+    /// <remarks>
+    /// Bounds the operator-declared batch expiry before deriving the sweep tap tree from it. The
+    /// sweep leaf is the operator's only unilateral path out of the batch output, and the tree
+    /// validation performed later can only prove the tree is consistent with whatever expiry was
+    /// supplied — so this is the one place the value itself is checked. Callers must invoke this
+    /// before confirming registration, so a rejected batch is never confirmed.
+    /// </remarks>
+    /// <exception cref="InvalidBatchExpiryException">
+    /// The operator declared a batch expiry outside the bounds of <see cref="BatchExpiryPolicy"/>.
+    /// </exception>
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        // Bound the expiry first — a batch we reject is not worth a round-trip.
+        var policy = batchExpiryPolicy ?? BatchExpiryPolicy.ForNetwork(network);
+        var batchExpiry = policy.Validate(batchStartedEvent.RawBatchExpiry, logger);
+
         // Get operator terms to build a sweep tap tree
         var terms = await clientTransport.GetServerInfoAsync(cancellationToken);
-        var sweepTapScript = new UnilateralPathArkTapScript(batchStartedEvent.BatchExpiry, new NofNMultisigTapScript([terms.ForfeitPubKey])); ;
+
+        var sweepTapScript = new UnilateralPathArkTapScript(batchExpiry, new NofNMultisigTapScript([terms.ForfeitPubKey]));
         _sweepTapTreeRoot = sweepTapScript.Build().LeafHash;
 
         // An intent paying only onchain has no VTXO tree branch to co-sign, so the signing

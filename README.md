@@ -1049,6 +1049,54 @@ services.AddArkNetwork(new ArkNetworkConfig(
     BoltzUri: "http://my-boltz:9069/"));
 ```
 
+## Batch Expiry Validation
+
+When an Arkade server opens a batch it declares a **batch expiry**, which becomes the timelock on the
+sweep leaf of the batch output — the operator's only unilateral path out of the shared output.
+Everything else in that output is an N-of-N aggregate that includes your key. Batch tree validation
+checks each output against a sweep root derived from the operator's own expiry, so it proves the tree
+is self-consistent and says nothing about whether the expiry is safe: an operator declaring a
+one-block expiry could sweep the batch output before anyone could unilaterally exit, and the tree
+would still validate.
+
+The SDK therefore bounds the declared expiry itself, **on by default**, before confirming
+registration or initialising any signing state. A rejected batch fails the intent with
+`InvalidBatchExpiryException` and is never confirmed.
+
+| | Mainnet / testnet / signet | Regtest |
+| --- | --- | --- |
+| Block-typed expiry | rejected | allowed, minimum 10 blocks |
+| Seconds-typed expiry | minimum 24 hours | minimum 512 seconds |
+
+Block-typed expiries are regtest-only because that mirrors arkd, and because they bound the
+operator's sweep in blocks rather than wall-clock time.
+
+You only need to configure this if you talk to a server whose configuration the defaults reject:
+
+```csharp
+// Fluent builder
+builder.AddArk().ConfigureBatchExpiry(options =>
+{
+    options.MinimumExpiry = TimeSpan.FromHours(6);
+});
+
+// IServiceCollection
+services.Configure<BatchExpiryOptions>(options =>
+{
+    options.MinimumExpiry = TimeSpan.FromHours(6);
+});
+```
+
+The floors can be lowered but not disabled — a floor of zero or less throws rather than silently
+turning the check off. `AllowBlockTypedExpiry = true` opts a non-regtest network into block-typed
+expiries; only set it for a server you know is configured that way.
+
+BIP-68 encodes seconds in units of 512, so both the declared expiry and the floor are rounded down to
+a multiple of 512 before comparison — a 24-hour floor accepts `86016` (168 × 512). A declared value
+that is not a multiple of 512 is accepted with a warning naming the value actually committed to the
+leaf, since a server that rounds differently would otherwise surface as an opaque tree-validation
+failure.
+
 ## Swaps
 
 The swap framework is **multi-provider** — swap providers are pluggable via DI and the `SwapsManagementService` routes operations to the right provider based on the requested asset pair.
