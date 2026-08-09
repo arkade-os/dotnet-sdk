@@ -18,14 +18,23 @@ public static class LightningSendProfile
     /// </summary>
     /// <param name="invoice">The BOLT11 to be paid.</param>
     /// <param name="refundAddress">The client's own Arkade refund address.</param>
+    /// <param name="clientRefundPubkey">
+    /// The client's own x-only key (hex) for the covenant's client-side refund leaves. Keep the
+    /// matching private key: it is the only recourse that depends on nobody else.
+    /// </param>
     /// <param name="rfqId">The correlation id; a fresh one is generated when omitted.</param>
     /// <returns>The request payload, ready for a transport.</returns>
     public static RfqRequest<LightningSendRequestProfile> Request(
-        string invoice, string refundAddress, string? rfqId = null) => new()
+        string invoice, string refundAddress, string clientRefundPubkey, string? rfqId = null) => new()
     {
         RfqId = rfqId ?? RfqProtocol.NewRfqId(),
         Pair = Pair,
         AmountSide = RfqAmountSide.To,
-        Profile = new LightningSendRequestProfile { Invoice = invoice, RefundAddress = refundAddress },
+        Profile = new LightningSendRequestProfile
+        {
+            Invoice = invoice,
+            RefundAddress = refundAddress,
+            ClientRefundPubkey = clientRefundPubkey,
+        },
     };
 }

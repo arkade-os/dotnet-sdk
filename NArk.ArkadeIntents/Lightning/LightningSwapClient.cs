@@ -14,7 +14,10 @@ using NArk.ArkadeIntents.Rfq;
 using NArk.Core;
 using NArk.Core.Services;
 using NArk.Core.Transport;
+using NArk.Core.Contracts;
 using NBitcoin;
+using NBitcoin.Scripting;
+using NBitcoin.Secp256k1;
 
 namespace NArk.ArkadeIntents.Lightning;
 
@@ -142,11 +145,20 @@ public sealed class LightningSwapClient
         var refundPkScript = refundArkAddress.ScriptPubKey.ToBytes();
         var refundAddress = refundArkAddress.ToString(serverInfo.Network == Network.Main);
 
-        var request = LightningSendProfile.Request(invoice, refundAddress);
+        // The covenant's client-side leaves are keyed by this. Deliberately the same key that owns
+        // the refund destination above, so the party who can push the unilateral refund is exactly
+        // the party the cooperative refund pays — and so it needs no storage of its own to survive:
+        // it is on the wallet's own derivation chain, recoverable like any other address.
+        var clientRefund = ClientRefundDescriptorOf(receive);
+
+        var request = LightningSendProfile.Request(
+            invoice, refundAddress,
+            Convert.ToHexString(clientRefund.ToXOnlyPubKey().ToBytes()).ToLowerInvariant());
         var quote = await rfqTransport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(
             request, cancellationToken);
 
-        var contract = await DeriveLockupAsync(quote, decoded, refundPkScript, serverInfo, cancellationToken);
+        var contract = await DeriveLockupAsync(
+            quote, decoded, refundPkScript, clientRefund, serverInfo, cancellationToken);
         var lockupArkAddress = contract.GetArkAddress();
         var lockupAddress = lockupArkAddress.ToString(serverInfo.Network == Network.Main);
 
@@ -257,12 +269,15 @@ public sealed class LightningSwapClient
             var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept)
                 ?? throw new InvalidOperationException("no unspent VTXO at the swap address");
 
-            var coin = await new ArkProgramContractTransformer(_walletProvider)
-                .Transform(intent.WalletId, contract, vtxo, "refund");
+            // `refundWithoutReceiver`: our own key plus the server, once the locktime checked above
+            // has passed. Deliberately not the faster `nonInteractiveRefund` leaf — that one needs
+            // the solver's signature, so it is a path the two of us take by agreement, not one we
+            // can take alone. This is the exit that depends on no counterparty.
+            var coin = contract.ToRefundWithoutReceiverCoin(intent.WalletId, vtxo);
 
-            // The covenant pins the payout: output 0 must pay the script committed at funding time,
-            // for at least the input's value. So the destination is read back out of the contract —
-            // not chosen now — and the whole amount goes out, with no fee taken from it.
+            // This leaf carries no covenant, so nothing on-chain pins the payout — we choose it. It
+            // still goes to the address committed at funding time, read back off the contract rather
+            // than derived afresh, so a refund can never land somewhere the swap never named.
             var destination = RefundAddressOf(contract, serverInfo.SignerKey.ToXOnlyPubKey());
             var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)vtxo.Amount), destination);
 
@@ -285,7 +300,7 @@ public sealed class LightningSwapClient
     }
 
     /// <summary>Rebuild the funded contract from the one imported before the lockup was paid.</summary>
-    private async Task<ArkProgramContract> LoadContract(
+    private async Task<VHTLCv2Contract> LoadContract(
         ArkadeSwapIntent intent, Network network, CancellationToken cancellationToken)
     {
         var contracts = await _contractStorage.GetContracts(
@@ -295,31 +310,23 @@ public sealed class LightningSwapClient
                 $"the lockup contract for swap '{intent.Id}' is not in the contract store — " +
                 "without it the funded script cannot be rebuilt");
 
-        return ArkProgramContract.Parse(entity.AdditionalData, network);
+        return (VHTLCv2Contract)VHTLCv2Contract.Parse(entity.AdditionalData, network);
     }
 
     /// <summary>
-    /// Recover the covenant's pinned payout address from the contract's own args — the one place a
-    /// refund can ever pay, whoever pushes it.
+    /// The maker's own payout address, as committed when the swap was funded.
     /// </summary>
     /// <param name="contract">The rebuilt lockup contract.</param>
     /// <param name="serverKey">The Arkade server key the address is derived against.</param>
-    /// <returns>The address the covenant will accept as the refund's output.</returns>
+    /// <returns>Where a refund of this swap pays.</returns>
     /// <remarks>
-    /// The covenant commits to the x-only witness program alone; the <c>0x5120</c> P2TR prefix is
-    /// re-added here, mirroring how the introspection opcode reconstructs the output script.
+    /// Taken from the script the <c>nonInteractiveRefund</c> covenant pins its payout to. That leaf
+    /// is not the one we spend through, but it is where the destination was committed at funding
+    /// time, so reading it back is what keeps every refund path — ours and the solver's — paying the
+    /// same place.
     /// </remarks>
-    public static ArkAddress RefundAddressOf(ArkProgramContract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey)
-    {
-        if (!contract.Args.TryGetValue("refundKey", out var refundKey) || refundKey.Bytes is not { Length: 32 } program)
-        {
-            throw new InvalidOperationException(
-                "the lockup contract carries no 32-byte refundKey arg — it is not a Lightning swap covenant");
-        }
-
-        var pkScript = new Script(Op.GetPushOp(1), Op.GetPushOp(program));
-        return ArkAddress.FromScriptPubKey(pkScript, serverKey);
-    }
+    public static ArkAddress RefundAddressOf(VHTLCv2Contract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey) =>
+        ArkAddress.FromScriptPubKey(new Script(contract.NonInteractiveRefundPkScript), serverKey);
 
     /// <summary>
     /// Build the swap contract from the quote's binding fields and the maker's own data.
@@ -327,28 +334,57 @@ public sealed class LightningSwapClient
     /// <param name="quote">The solver's quote — only its binding fields are read.</param>
     /// <param name="invoice">The decoded invoice, the source of the payment hash.</param>
     /// <param name="refundPkScript">The maker's own P2TR scriptPubKey.</param>
+    /// <param name="clientRefund">The maker's own key for the covenant's client-side leaves.</param>
     /// <param name="serverInfo">The Arkade server's own terms.</param>
     /// <param name="cancellationToken">Cancels the emulator fetch.</param>
-    /// <returns>The compiled contract.</returns>
-    private async Task<ArkProgramContract> DeriveLockupAsync(
+    /// <returns>The derived contract.</returns>
+    /// <remarks>
+    /// The one value taken from the quote's non-binding half is
+    /// <see cref="LightningSendQuoteProfile.ReceiverPkScript"/>, and only because every leaf feeds
+    /// the merkle root: without the solver's own claim destination there is no way to reproduce the
+    /// address at all. It is safe to take because that leaf pays the solver — a wrong value costs
+    /// the solver a spending path and the maker nothing.
+    /// </remarks>
+    private async Task<VHTLCv2Contract> DeriveLockupAsync(
         RfqQuote<LightningSendQuoteProfile> quote,
         BOLT11PaymentRequest invoice,
         byte[] refundPkScript,
+        OutputDescriptor clientRefund,
         ArkServerInfo serverInfo,
         CancellationToken cancellationToken)
     {
         var emulatorInfo = await _emulator.GetInfoAsync(cancellationToken);
+        var delays = UnilateralDelaysFor(serverInfo);
 
-        var parameters = new CovenantSwapParams(
-            Receiver: Convert.FromHexString(quote.SolverPubkey),
-            PreimageHash: CovenantSwapProgram.PreimageHashFromPaymentHash(invoice.PaymentHash.ToBytes()),
-            RefundLocktime: checked((uint)quote.RefundLocktime),
-            ClaimDelay: ClaimDelayFor(serverInfo),
-            EmulatorPubkey: Convert.FromHexString(emulatorInfo.SignerPubkey),
-            RefundPkScript: refundPkScript);
+        var receiverPkScript = quote.Profile?.ReceiverPkScript
+            ?? throw new InvalidOperationException(
+                "the quote carries no receiver_pk_script, so the covenant's nonInteractiveClaim leaf " +
+                "cannot be reconstructed and the lockup address cannot be derived");
 
-        return CovenantSwapProgram.BuildContract(parameters, serverInfo.SignerKey);
+        return new VHTLCv2Contract(
+            serverInfo.SignerKey,
+            // Roles are positional: on this corridor the maker sends and the solver receives.
+            sender: clientRefund,
+            receiver: DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
+            new uint160(SwapScriptValues.PreimageHashFromPaymentHash(invoice.PaymentHash.ToBytes()), false),
+            new LockTime(checked((uint)quote.RefundLocktime)),
+            new Sequence(TimeSpan.FromSeconds(delays.Claim)),
+            new Sequence(TimeSpan.FromSeconds(delays.Refund)),
+            new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
+            NormalizeToXOnly(Convert.FromHexString(emulatorInfo.SignerPubkey)),
+            nonInteractiveClaimPkScript: Convert.FromHexString(receiverPkScript),
+            nonInteractiveRefundPkScript: refundPkScript);
     }
+
+    private static ECXOnlyPubKey NormalizeToXOnly(byte[] pubkey) =>
+        ECXOnlyPubKey.Create(pubkey.Length == 33 ? pubkey[1..] : pubkey);
+
+    /// <summary>
+    /// Wrap a counterparty's x-only key as a descriptor. The parity byte is arbitrary — every leaf
+    /// commits to the x-only form — so the even prefix is as good as any.
+    /// </summary>
+    private static OutputDescriptor DescriptorForXOnly(string xOnlyHex, Network network) =>
+        KeyExtensions.ParseOutputDescriptor("02" + xOnlyHex.ToLowerInvariant(), network);
 
     /// <summary>
     /// Derive the solver's unilateral-claim delay from the server's own minimum exit delay.
@@ -372,6 +408,39 @@ public sealed class LightningSwapClient
                 "encodes a time-based delay, and block-interval variance is far too wide to hold a " +
                 "Lightning HTLC deadline against");
         }
-        return CovenantSwapProgram.CeilToGranularity(checked((uint)exit.LockPeriod.TotalSeconds));
+        return SwapScriptValues.CeilToGranularity(checked((uint)exit.LockPeriod.TotalSeconds));
     }
+
+    /// <summary>
+    /// The three CSV delays the covenant's timelocked leaves use, all derived from the server's own
+    /// minimum exit delay.
+    /// </summary>
+    /// <param name="serverInfo">The server's advertised terms.</param>
+    /// <returns>The claim, refund and refund-without-receiver delays, in seconds.</returns>
+    /// <remarks>
+    /// These are deliberately absent from the RFQ wire. Both sides read the same public
+    /// <c>/v1/info</c> and apply the same rule, so they arrive at identical numbers without the
+    /// solver being able to influence them — a delay it could dictate would be a delay it could
+    /// stretch. Each rung sits one BIP68 unit above the last, which is what keeps the ladder
+    /// ordered: the receiver's claim opens first, then the two-party refund, then the recourse that
+    /// needs nobody.
+    /// </remarks>
+    private static (uint Claim, uint Refund, uint RefundWithoutReceiver) UnilateralDelaysFor(
+        ArkServerInfo serverInfo)
+    {
+        var claim = ClaimDelayFor(serverInfo);
+        return (claim,
+            claim + SwapScriptValues.SequenceGranularitySeconds,
+            claim + 2 * SwapScriptValues.SequenceGranularitySeconds);
+    }
+
+    /// <summary>
+    /// The wallet-owned descriptor behind a derived receive contract — the key the covenant's
+    /// client-side refund leaves are built around, and the one that signs them.
+    /// </summary>
+    private static OutputDescriptor ClientRefundDescriptorOf(ArkContract receive) =>
+        receive is ArkPaymentContract payment
+            ? payment.User
+            : throw new InvalidOperationException(
+                $"expected a payment contract to take the client refund key from, got {receive.GetType().Name}");
 }

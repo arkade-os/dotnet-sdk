@@ -14,4 +14,17 @@ public sealed class LightningSendQuoteProfile
     /// own derivation and refuse to fund on any mismatch.
     /// </summary>
     public string? LockupAddress { get; init; }
+
+    /// <summary>
+    /// The solver's own claim destination as a P2TR scriptPubKey (hex), which the covenant's
+    /// <c>nonInteractiveClaim</c> leaf pins its payout to.
+    /// </summary>
+    /// <remarks>
+    /// Compare-only, but unlike <see cref="LockupAddress"/> it is also an <em>input</em>: every leaf
+    /// contributes to the merkle root, so the local reconstruction needs this exact value to arrive
+    /// at a matching address. It carries none of <see cref="LockupAddress"/>'s trust weight though —
+    /// a wrong value only makes that one leaf unusable for the solver, and it pays the solver, never
+    /// away from anything the client controls.
+    /// </remarks>
+    public string? ReceiverPkScript { get; init; }
 }
