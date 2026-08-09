@@ -21,12 +21,13 @@ namespace NArk.Tests.ArkadeIntents.Lightning;
 public class HttpRfqTransportTests
 {
     private const string RfqId = "9f2c00000000000000000000000000000000000000000000000000000000a1b2";
+    private const string ClientRefundPubkey = "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394";
     private static readonly Uri Solver = new("http://solver.test:8787");
 
     [Test]
     public void SendRequest_SerializesExactlyTheStrictShape()
     {
-        var request = LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId);
+        var request = LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId);
 
         var json = JsonNode.Parse(JsonSerializer.Serialize(request, RfqProtocol.Json))!.AsObject();
 
@@ -41,9 +42,12 @@ public class HttpRfqTransportTests
             // Omitted, not null: sending an amount that disagrees with the invoice is a refusal,
             // and a null would be an unknown-shaped field to a strict parser.
             Assert.That(json.ContainsKey("amount"), Is.False);
-            Assert.That(json["profile"]!.AsObject().Count, Is.EqualTo(2));
+            Assert.That(json["profile"]!.AsObject().Count, Is.EqualTo(3));
             Assert.That(json["profile"]!["invoice"]!.GetValue<string>(), Is.EqualTo("lnbcrt1..."));
             Assert.That(json["profile"]!["refund_address"]!.GetValue<string>(), Is.EqualTo("ark1qexample"));
+            // Required since the covenant grew its client-side refund leaves; a request without it
+            // is refused outright rather than quoted on the older key-less script.
+            Assert.That(json["profile"]!["client_refund_pubkey"]!.GetValue<string>(), Is.EqualTo(ClientRefundPubkey));
             Assert.That(json.Count, Is.EqualTo(6), "an extra top-level field is unsupported_payload");
         });
     }
@@ -63,7 +67,7 @@ public class HttpRfqTransportTests
     {
         var transport = TransportReturning(HttpStatusCode.Created, Quote());
 
-        var quote = await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId));
+        var quote = await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId));
 
         Assert.Multiple(() =>
         {
@@ -86,7 +90,7 @@ public class HttpRfqTransportTests
         quote["profile"]!["another_one"] = 42;
         var transport = TransportReturning(HttpStatusCode.Created, quote);
 
-        var parsed = await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId));
+        var parsed = await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId));
 
         Assert.That(parsed.SolverPubkey, Is.Not.Null);
     }
@@ -102,7 +106,7 @@ public class HttpRfqTransportTests
         });
 
         var ex = Assert.ThrowsAsync<RfqRefusedException>(() =>
-            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId)));
 
         Assert.That(ex!.Reason, Is.EqualTo(RfqRefusalReason.ExposureCap));
         Assert.That(ex.RfqId, Is.EqualTo(RfqId));
@@ -118,7 +122,7 @@ public class HttpRfqTransportTests
         });
 
         var ex = Assert.ThrowsAsync<RfqRefusedException>(() =>
-            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId)));
 
         Assert.That(ex!.Reason, Is.EqualTo(RfqRefusalReason.Unknown));
     }
@@ -132,7 +136,7 @@ public class HttpRfqTransportTests
         var transport = TransportReturning(HttpStatusCode.Created, quote);
 
         var ex = Assert.ThrowsAsync<InvalidOperationException>(() =>
-            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId)));
 
         Assert.That(ex!.Message, Does.Contain(RfqId));
     }
@@ -143,7 +147,7 @@ public class HttpRfqTransportTests
         var transport = TransportReturning(HttpStatusCode.OK, new JsonObject { ["v"] = 1, ["type"] = "not_found" });
 
         Assert.ThrowsAsync<InvalidOperationException>(() =>
-            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId)));
+            transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId)));
     }
 
     [Test]
@@ -197,7 +201,7 @@ public class HttpRfqTransportTests
         var handler = new StubHandler(HttpStatusCode.Created, Quote());
         var transport = new HttpRfqTransport(new HttpClient(handler), new Uri("http://gateway.test/solver"));
 
-        await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", RfqId));
+        await transport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(LightningSendProfile.Request("lnbcrt1...", "ark1qexample", ClientRefundPubkey, RfqId));
 
         Assert.That(handler.LastRequestUri!.AbsolutePath, Is.EqualTo("/solver/v1/swap"));
     }
