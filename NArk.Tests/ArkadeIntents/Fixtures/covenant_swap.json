@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden vectors for the Lightning send leg's covenant swap script, generated from the solver side's own derivation of the same script. The maker funds the address derived here; a single byte of drift produces an address the solver cannot claim, with the deposit stuck until refundLocktime. Treat these as a safety gate, not a regression baseline: if they disagree with our output, ours is what is wrong.",
+  "_comment": "Golden vectors for the Lightning send leg's covenant swap script, generated from the published ts-sdk's own derivation of the same script. The maker funds the address derived here; a single byte of drift produces an address the solver cannot claim, with the deposit stuck until refundLocktime. Treat these as a safety gate, not a regression baseline: if they disagree with our output, ours is what is wrong.",
   "inputs": {
     "receiver": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
     "server": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
