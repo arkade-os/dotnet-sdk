@@ -248,6 +248,47 @@ public class VHTLCv2Contract : ArkContract
             Convert.FromHexString(contractData["niRefundPkScript"]));
 
     /// <summary>
+    /// The receiver's payout: the <c>claim</c> leaf, opened by revealing the preimage.
+    /// </summary>
+    /// <param name="walletIdentifier">The wallet holding the receiver's key.</param>
+    /// <param name="vtxo">The unspent lockup output.</param>
+    /// <param name="preimage">The 32-byte secret whose hash this contract commits to.</param>
+    /// <returns>A coin spendable through the claim leaf.</returns>
+    /// <exception cref="ArgumentException">The preimage is the wrong length, or hashes to something else.</exception>
+    /// <remarks>
+    /// Spending this publishes the preimage in the witness, which is what settles the other side of
+    /// the swap — so claiming is not merely taking delivery, it is also how the counterparty gets
+    /// paid. The preimage is checked against <see cref="Hash"/> before a coin is built: a spend
+    /// carrying the wrong one fails in the mempool, having already broadcast the attempt.
+    /// </remarks>
+    public ArkCoin ToClaimCoin(string walletIdentifier, ArkVtxo vtxo, byte[] preimage)
+    {
+        if (vtxo.IsSpent())
+        {
+            throw new InvalidOperationException("the lockup VTXO is already spent");
+        }
+        if (preimage.Length != PreimageSize)
+        {
+            throw new ArgumentException(
+                $"preimage must be {PreimageSize} bytes, got {preimage.Length}", nameof(preimage));
+        }
+
+        var digest = NBitcoin.Crypto.Hashes.RIPEMD160(
+            NBitcoin.Crypto.Hashes.SHA256(preimage), 32);
+        if (!digest.SequenceEqual(Hash.ToBytes(false)))
+        {
+            throw new ArgumentException(
+                "this preimage does not hash to the contract's committed digest", nameof(preimage));
+        }
+
+        return new ArkCoin(
+            walletIdentifier, this, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight,
+            vtxo.OutPoint, vtxo.TxOut, Receiver,
+            CreateClaimScript(), new WitScript(Op.GetPushOp(preimage)), null, null,
+            vtxo.Swept, vtxo.Unrolled, assets: vtxo.Assets);
+    }
+
+    /// <summary>
     /// The sender's own timelocked way out: <c>refundWithoutReceiver</c>, co-signed by the Arkade
     /// server once <see cref="RefundLocktime"/> has passed.
     /// </summary>
