@@ -1087,6 +1087,67 @@ services.AddSingleton<ISwapProvider, MySwapProvider>();
 
 The `SwapsManagementService` will automatically discover it and route matching requests to it.
 
+## Lightning Corridors (`NArk.ArkadeIntents`)
+
+A second route between Arkade and Lightning, alongside the Boltz integration above. Terms are
+negotiated over **RFQ** with any solver serving the pair, and settle into a covenant swap contract
+that neither side has to stay online for. Full details in
+[docs/articles/lightning-corridors.md](docs/articles/lightning-corridors.md).
+
+There is no accept message: **funding your own derivation is acceptance.** You derive the swap
+contract locally, compare it against the solver's `lockup_address`, and fund only on a match — which
+is what makes a wrong or hostile solver able to produce only an address you decline, never one that
+traps your funds.
+
+### Sending — pay a BOLT11 from an Arkade balance
+
+```csharp
+var client = new LightningSwapClient(
+    transport, emulator, contractService, spendingService,
+    intentStorage, contractStorage, vtxoStorage, walletProvider);
+
+var funded = await client.SendToLightningAsync(
+    walletId: "my-wallet",
+    invoice: "lnbcrt500000n1p...",
+    rfqTransport: new HttpRfqTransport(httpClient, new Uri("http://localhost:3000")));
+
+// Refund once the locktime passes, if it never filled:
+await client.RefundSwap(funded.RfqId);
+```
+
+### Receiving — be paid over Lightning, take delivery on Arkade
+
+```csharp
+var client = new LightningReceiveClient(transport, emulator, contractService);
+
+var pending = await client.ReceiveFromLightningAsync(
+    walletId: "my-wallet",
+    amountSats: 50_000,
+    rfqTransport: rfqTransport,
+    covclaimdPubKey: covclaimdPubKey);   // read live from covclaimd, never hardcoded
+
+Console.WriteLine($"have the payer settle: {pending.Invoice}");
+// keep pending.Preimage — nobody else holds it in the clear
+```
+
+On this corridor **you** choose the secret and send only its hash, plus a copy sealed to covclaimd
+the solver cannot open. The solver funds the Arkade side before the payment it is owed has settled,
+so a solver able to open that packet could settle the invoice without ever delivering.
+
+> **The receive corridor has no counterparty yet.** The reference solver implements it but does not
+> route it on any transport, so `LightningReceiveClient` is ready-but-unreachable until that lands.
+
+Both corridors build the same eight-leaf `VHTLCv2Contract`. Because the contract is an agreement
+about bytes with no wire versioning, the derivation is pinned to golden vectors generated from the
+counterparty's own implementation — regenerate them whenever the solver moves to a newer
+ts-sdk pin:
+
+```bash
+node NArk.Tests/ArkadeIntents/Fixtures/generate-covenant-vectors.mjs \
+  <node-project-with-arkade-sdk> > NArk.Tests/ArkadeIntents/Fixtures/covenant_swap.json
+dotnet test NArk.Tests --filter VHTLCv2ContractTests
+```
+
 ## ArkadeScript & Emulator (`NArk.Arkade`)
 
 The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/arkade-os/emulator) — a Bitcoin-Script superset (40+ extension opcodes for transaction introspection, asset queries, EC operations, streaming SHA-256, …) that the [emulator](https://github.com/arkade-os/emulator) co-signs only when the script attached to an input passes validation.

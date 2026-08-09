@@ -10,6 +10,8 @@
   href: assets.md
 - name: Swaps
   href: swaps.md
+- name: Lightning Corridors
+  href: lightning-corridors.md
 - name: ArkadeScript & Emulator
   href: arkade-script.md
 - name: Storage
