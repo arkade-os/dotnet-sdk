@@ -13,9 +13,9 @@ Two corridors:
 | `lightning:BTC->arkade:BTC` | the solver | you, with a preimage you chose |
 
 > [!IMPORTANT]
-> The receive corridor is implemented here but has **no counterparty yet**: the reference solver
-> serves it internally and does not route it on any transport. Treat `LightningReceiveClient` as
-> ready-but-unreachable until that lands.
+> The receive corridor is complete here but has **no counterparty yet**: the reference solver serves
+> it internally and does not route it on any transport, so nothing can negotiate against it until
+> that lands.
 
 ## The shape of it
 
@@ -58,7 +58,9 @@ await client.RefundSwap(funded.RfqId);
 ## Receiving: be paid over Lightning, take delivery on Arkade
 
 ```csharp
-var client = new LightningReceiveClient(transport, emulator, contractService);
+var client = new LightningReceiveClient(
+    transport, emulator, contractService, spendingService,
+    intentStorage, contractStorage, vtxoStorage);
 
 var pending = await client.ReceiveFromLightningAsync(
     walletId: "my-wallet",
@@ -67,7 +69,9 @@ var pending = await client.ReceiveFromLightningAsync(
     covclaimdPubKey: covclaimdPubKey);   // read live from covclaimd, never hardcoded
 
 Console.WriteLine($"have the payer settle: {pending.Invoice}");
-// keep pending.Preimage — nobody else holds it in the clear
+
+// Once the solver funds the lockup — the monitor moves the intent to Claimable:
+await client.ClaimAsync(pending.RfqId);
 ```
 
 Here **you** choose the secret and send only its hash, plus a copy sealed to covclaimd that the
@@ -78,6 +82,15 @@ solver able to open the packet could settle the invoice without ever delivering.
 The invoice it mints is checked, not trusted — `LightningReceiveGates.VerifyInvoice` refuses one for
 a different payment hash (your preimage could never settle it) or a different amount than the quote
 delivers.
+
+Claiming is not optional tidy-up. The preimage becomes public in the claim witness, and that is what
+lets the held invoice settle — so an unclaimed swap is one where the solver reclaims its lockup and
+the payer's money was never earned. `ClaimAsync` refuses once `refund_locktime` has passed rather
+than race that reclaim for the same output.
+
+The preimage is persisted on the intent before the invoice is handed out, because there is no
+recovering it afterwards: you chose it, and the only other copy is sealed to a key you do not hold.
+The covclaimd packet is a fallback claimer, not a backup you can read.
 
 ## The covenant contract
 

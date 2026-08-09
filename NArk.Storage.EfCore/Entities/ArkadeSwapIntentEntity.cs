@@ -48,6 +48,12 @@ public class ArkadeSwapIntentEntity
     /// <summary>Unix seconds at which a Lightning swap's covenant refund path opens.</summary>
     public long? RefundLocktime { get; set; }
 
+    /// <summary>
+    /// The preimage a receive swap settles on, hex — chosen locally and unrecoverable from anywhere
+    /// else, so it lives here or the claim cannot be made.
+    /// </summary>
+    public string? Preimage { get; set; }
+
     /// <summary>The ark tx that fulfilled the swap; set once fulfilled.</summary>
     public string? SpentTxid { get; set; }
 

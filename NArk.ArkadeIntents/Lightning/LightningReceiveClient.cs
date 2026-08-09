@@ -1,7 +1,10 @@
 using BTCPayServer.Lightning;
+using NArk.Abstractions;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.VTXOs;
+using NArk.ArkadeIntents.Models;
 using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
@@ -57,9 +60,9 @@ public sealed record PendingLightningReceive(
 /// solver's <c>lockup_address</c> or its invoice beyond checking both against what was asked for.
 /// </para>
 /// <para>
-/// <b>Not yet reachable end to end.</b> The reference solver implements this corridor but does not
-/// route it on any transport — its RFQ ingress dispatches only the two send pairs — so this class
-/// has no counterparty to negotiate with until that lands.
+/// <b>No counterparty yet.</b> The reference solver implements this corridor but does not route it
+/// on any transport — its RFQ ingress dispatches only the two send pairs — so nothing here can
+/// negotiate against it until that lands.
 /// </para>
 /// </remarks>
 public sealed class LightningReceiveClient
@@ -67,22 +70,42 @@ public sealed class LightningReceiveClient
     private readonly IClientTransport _transport;
     private readonly IEmulatorProvider _emulator;
     private readonly IContractService _contractService;
+    private readonly ISpendingService _spendingService;
+    private readonly IArkadeIntentStorage _intentStorage;
+    private readonly IContractStorage _contractStorage;
+    private readonly IVtxoStorage _vtxoStorage;
+    private readonly TimeProvider _time;
     private readonly ILogger<LightningReceiveClient>? _logger;
 
     /// <summary>Creates the client.</summary>
     /// <param name="transport">The Arkade connection — the source of the server key and its exit delay.</param>
     /// <param name="emulator">The covenant co-signer, fetched from the client's own endpoint.</param>
-    /// <param name="contractService">Derives the client's own payout address.</param>
+    /// <param name="contractService">Derives the client's own payout address and imports the lockup.</param>
+    /// <param name="spendingService">Spends the claim.</param>
+    /// <param name="intentStorage">Records the swap — including the preimage, which lives nowhere else.</param>
+    /// <param name="contractStorage">Source of the imported lockup contract, for the claim path.</param>
+    /// <param name="vtxoStorage">Source of the lockup VTXO the solver funded.</param>
+    /// <param name="time">Clock for the claim's deadline check; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
     public LightningReceiveClient(
         IClientTransport transport,
         IEmulatorProvider emulator,
         IContractService contractService,
+        ISpendingService spendingService,
+        IArkadeIntentStorage intentStorage,
+        IContractStorage contractStorage,
+        IVtxoStorage vtxoStorage,
+        TimeProvider? time = null,
         ILogger<LightningReceiveClient>? logger = null)
     {
         _transport = transport;
         _emulator = emulator;
         _contractService = contractService;
+        _spendingService = spendingService;
+        _intentStorage = intentStorage;
+        _contractStorage = contractStorage;
+        _vtxoStorage = vtxoStorage;
+        _time = time ?? TimeProvider.System;
         _logger = logger;
     }
 
@@ -146,6 +169,39 @@ public sealed class LightningReceiveClient
             throw new LockupAddressMismatchException(lockupAddress, quoted);
         }
 
+        // Imported and recorded BEFORE the invoice is handed out. Once a payer has it the solver
+        // can fund at any moment, and from that point the swap is only claimable by whoever holds
+        // the preimage — so the row carrying it has to exist first. There is no recovering it
+        // afterwards: we chose it, and the only other copy is sealed to a key we do not hold.
+        await _contractService.ImportContract(
+            walletId,
+            contract,
+            ContractActivityState.AwaitingFundsBeforeDeactivate,
+            metadata: new Dictionary<string, string> { ["Source"] = $"lightning-receive:{request.RfqId}" },
+            cancellationToken: cancellationToken);
+
+        await _intentStorage.SaveArkadeSwapIntent(new ArkadeSwapIntent
+        {
+            Id = request.RfqId,
+            WalletId = walletId,
+            Type = ArkadeSwapIntentType.LightningToBtc,
+            OfferAmount = Money.Satoshis(quote.FromAmount),
+            WantAmount = Money.Satoshis(quote.ToAmount),
+            Status = ArkadeSwapIntentStatus.Pending,
+            CreatedAt = _time.GetUtcNow(),
+            SwapPkScript = contract.GetScriptPubKey().ToHex(),
+            SwapAddress = lockupAddress,
+            // No offer TLV: negotiated by RFQ, and the covenant is rebuilt from the imported
+            // contract rather than from a wire offer.
+            OfferHex = "",
+            FromAssetId = "lightning:btc",
+            ToAssetId = "btc",
+            Invoice = invoice.ToString(),
+            PaymentHash = sealed_.PaymentHash,
+            Preimage = Convert.ToHexString(sealed_.Preimage).ToLowerInvariant(),
+            RefundLocktime = quote.RefundLocktime,
+        }, cancellationToken);
+
         _logger?.LogInformation(
             "Receive swap {RfqId} negotiated: {Amount} sats to {Payout}, lockup {Lockup}",
             request.RfqId, amountSats, payoutAddress, lockupAddress);
@@ -153,6 +209,87 @@ public sealed class LightningReceiveClient
         return new PendingLightningReceive(
             request.RfqId, quote, invoice.ToString(), sealed_.Preimage, sealed_.PaymentHash,
             contract, lockupAddress, payoutAddress);
+    }
+
+    /// <summary>
+    /// Take delivery: spend the lockup the solver funded, revealing the preimage.
+    /// </summary>
+    /// <param name="swapId">The negotiation's correlation id.</param>
+    /// <param name="cancellationToken">Cancels before the spend; after it the claim is live regardless.</param>
+    /// <returns>The updated intent.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// No such swap, the wrong direction, nothing funded yet, or the solver's reclaim window has
+    /// already opened.
+    /// </exception>
+    /// <remarks>
+    /// This both takes delivery and pays the solver: the preimage becomes public in the witness, and
+    /// that is what lets the held invoice settle. So it is not an optional tidy-up — a swap left
+    /// unclaimed past <c>refund_locktime</c> is one where the solver reclaims its lockup and the
+    /// payer's money was never earned.
+    /// </remarks>
+    public async Task<ArkadeSwapIntent> ClaimAsync(
+        string swapId, CancellationToken cancellationToken = default)
+    {
+        var intent = (await _intentStorage.GetArkadeSwapIntents(cancellationToken: cancellationToken))
+                         .FirstOrDefault(s => s.Id == swapId)
+                     ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
+
+        if (intent.Type != ArkadeSwapIntentType.LightningToBtc)
+            throw new InvalidOperationException($"Swap '{swapId}' is not a Lightning receive ({intent.Type}).");
+        if (intent.Preimage is not { Length: > 0 } preimageHex)
+            throw new InvalidOperationException($"Swap '{swapId}' has no preimage recorded — it cannot be claimed.");
+        if (intent.RefundLocktime is not { } locktime)
+            throw new InvalidOperationException($"Swap '{swapId}' has no refund locktime recorded.");
+
+        // Past this the solver's own reclaim path is open, so a claim would be racing it for the
+        // same output. Better to refuse than to broadcast a spend that may already be stale.
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
+        if (now >= locktime)
+        {
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' passed its claim window {now - locktime}s ago; the solver's reclaim path is open.");
+        }
+
+        var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
+        var contract = await LoadContract(intent, serverInfo.Network, cancellationToken);
+
+        var vtxos = await _vtxoStorage.GetVtxos(
+            scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
+        var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept)
+            ?? throw new InvalidOperationException(
+                $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet.");
+
+        var coin = contract.ToClaimCoin(intent.WalletId, vtxo, Convert.FromHexString(preimageHex));
+
+        // Where the claim pays was fixed at negotiation time, in the leaf that pins our payout.
+        // Reading it back rather than deriving afresh keeps a claim from ever landing somewhere the
+        // swap did not name.
+        var destination = ArkAddress.FromScriptPubKey(
+            new Script(contract.NonInteractiveClaimPkScript), serverInfo.SignerKey.ToXOnlyPubKey());
+        var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)vtxo.Amount), destination);
+
+        var txid = await _spendingService.Spend(intent.WalletId, [coin], [output], cancellationToken);
+
+        intent.Status = ArkadeSwapIntentStatus.Fulfilled;
+        intent.SpentTxid = txid.ToString();
+        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+        _logger?.LogInformation("Claimed Lightning receive swap {SwapId} in {Txid}", swapId, txid);
+        return intent;
+    }
+
+    /// <summary>Rebuild the funded contract from the one imported before the invoice went out.</summary>
+    private async Task<VHTLCv2Contract> LoadContract(
+        ArkadeSwapIntent intent, Network network, CancellationToken cancellationToken)
+    {
+        var contracts = await _contractStorage.GetContracts(
+            scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
+        var entity = contracts.FirstOrDefault()
+            ?? throw new InvalidOperationException(
+                $"the lockup contract for swap '{intent.Id}' is not in the contract store — " +
+                "without it the funded script cannot be rebuilt");
+
+        return (VHTLCv2Contract)VHTLCv2Contract.Parse(entity.AdditionalData, network);
     }
 
     /// <summary>

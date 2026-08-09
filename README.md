@@ -1118,7 +1118,9 @@ await client.RefundSwap(funded.RfqId);
 ### Receiving — be paid over Lightning, take delivery on Arkade
 
 ```csharp
-var client = new LightningReceiveClient(transport, emulator, contractService);
+var client = new LightningReceiveClient(
+    transport, emulator, contractService, spendingService,
+    intentStorage, contractStorage, vtxoStorage);
 
 var pending = await client.ReceiveFromLightningAsync(
     walletId: "my-wallet",
@@ -1127,15 +1129,21 @@ var pending = await client.ReceiveFromLightningAsync(
     covclaimdPubKey: covclaimdPubKey);   // read live from covclaimd, never hardcoded
 
 Console.WriteLine($"have the payer settle: {pending.Invoice}");
-// keep pending.Preimage — nobody else holds it in the clear
+
+// Once the solver funds the lockup — the monitor moves the intent to Claimable:
+await client.ClaimAsync(pending.RfqId);
 ```
 
 On this corridor **you** choose the secret and send only its hash, plus a copy sealed to covclaimd
 the solver cannot open. The solver funds the Arkade side before the payment it is owed has settled,
 so a solver able to open that packet could settle the invoice without ever delivering.
 
+Claiming publishes the preimage, which is also how the solver gets paid — an unclaimed swap is one
+where it reclaims its lockup and the payer's money was never earned. The preimage is persisted
+before the invoice goes out, since nothing can re-derive it afterwards.
+
 > **The receive corridor has no counterparty yet.** The reference solver implements it but does not
-> route it on any transport, so `LightningReceiveClient` is ready-but-unreachable until that lands.
+> route it on any transport, so nothing can negotiate against it until that lands.
 
 Both corridors build the same eight-leaf `VHTLCv2Contract`. Because the contract is an agreement
 about bytes with no wire versioning, the derivation is pinned to golden vectors generated from the

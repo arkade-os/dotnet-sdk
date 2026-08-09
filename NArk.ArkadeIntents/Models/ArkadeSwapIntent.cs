@@ -62,6 +62,17 @@ public class ArkadeSwapIntent
     /// </summary>
     public long? RefundLocktime { get; set; }
 
+    /// <summary>
+    /// The preimage this swap settles on, hex (<see cref="ArkadeSwapIntentType.LightningToBtc"/>
+    /// only) — the one piece of state that cannot be re-derived from anything else.
+    /// </summary>
+    /// <remarks>
+    /// We chose it, so nobody else holds it in the clear; the sealed copy travelling to covclaimd is
+    /// a fallback claimer, not a backup we can read. Losing this row before the claim lands means
+    /// waiting out the solver's reclaim and getting nothing.
+    /// </remarks>
+    public string? Preimage { get; set; }
+
     /// <summary>The ark tx that fulfilled the swap (spent the covenant VTXO); set once <see cref="ArkadeSwapIntentStatus.Fulfilled"/>.</summary>
     public string? SpentTxid { get; set; }
 }

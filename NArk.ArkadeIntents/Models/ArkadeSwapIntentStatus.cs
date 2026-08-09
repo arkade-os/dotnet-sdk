@@ -9,6 +9,17 @@ public enum ArkadeSwapIntentStatus
     /// <summary>Deposit funded; waiting for the solver to fill (or for expiry).</summary>
     Pending,
 
+    /// <summary>
+    /// The counterparty funded the covenant and it is ours to spend
+    /// (<see cref="ArkadeSwapIntentType.LightningToBtc"/> only).
+    /// </summary>
+    /// <remarks>
+    /// The receive direction inverts who waits on whom: the solver pays out first, so an unspent
+    /// lockup is not a swap still waiting on someone else — it is money sitting in a script only our
+    /// claim can move, on a clock, before the solver's own reclaim path opens.
+    /// </remarks>
+    Claimable,
+
     /// <summary>The cancel path is being spent; set before spending so the monitor can't read the cancel as a fill.</summary>
     Cancelling,
 

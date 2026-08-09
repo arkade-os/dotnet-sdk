@@ -16,4 +16,12 @@ public enum ArkadeSwapIntentType
     /// VTXO the maker funded and a solver fills without a round trip.
     /// </summary>
     BtcToLightning,
+
+    /// <summary>
+    /// Be paid over Lightning and take delivery on Arkade. The mirror of
+    /// <see cref="BtcToLightning"/>, with the exposure mirrored too: here the solver funds the
+    /// covenant first and is only paid once our claim publishes the preimage, which is why we — not
+    /// the solver — choose that secret.
+    /// </summary>
+    LightningToBtc,
 }
