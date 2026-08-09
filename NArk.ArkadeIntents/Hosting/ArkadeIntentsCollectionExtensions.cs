@@ -20,6 +20,7 @@ public static class ArkadeIntentsCollectionExtensions
         services.AddHttpClient<SolverDiscoveryService>();
         services.AddSingleton<ArkadeIntentManager>();
         services.AddSingleton<LightningSwapClient>();
+        services.AddSingleton<LightningReceiveClient>();
         services.AddHostedService<ArkadeSwapIntentMonitoringService>();
         return services;
     }

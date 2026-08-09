@@ -86,6 +86,35 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
         return null;
     }
 
+    /// <summary>
+    /// Map a Lightning <em>receive</em> swap's lockup VTXO to its status.
+    /// </summary>
+    /// <param name="vtxo">The lockup VTXO the solver funded.</param>
+    /// <param name="refundLocktime">Unix seconds at which the solver's own reclaim path opens.</param>
+    /// <param name="now">Current time, unix seconds.</param>
+    /// <returns>The status to move to, or <c>null</c> while nothing has changed.</returns>
+    /// <remarks>
+    /// The roles invert here, and so does what an unspent lockup means. On the send leg it is a swap
+    /// still waiting on the solver; here the solver has already paid out, and the covenant holds
+    /// money only our preimage can move — so an unspent lockup is a call to act, on a clock that
+    /// ends when the solver's reclaim opens. A spend before that deadline can only be our own claim;
+    /// at or after it, either party could have moved, so the outcome is reported rather than guessed.
+    /// </remarks>
+    public static ArkadeSwapIntentStatus? ResolveLightningReceiveStatus(
+        ArkVtxo vtxo, long refundLocktime, long now)
+    {
+        if (vtxo.IsSpent())
+        {
+            return now < refundLocktime
+                ? ArkadeSwapIntentStatus.Fulfilled
+                : ArkadeSwapIntentStatus.Resolved;
+        }
+        if (vtxo.Swept) return ArkadeSwapIntentStatus.Recoverable;
+        // Past the deadline an unclaimed lockup is the solver's to take back; there is nothing for
+        // us to report until it actually moves.
+        return now < refundLocktime ? ArkadeSwapIntentStatus.Claimable : null;
+    }
+
     private async void OnVtxoChanged(object? sender, ArkVtxo vtxo)
     {
         try
@@ -94,9 +123,15 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
 
             // A Lightning swap's covenant has a refund leaf, so the same VTXO state means different
             // things either side of its deadline; the asset directions have no such leaf.
-            var status = swap is { Type: ArkadeSwapIntentType.BtcToLightning, RefundLocktime: { } locktime }
-                ? ResolveLightningStatus(vtxo, locktime, _time.GetUtcNow().ToUnixTimeSeconds())
-                : ResolveTerminalStatus(vtxo);
+            var now = _time.GetUtcNow().ToUnixTimeSeconds();
+            var status = swap switch
+            {
+                { Type: ArkadeSwapIntentType.BtcToLightning, RefundLocktime: { } send } =>
+                    ResolveLightningStatus(vtxo, send, now),
+                { Type: ArkadeSwapIntentType.LightningToBtc, RefundLocktime: { } receive } =>
+                    ResolveLightningReceiveStatus(vtxo, receive, now),
+                _ => ResolveTerminalStatus(vtxo),
+            };
 
             if (status is null || status == swap?.Status) return;
 
