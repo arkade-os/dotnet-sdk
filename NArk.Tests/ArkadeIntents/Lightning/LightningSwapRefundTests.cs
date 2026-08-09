@@ -2,6 +2,7 @@ using NArk.Abstractions.Extensions;
 using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
+using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.Core.Services;
 using NArk.Core.Transport;
@@ -33,15 +34,18 @@ public class LightningSwapRefundTests
     {
         var serverKey = Key(3);
         var refundPkScript = P2tr(Key(5));
-        var contract = CovenantSwapProgram.BuildContract(
-            new CovenantSwapParams(
-                Receiver: Key(1),
-                PreimageHash: new byte[20],
-                RefundLocktime: 1_800_000_000,
-                ClaimDelay: 4096,
-                EmulatorPubkey: Key(9),
-                RefundPkScript: refundPkScript),
-            Descriptor(serverKey));
+        var contract = new VHTLCv2Contract(
+            Descriptor(serverKey),
+            sender: Descriptor(Key(7)),
+            receiver: Descriptor(Key(1)),
+            new uint160(new byte[20], false),
+            new LockTime(1_800_000_000),
+            new Sequence(TimeSpan.FromSeconds(4096)),
+            new Sequence(TimeSpan.FromSeconds(4608)),
+            new Sequence(TimeSpan.FromSeconds(5120)),
+            NBitcoin.Secp256k1.ECXOnlyPubKey.Create(Key(9)),
+            nonInteractiveClaimPkScript: P2tr(Key(2)),
+            nonInteractiveRefundPkScript: refundPkScript);
 
         var recovered = LightningSwapClient.RefundAddressOf(
             contract, NBitcoin.Secp256k1.ECXOnlyPubKey.Create(serverKey));
