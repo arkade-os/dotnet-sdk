@@ -13,7 +13,7 @@ namespace NArk.Tests.ArkadeIntents.Lightning;
 /// The maker funds the address this script derives. If our compilation drifts from the solver's by
 /// a single byte we derive a different address, fund it, and the solver cannot claim it — the
 /// deposit then sits until the refund locktime. So these vectors are a safety gate, not a
-/// regression test: they were generated from the solver side's own derivation and must never be
+/// regression test: they were generated from the published ts-sdk's own derivation and must never be
 /// "fixed" to match ours.
 /// </remarks>
 [TestFixture]
