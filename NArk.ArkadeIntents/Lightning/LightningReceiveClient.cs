@@ -60,9 +60,10 @@ public sealed record PendingLightningReceive(
 /// solver's <c>lockup_address</c> or its invoice beyond checking both against what was asked for.
 /// </para>
 /// <para>
-/// <b>No counterparty yet.</b> The reference solver implements this corridor but does not route it
-/// on any transport — its RFQ ingress dispatches only the two send pairs — so nothing here can
-/// negotiate against it until that lands.
+/// Verified against a live solver on regtest: the quote it returns carries the invoice, the lockup
+/// address and the solver's refund script, and the address reproduces locally leaf for leaf. What
+/// has not run end to end is the part after that — funding observed, claim broadcast, invoice
+/// settled.
 /// </para>
 /// </remarks>
 public sealed class LightningReceiveClient

@@ -1253,8 +1253,9 @@ Claiming publishes the preimage, which is also how the solver gets paid — an u
 where it reclaims its lockup and the payer's money was never earned. The preimage is persisted
 before the invoice goes out, since nothing can re-derive it afterwards.
 
-> **The receive corridor has no counterparty yet.** The reference solver implements it but does not
-> route it on any transport, so nothing can negotiate against it until that lands.
+> **Verified at the contract, not yet at the round trip.** Both corridors negotiate against the
+> reference solver and both reproduce its quoted `lockup_address` locally, but neither has been
+> driven through a full settlement yet.
 
 Both corridors build the same eight-leaf `VHTLCv2Contract`. Because the contract is an agreement
 about bytes with no wire versioning, the derivation is pinned to golden vectors generated from the
