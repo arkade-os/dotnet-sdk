@@ -12,10 +12,11 @@ Two corridors:
 | `arkade:BTC->lightning:BTC` | you | the solver, with the preimage paying the invoice yields |
 | `lightning:BTC->arkade:BTC` | the solver | you, with a preimage you chose |
 
-> [!IMPORTANT]
-> The receive corridor is complete here but has **no counterparty yet**: the reference solver serves
-> it internally and does not route it on any transport, so nothing can negotiate against it until
-> that lands.
+> [!NOTE]
+> Both corridors negotiate against the reference solver today, and both reproduce its quoted
+> `lockup_address` locally. Neither has yet been driven through a full settlement — funding
+> observed, claim broadcast, the other side paid — so treat them as verified at the contract, not
+> at the round trip.
 
 ## The shape of it
 
