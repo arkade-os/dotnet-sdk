@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -43,4 +44,43 @@ public static class RfqProtocol
     /// </summary>
     /// <returns>64 lowercase hex characters.</returns>
     public static string NewRfqId() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+
+    /// <summary>
+    /// Validate a reply and narrow it to the quote we asked for. A refusal throws; so does a quote
+    /// for a different negotiation — matching the correlation id is what stops a stale or
+    /// misrouted reply being funded.
+    /// </summary>
+    /// <typeparam name="TQuoteProfile">The corridor's quote-profile shape.</typeparam>
+    /// <param name="payload">The reply payload.</param>
+    /// <param name="rfqId">The correlation id of the request.</param>
+    /// <returns>The quote.</returns>
+    /// <exception cref="RfqRefusedException">The reply was a refusal.</exception>
+    /// <exception cref="InvalidOperationException">The reply was not a quote for this negotiation.</exception>
+    public static RfqQuote<TQuoteProfile> ExpectQuote<TQuoteProfile>(JsonNode payload, string rfqId)
+    {
+        if (TypeOf(payload) == "rfq_refusal")
+        {
+            var refusal = payload.Deserialize<RfqRefusal>(RfqProtocol.Json)!;
+            throw new RfqRefusedException(refusal.Reason, refusal.RfqId ?? rfqId, refusal.Detail);
+        }
+
+        if (TypeOf(payload) != "rfq_quote")
+        {
+            throw new InvalidOperationException($"unexpected reply type '{TypeOf(payload) ?? "(none)"}'");
+        }
+
+        var quote = payload.Deserialize<RfqQuote<TQuoteProfile>>(RfqProtocol.Json)!;
+        if (quote.RfqId != rfqId)
+        {
+            throw new InvalidOperationException(
+                $"quote answers negotiation '{quote.RfqId}', not '{rfqId}'");
+        }
+        return quote;
+    }
+
+
+
+    /// <summary>The payload's discriminator, or null when it carries none.</summary>
+    private static string? TypeOf(System.Text.Json.Nodes.JsonNode? payload) =>
+        payload?["type"]?.GetValue<string>();
 }

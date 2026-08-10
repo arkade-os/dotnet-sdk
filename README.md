@@ -1222,6 +1222,9 @@ var funded = await client.SendToLightningAsync(
     invoice: "lnbcrt500000n1p...",
     rfqTransport: new HttpRfqTransport(httpClient, new Uri("http://localhost:3000")));
 
+// Or reach a solver that has no inbound port at all, which is how they run in production:
+//   using var relay = new NostrRfqTransport(new Uri("wss://relay.example"), solverPubkey);
+
 // Refund once the locktime passes, if it never filled:
 await client.RefundSwap(funded.RfqId);
 ```
