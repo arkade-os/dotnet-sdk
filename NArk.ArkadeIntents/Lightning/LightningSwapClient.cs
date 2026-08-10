@@ -262,7 +262,8 @@ public sealed class LightningSwapClient
         try
         {
             var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
-            var contract = await LoadContract(intent, serverInfo.Network, cancellationToken);
+            var contract = await LightningCorridor.LoadLockupAsync(
+                _contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
 
             var vtxos = await _vtxoStorage.GetVtxos(
                 scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
@@ -297,20 +298,6 @@ public sealed class LightningSwapClient
             await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
             throw;
         }
-    }
-
-    /// <summary>Rebuild the funded contract from the one imported before the lockup was paid.</summary>
-    private async Task<VHTLCv2Contract> LoadContract(
-        ArkadeSwapIntent intent, Network network, CancellationToken cancellationToken)
-    {
-        var contracts = await _contractStorage.GetContracts(
-            scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-        var entity = contracts.FirstOrDefault()
-            ?? throw new InvalidOperationException(
-                $"the lockup contract for swap '{intent.Id}' is not in the contract store — " +
-                "without it the funded script cannot be rebuilt");
-
-        return (VHTLCv2Contract)VHTLCv2Contract.Parse(entity.AdditionalData, network);
     }
 
     /// <summary>
@@ -354,7 +341,7 @@ public sealed class LightningSwapClient
         CancellationToken cancellationToken)
     {
         var emulatorInfo = await _emulator.GetInfoAsync(cancellationToken);
-        var delays = UnilateralDelaysFor(serverInfo);
+        var delays = LightningCorridor.UnilateralDelays(serverInfo);
 
         var receiverPkScript = quote.Profile?.ReceiverPkScript
             ?? throw new InvalidOperationException(
@@ -365,73 +352,15 @@ public sealed class LightningSwapClient
             serverInfo.SignerKey,
             // Roles are positional: on this corridor the maker sends and the solver receives.
             sender: clientRefund,
-            receiver: DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
+            receiver: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
             new uint160(SwapScriptValues.PreimageHashFromPaymentHash(invoice.PaymentHash.ToBytes()), false),
             new LockTime(checked((uint)quote.RefundLocktime)),
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            NormalizeToXOnly(Convert.FromHexString(emulatorInfo.SignerPubkey)),
+            LightningCorridor.NormalizeToXOnly(Convert.FromHexString(emulatorInfo.SignerPubkey)),
             nonInteractiveClaimPkScript: Convert.FromHexString(receiverPkScript),
             nonInteractiveRefundPkScript: refundPkScript);
-    }
-
-    private static ECXOnlyPubKey NormalizeToXOnly(byte[] pubkey) =>
-        ECXOnlyPubKey.Create(pubkey.Length == 33 ? pubkey[1..] : pubkey);
-
-    /// <summary>
-    /// Wrap a counterparty's x-only key as a descriptor. The parity byte is arbitrary — every leaf
-    /// commits to the x-only form — so the even prefix is as good as any.
-    /// </summary>
-    private static OutputDescriptor DescriptorForXOnly(string xOnlyHex, Network network) =>
-        KeyExtensions.ParseOutputDescriptor("02" + xOnlyHex.ToLowerInvariant(), network);
-
-    /// <summary>
-    /// Derive the solver's unilateral-claim delay from the server's own minimum exit delay.
-    /// </summary>
-    /// <param name="serverInfo">The server's advertised terms.</param>
-    /// <returns>The delay in seconds, rounded up to a whole BIP68 unit.</returns>
-    /// <remarks>
-    /// This cannot be a constant. The server rejects any script whose exit delay is below its
-    /// configured minimum, and that minimum differs by orders of magnitude between deployments —
-    /// thousands of seconds on a test network against roughly a week on mainnet. Worse, the
-    /// rejection surfaces only when a spend is attempted: funding is accepted first, so a wrong
-    /// constant fails once there is already money in the script.
-    /// </remarks>
-    private static uint ClaimDelayFor(ArkServerInfo serverInfo)
-    {
-        var exit = serverInfo.UnilateralExit;
-        if (exit.LockType != SequenceLockType.Time)
-        {
-            throw new InvalidOperationException(
-                "the Arkade server advertises its unilateral exit delay in blocks; this swap script " +
-                "encodes a time-based delay, and block-interval variance is far too wide to hold a " +
-                "Lightning HTLC deadline against");
-        }
-        return SwapScriptValues.CeilToGranularity(checked((uint)exit.LockPeriod.TotalSeconds));
-    }
-
-    /// <summary>
-    /// The three CSV delays the covenant's timelocked leaves use, all derived from the server's own
-    /// minimum exit delay.
-    /// </summary>
-    /// <param name="serverInfo">The server's advertised terms.</param>
-    /// <returns>The claim, refund and refund-without-receiver delays, in seconds.</returns>
-    /// <remarks>
-    /// These are deliberately absent from the RFQ wire. Both sides read the same public
-    /// <c>/v1/info</c> and apply the same rule, so they arrive at identical numbers without the
-    /// solver being able to influence them — a delay it could dictate would be a delay it could
-    /// stretch. Each rung sits one BIP68 unit above the last, which is what keeps the ladder
-    /// ordered: the receiver's claim opens first, then the two-party refund, then the recourse that
-    /// needs nobody.
-    /// </remarks>
-    private static (uint Claim, uint Refund, uint RefundWithoutReceiver) UnilateralDelaysFor(
-        ArkServerInfo serverInfo)
-    {
-        var claim = ClaimDelayFor(serverInfo);
-        return (claim,
-            claim + SwapScriptValues.SequenceGranularitySeconds,
-            claim + 2 * SwapScriptValues.SequenceGranularitySeconds);
     }
 
     /// <summary>

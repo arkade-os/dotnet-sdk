@@ -252,7 +252,8 @@ public sealed class LightningReceiveClient
         }
 
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
-        var contract = await LoadContract(intent, serverInfo.Network, cancellationToken);
+        var contract = await LightningCorridor.LoadLockupAsync(
+            _contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
 
         var vtxos = await _vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
@@ -279,20 +280,6 @@ public sealed class LightningReceiveClient
         return intent;
     }
 
-    /// <summary>Rebuild the funded contract from the one imported before the invoice went out.</summary>
-    private async Task<VHTLCv2Contract> LoadContract(
-        ArkadeSwapIntent intent, Network network, CancellationToken cancellationToken)
-    {
-        var contracts = await _contractStorage.GetContracts(
-            scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-        var entity = contracts.FirstOrDefault()
-            ?? throw new InvalidOperationException(
-                $"the lockup contract for swap '{intent.Id}' is not in the contract store — " +
-                "without it the funded script cannot be rebuilt");
-
-        return (VHTLCv2Contract)VHTLCv2Contract.Parse(entity.AdditionalData, network);
-    }
-
     /// <summary>
     /// Build the funding contract from the quote's binding fields and the client's own data.
     /// </summary>
@@ -311,7 +298,7 @@ public sealed class LightningReceiveClient
         CancellationToken cancellationToken)
     {
         var emulatorInfo = await _emulator.GetInfoAsync(cancellationToken);
-        var delays = UnilateralDelaysFor(serverInfo);
+        var delays = LightningCorridor.UnilateralDelays(serverInfo);
 
         var solverRefundPkScript = quote.Profile?.SolverRefundPkScript
             ?? throw new InvalidOperationException(
@@ -320,43 +307,16 @@ public sealed class LightningReceiveClient
 
         return new VHTLCv2Contract(
             serverInfo.SignerKey,
-            sender: DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
+            sender: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
             receiver: payoutDescriptor,
             new uint160(SwapScriptValues.PreimageHashFromPaymentHash(Convert.FromHexString(paymentHash)), false),
             new LockTime(checked((uint)quote.RefundLocktime)),
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            NormalizeToXOnly(Convert.FromHexString(emulatorInfo.SignerPubkey)),
+            LightningCorridor.NormalizeToXOnly(Convert.FromHexString(emulatorInfo.SignerPubkey)),
             nonInteractiveClaimPkScript: payoutPkScript,
             nonInteractiveRefundPkScript: Convert.FromHexString(solverRefundPkScript));
     }
 
-    /// <summary>
-    /// The three CSV delays, derived from the server's own minimum exit delay exactly as the
-    /// counterparty derives them — they are deliberately not carried on the wire.
-    /// </summary>
-    private static (uint Claim, uint Refund, uint RefundWithoutReceiver) UnilateralDelaysFor(
-        ArkServerInfo serverInfo)
-    {
-        var exit = serverInfo.UnilateralExit;
-        if (exit.LockType != SequenceLockType.Time)
-        {
-            throw new InvalidOperationException(
-                "the Arkade server advertises its unilateral exit delay in blocks; this swap script " +
-                "encodes a time-based delay, and block-interval variance is far too wide to hold a " +
-                "Lightning HTLC deadline against");
-        }
-
-        var claim = SwapScriptValues.CeilToGranularity(checked((uint)exit.LockPeriod.TotalSeconds));
-        return (claim,
-            claim + SwapScriptValues.SequenceGranularitySeconds,
-            claim + 2 * SwapScriptValues.SequenceGranularitySeconds);
-    }
-
-    private static ECXOnlyPubKey NormalizeToXOnly(byte[] pubkey) =>
-        ECXOnlyPubKey.Create(pubkey.Length == 33 ? pubkey[1..] : pubkey);
-
-    private static OutputDescriptor DescriptorForXOnly(string xOnlyHex, Network network) =>
-        KeyExtensions.ParseOutputDescriptor("02" + xOnlyHex.ToLowerInvariant(), network);
 }
