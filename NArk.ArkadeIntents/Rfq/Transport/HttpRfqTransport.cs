@@ -47,7 +47,7 @@ public sealed class HttpRfqTransport : IRfqTransport
             ?? throw new InvalidOperationException(
                 $"solver returned {(int)response.StatusCode} with no RFQ payload");
 
-        return ExpectQuote<TQuoteProfile>(payload, request.RfqId);
+        return RfqProtocol.ExpectQuote<TQuoteProfile>(payload, request.RfqId);
     }
 
     /// <inheritdoc />
@@ -62,39 +62,6 @@ public sealed class HttpRfqTransport : IRfqTransport
         return TypeOf(payload) == "rfq_status"
             ? payload.Deserialize<RfqStatus<TStatusProfile>>(RfqProtocol.Json)
             : null;
-    }
-
-    /// <summary>
-    /// Validate a reply and narrow it to the quote we asked for. A refusal throws; so does a quote
-    /// for a different negotiation — matching the correlation id is what stops a stale or
-    /// misrouted reply being funded.
-    /// </summary>
-    /// <typeparam name="TQuoteProfile">The corridor's quote-profile shape.</typeparam>
-    /// <param name="payload">The reply payload.</param>
-    /// <param name="rfqId">The correlation id of the request.</param>
-    /// <returns>The quote.</returns>
-    /// <exception cref="RfqRefusedException">The reply was a refusal.</exception>
-    /// <exception cref="InvalidOperationException">The reply was not a quote for this negotiation.</exception>
-    internal static RfqQuote<TQuoteProfile> ExpectQuote<TQuoteProfile>(JsonNode payload, string rfqId)
-    {
-        if (TypeOf(payload) == "rfq_refusal")
-        {
-            var refusal = payload.Deserialize<RfqRefusal>(RfqProtocol.Json)!;
-            throw new RfqRefusedException(refusal.Reason, refusal.RfqId ?? rfqId, refusal.Detail);
-        }
-
-        if (TypeOf(payload) != "rfq_quote")
-        {
-            throw new InvalidOperationException($"unexpected reply type '{TypeOf(payload) ?? "(none)"}'");
-        }
-
-        var quote = payload.Deserialize<RfqQuote<TQuoteProfile>>(RfqProtocol.Json)!;
-        if (quote.RfqId != rfqId)
-        {
-            throw new InvalidOperationException(
-                $"quote answers negotiation '{quote.RfqId}', not '{rfqId}'");
-        }
-        return quote;
     }
 
     private static async Task<JsonNode?> ReadPayloadAsync(HttpResponseMessage response, CancellationToken ct)

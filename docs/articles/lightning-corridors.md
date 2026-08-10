@@ -93,6 +93,30 @@ The preimage is persisted on the intent before the invoice is handed out, becaus
 recovering it afterwards: you chose it, and the only other copy is sealed to a key you do not hold.
 The covclaimd packet is a fallback claimer, not a backup you can read.
 
+## Reaching a solver
+
+Two transports, same payloads.
+
+`HttpRfqTransport` posts to a solver that happens to expose a port — convenient locally, and what
+the reference solver offers.
+
+`NostrRfqTransport` is the one the protocol specifies: NIP-01 over a relay, both parties dialling
+out, addressed by x-only pubkey. No URLs appear in the protocol at all, which is what lets a solver
+run with no inbound port and no DNS name — and it is the only way to use a registry card, since a
+card carries a discovery pubkey and relays rather than an address.
+
+```csharp
+using var transport = new NostrRfqTransport(new Uri("wss://relay.example"), solverPubkey);
+```
+
+Each negotiation uses a fresh identity key by default, so separate swaps are unlinkable to the relay
+operator and a stale archive can never be replayed at us. Pass a stable key when talking to one
+solver repeatedly — the ECDH it saves is the dominant per-message cost.
+
+Relay-level faults surface as `NostrRelayException` rather than as silence. "The relay refused my
+event" and "the solver declined" are different problems, and a transport that reports both as
+nothing to see is how the reference deployment's own outage stayed invisible for days.
+
 ## The covenant contract
 
 Both corridors build the same eight-leaf contract,
