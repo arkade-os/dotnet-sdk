@@ -241,6 +241,46 @@ public static class DockerHelper
     }
 
     /// <summary>
+    /// Returns the regtest tip's median time past (BIP 113) — the clock
+    /// consensus uses for time-based locks (BIP-68 relative time locks, CLTV).
+    /// </summary>
+    public static async Task<DateTimeOffset> BitcoinGetMedianTime(CancellationToken ct = default)
+    {
+        var json = JsonNode.Parse(await BitcoinCli(["getblockchaininfo"], ct))!;
+        return DateTimeOffset.FromUnixTimeSeconds(json["mediantime"]!.GetValue<long>());
+    }
+
+    /// <summary>
+    /// Pins the node's clock to <paramref name="time"/> (<c>setmocktime</c>), or
+    /// releases it back to the system clock when <paramref name="time"/> is null.
+    /// <para>
+    /// Blocks mined afterwards carry the mocked timestamp, which is the only way
+    /// to advance median time past far enough to mature a BIP-68 <i>time-based</i>
+    /// relative lock in regtest — mining alone can't, since block times track the
+    /// real clock. Pair with <see cref="AdvanceMedianTimePast"/>.
+    /// </para>
+    /// </summary>
+    public static async Task BitcoinSetMockTime(DateTimeOffset? time, CancellationToken ct = default)
+        => await BitcoinCli(["setmocktime", (time?.ToUnixTimeSeconds() ?? 0).ToString()], ct);
+
+    /// <summary>
+    /// Pushes the regtest tip's median time past to at least
+    /// <paramref name="target"/> by mocking the node clock and mining.
+    /// <para>
+    /// Median time past is the median of the last 11 block times, so 11 blocks
+    /// at the mocked timestamp are enough to move it there wholesale. The mock
+    /// is left in place — callers should reset it with
+    /// <c>BitcoinSetMockTime(null)</c> once done, since it freezes the node's
+    /// clock for everything else running against the same container.
+    /// </para>
+    /// </summary>
+    public static async Task AdvanceMedianTimePast(DateTimeOffset target, CancellationToken ct = default)
+    {
+        await BitcoinSetMockTime(target, ct);
+        await MineBlocks(11, ct);
+    }
+
+    /// <summary>
     /// Returns the total BTC received by <paramref name="address"/> in transactions
     /// with at least <paramref name="minConf"/> confirmations. Returns <see cref="Money.Zero"/>
     /// when the address is unknown to the wallet (typical for freshly-derived taproot addresses).

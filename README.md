@@ -587,6 +587,33 @@ await exitService.ProgressExitsAsync(cancellationToken);
 
 The exit watchtower background service does this automatically if registered.
 
+### CSV Delay: Block-Based vs Time-Based
+
+The server's unilateral-exit delay (`ArkServerInfo.UnilateralExit`) is a **BIP-68 relative timelock**, not a block count. arkd advertises a single integer that it overloads: below 512 it means blocks, 512 or above it means seconds (arkd's production default is `86400`, i.e. 24 hours). The SDK decodes that into an `NBitcoin.Sequence`, and the two encodings mature under completely different rules:
+
+| `LockType` | Delay read from | Matures when |
+| --- | --- | --- |
+| `SequenceLockType.Height` | `Sequence.LockHeight` (blocks) | tip height ≥ leaf confirmation height + delay |
+| `SequenceLockType.Time` | `Sequence.LockPeriod` (512-second units) | tip **median time past** ≥ leaf block's MTP + delay |
+
+Never do arithmetic on the raw `Sequence.Value`: a time-based lock sets `SEQUENCE_LOCKTIME_TYPE_FLAG` (bit 22), so a 24-hour delay reads as `4194472`. Branch on `LockType`, or use the SDK's helper:
+
+```csharp
+var maturity = await CsvMaturity.EvaluateAsync(
+    serverInfo.UnilateralExit,
+    leafConfirmationHeight,
+    blockchain,
+    ct);
+
+if (maturity.IsMatured) { /* claim */ }
+else logger.LogDebug("CSV not matured: {Progress}", maturity.Progress);
+```
+
+`UnilateralExitService` uses this internally for both the stateful and stateless paths, so no extra wiring is needed for the built-in flow. Two requirements fall out of it for custom `IBitcoinBlockchain` implementations:
+
+- `GetChainTime` must return the tip's **median time past** (BIP 113) as `TimeHeight.Timestamp`, not the tip block's own `nTime`.
+- `GetMedianTimePastAsync(blockHeight)` must resolve a historical block's MTP. It has a default implementation that throws `NotSupportedException`, so a backend that skips it fails loudly on a time-based delay instead of stalling. All three built-in backends (`NBXplorerBlockchain`, `EsploraBlockchain`, `RpcBlockchain`) implement it.
+
 ### Virtual Tx Storage Modes
 
 - **Lite mode (default)**: Stores only txids + expiry. Fetches hex on demand when exit is actually started (saves storage, slower exit start). Right default for most wallets — the common case never exits unilaterally.

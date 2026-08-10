@@ -11,9 +11,7 @@ namespace NArk.Transport.GrpcClient;
 public partial class GrpcClientTransport
 {
     private static Sequence ParseSequence(long val)
-    {
-        return val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
-    }
+        => NArk.Core.Transport.Extensions.ExitDelayExtensions.ToExitDelaySequence(val);
 
     public async Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
     {

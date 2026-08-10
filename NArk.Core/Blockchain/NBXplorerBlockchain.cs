@@ -64,6 +64,23 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         }
     }
 
+    public async Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
+    {
+        var rpc = _explorerClient.RPCClient;
+        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, blockHeight);
+        if (hashResponse.Error is not null)
+            return null;
+        var blockHash = (string?)hashResponse.Result;
+        if (blockHash is null)
+            return null;
+
+        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, blockHash, true);
+        if (headerResponse.Error is not null)
+            return null;
+        var medianTime = (long?)headerResponse.Result?["mediantime"];
+        return medianTime is null ? null : DateTimeOffset.FromUnixTimeSeconds(medianTime.Value);
+    }
+
     // ── UTXO lookup (NBXplorer TrackedSource) ───────────────────────
 
     public async Task<IReadOnlyList<BoardingUtxo>> GetUtxosAsync(string address, CancellationToken cancellationToken = default)
