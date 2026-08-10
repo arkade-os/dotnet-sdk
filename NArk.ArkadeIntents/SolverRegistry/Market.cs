@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace NArk.ArkadeIntents.SolverRegistry;
 
 /// <summary>
@@ -42,10 +45,20 @@ public class SolverMarket
     public required AssetDescriptor BaseAsset { get; init; }
     public required AssetDescriptor QuoteAsset { get; init; }
 
-    /// <summary>Exact price-feed URL. Must be CORS-accessible for browser clients.</summary>
-    public required string PriceFeed { get; init; }
+    /// <summary>
+    /// Exact price-feed URL. Must be CORS-accessible for browser clients. Absent on a corridor
+    /// market, where terms are negotiated per trade by RFQ rather than read off a feed.
+    /// </summary>
+    public string? PriceFeed { get; init; }
 
-    public required PriceFeedSchema PriceFeedSchema { get; init; }
+    /// <summary>How to read <see cref="PriceFeed"/>. Absent whenever that is.</summary>
+    public PriceFeedSchema? PriceFeedSchema { get; init; }
+
+    /// <summary>
+    /// The rail the quote side settles on — <c>"lightning"</c>, <c>"onchain"</c>. Absent means
+    /// arkade, i.e. an ordinary spot market rather than a corridor.
+    /// </summary>
+    public string? QuoteCorridor { get; init; }
 
     /// <summary>Normalization factor: the raw feed scalar is divided by 10^<see cref="PriceDecimals"/>.</summary>
     public int PriceDecimals { get; init; }
@@ -57,10 +70,27 @@ public class SolverMarket
     public int FeeBps { get; init; }
 
     /// <summary>Minimum trade size, in base-asset units.</summary>
+    /// <remarks>
+    /// Serialized as a decimal string: these are base units of an asset whose precision the card
+    /// itself declares, and a JSON number would silently lose the large ones.
+    /// </remarks>
+    [JsonConverter(typeof(NumericStringConverter))]
     public long MinBaseAmount { get; init; }
 
     /// <summary>Maximum trade size, in base-asset units.</summary>
+    [JsonConverter(typeof(NumericStringConverter))]
     public long MaxBaseAmount { get; init; }
+
+    /// <summary>Minimum trade size, in quote-asset units — where a corridor states its bounds.</summary>
+    [JsonConverter(typeof(NumericStringConverter))]
+    public long MinQuoteAmount { get; init; }
+
+    /// <summary>Maximum trade size, in quote-asset units.</summary>
+    [JsonConverter(typeof(NumericStringConverter))]
+    public long MaxQuoteAmount { get; init; }
+
+    /// <summary>True when this market is a corridor rather than an arkade-to-arkade spot pair.</summary>
+    public bool IsCorridor => !string.IsNullOrEmpty(QuoteCorridor);
 }
 
 /// <summary>A <see cref="SolverMarket"/> as published in the per-network index, tagged with its solver.</summary>
@@ -71,4 +101,28 @@ public sealed class IndexedMarket : SolverMarket
 
     /// <summary>The solver's discovery x-only pubkey (hex), if the card carried one.</summary>
     public string? DiscoveryPubkey { get; init; }
+}
+
+/// <summary>
+/// Reads an integer that the card serializes as a decimal string, and tolerates a bare number.
+/// </summary>
+/// <remarks>
+/// The registry writes amounts as strings on purpose — they are base units of assets whose precision
+/// the card declares, and JSON's double-backed numbers cannot carry the large ones exactly. Accepting
+/// both shapes means a hand-written or older card still reads.
+/// </remarks>
+internal sealed class NumericStringConverter : JsonConverter<long>
+{
+    public override long Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType switch
+        {
+            JsonTokenType.Number => reader.GetInt64(),
+            JsonTokenType.String when long.TryParse(reader.GetString(), out var parsed) => parsed,
+            JsonTokenType.String => throw new JsonException(
+                $"expected an integer amount, got \"{reader.GetString()}\""),
+            _ => throw new JsonException($"expected an integer amount, got {reader.TokenType}"),
+        };
+
+    public override void Write(Utf8JsonWriter writer, long value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.ToString());
 }
