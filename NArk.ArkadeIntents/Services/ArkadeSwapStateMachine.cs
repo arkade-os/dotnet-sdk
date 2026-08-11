@@ -189,6 +189,12 @@ public static class ArkadeSwapStateMachine
             ArkadeSwapIntentType.BtcToLightning when o.PastLocktime =>
                 Changed(current, ArkadeSwapIntentStatus.Refundable),
 
+            // Seeing the lockup at all is proof the funding spend landed, which is the only
+            // confirmation a swap recorded before its own spend ever gets. From Pending this is a
+            // no-op; from Funding it is the promotion.
+            ArkadeSwapIntentType.BtcToLightning =>
+                Changed(current, ArkadeSwapIntentStatus.Pending),
+
             // The solver funded and only our preimage moves it. An unspent lockup here is not a swap
             // waiting on someone else — it is money on a clock, ours until the solver's own reclaim
             // path opens. Past that we stop calling it claimable rather than race the reclaim.
@@ -241,7 +247,7 @@ public static class ArkadeSwapStateMachine
             new(1, SwapStepKind.Negotiate, SwapTrigger.Client, null),
             new(2, SwapStepKind.DeriveAndVerifyAddress, SwapTrigger.Client, null),
             new(3, SwapStepKind.Gate, SwapTrigger.Client, null),
-            new(4, SwapStepKind.ImportContract, SwapTrigger.Client, null),
+            new(4, SwapStepKind.ImportContract, SwapTrigger.Client, ArkadeSwapIntentStatus.Funding),
             new(5, SwapStepKind.FundLockup, SwapTrigger.Client, ArkadeSwapIntentStatus.Pending),
             new(6, SwapStepKind.CounterpartyFills, SwapTrigger.Solver, null),
             new(7, SwapStepKind.CounterpartyClaims, SwapTrigger.Solver, ArkadeSwapIntentStatus.Fulfilled),

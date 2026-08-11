@@ -49,6 +49,35 @@ public class ArkadeSwapStateMachineTests
         Assert.That(Next(Send, Pending, Open(Before)), Is.Null);
     }
 
+    [Test]
+    public void Send_SeeingTheLockupAtAll_ConfirmsTheFundingLanded()
+    {
+        // A swap is recorded before its own spend, so this is the only confirmation it ever gets
+        // that the money actually moved.
+        Assert.That(
+            Next(Send, ArkadeSwapIntentStatus.Funding, Open(Before)),
+            Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+    }
+
+    [Test]
+    public void Send_FundingWithNoLockupYet_StaysPut()
+    {
+        // Nothing observed means nothing to conclude — the spend may be in flight, or may have
+        // failed. Reconciliation decides that with a clock, not the machine with a guess.
+        Assert.That(ArkadeSwapStateMachine.ActionFor(Send, ArkadeSwapIntentStatus.Funding),
+            Is.EqualTo(ArkadeIntentAction.None));
+    }
+
+    [Test]
+    public void Send_FundingStraightPastTheLocktime_GoesToRefundable()
+    {
+        // A swap that was recorded, funded, and then left alone long enough must not need a stop in
+        // Pending it never observed.
+        Assert.That(
+            Next(Send, ArkadeSwapIntentStatus.Funding, Open(After)),
+            Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+    }
+
     // ─── Receive: lightning → arkade ──────────────────────────────────
 
     [Test]
@@ -184,10 +213,24 @@ public class ArkadeSwapStateMachineTests
         });
     }
 
-    /// <summary>Every status the machine can actually produce for a corridor, plus its entry state.</summary>
+    /// <summary>
+    /// Every status a corridor can end up in: the ones the client writes directly, plus everything
+    /// the machine can transition to from them.
+    /// </summary>
+    /// <remarks>
+    /// The seed is not decoration. Some states are entered rather than transitioned into — a swap is
+    /// put into <see cref="ArkadeSwapIntentStatus.Funding"/> by the client before it spends, and into
+    /// <see cref="ArkadeSwapIntentStatus.Cancelling"/> before it cancels — and a walk that only
+    /// followed transitions would call those unreachable and fail a description that is correct.
+    /// </remarks>
     private static IReadOnlyCollection<ArkadeSwapIntentStatus> Reachable(ArkadeSwapIntentType type)
     {
-        var seen = new HashSet<ArkadeSwapIntentStatus> { Pending, ArkadeSwapIntentStatus.Cancelling };
+        var seen = new HashSet<ArkadeSwapIntentStatus>
+        {
+            ArkadeSwapIntentStatus.Funding,
+            Pending,
+            ArkadeSwapIntentStatus.Cancelling,
+        };
         var observations = new[] { Open(Before), Open(After), Spent(Before), Spent(After), Swept(Before) };
 
         for (var settled = false; !settled;)
