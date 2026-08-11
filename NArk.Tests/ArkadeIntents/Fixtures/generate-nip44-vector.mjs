@@ -28,7 +28,7 @@ const require = createRequire(pathToFileURL(resolve(modulesPath, 'package.json')
 const nostrToolsRoot = require.resolve('nostr-tools').replace(/\/lib\/.*$/, '')
 const { nip44 } = await import(pathToFileURL(resolve(nostrToolsRoot, 'lib/esm/index.js')).href)
 const { schnorr } = await import(pathToFileURL(require.resolve('@noble/curves/secp256k1.js')).href)
-const { finalizeEvent, getEventHash, verifyEvent } = await import(
+const { getEventHash, verifyEvent } = await import(
   pathToFileURL(resolve(nostrToolsRoot, 'lib/esm/index.js')).href
 )
 
@@ -85,17 +85,21 @@ console.log(
       // A directed RFQ event as the reference produces it: kind 4859, sealed content, `p`-tagged.
       // Our id computation and signature check are pinned against this.
       event: (() => {
-        const signed = finalizeEvent(
-          {
-            kind: 4859,
-            created_at: 1786000000,
-            tags: [['p', toHex(solverPub)]],
-            content: nip44.v2.encrypt(plaintext, fromClient, NONCE),
-          },
-          CLIENT_PRIV,
-        )
-        if (!verifyEvent(signed)) throw new Error('nostr-tools produced an event it cannot verify')
-        if (getEventHash(signed) !== signed.id) throw new Error('id mismatch from nostr-tools')
+        const unsigned = {
+          kind: 4859,
+          created_at: 1786000000,
+          tags: [['p', toHex(solverPub)]],
+          content: nip44.v2.encrypt(plaintext, fromClient, NONCE),
+          pubkey: toHex(clientPub),
+        }
+        // Signed with a zero auxiliary value rather than through finalizeEvent. BIP340 randomises
+        // that by default, so the same event signs to a different (equally valid) signature every
+        // time — which would make this fixture report a false drift on every regeneration, and a
+        // drift detector that cries wolf is worse than none.
+        const id = getEventHash(unsigned)
+        const sig = toHex(schnorr.sign(hexToBytes(id), CLIENT_PRIV, new Uint8Array(32)))
+        const signed = { ...unsigned, id, sig }
+        if (!verifyEvent(signed)) throw new Error('nostr-tools cannot verify the event we built')
         return signed
       })(),
     },

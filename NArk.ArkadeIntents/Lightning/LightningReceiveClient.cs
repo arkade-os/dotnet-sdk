@@ -159,7 +159,8 @@ public sealed class LightningReceiveClient
             .RequestQuoteAsync<LightningReceiveRequestProfile, LightningReceiveQuoteProfile>(
                 request, cancellationToken);
 
-        var invoice = LightningReceiveGates.VerifyInvoice(quote, sealed_.PaymentHash, serverInfo.Network);
+        var invoice = LightningReceiveGates.VerifyInvoice(
+            quote, sealed_.PaymentHash, amountSats, serverInfo.Network);
 
         var contract = await DeriveLockupAsync(
             quote, sealed_.PaymentHash, payoutDescriptor, payoutPkScript, serverInfo, cancellationToken);
