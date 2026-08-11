@@ -370,7 +370,19 @@ public static class TransactionHelpers
                 signedCheckpoints.Add(signedCheckpoint with { Psbt = psbt });
             }
 
-            await clientTransport.FinalizeTx(response.ArkTxId, [.. signedCheckpoints.Select(x => x.Psbt.ToBase64())],
+            // Finalize against the transaction we submitted, not the one the server names. The two
+            // are the same in every honest exchange, so checking costs nothing — and a response that
+            // renames it is the shape of an attempt to have our signed checkpoints, which carry the
+            // preimage on a claim, applied to a transaction we never built.
+            var submittedArkTxId = arkTx.GetGlobalTransaction().GetHash().ToString();
+            if (!string.Equals(response.ArkTxId, submittedArkTxId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Server returned ark txid {response.ArkTxId} for a transaction submitted as " +
+                    $"{submittedArkTxId}; refusing to finalize a transaction we did not build.");
+            }
+
+            await clientTransport.FinalizeTx(submittedArkTxId, [.. signedCheckpoints.Select(x => x.Psbt.ToBase64())],
                 cancellationToken: cancellationToken);
 
             // Capture the signed off-chain txs we just produced, keyed by txid,
