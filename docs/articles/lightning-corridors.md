@@ -31,11 +31,11 @@ address you decline, never one that traps your funds.
 ## Sending: pay a BOLT11 from an Arkade balance
 
 ```csharp
-var client = new LightningSwapClient(
-    transport, emulator, contractService, spendingService,
-    intentStorage, contractStorage, vtxoStorage, walletProvider);
+// One service over every corridor. Register it once and reach all of them through it.
+var intents = new ArkadeIntentsService(
+    assetSwaps, lightningSend, lightningReceive, intentStorage, vtxoStorage, TimeProvider.System);
 
-var funded = await client.SendToLightningAsync(
+var funded = await intents.SendToLightningAsync(
     walletId: "my-wallet",
     invoice: "lnbcrt500000n1p...",
     rfqTransport: new HttpRfqTransport(httpClient, new Uri("http://localhost:3000")));
@@ -53,17 +53,13 @@ and you nothing.
 If the swap never fills, refund it once the locktime passes:
 
 ```csharp
-await client.RefundSwap(funded.RfqId);
+await intents.RefundLightningSendAsync(funded.RfqId);
 ```
 
 ## Receiving: be paid over Lightning, take delivery on Arkade
 
 ```csharp
-var client = new LightningReceiveClient(
-    transport, emulator, contractService, spendingService,
-    intentStorage, contractStorage, vtxoStorage);
-
-var pending = await client.ReceiveFromLightningAsync(
+var pending = await intents.ReceiveFromLightningAsync(
     walletId: "my-wallet",
     amountSats: 50_000,
     rfqTransport: rfqTransport,
@@ -72,7 +68,7 @@ var pending = await client.ReceiveFromLightningAsync(
 Console.WriteLine($"have the payer settle: {pending.Invoice}");
 
 // Once the solver funds the lockup — the monitor moves the intent to Claimable:
-await client.ClaimAsync(pending.RfqId);
+await intents.ClaimLightningReceiveAsync(pending.RfqId);
 ```
 
 Here **you** choose the secret and send only its hash, plus a copy sealed to covclaimd that the
@@ -80,13 +76,24 @@ solver cannot open ([`ClaimPacket`](xref:NArk.ArkadeIntents.Lightning.ClaimPacke
 is load-bearing: the solver funds the Arkade side before the payment it is owed has settled, so a
 solver able to open the packet could settle the invoice without ever delivering.
 
+We never talk to covclaimd ourselves — we read its public key once and seal to it, and the packet
+travels to the solver as opaque bytes it forwards. What the daemon buys is the receive corridor's
+answer to the problem the send corridor solves with a locktime: if you go offline between minting
+the invoice and the solver funding, covclaimd holds the only other copy of your preimage and can
+push the covenant's `nonInteractiveClaim` leaf on your behalf. That leaf is pinned to *your*
+`receiver_pk_script`, so the daemon can complete the claim and cannot redirect it — which is what
+makes handing a stranger your preimage a reasonable thing to do.
+
+It appears on this corridor only. On a send you never hold the preimage; the payee minted it and the
+solver learns it by paying, so there is nothing to seal and nothing for covclaimd to do.
+
 The invoice it mints is checked, not trusted — `LightningReceiveGates.VerifyInvoice` refuses one for
 a different payment hash (your preimage could never settle it) or a different amount than the quote
 delivers.
 
 Claiming is not optional tidy-up. The preimage becomes public in the claim witness, and that is what
 lets the held invoice settle — so an unclaimed swap is one where the solver reclaims its lockup and
-the payer's money was never earned. `ClaimAsync` refuses once `refund_locktime` has passed rather
+the payer's money was never earned. The claim refuses once `refund_locktime` has passed rather
 than race that reclaim for the same output.
 
 The preimage is persisted on the intent before the invoice is handed out, because there is no
@@ -126,12 +133,28 @@ plus two whose co-signer is an emulator key tweaked by a covenant pinning where 
 Roles are **positional**, not fixed to a party. On the send corridor you are `sender` and the solver
 is `receiver`; on the receive corridor they swap.
 
-Your ladder of recourse on a send swap, fastest first:
+The contract has four refund leaves on a send swap, but only one of them is a recourse you can
+actually reach on your own, and the difference is worth knowing before the moment you need it:
 
-1. `refund` — you + solver + server, immediately
-2. `unilateralRefund` — you + solver after a CSV delay, no server
-3. `refundWithoutReceiver` — you + server after `refund_locktime`, no solver ← what `RefundSwap` uses
-4. `unilateralRefundWithoutReceiver` — you alone after the longest delay, needing nobody
+| leaf | who signs | when | can you start it? |
+| --- | --- | --- | --- |
+| `refund` | you + solver + server | immediately | no |
+| `unilateralRefund` | you + solver | after a CSV delay | no |
+| `refundWithoutReceiver` | you + server | after `refund_locktime` | **yes** — this is `RefundLightningSendAsync` |
+| `unilateralRefundWithoutReceiver` | you alone | after the longest delay | only by exiting to the chain |
+
+The first two need the solver's signature, and **the RFQ protocol has no message asking for one**.
+A solver may push a refund of its own accord, but that is an operator action on its side, not
+something a client can request.
+So a leaf that reads as faster on paper is not a faster path for you; it is a path that opens only
+if the solver independently decides to take it.
+
+The last leaf needs nobody, which sounds like the real backstop and is not. Reaching it means
+unrolling the VTXO to the chain, and an eight-leaf covenant arrives there carrying enough script
+data that the exit costs more than it recovers. That is a deliberate property of the construction,
+not a gap in this SDK: the contract is priced so that waiting for `refund_locktime` and taking
+`refundWithoutReceiver` is the sane move, and the Arkade server declining to co-sign is the only
+scenario the arithmetic assumes away.
 
 The three CSV delays are **not carried on the wire**. Both sides derive them from the Arkade
 operator's own `unilateralExitDelay`, rounded up to a whole BIP68 unit and then one unit per rung —

@@ -1213,11 +1213,11 @@ traps your funds.
 ### Sending — pay a BOLT11 from an Arkade balance
 
 ```csharp
-var client = new LightningSwapClient(
-    transport, emulator, contractService, spendingService,
-    intentStorage, contractStorage, vtxoStorage, walletProvider);
+// One service over every corridor. Register it once and reach all of them through it.
+var intents = new ArkadeIntentsService(
+    assetSwaps, lightningSend, lightningReceive, intentStorage, vtxoStorage, TimeProvider.System);
 
-var funded = await client.SendToLightningAsync(
+var funded = await intents.SendToLightningAsync(
     walletId: "my-wallet",
     invoice: "lnbcrt500000n1p...",
     rfqTransport: new HttpRfqTransport(httpClient, new Uri("http://localhost:3000")));
@@ -1225,18 +1225,15 @@ var funded = await client.SendToLightningAsync(
 // Or reach a solver that has no inbound port at all, which is how they run in production:
 //   using var relay = new NostrRfqTransport(new Uri("wss://relay.example"), solverPubkey);
 
-// Refund once the locktime passes, if it never filled:
-await client.RefundSwap(funded.RfqId);
+// Refund once the locktime passes, if it never filled. Yours to call whenever you want it
+// back — `AdvanceAllAsync` will also sweep it, but it is not the only way in:
+await intents.RefundLightningSendAsync(funded.RfqId);
 ```
 
 ### Receiving — be paid over Lightning, take delivery on Arkade
 
 ```csharp
-var client = new LightningReceiveClient(
-    transport, emulator, contractService, spendingService,
-    intentStorage, contractStorage, vtxoStorage);
-
-var pending = await client.ReceiveFromLightningAsync(
+var pending = await intents.ReceiveFromLightningAsync(
     walletId: "my-wallet",
     amountSats: 50_000,
     rfqTransport: rfqTransport,
@@ -1245,7 +1242,7 @@ var pending = await client.ReceiveFromLightningAsync(
 Console.WriteLine($"have the payer settle: {pending.Invoice}");
 
 // Once the solver funds the lockup — the monitor moves the intent to Claimable:
-await client.ClaimAsync(pending.RfqId);
+await intents.ClaimLightningReceiveAsync(pending.RfqId);
 ```
 
 On this corridor **you** choose the secret and send only its hash, plus a copy sealed to covclaimd
