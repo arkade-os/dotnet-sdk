@@ -59,7 +59,14 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     /// <returns>The scripts to watch.</returns>
     /// <remarks>
     /// Refundable swaps stay watched: their deposit is still sitting in the covenant, and the refund
-    /// that ends them is observable on the very same script.
+    /// that ends them is observable on the very same script. Claimable ones stay watched for the
+    /// sharper version of the same reason — on the receive corridor that state means the money is
+    /// ours to take, on a clock that runs out in hours, and dropping the script there is dropping it
+    /// exactly when the spend that matters is about to happen.
+    ///
+    /// Funding is deliberately left out. Its lockup may not exist yet, so polling would watch a
+    /// script that may never be funded; reconciliation reads that state on startup, which is when a
+    /// swap recorded before its own spend actually needs re-examining.
     /// </remarks>
     async Task<HashSet<string>> IActiveScriptsProvider.GetActiveScripts(CancellationToken cancellationToken)
     {
@@ -67,8 +74,10 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
             status: ArkadeSwapIntentStatus.Pending, cancellationToken: cancellationToken);
         var refundable = await GetArkadeSwapIntents(
             status: ArkadeSwapIntentStatus.Refundable, cancellationToken: cancellationToken);
+        var claimable = await GetArkadeSwapIntents(
+            status: ArkadeSwapIntentStatus.Claimable, cancellationToken: cancellationToken);
 
-        return pending.Concat(refundable).Select(s => s.SwapPkScript).ToHashSet();
+        return pending.Concat(refundable).Concat(claimable).Select(s => s.SwapPkScript).ToHashSet();
     }
 }
 
