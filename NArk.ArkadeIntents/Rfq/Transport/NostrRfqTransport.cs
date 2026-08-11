@@ -29,17 +29,26 @@ public sealed class NostrRelayException(string message) : Exception(message);
 /// card carries a discovery pubkey and relays rather than a URL.
 /// </para>
 /// <para>
-/// Each negotiation uses a fresh identity key by default. That keeps separate swaps unlinkable to
-/// the relay operator, and it sidesteps the archive-replay problem a stable key has — a key with no
-/// history cannot be handed a backlog of stale events on connect. The cost is an ECDH per
-/// negotiation, which is the dominant per-message cost in this scheme; pass a stable key when
-/// talking to one solver repeatedly and that goes away.
+/// Each negotiation uses a fresh identity key by default, which keeps separate swaps unlinkable to
+/// the relay operator. The cost is an ECDH per negotiation — the dominant per-message cost in this
+/// scheme — so pass a stable key when talking to one solver repeatedly.
 /// </para>
 /// </remarks>
 public sealed class NostrRfqTransport : IRfqTransport, IDisposable
 {
-    /// <summary>Directed RFQ traffic. Provisional, per the protocol spec.</summary>
-    public const int DirectedKind = 4859;
+    /// <summary>
+    /// Directed RFQ traffic. In NIP-01's <em>ephemeral</em> range, so relays forward it without
+    /// storing it. Provisional, per the protocol spec.
+    /// </summary>
+    /// <remarks>
+    /// The range matters to how this transport is written. Nothing is retained, so there is no
+    /// backlog to catch up from — a subscription that is not already live when the reply is
+    /// published misses it outright. Hence subscribing before publishing rather than after.
+    /// </remarks>
+    public const int DirectedKind = 24859;
+
+    /// <summary>Open-RFQ broadcasts. Same range, same retention: none.</summary>
+    public const int BroadcastKind = 24860;
 
     private readonly Uri _relay;
     private readonly byte[] _solverPubkey;
@@ -119,9 +128,10 @@ public sealed class NostrRfqTransport : IRfqTransport, IDisposable
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(_relay, ct);
 
-        // Subscribe BEFORE publishing, or the reply can arrive before we are listening for it.
-        // `since` is floored to whole seconds because that is the resolution `created_at` has; one
-        // second of slack is cheaper than missing a reply minted in the same second we subscribed.
+        // Subscribe BEFORE publishing. These kinds are ephemeral, so a relay stores nothing and
+        // there is no backlog to fall back on: a reply published while we are not yet listening is
+        // simply gone. `since` is floored to whole seconds because that is all `created_at` has, and
+        // a second of slack costs less than missing a reply minted in the second we subscribed.
         var subId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
         var since = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1;
         await SendAsync(socket, new JsonArray(
