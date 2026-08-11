@@ -61,9 +61,14 @@ public static class OfferCodec
             offset += 3;
             if (offset + length > data.Length)
                 throw new FormatException($"truncated TLV value for type 0x{type:x2}");
-            if (!KnownTypes.Contains(type))
-                throw new FormatException($"unknown TLV type: 0x{type:x2}");
-            fields[type] = data[offset..(offset + length)];
+            // Skip what we do not know rather than refusing the offer. TLV carries its own lengths
+            // precisely so a reader can step over a field it was not built for, and the alternative
+            // is that the first counterparty to add one breaks every existing client at once — with
+            // no way to ship a fix ahead of the change, because the change is theirs to make. Every
+            // field this codec actually needs is still demanded by `Need` below, so an offer missing
+            // something real is still rejected; only the unrecognised extras pass through.
+            if (KnownTypes.Contains(type))
+                fields[type] = data[offset..(offset + length)];
             offset += length;
         }
 

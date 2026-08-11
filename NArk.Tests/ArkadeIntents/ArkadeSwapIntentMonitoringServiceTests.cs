@@ -143,16 +143,24 @@ public class ArkadeSwapIntentMonitoringServiceTests
         public readonly Dictionary<string, ArkadeSwapIntent> Swaps = new();
 
         public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+            string? id = null,
             ArkadeSwapIntentStatus? status = null,
             string? swapPkScript = null,
             string[]? walletIds = null,
             int? skip = null,
             int? take = null,
             CancellationToken cancellationToken = default)
-            => Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(
+        {
+            // Honours every filter it is given: a fake that answers a lookup by id with the whole
+            // table would let a caller move the wrong swap's money and still pass.
+            IEnumerable<ArkadeSwapIntent> q =
                 swapPkScript is not null && Swaps.TryGetValue(swapPkScript, out var one)
                     ? [one]
-                    : Swaps.Values.ToArray());
+                    : Swaps.Values;
+            if (id is not null) q = q.Where(i => i.Id == id);
+            if (status is { } st) q = q.Where(i => i.Status == st);
+            return Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(q.ToArray());
+        }
 
         public Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default)
             => Task.CompletedTask;

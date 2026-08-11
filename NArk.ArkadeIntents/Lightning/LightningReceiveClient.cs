@@ -230,8 +230,7 @@ public sealed class LightningReceiveClient
     public async Task<ArkadeSwapIntent> ClaimAsync(
         string swapId, CancellationToken cancellationToken = default)
     {
-        var intent = (await _intentStorage.GetArkadeSwapIntents(cancellationToken: cancellationToken))
-                         .FirstOrDefault(s => s.Id == swapId)
+        var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
                      ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
 
         if (intent.Type != ArkadeSwapIntentType.LightningToBtc)

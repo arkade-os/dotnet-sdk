@@ -183,9 +183,18 @@ public class ArkadeIntentsReconciliationTests
         public event EventHandler? ActiveScriptsChanged;
 
         public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+            string? id = null,
             ArkadeSwapIntentStatus? status = null, string? swapPkScript = null, string[]? walletIds = null,
             int? skip = null, int? take = null, CancellationToken cancellationToken = default)
-            => Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>([intent]);
+        {
+            // Applies the filters rather than always answering with the one intent. A fake that
+            // ignores them lets a caller look up the wrong swap and still go green.
+            IEnumerable<ArkadeSwapIntent> q = [intent];
+            if (id is not null) q = q.Where(i => i.Id == id);
+            if (status is { } s) q = q.Where(i => i.Status == s);
+            if (swapPkScript is not null) q = q.Where(i => i.SwapPkScript == swapPkScript);
+            return Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(q.ToList());
+        }
 
         public Task SaveArkadeSwapIntent(ArkadeSwapIntent i, CancellationToken cancellationToken = default)
         {

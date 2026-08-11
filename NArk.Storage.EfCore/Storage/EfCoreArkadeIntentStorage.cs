@@ -20,6 +20,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
     }
 
     public async Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+        string? id = null,
         ArkadeSwapIntentStatus? status = null,
         string? swapPkScript = null,
         string[]? walletIds = null,
@@ -30,6 +31,8 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var query = db.Set<ArkadeSwapIntentEntity>().AsQueryable();
 
+        if (id is not null)
+            query = query.Where(x => x.Id == id);
         if (status is { } s)
             query = query.Where(x => x.Status == s);
         if (swapPkScript is not null)

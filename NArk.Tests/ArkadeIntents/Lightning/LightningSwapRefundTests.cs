@@ -98,7 +98,7 @@ public class LightningSwapRefundTests
         // nor a later retry would touch it.
         var swap = Swap();
         var storage = Substitute.For<IArkadeIntentStorage>();
-        storage.GetArkadeSwapIntents(cancellationToken: Arg.Any<CancellationToken>())
+        storage.GetArkadeSwapIntents(id: Arg.Any<string>(), cancellationToken: Arg.Any<CancellationToken>())
             .Returns([swap]);
         var refunder = Refunder(swap, Locktime + 1, storage);
 
@@ -114,7 +114,7 @@ public class LightningSwapRefundTests
         if (storage is null)
         {
             storage = Substitute.For<IArkadeIntentStorage>();
-            storage.GetArkadeSwapIntents(cancellationToken: Arg.Any<CancellationToken>())
+            storage.GetArkadeSwapIntents(id: Arg.Any<string>(), cancellationToken: Arg.Any<CancellationToken>())
                 .Returns([swap]);
         }
 
