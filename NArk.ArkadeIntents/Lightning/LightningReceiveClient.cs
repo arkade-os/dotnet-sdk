@@ -256,9 +256,25 @@ public sealed class LightningReceiveClient
 
         var vtxos = await _vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-        var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept)
+
+        // Match the amount, never just the address. The lockup address is public from the moment we
+        // hold a quote, so anyone can put an output there — and claiming is not a neutral act: it
+        // publishes the preimage. Spending a stray output would hand over the secret that settles the
+        // payer's invoice in exchange for whatever that output happened to hold. The solver applies
+        // the same exact-value rule to its own side of this corridor for the same reason.
+        //
+        // It also keeps us on the same output the solver is watching. A retried funding can leave two
+        // outputs at one address, and claiming the one it did not record leaves it waiting on an
+        // outpoint nobody will ever spend — the swap stalls with both sides behaving correctly.
+        var expected = (ulong)intent.WantAmount.Satoshi;
+        var candidates = vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
+        var vtxo = candidates.FirstOrDefault(v => v.Amount == expected)
             ?? throw new InvalidOperationException(
-                $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet.");
+                candidates.Count == 0
+                    ? $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet."
+                    : $"Swap '{swapId}' has {candidates.Count} unspent output(s) at its lockup address " +
+                      $"but none holding the quoted {expected} sats, so none of them is the funding " +
+                      "this swap was promised; refusing to publish the preimage for one of them.");
 
         var coin = contract.ToClaimCoin(intent.WalletId, vtxo, Convert.FromHexString(preimageHex));
 
