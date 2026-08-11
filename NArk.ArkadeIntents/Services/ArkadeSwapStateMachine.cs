@@ -214,10 +214,18 @@ public static class ArkadeSwapStateMachine
     /// <param name="status">Where the swap is.</param>
     /// <returns>The action, or <see cref="ArkadeIntentAction.None"/>.</returns>
     /// <remarks>
+    /// <para>
     /// Only consequences, never decisions. Claiming a funded receive swap and refunding a send swap
     /// past its locktime both follow from the state with nothing left to weigh — the money is
     /// already ours, the window is finite, and no one else is coming. Cancelling a pending asset
     /// swap is a choice: it is still waiting to be filled, which is what was asked for.
+    /// </para>
+    /// <para>
+    /// Both are also callable directly, and this is only the sweep's opinion about them. Neither
+    /// needs a counterparty, which is what makes automating them safe at all — the covenant's other
+    /// refund leaves need the solver's signature and the protocol has no way to ask for one, so
+    /// there is nothing for a timer to attempt there even in principle.
+    /// </para>
     /// </remarks>
     public static ArkadeIntentAction ActionFor(
         ArkadeSwapIntentType type, ArkadeSwapIntentStatus status) => (type, status) switch
