@@ -40,12 +40,68 @@ public enum SwapActor
     Clock,
 }
 
+/// <summary>What happens at a step, as something a program can branch on.</summary>
+/// <remarks>
+/// Named rather than described. A free-text step is prose sitting in a type: nothing can consume it,
+/// nothing stops it drifting, and a caller that wanted to react to a particular step would be
+/// matching on English. These are the distinct things that actually happen, so a UI can label them,
+/// a log can key on them, and a new one cannot be invented by typing a sentence.
+/// </remarks>
+public enum SwapStepKind
+{
+    /// <summary>Choose the preimage and seal it to covclaimd.</summary>
+    SealPreimage,
+
+    /// <summary>Ask a solver for terms.</summary>
+    Negotiate,
+
+    /// <summary>Check what the quote sent back against what was asked for.</summary>
+    VerifyQuote,
+
+    /// <summary>Derive the covenant locally and refuse on any mismatch.</summary>
+    DeriveAndVerifyAddress,
+
+    /// <summary>Apply the safety gates immediately before committing.</summary>
+    Gate,
+
+    /// <summary>Import the contract so the funded script can be rebuilt later.</summary>
+    ImportContract,
+
+    /// <summary>Fund the lockup.</summary>
+    FundLockup,
+
+    /// <summary>Hand the minted invoice to whoever is paying.</summary>
+    PublishInvoice,
+
+    /// <summary>The counterparty funds its side.</summary>
+    CounterpartyFunds,
+
+    /// <summary>The counterparty fills — pays the invoice, or takes the offer.</summary>
+    CounterpartyFills,
+
+    /// <summary>The counterparty claims the lockup with the preimage.</summary>
+    CounterpartyClaims,
+
+    /// <summary>Wait out the refund locktime.</summary>
+    AwaitRefundLocktime,
+
+    /// <summary>Spend the claim, publishing the preimage.</summary>
+    Claim,
+
+    /// <summary>Spend the refund back to our own address.</summary>
+    Refund,
+
+    /// <summary>Take the deposit back by choice.</summary>
+    Cancel,
+}
+
 /// <summary>One step in a corridor's lifecycle.</summary>
 /// <param name="Ordinal">Its position, from 1.</param>
-/// <param name="Name">What happens.</param>
+/// <param name="Kind">What happens.</param>
 /// <param name="Actor">Who makes it happen.</param>
-/// <param name="Leaves">The status the swap sits in once this step is done.</param>
-public sealed record SwapStep(int Ordinal, string Name, SwapActor Actor, ArkadeSwapIntentStatus? Leaves);
+/// <param name="Leaves">The status the swap sits in once this step is done, when it moves it.</param>
+public sealed record SwapStep(
+    int Ordinal, SwapStepKind Kind, SwapActor Actor, ArkadeSwapIntentStatus? Leaves);
 
 /// <summary>
 /// The lifecycle of every Arkade intent swap, in one place: which states exist per corridor, what
@@ -164,41 +220,48 @@ public static class ArkadeSwapStateMachine
     };
 
     /// <summary>
-    /// The ordered steps of a corridor, as documentation the code can be checked against.
+    /// The ordered steps of a corridor: what happens, who does it, and where it leaves the swap.
     /// </summary>
+    /// <remarks>
+    /// Not every step moves the swap — negotiating and verifying leave no trace in storage, and are
+    /// listed anyway because the sequence is the thing a caller needs to reason about. The ones that
+    /// do move it are checked against the transition table by test, so this cannot describe a state
+    /// the machine never reaches.
+    /// </remarks>
     /// <param name="type">Which corridor.</param>
     /// <returns>The steps, in order.</returns>
     public static IReadOnlyList<SwapStep> Steps(ArkadeSwapIntentType type) => type switch
     {
         ArkadeSwapIntentType.BtcToLightning =>
         [
-            new(1, "negotiate terms by RFQ", SwapActor.Client, null),
-            new(2, "derive the covenant locally and refuse on any mismatch", SwapActor.Client, null),
-            new(3, "gate on invoice, quote validity and refund headroom", SwapActor.Client, null),
-            new(4, "import the contract, then fund the lockup", SwapActor.Client, ArkadeSwapIntentStatus.Pending),
-            new(5, "observe the funding and pay the invoice", SwapActor.Solver, null),
-            new(6, "claim with the preimage", SwapActor.Solver, ArkadeSwapIntentStatus.Fulfilled),
-            new(7, "or, unfilled, wait out the refund locktime", SwapActor.Clock, ArkadeSwapIntentStatus.Refundable),
-            new(8, "push the refund to our own address", SwapActor.Client, ArkadeSwapIntentStatus.Cancelled),
+            new(1, SwapStepKind.Negotiate, SwapActor.Client, null),
+            new(2, SwapStepKind.DeriveAndVerifyAddress, SwapActor.Client, null),
+            new(3, SwapStepKind.Gate, SwapActor.Client, null),
+            new(4, SwapStepKind.ImportContract, SwapActor.Client, null),
+            new(5, SwapStepKind.FundLockup, SwapActor.Client, ArkadeSwapIntentStatus.Pending),
+            new(6, SwapStepKind.CounterpartyFills, SwapActor.Solver, null),
+            new(7, SwapStepKind.CounterpartyClaims, SwapActor.Solver, ArkadeSwapIntentStatus.Fulfilled),
+            new(8, SwapStepKind.AwaitRefundLocktime, SwapActor.Clock, ArkadeSwapIntentStatus.Refundable),
+            new(9, SwapStepKind.Refund, SwapActor.Client, ArkadeSwapIntentStatus.Cancelled),
         ],
 
         ArkadeSwapIntentType.LightningToBtc =>
         [
-            new(1, "choose the preimage and seal it to covclaimd", SwapActor.Client, null),
-            new(2, "negotiate terms by RFQ", SwapActor.Client, null),
-            new(3, "check the minted invoice against what was asked for", SwapActor.Client, null),
-            new(4, "derive the covenant locally and refuse on any mismatch", SwapActor.Client, null),
-            new(5, "import the contract and record the preimage", SwapActor.Client, ArkadeSwapIntentStatus.Pending),
-            new(6, "hand the invoice to a payer", SwapActor.Client, null),
-            new(7, "fund the lockup once the payment is held", SwapActor.Solver, ArkadeSwapIntentStatus.Claimable),
-            new(8, "claim, publishing the preimage and settling the invoice", SwapActor.Client, ArkadeSwapIntentStatus.Fulfilled),
+            new(1, SwapStepKind.SealPreimage, SwapActor.Client, null),
+            new(2, SwapStepKind.Negotiate, SwapActor.Client, null),
+            new(3, SwapStepKind.VerifyQuote, SwapActor.Client, null),
+            new(4, SwapStepKind.DeriveAndVerifyAddress, SwapActor.Client, null),
+            new(5, SwapStepKind.ImportContract, SwapActor.Client, ArkadeSwapIntentStatus.Pending),
+            new(6, SwapStepKind.PublishInvoice, SwapActor.Client, null),
+            new(7, SwapStepKind.CounterpartyFunds, SwapActor.Solver, ArkadeSwapIntentStatus.Claimable),
+            new(8, SwapStepKind.Claim, SwapActor.Client, ArkadeSwapIntentStatus.Fulfilled),
         ],
 
         _ =>
         [
-            new(1, "build the offer and fund the covenant", SwapActor.Client, ArkadeSwapIntentStatus.Pending),
-            new(2, "fill the offer", SwapActor.Solver, ArkadeSwapIntentStatus.Fulfilled),
-            new(3, "or cancel it back, which is the caller's decision", SwapActor.Client, ArkadeSwapIntentStatus.Cancelled),
+            new(1, SwapStepKind.FundLockup, SwapActor.Client, ArkadeSwapIntentStatus.Pending),
+            new(2, SwapStepKind.CounterpartyFills, SwapActor.Solver, ArkadeSwapIntentStatus.Fulfilled),
+            new(3, SwapStepKind.Cancel, SwapActor.Client, ArkadeSwapIntentStatus.Cancelled),
         ],
     };
 }
