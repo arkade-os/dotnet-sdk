@@ -14,8 +14,11 @@ public enum LightningReceiveRefusalReason
     /// <summary>The invoice is for a different payment hash than the one requested.</summary>
     WrongPaymentHash,
 
-    /// <summary>The invoice's amount is not what the quote promised to deliver.</summary>
+    /// <summary>The invoice's amount is not the one the quote says the payer owes.</summary>
     AmountMismatch,
+
+    /// <summary>The quote delivers less to us than we asked to receive.</summary>
+    ShortPayout,
 }
 
 /// <summary>Thrown when a client's own checks refuse a receive quote.</summary>
@@ -40,17 +43,29 @@ public static class LightningReceiveGates
     /// </summary>
     /// <param name="quote">The solver's quote.</param>
     /// <param name="expectedPaymentHash">The hash the client requested against, hex.</param>
+    /// <param name="requestedPayoutSats">What the client asked to receive on Arkade.</param>
     /// <param name="network">The network to decode on.</param>
     /// <returns>The decoded invoice.</returns>
     /// <exception cref="LightningReceiveNotUsableException">The invoice is missing, wrong or unusable.</exception>
     /// <remarks>
+    /// <para>
     /// The invoice is the one thing here a third party acts on, so it is checked rather than
     /// trusted. A wrong payment hash would be an invoice the client's own preimage can never settle
-    /// — the payer's money would move and the swap still could not complete. A wrong amount would
-    /// have the payer send a sum the swap does not deliver.
+    /// — the payer's money would move and the swap still could not complete.
+    /// </para>
+    /// <para>
+    /// The two amounts are checked against different things, and mixing them up is easy: on this
+    /// corridor <c>from_amount</c> is what the PAYER owes, so it is what the invoice must say, while
+    /// <c>to_amount</c> is what lands on Arkade. They differ by the solver's fee, so comparing the
+    /// invoice against the payout would refuse every quote that charges anything — and comparing the
+    /// payout against nothing would accept a quote that quietly delivers less than was asked for.
+    /// </para>
     /// </remarks>
     public static BOLT11PaymentRequest VerifyInvoice(
-        RfqQuote<LightningReceiveQuoteProfile> quote, string expectedPaymentHash, Network network)
+        RfqQuote<LightningReceiveQuoteProfile> quote,
+        string expectedPaymentHash,
+        long requestedPayoutSats,
+        Network network)
     {
         if (quote.Profile?.Invoice is not { Length: > 0 } raw)
         {
@@ -80,11 +95,18 @@ public static class LightningReceiveGates
         }
 
         var invoiceSats = decoded.MinimumAmount.ToUnit(LightMoneyUnit.Satoshi);
-        if (invoiceSats != quote.ToAmount)
+        if (invoiceSats != quote.FromAmount)
         {
             throw new LightningReceiveNotUsableException(
                 LightningReceiveRefusalReason.AmountMismatch,
-                $"the invoice asks for {invoiceSats} sats but the quote delivers {quote.ToAmount}");
+                $"the invoice asks the payer for {invoiceSats} sats but the quote says {quote.FromAmount}");
+        }
+
+        if (quote.ToAmount < requestedPayoutSats)
+        {
+            throw new LightningReceiveNotUsableException(
+                LightningReceiveRefusalReason.ShortPayout,
+                $"the quote delivers {quote.ToAmount} sats, less than the {requestedPayoutSats} asked for");
         }
 
         return decoded;
