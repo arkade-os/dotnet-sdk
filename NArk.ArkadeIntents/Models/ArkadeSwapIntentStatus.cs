@@ -6,6 +6,17 @@ namespace NArk.ArkadeIntents.Models;
 /// </summary>
 public enum ArkadeSwapIntentStatus
 {
+    /// <summary>
+    /// The swap is recorded and its funding spend is in flight, or its outcome is not yet known.
+    /// </summary>
+    /// <remarks>
+    /// Written BEFORE the money moves, which is the only ordering that cannot lose a swap: a crash
+    /// after funding but before recording would otherwise leave funds in a script nothing is
+    /// watching. The cost is the opposite and much cheaper case — a row for a spend that never
+    /// landed, which reconciliation can see precisely because the row exists.
+    /// </remarks>
+    Funding,
+
     /// <summary>Deposit funded; waiting for the solver to fill (or for expiry).</summary>
     Pending,
 

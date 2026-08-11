@@ -10,14 +10,12 @@ using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NArk.ArkadeIntents.Models;
-using NArk.ArkadeIntents.Rfq;
 using NArk.Core;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Core.Contracts;
 using NBitcoin;
 using NBitcoin.Scripting;
-using NBitcoin.Secp256k1;
 
 namespace NArk.ArkadeIntents.Lightning;
 
@@ -184,19 +182,19 @@ public sealed class LightningSwapClient
             metadata: new Dictionary<string, string> { ["Source"] = $"lightning-swap:{request.RfqId}" },
             cancellationToken: cancellationToken);
 
-        var txid = await _spendingService.Spend(
-            walletId,
-            [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(quote.FromAmount), lockupArkAddress)],
-            cancellationToken);
-
-        await _intentStorage.SaveArkadeSwapIntent(new ArkadeSwapIntent
+        // Recorded BEFORE the spend, and deliberately so. The contract import above makes the
+        // funded script rebuildable; this makes the swap FINDABLE. Without it a crash between the
+        // spend and the record leaves money in a covenant that nothing is watching and no sweep
+        // knows to look for — the one failure here with no way back. The reverse mistake, a row for
+        // a spend that never landed, costs nothing and is exactly what reconciliation can spot.
+        var intent = new ArkadeSwapIntent
         {
             Id = request.RfqId,
             WalletId = walletId,
             Type = ArkadeSwapIntentType.BtcToLightning,
             OfferAmount = Money.Satoshis(quote.FromAmount),
             WantAmount = Money.Satoshis(quote.ToAmount),
-            Status = ArkadeSwapIntentStatus.Pending,
+            Status = ArkadeSwapIntentStatus.Funding,
             CreatedAt = _time.GetUtcNow(),
             SwapPkScript = lockupArkAddress.ScriptPubKey.ToHex(),
             SwapAddress = lockupAddress,
@@ -208,7 +206,16 @@ public sealed class LightningSwapClient
             Invoice = invoice,
             PaymentHash = decoded.PaymentHash.ToString(),
             RefundLocktime = quote.RefundLocktime,
-        }, cancellationToken);
+        };
+        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+        var txid = await _spendingService.Spend(
+            walletId,
+            [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(quote.FromAmount), lockupArkAddress)],
+            cancellationToken);
+
+        intent.Status = ArkadeSwapIntentStatus.Pending;
+        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         return new FundedLightningSwap(
             RfqId: request.RfqId,

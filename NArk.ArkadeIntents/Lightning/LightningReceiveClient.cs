@@ -1,4 +1,3 @@
-using BTCPayServer.Lightning;
 using NArk.Abstractions;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
@@ -16,7 +15,6 @@ using NArk.Core.Services;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
-using NBitcoin.Secp256k1;
 
 namespace NArk.ArkadeIntents.Lightning;
 
