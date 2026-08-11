@@ -24,10 +24,21 @@ public class ArkadeSwapStateMachineTests
     // ─── Send: arkade → lightning ─────────────────────────────────────
 
     [Test]
-    public void Send_SpentBeforeTheLocktime_CanOnlyBeTheFill()
+    public void Send_SpentWithAProvenPreimage_IsTheFill()
     {
-        // The refund leaf is not spendable yet, so nothing else could have moved it.
-        Assert.That(Next(Send, Pending, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        // The only thing that proves a fill. A fill cannot happen without the preimage being
+        // revealed, and the preimage is checkable against the payment hash.
+        Assert.That(Next(Send, Pending, Filled(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+    }
+
+    [Test]
+    public void Send_SpentWithNoPreimage_IsNotReadAsAPayment()
+    {
+        // The counterparty can push the covenant's non-interactive refund at any moment — it carries
+        // no timelock — so a spend before the deadline is not proof of anything. Calling it a fill
+        // reports a refunded payment as a completed one, which downstream means an order settled
+        // against money that came back.
+        Assert.That(Next(Send, Pending, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
     }
 
     [Test]
@@ -95,9 +106,19 @@ public class ArkadeSwapStateMachineTests
     }
 
     [Test]
-    public void Receive_SpentBeforeTheDeadline_IsOurClaimLanding()
+    public void Receive_SpentWithAProvenPreimage_IsOurClaimLanding()
     {
-        Assert.That(Next(Receive, Claimable, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        // Our own claim is what publishes the preimage here, so the same proof applies from the
+        // other side of the corridor.
+        Assert.That(Next(Receive, Claimable, Filled(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+    }
+
+    [Test]
+    public void Receive_SpentWithNoPreimage_IsTheSolverReclaiming()
+    {
+        // The solver's own recourse leaves no preimage behind, and taking it for delivery would
+        // credit us with sats that went back to the counterparty.
+        Assert.That(Next(Receive, Claimable, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
     }
 
     [Test]
@@ -231,7 +252,7 @@ public class ArkadeSwapStateMachineTests
             Pending,
             ArkadeSwapIntentStatus.Cancelling,
         };
-        var observations = new[] { Open(Before), Open(After), Spent(Before), Spent(After), Swept(Before) };
+        var observations = new[] { Open(Before), Open(After), Spent(Before), Spent(After), Filled(Before), Swept(Before) };
 
         for (var settled = false; !settled;)
         {
@@ -261,7 +282,13 @@ public class ArkadeSwapStateMachineTests
         ArkadeSwapStateMachine.Next(type, current, o);
 
     private static SwapObservation Open(long now) => new(Spent: false, Swept: false, now, Locktime);
+
+    /// <summary>Spent, with nothing proving who moved it.</summary>
     private static SwapObservation Spent(long now) => new(Spent: true, Swept: false, now, Locktime);
+
+    /// <summary>Spent by a transaction that revealed this swap's preimage.</summary>
+    private static SwapObservation Filled(long now) =>
+        new(Spent: true, Swept: false, now, Locktime, PreimageRevealed: true);
     private static SwapObservation Swept(long now) => new(Spent: false, Swept: true, now, Locktime);
 
     [Test]

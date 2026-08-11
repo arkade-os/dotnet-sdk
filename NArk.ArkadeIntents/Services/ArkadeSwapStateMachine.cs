@@ -10,15 +10,22 @@ namespace NArk.ArkadeIntents.Services;
 /// <param name="RefundLocktime">
 /// Unix seconds at which the covenant's timelocked path opens, when the corridor has one.
 /// </param>
-public readonly record struct SwapObservation(bool Spent, bool Swept, long Now, long? RefundLocktime)
+/// <param name="PreimageRevealed">
+/// Whether the transaction that spent the lockup carried a preimage hashing to this swap's payment
+/// hash. Supplied by the caller, which is the only party that knows the hash to check against.
+/// </param>
+public readonly record struct SwapObservation(
+    bool Spent, bool Swept, long Now, long? RefundLocktime, bool PreimageRevealed = false)
 {
     /// <summary>Read an observation off a VTXO.</summary>
     /// <param name="vtxo">The lockup output.</param>
     /// <param name="now">Unix seconds.</param>
     /// <param name="refundLocktime">The corridor's refund locktime, if it has one.</param>
+    /// <param name="preimageRevealed">Whether the spend proved a preimage for this swap.</param>
     /// <returns>The observation.</returns>
-    public static SwapObservation From(ArkVtxo vtxo, long now, long? refundLocktime) =>
-        new(vtxo.IsSpent(), vtxo.Swept, now, refundLocktime);
+    public static SwapObservation From(
+        ArkVtxo vtxo, long now, long? refundLocktime, bool preimageRevealed = false) =>
+        new(vtxo.IsSpent(), vtxo.Swept, now, refundLocktime, preimageRevealed);
 
     /// <summary>True once the timelocked path is open.</summary>
     public bool PastLocktime => RefundLocktime is { } t && Now >= t;
@@ -168,12 +175,15 @@ public static class ArkadeSwapStateMachine
     private static ArkadeSwapIntentStatus SpentInto(ArkadeSwapIntentType type, SwapObservation o) =>
         type switch
         {
-            // Both Lightning corridors carry a refund leaf, so the same spend means different things
-            // either side of its deadline. Before it, only one party could have moved and the swap
-            // is done; at or after it, both paths are live and attributing the spend needs the
-            // witness, so the outcome is reported rather than guessed.
+            // A Lightning swap is filled only when a preimage proves it. Nothing else does: the
+            // counterparty can push the covenant's non-interactive refund at any time — it carries no
+            // timelock — so a spent lockup on its own says the script moved, not who moved it or why.
+            // Reading a spend as a fill would report a payment that was refunded as one that
+            // completed, which in a payment processor means an order settled against money that came
+            // back. A fill cannot happen without the preimage being revealed, and the preimage is
+            // checkable against the payment hash, so this is provable rather than inferred.
             ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc =>
-                o.PastLocktime ? ArkadeSwapIntentStatus.Resolved : ArkadeSwapIntentStatus.Fulfilled,
+                o.PreimageRevealed ? ArkadeSwapIntentStatus.Fulfilled : ArkadeSwapIntentStatus.Resolved,
 
             // The asset corridors have no such leaf: a spend can only be the fill.
             _ => ArkadeSwapIntentStatus.Fulfilled,

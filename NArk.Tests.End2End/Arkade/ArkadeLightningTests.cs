@@ -292,7 +292,7 @@ public class ArkadeLightningTests
         // The asset corridor is not exercised here, so its client is left out rather than
         // constructed to satisfy a signature.
         var intents = new ArkadeIntentsService(
-            null!, send, receive, intentStorage, w.vtxoStorage, TimeProvider.System);
+            null!, send, receive, intentStorage, w.vtxoStorage, w.clientTransport, TimeProvider.System);
 
         var solver = new Uri(solverUrl!.EndsWith('/') ? solverUrl : solverUrl + "/");
         var rfq = new HttpRfqTransport(new HttpClient(), solver);

@@ -1,4 +1,6 @@
 using NArk.Abstractions;
+using NSubstitute;
+using NArk.Core.Transport;
 using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Models;
@@ -87,8 +89,11 @@ public class ArkadeIntentsReconciliationTests
     }
 
     [Test]
-    public async Task ASwapFilledWhileWeWereDown_RecordsTheSpend()
+    public async Task ASpentLightningLockup_IsNotAssumedFilled()
     {
+        // The spend is recorded, but nothing here proves who moved it: the counterparty can push the
+        // covenant's untimelocked refund at any time. Reading this as a fill would report a refunded
+        // payment as a completed one — an order settled against money that came back.
         var (service, storage) = Build(
             Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending),
             Vtxo(spentBy: "spendtx", arkTxid: "arktx"));
@@ -97,7 +102,7 @@ public class ArkadeIntentsReconciliationTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(result.Updated.Single().To, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(result.Updated.Single().To, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
             Assert.That(storage.Saved.Single().SpentTxid, Is.EqualTo("arktx"));
         });
     }
@@ -139,6 +144,21 @@ public class ArkadeIntentsReconciliationTests
 
     private static FakeVtxos _lastVtxos = new(null);
 
+    /// <summary>
+    /// A transport that yields no transactions, so nothing can be proven from a spend.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately silent rather than fabricating a witness: what these tests pin is that an
+    /// unproven spend is never read as a fill.
+    /// </remarks>
+    private static IClientTransport SilentTransport()
+    {
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>([]));
+        return transport;
+    }
+
     private static (ArkadeIntentsService, FakeIntents) Build(ArkadeSwapIntent intent, ArkVtxo? vtxo)
     {
         var intents = new FakeIntents(intent);
@@ -147,7 +167,8 @@ public class ArkadeIntentsReconciliationTests
 
         // Only the storages and the clock take part in reconciliation; the corridor clients are
         // never reached, so they are left null rather than mocked into existence.
-        return (new ArkadeIntentsService(null!, null!, null!, intents, vtxos, clock), intents);
+        return (new ArkadeIntentsService(
+            null!, null!, null!, intents, vtxos, SilentTransport(), clock), intents);
     }
 
     private static ArkadeSwapIntent Intent(ArkadeSwapIntentType type, ArkadeSwapIntentStatus status) => new()
