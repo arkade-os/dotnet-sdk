@@ -360,7 +360,7 @@ public sealed class LightningSwapClient
             // Roles are positional: on this corridor the maker sends and the solver receives.
             sender: clientRefund,
             receiver: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
-            new uint160(SwapScriptValues.PreimageHashFromPaymentHash(invoice.PaymentHash.ToBytes()), false),
+            new uint160(SwapScriptValues.PreimageHashFromPaymentHash(invoice.PaymentHash), false),
             new LockTime(checked((uint)quote.RefundLocktime)),
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
