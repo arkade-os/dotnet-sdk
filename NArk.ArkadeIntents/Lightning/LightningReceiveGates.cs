@@ -85,7 +85,9 @@ public static class LightningReceiveGates
                 $"the quote's invoice will not decode: {e.Message}");
         }
 
-        var hash = Convert.ToHexString(decoded.PaymentHash.ToBytes()).ToLowerInvariant();
+        // ToString() renders big-endian, the order a payment hash is written and compared in;
+        // ToBytes() would hand back the reverse and make every comparison here fail.
+        var hash = decoded.PaymentHash.ToString().ToLowerInvariant();
         if (hash != expectedPaymentHash.ToLowerInvariant())
         {
             throw new LightningReceiveNotUsableException(

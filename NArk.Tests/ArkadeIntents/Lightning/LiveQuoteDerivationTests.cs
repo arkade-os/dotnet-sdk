@@ -59,6 +59,43 @@ public class LiveQuoteDerivationTests
         Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(QuotedLockupAddress));
     }
 
+    // ─── A send quote whose two covenant destinations actually differ ───
+
+    // Captured 2026-08-11 from the same stack, with the trader's refund address on a wallet of its
+    // own. That is the whole point of this second vector: in the transcript above the trader and the
+    // solver happened to share an address, so `nonInteractiveClaim` and `nonInteractiveRefund` were
+    // pinned to the same script and the two could be swapped with no visible effect. A vector that
+    // cannot tell two inputs apart cannot catch them being confused.
+    private const string DistinctPaymentHash = "22fa82b7a24a4907c3955ca1044b4eef7a4e30aab0dfa96eae8e6435500fb5f4";
+    private const string SolverClaimPkScript = "5120ec250c5be12707c56bee7a263fb1495e0fbdb733c9eb35a53b5e57e1e2ec2534";
+    private const string TraderRefundPkScript = "5120535e2e7fb7a3fa9b3be74b13b813261497e3ad8a9d61cc45d233b4e0d21a7e73";
+    private const uint DistinctRefundLocktime = 1786771492;
+
+    private const string DistinctQuotedAddress =
+        "tark1qr340xg400jtxat9hdd0ungyu6s05zjtdf85uj9smyzxshf98ndahaxvrkkd9cur3mwaagmq6sq49s3d8ed3gtdcjutx5cv0d3ysnytya2kpzq";
+
+    [Test]
+    public void OurDerivation_KeepsTheTwoCovenantDestinationsApart()
+    {
+        var claim = SwapScriptValues.CeilToGranularity(OperatorExitDelay);
+
+        var contract = new VHTLCv2Contract(
+            Descriptor(ArkdSigner),
+            sender: Descriptor("02" + ClientRefundPubkey),
+            receiver: Descriptor("02" + SolverPubkey),
+            new uint160(SwapScriptValues.PreimageHashFromPaymentHash(Convert.FromHexString(DistinctPaymentHash)), false),
+            new LockTime(DistinctRefundLocktime),
+            new Sequence(TimeSpan.FromSeconds(claim)),
+            new Sequence(TimeSpan.FromSeconds(claim + SwapScriptValues.SequenceGranularitySeconds)),
+            new Sequence(TimeSpan.FromSeconds(claim + 2 * SwapScriptValues.SequenceGranularitySeconds)),
+            ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
+            // The solver's payout pins the claim leaf; the trader's own address pins the refund leaf.
+            nonInteractiveClaimPkScript: Convert.FromHexString(SolverClaimPkScript),
+            nonInteractiveRefundPkScript: Convert.FromHexString(TraderRefundPkScript));
+
+        Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(DistinctQuotedAddress));
+    }
+
     // ─── The receive corridor, same stack, captured after the solver began routing it ───
 
     private const string ReceivePaymentHash = "deb0e38ced1e41de6f92e70e80c418d2d356afaaa99e26f5939dbc7d3ef4772a";

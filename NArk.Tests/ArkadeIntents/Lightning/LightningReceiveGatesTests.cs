@@ -25,9 +25,7 @@ public class LightningReceiveGatesTests
         var decoded = LightningReceiveGates.VerifyInvoice(
             Quote(Invoice, AmountSats), PaymentHashOfInvoice, AmountSats, Network.RegTest);
 
-        Assert.That(
-            Convert.ToHexString(decoded.PaymentHash.ToBytes()).ToLowerInvariant(),
-            Is.EqualTo(PaymentHashOfInvoice));
+        Assert.That(decoded.PaymentHash.ToString().ToLowerInvariant(), Is.EqualTo(PaymentHashOfInvoice));
     }
 
     [Test]
@@ -120,7 +118,16 @@ public class LightningReceiveGatesTests
         "lnbcrt500000n1p480splpp5curkvkad252gsynvrp5fj4q7m9rhh4cq5n085v6nfdfrpgzdpe9qxqr8pqcqpj4q5dgd" +
         "snq6g3gpln7hxmy44dkzesuejn5hg3qjvw7m55a7qgj5d4a98807l23tr2xsy3k0ula655raayenf5l88twhhsv2lu2nt0l5qpvm7x0y";
 
+    /// <summary>
+    /// The invoice's payment hash the way a payment hash is actually written.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately <c>ToString()</c> and not <c>ToBytes()</c>. <see cref="uint256"/> hands out its
+    /// bytes little-endian, and an earlier version of this fixture took them that way — the same call
+    /// the code under test was making, so the two agreed on a reversed hash and the test could not
+    /// have failed on it. It took a real solver to disagree. Building the expectation the way the
+    /// counterparty writes it is what makes this a check rather than an echo.
+    /// </remarks>
     private static readonly string PaymentHashOfInvoice =
-        Convert.ToHexString(BOLT11PaymentRequest.Parse(Invoice, Network.RegTest).PaymentHash.ToBytes())
-            .ToLowerInvariant();
+        BOLT11PaymentRequest.Parse(Invoice, Network.RegTest).PaymentHash.ToString().ToLowerInvariant();
 }

@@ -43,7 +43,11 @@ public sealed class LockupAddressMismatchException : Exception
     /// <param name="derived">The address the maker derived from its own data.</param>
     /// <param name="quoted">The address the solver sent for comparison.</param>
     public LockupAddressMismatchException(string derived, string? quoted)
-        : base("solver's lockup address does not match the local derivation — refusing to fund")
+        // Both addresses belong in the message. A mismatch is a derivation disagreement, and the
+        // first thing anyone needs is the two strings side by side — a bare "they differ" turns a
+        // one-glance diff into a debugging session, at exactly the moment funding is on the line.
+        : base("solver's lockup address does not match the local derivation — refusing to fund. " +
+               $"derived {derived}, quoted {quoted ?? "<none>"}")
     {
         Derived = derived;
         Quoted = quoted;
