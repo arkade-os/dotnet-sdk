@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents.Lightning;
+using NArk.Core.Transport;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
 
@@ -67,6 +68,7 @@ public sealed class ArkadeIntentsService
     private readonly LightningReceiveClient _lightningReceive;
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IVtxoStorage _vtxoStorage;
+    private readonly IClientTransport _transport;
     private readonly TimeProvider _time;
     private readonly ILogger<ArkadeIntentsService>? _logger;
 
@@ -84,6 +86,7 @@ public sealed class ArkadeIntentsService
         LightningReceiveClient lightningReceive,
         IArkadeIntentStorage intentStorage,
         IVtxoStorage vtxoStorage,
+        IClientTransport transport,
         TimeProvider? time = null,
         ILogger<ArkadeIntentsService>? logger = null)
     {
@@ -92,6 +95,7 @@ public sealed class ArkadeIntentsService
         _lightningReceive = lightningReceive;
         _intentStorage = intentStorage;
         _vtxoStorage = vtxoStorage;
+        _transport = transport;
         _time = time ?? TimeProvider.System;
         _logger = logger;
     }
@@ -301,6 +305,30 @@ public sealed class ArkadeIntentsService
     /// Run this at startup, before the first <see cref="AdvanceAllAsync"/>, or the sweep acts on a
     /// picture that stopped being true when the process did.
     /// </remarks>
+    /// <summary>
+    /// The preimage the spend of a lockup revealed, if it revealed one.
+    /// </summary>
+    /// <remarks>
+    /// Answers <c>null</c> for anything that is not a spent Lightning swap with a payment hash to
+    /// check against: there is nothing to prove in those cases, and asking the indexer for a
+    /// transaction that cannot help is a round trip spent on a foregone answer.
+    /// </remarks>
+    private async Task<byte[]?> RevealedPreimageAsync(
+        ArkadeSwapIntent intent, ArkVtxo lockup, CancellationToken cancellationToken)
+    {
+        if (!lockup.IsSpent()
+            || intent.PaymentHash is not { Length: > 0 } hash
+            || intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc))
+        {
+            return null;
+        }
+
+        var spender = lockup.SpentByTransactionId ?? lockup.SettledByTransactionId;
+        return spender is not { Length: > 0 }
+            ? null
+            : await SwapPreimageReader.FindAsync(_transport, lockup.OutPoint, spender, hash, cancellationToken);
+    }
+
     public async Task<ArkadeReconciliation> ReconcileAsync(
         string? walletId = null, CancellationToken cancellationToken = default)
     {
