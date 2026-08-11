@@ -294,15 +294,10 @@ public sealed class LightningReceiveClient
         return intent;
     }
 
-    /// <summary>
-    /// Build the funding contract from the quote's binding fields and the client's own data.
-    /// </summary>
-    /// <remarks>
-    /// Roles invert here relative to the send leg: the solver funds, so it is the covenant's
-    /// <c>sender</c>, and the client claims, so it is the <c>receiver</c>. The two covenant payout
-    /// destinations follow them — <c>nonInteractiveClaim</c> pays the client, <c>nonInteractiveRefund</c>
-    /// pays the solver.
-    /// </remarks>
+    // Build the funding contract from the quote's binding fields and the client's own data. Roles
+    // invert here relative to the send leg: the solver funds, so it is the covenant's
+    // destinations follow them — <c>nonInteractiveClaim</c> pays the client,
+    // <c>nonInteractiveRefund</c> pays the solver.
     private async Task<VHTLCv2Contract> DeriveLockupAsync(
         RfqQuote<LightningReceiveQuoteProfile> quote,
         string paymentHash,
