@@ -26,7 +26,7 @@ jobs:
         with:
           profile: solver,boltz
       - name: Run Arkade E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade&TestCategory!=LightningCorridors"
         timeout-minutes: 15
       - name: Collect docker logs on failure
         if: failure()

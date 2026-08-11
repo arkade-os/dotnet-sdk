@@ -7,6 +7,7 @@ using NArk.Core.CoinSelector;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Tests.End2End.Common;
+using NBitcoin.Secp256k1;
 
 namespace NArk.Tests.End2End.Arkade;
 
@@ -129,6 +130,61 @@ internal static class SolverLiquidityHelper
             $"solver did not report inventory for freshly-funded asset {assetId} plus a spendable " +
             $"{btcLiquidity}-sat VTXO within 90s (check the sends confirmed and the pair registered " +
             "with the right decimals)");
+    }
+
+    /// <summary>
+    /// Makes sure a solver holds an unencumbered VTXO it can pay a swap out of, funding one if not.
+    /// </summary>
+    /// <param name="serverKey">The Arkade server's signer key, to rebuild the solver's address.</param>
+    /// <param name="solverPkScriptHex">The solver's own payout script, as a quote reports it.</param>
+    /// <param name="sats">How much spendable float the corridor needs.</param>
+    /// <param name="ct">Cancels the top-up.</param>
+    /// <returns>True if the solver ends up funded.</returns>
+    /// <remarks>
+    /// <para>
+    /// The Lightning corridors need this for the receive direction only, and only because the solver
+    /// pays out first there: it funds the Arkade lockup before the invoice it is owed has settled, so
+    /// a solver whose float is bound up in coins it is still settling refuses with
+    /// <c>insufficient_unreserved_balance</c> and the swap simply never appears. Waiting it out is not
+    /// a fix — the float frees on the operator's settlement schedule, not the test's.
+    /// </para>
+    /// <para>
+    /// Call it after the quote and before paying the invoice. That window is the right one: the quote
+    /// is what reveals the solver's own script, and the solver does not fund until the payment lands,
+    /// so topping up in between is early enough to matter and late enough to be possible.
+    /// </para>
+    /// </remarks>
+    internal static async Task<bool> EnsureBtcFloat(
+        ECXOnlyPubKey serverKey, string solverPkScriptHex, ulong sats, CancellationToken ct = default)
+    {
+        // Check before funding a wallet to pay with: standing one up costs an on-chain fund and a
+        // settle, and a solver that is already liquid needs neither.
+        var probe = await FundedWalletHelper.GetFundedWallet(vtxoCount: 1, amountSatsPerVtxo: 1_000);
+        if (await HasSpendableSats(probe.clientTransport, solverPkScriptHex, sats, ct)) return true;
+
+        var funder = await FundedWalletHelper.GetFundedWallet(
+            vtxoCount: 1, amountSatsPerVtxo: checked((int)(sats + 500_000)));
+
+        var solverAddress = ArkAddress.FromScriptPubKey(
+            new NBitcoin.Script(Convert.FromHexString(solverPkScriptHex)), serverKey);
+
+        var coinService = new CoinService(funder.clientTransport, funder.contracts,
+            [new NArk.Core.Transformers.PaymentContractTransformer(funder.walletProvider)]);
+        var spending = new SpendingService(
+            funder.vtxoStorage, funder.contracts, funder.walletProvider, coinService, funder.contractService,
+            funder.clientTransport, new DefaultCoinSelector(), funder.safetyService,
+            TestPersistance.TestStorage.CreateIntentStorage());
+
+        await spending.Spend(funder.walletIdentifier,
+            [new ArkTxOut(ArkTxOutType.Vtxo, NBitcoin.Money.Satoshis(sats), solverAddress)], ct);
+
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(90);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await HasSpendableSats(funder.clientTransport, solverPkScriptHex, sats, ct)) return true;
+            await Task.Delay(1000, ct);
+        }
+        return false;
     }
 
     /// <summary>True once the solver's address holds an unspent, unswept VTXO of at least <paramref name="sats"/>.</summary>
