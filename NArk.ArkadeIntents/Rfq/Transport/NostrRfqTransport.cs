@@ -215,8 +215,11 @@ public sealed class NostrRfqTransport : IRfqTransport, IDisposable
                     }
                     continue;
 
-                // The relay tore down a subscription we still believe is live.
-                case "CLOSED" when message.Count >= 2 && message[1]?.GetValue<string>() == publishedId:
+                // The relay tore down a subscription we still believe is live. No id check: this
+                // socket carries exactly one subscription, so every CLOSED on it is ours. An earlier
+                // guard compared the frame's subscription id against the published event id — two
+                // different identifiers that never match — and the case below did the same thing
+                // anyway, so it described a distinction that did not exist.
                 case "CLOSED":
                     throw new NostrRelayException(
                         $"the relay closed our subscription: {message.ElementAtOrDefault(2)?.GetValue<string>() ?? "no reason given"}");
