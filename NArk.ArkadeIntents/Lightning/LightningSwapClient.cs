@@ -321,23 +321,11 @@ public sealed class LightningSwapClient
     public static ArkAddress RefundAddressOf(VHTLCv2Contract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey) =>
         ArkAddress.FromScriptPubKey(new Script(contract.NonInteractiveRefundPkScript), serverKey);
 
-    /// <summary>
-    /// Build the swap contract from the quote's binding fields and the maker's own data.
-    /// </summary>
-    /// <param name="quote">The solver's quote — only its binding fields are read.</param>
-    /// <param name="invoice">The decoded invoice, the source of the payment hash.</param>
-    /// <param name="refundPkScript">The maker's own P2TR scriptPubKey.</param>
-    /// <param name="clientRefund">The maker's own key for the covenant's client-side leaves.</param>
-    /// <param name="serverInfo">The Arkade server's own terms.</param>
-    /// <param name="cancellationToken">Cancels the emulator fetch.</param>
-    /// <returns>The derived contract.</returns>
-    /// <remarks>
-    /// The one value taken from the quote's non-binding half is
-    /// <see cref="LightningSendQuoteProfile.ReceiverPkScript"/>, and only because every leaf feeds
-    /// the merkle root: without the solver's own claim destination there is no way to reproduce the
-    /// address at all. It is safe to take because that leaf pays the solver — a wrong value costs
-    /// the solver a spending path and the maker nothing.
-    /// </remarks>
+    // Builds the contract from the quote's binding fields and the maker's own data. The one value
+    // taken from the non-binding half is `receiver_pk_script`, and only because every leaf feeds the
+    // merkle root: without the solver's own claim destination the address cannot be reproduced at
+    // all. Safe to take, because that leaf pays the solver — a wrong value costs it a spending path
+    // and the maker nothing.
     private async Task<VHTLCv2Contract> DeriveLockupAsync(
         RfqQuote<LightningSendQuoteProfile> quote,
         BOLT11PaymentRequest invoice,
@@ -369,10 +357,9 @@ public sealed class LightningSwapClient
             nonInteractiveRefundPkScript: refundPkScript);
     }
 
-    /// <summary>
-    /// The wallet-owned descriptor behind a derived receive contract — the key the covenant's
-    /// client-side refund leaves are built around, and the one that signs them.
-    /// </summary>
+    // The key the covenant's client-side refund leaves are built around, and the one that signs
+    // them: the same descriptor that owns the refund destination, so the party who can push the
+    // refund is exactly the party it pays.
     private static OutputDescriptor ClientRefundDescriptorOf(ArkContract receive) =>
         receive is ArkPaymentContract payment
             ? payment.User

@@ -61,23 +61,25 @@ public static class LightningCorridor
     /// <returns>The x-only key the covenant commits to.</returns>
     /// <exception cref="ArgumentException">The bytes are not a key in either encoding.</exception>
     /// <remarks>
-    /// Parses a 33-byte input rather than trusting its length. Slicing the first byte off any 33-byte
-    /// blob yields 32 bytes that look like a key and are not one — the first 33 bytes of an
-    /// uncompressed point, say — and the covenant would then commit to a co-signer nobody holds.
-    /// Nothing downstream can notice: the script is well formed and the address is ordinary. On these
-    /// corridors the address check catches it before funding, but that is a second line, not this
-    /// one's job, and the asset corridor has no counterparty address to compare against at all.
+    /// Parsed, not sliced. Taking the first byte off any 33-byte blob yields 32 bytes shaped exactly
+    /// like a key — the head of an uncompressed point, say — and the covenant would then commit to a
+    /// co-signer nobody holds, in a script that is well formed and an address that looks ordinary.
     /// </remarks>
     public static ECXOnlyPubKey NormalizeToXOnly(byte[] pubkey)
     {
-        if (pubkey.Length == 32) return ECXOnlyPubKey.Create(pubkey);
-        if (pubkey.Length == 33 && ECPubKey.TryCreate(pubkey, Context.Instance, out _, out var compressed))
+        if (pubkey.Length == 32)
         {
-            return compressed.ToXOnlyPubKey();
+            return ECXOnlyPubKey.Create(pubkey);
+        }
+        if (pubkey.Length == 33)
+        {
+            return ECPubKey.TryCreate(pubkey, Context.Instance, out _, out var compressed)
+                ? compressed.ToXOnlyPubKey()
+                : throw new ArgumentException("not a valid compressed public key", nameof(pubkey));
         }
         throw new ArgumentException(
-            $"expected a 32-byte x-only or 33-byte compressed public key, got {pubkey.Length} bytes" +
-            (pubkey.Length == 33 ? " that do not parse as one" : ""), nameof(pubkey));
+            $"expected a 32-byte x-only or 33-byte compressed public key, got {pubkey.Length} bytes",
+            nameof(pubkey));
     }
 
     /// <summary>Wrap a counterparty's x-only key as a descriptor.</summary>
