@@ -160,6 +160,26 @@ public sealed class ArkadeIntentsService
         (await _intentStorage.GetArkadeSwapIntents(cancellationToken: cancellationToken))
         .FirstOrDefault(s => s.Id == swapId);
 
+    /// <summary>
+    /// Ask the solver where it thinks a negotiation stands.
+    /// </summary>
+    /// <typeparam name="TStatusProfile">The corridor's status-profile shape.</typeparam>
+    /// <param name="swapId">The correlation id the negotiation was opened under.</param>
+    /// <param name="rfqTransport">How to reach the solver.</param>
+    /// <param name="cancellationToken">Cancels the round trip.</param>
+    /// <returns>The solver's view, or <c>null</c> when it has no record.</returns>
+    /// <remarks>
+    /// Diagnostic only, and never the money path — a funded swap is observable on-chain whether or
+    /// not the solver answers, which is why nothing here acts on the reply. What it adds is the one
+    /// thing the chain cannot express: WHY nothing has happened. Refused, expired and not-yet all
+    /// look identical from our side, and only the counterparty can tell them apart.
+    /// </remarks>
+    public Task<RfqStatus<TStatusProfile>?> GetSolverStatusAsync<TStatusProfile>(
+        string swapId,
+        IRfqTransport rfqTransport,
+        CancellationToken cancellationToken = default) =>
+        rfqTransport.GetStatusAsync<TStatusProfile>(swapId, cancellationToken);
+
     // ─── Acting ───────────────────────────────────────────────────────
 
     /// <summary>Cancel a pending asset swap and take the deposit back.</summary>
