@@ -15,6 +15,7 @@ using NArk.Core.Services;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
+using NArk.ArkadeIntents.SolverRegistry;
 
 namespace NArk.ArkadeIntents.Lightning;
 
@@ -128,6 +129,7 @@ public sealed class LightningReceiveClient
         long amountSats,
         IRfqTransport rfqTransport,
         string covclaimdPubKey,
+        SolverCard? solverCard = null,
         CancellationToken cancellationToken = default)
     {
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
@@ -153,9 +155,24 @@ public sealed class LightningReceiveClient
             Convert.ToHexString(payoutDescriptor.ToXOnlyPubKey().ToBytes()).ToLowerInvariant(),
             sealed_.Packet);
 
+        // Asked before the request: a size outside the advertised range is one the solver refuses
+        // anyway, and its refusal cannot say by how much.
+        if (solverCard is not null)
+        {
+            SolverTerms.AssertWithinLimits(solverCard, LightningReceiveProfile.Pair, amountSats);
+        }
+
         var quote = await rfqTransport
             .RequestQuoteAsync<LightningReceiveRequestProfile, LightningReceiveQuoteProfile>(
                 request, cancellationToken);
+
+        // Held to its own published terms. A quote is whatever arrived on a socket; the card is
+        // signed, reviewed and tied to a discoverable identity, and only comparing the two catches a
+        // solver quoting differently from how it advertises.
+        if (solverCard is not null)
+        {
+            SolverTerms.AssertFeeWithinAdvertised(solverCard, quote);
+        }
 
         var invoice = LightningReceiveGates.VerifyInvoice(
             quote, sealed_.PaymentHash, amountSats, serverInfo.Network);
