@@ -115,6 +115,11 @@ public sealed class LightningReceiveClient
     /// <param name="walletId">The wallet taking delivery.</param>
     /// <param name="amountSats">What to receive on Arkade, in sats.</param>
     /// <param name="rfqTransport">How to reach the solver.</param>
+    /// <param name="solverCard">
+    /// The solver's published card, when there is one. Supplying it holds the solver to its own
+    /// advertised limits and fee. Omitting it is not a check skipped but one that does not apply — a
+    /// deployment naming a solver outright has no published terms to hold it to.
+    /// </param>
     /// <param name="covclaimdPubKey">
     /// covclaimd's compressed key, read live from its own endpoint. The preimage is sealed to this,
     /// so the claim can be pushed without the client online.
