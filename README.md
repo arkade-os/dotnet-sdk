@@ -1257,6 +1257,11 @@ before the invoice goes out, since nothing can re-derive it afterwards.
 > reference solver and both reproduce its quoted `lockup_address` locally, but neither has been
 > driven through a full settlement yet.
 
+> The settlement harness exists — `ArkadeLightningTests` in `NArk.Tests.End2End` drives both
+> corridors through funding, fill and claim — but it needs a solver started by hand (it is not part
+> of the regtest stack) plus an LND to mint and settle invoices. Set `ARKADE_LN_SOLVER_URL`,
+> `ARKADE_LND_REST` and `ARKADE_LND_MACAROON`; without them the tests skip.
+
 Both corridors build the same eight-leaf `VHTLCv2Contract`. Because the contract is an agreement
 about bytes with no wire versioning, the derivation is pinned to golden vectors generated from the
 counterparty's own implementation — regenerate them whenever the solver moves to a newer
