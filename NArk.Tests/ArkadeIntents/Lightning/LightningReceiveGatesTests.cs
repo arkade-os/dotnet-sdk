@@ -23,7 +23,7 @@ public class LightningReceiveGatesTests
     public void VerifyInvoice_AcceptsAnInvoiceMatchingTheRequest()
     {
         var decoded = LightningReceiveGates.VerifyInvoice(
-            Quote(Invoice, AmountSats), PaymentHashOfInvoice, Network.RegTest);
+            Quote(Invoice, AmountSats), PaymentHashOfInvoice, AmountSats, Network.RegTest);
 
         Assert.That(
             Convert.ToHexString(decoded.PaymentHash.ToBytes()).ToLowerInvariant(),
@@ -38,28 +38,54 @@ public class LightningReceiveGatesTests
         var somebodyElsesHash = new string('a', 64);
 
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
-            LightningReceiveGates.VerifyInvoice(Quote(Invoice, AmountSats), somebodyElsesHash, Network.RegTest));
+            LightningReceiveGates.VerifyInvoice(Quote(Invoice, AmountSats), somebodyElsesHash, AmountSats, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.WrongPaymentHash));
     }
 
     [Test]
-    public void VerifyInvoice_RefusesAnInvoiceThatDisagreesWithWhatTheQuoteDelivers()
+    public void VerifyInvoice_RefusesAnInvoiceThatDisagreesWithWhatThePayerOwes()
     {
-        // The payer acts on the invoice, the swap delivers the quote's amount. If those two ever
-        // part company, someone is short by the difference.
+        // `from_amount` is what the payer owes, so it is what the invoice must say. A mismatch means
+        // the invoice and the quote describe different trades.
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
             LightningReceiveGates.VerifyInvoice(
-                Quote(Invoice, AmountSats + 1_000), PaymentHashOfInvoice, Network.RegTest));
+                Quote(Invoice, AmountSats, fromAmount: AmountSats + 1_000),
+                PaymentHashOfInvoice, AmountSats, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.AmountMismatch));
+    }
+
+    [Test]
+    public void VerifyInvoice_AcceptsAFeeBetweenWhatThePayerOwesAndWhatWeReceive()
+    {
+        // The whole point of the spread: the payer is billed more than lands on Arkade. Checking the
+        // invoice against the payout instead would refuse every quote that charges anything.
+        var withFee = Quote(Invoice, toAmount: AmountSats - 500, fromAmount: AmountSats);
+
+        Assert.DoesNotThrow(() =>
+            LightningReceiveGates.VerifyInvoice(
+                withFee, PaymentHashOfInvoice, AmountSats - 500, Network.RegTest));
+    }
+
+    [Test]
+    public void VerifyInvoice_RefusesAQuoteThatDeliversLessThanAskedFor()
+    {
+        // The other half of the same trap: a solver could bill the payer correctly and still short
+        // the payout. Nothing else in the flow would notice.
+        var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
+            LightningReceiveGates.VerifyInvoice(
+                Quote(Invoice, toAmount: AmountSats - 500, fromAmount: AmountSats),
+                PaymentHashOfInvoice, AmountSats, Network.RegTest));
+
+        Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.ShortPayout));
     }
 
     [Test]
     public void VerifyInvoice_RefusesAQuoteWithNoInvoiceAtAll()
     {
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
-            LightningReceiveGates.VerifyInvoice(Quote(null, AmountSats), new string('b', 64), Network.RegTest));
+            LightningReceiveGates.VerifyInvoice(Quote(null, AmountSats), new string('b', 64), AmountSats, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.UnusableInvoice));
     }
@@ -68,17 +94,18 @@ public class LightningReceiveGatesTests
     public void VerifyInvoice_RefusesSomethingThatIsNotABolt11()
     {
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
-            LightningReceiveGates.VerifyInvoice(Quote("not-an-invoice", AmountSats), new string('c', 64), Network.RegTest));
+            LightningReceiveGates.VerifyInvoice(Quote("not-an-invoice", AmountSats), new string('c', 64), AmountSats, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.UnusableInvoice));
     }
 
-    private static RfqQuote<LightningReceiveQuoteProfile> Quote(string? invoice, long amountSats) => new()
+    private static RfqQuote<LightningReceiveQuoteProfile> Quote(
+        string? invoice, long toAmount, long? fromAmount = null) => new()
     {
         RfqId = new string('9', 64),
         Pair = LightningReceiveProfile.Pair,
-        FromAmount = amountSats,
-        ToAmount = amountSats,
+        FromAmount = fromAmount ?? toAmount,
+        ToAmount = toAmount,
         SolverPubkey = new string('e', 64),
         ValidUntil = 1_800_000_900,
         RefundLocktime = 1_800_605_184,
