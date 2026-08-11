@@ -6,6 +6,13 @@ name: E2E Unilateral Exit (time-based delay)
 # set) and a different maturity rule (median time past, not block height).
 # Nothing in the block-based suite touches that path, so it gets its own
 # regtest with a >= 512 delay.
+#
+# arkd refuses to start unless every delay is the same locktime type, so all
+# five have to cross 512 together — raising only the unilateral pair leaves it
+# seconds-typed among block-typed neighbours and arkd exits with "unilateral
+# exit delay and vtxo tree expiry type mismatch" before it ever serves. Values
+# are multiples of 512 (BIP-68 granularity; arkd rounds down otherwise), with
+# boarding kept distinct from unilateral because arkd requires that too.
 
 on:
   workflow_call:
@@ -17,6 +24,9 @@ jobs:
     env:
       ARKD_UNILATERAL_EXIT_DELAY: 1024
       ARKD_PUBLIC_UNILATERAL_EXIT_DELAY: 1024
+      ARKD_VTXO_TREE_EXPIRY: 8192
+      ARKD_BOARDING_EXIT_DELAY: 2048
+      ARKD_CHECKPOINT_EXIT_DELAY: 1536
     steps:
       - uses: actions/checkout@v4
         with:
