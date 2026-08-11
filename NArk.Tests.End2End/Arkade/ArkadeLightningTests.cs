@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.VTXOs;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
@@ -31,19 +32,29 @@ namespace NArk.Tests.End2End.Arkade;
 /// </para>
 /// <para>
 /// <b>The solver is not part of the regtest stack and has to be started by hand.</b> Point
-/// <c>ARKADE_LN_SOLVER_URL</c> at it. The tests also need a Lightning node with a REST interface —
-/// the send leg needs an invoice for the solver to pay, and the receive leg needs someone to settle
-/// the invoice the solver mints — so <c>ARKADE_LND_REST</c> and <c>ARKADE_LND_MACAROON</c> (hex)
-/// must point at one on the same network as the solver. Any of the three missing and the test
-/// self-<c>Ignore</c>s, which is also what happens in CI, where no solver runs.
+/// <c>ARKADE_LN_SOLVER_URL</c> at it; without that variable every test here skips, which is also
+/// what happens in CI, where no solver runs.
 /// </para>
 /// <para>
-/// A rebuilt regtest stack regenerates its LND certificate and macaroon. A stale macaroon here
-/// surfaces as a TLS or permission error that reads like a client bug and is not one — re-export it
-/// after every <c>--clean</c>.
+/// The tests also need a Lightning node — the send leg needs an invoice for the solver to pay, and
+/// the receive leg needs someone to settle the invoice the solver mints. They drive one through
+/// <c>docker exec … lncli</c> rather than over LND's REST port, which is deliberate: the stack does
+/// not publish that port, and reaching it would mean copying a TLS certificate and macaroon that
+/// every <c>--clean</c> silently replaces. A stale copy fails as a TLS or permission error that
+/// reads exactly like a client bug. Talking to the container has neither problem.
+/// <c>ARKADE_LND_CONTAINER</c> overrides the container name, and
+/// <c>ARKADE_COVCLAIMD_URL</c> the daemon's own address.
+/// </para>
+/// <para>
+/// Kept out of CI by category, not just by the environment guard below. The guard alone would make
+/// these skip there, but a skip is a claim that the corridor was considered and found untestable,
+/// and CI has no solver to consider it with. Excluding them says the true thing: this suite is not
+/// part of the automated run yet. Select it deliberately with
+/// <c>--filter TestCategory=LightningCorridors</c>.
 /// </para>
 /// </remarks>
 [TestFixture]
+[Category("LightningCorridors")]
 public class ArkadeLightningTests
 {
     private const long SwapSats = 50_000;
@@ -73,7 +84,7 @@ public class ArkadeLightningTests
     public async Task Send_FundsTheLockup_AndTheSolverClaimsItByPayingTheInvoice()
     {
         var ctx = await SetUpAsync();
-        var invoice = await ctx.Lnd.CreateInvoiceAsync(SwapSats, "arkade send e2e");
+        var invoice = ctx.Lnd.CreateInvoice(SwapSats, "arkade send e2e");
 
         var funded = await ctx.Intents.SendToLightningAsync(ctx.WalletId, invoice.Bolt11, ctx.Rfq);
 
@@ -89,7 +100,7 @@ public class ArkadeLightningTests
         var lockup = await WaitForVtxo(ctx, funded.LockupPkScript);
         Assert.That(lockup.Amount, Is.EqualTo((ulong)SwapSats), "the lockup holds the quoted amount");
 
-        var settled = await Poll(() => ctx.Lnd.IsSettledAsync(invoice.PaymentHash), SolverTimeout);
+        var settled = await Poll(() => Task.FromResult(ctx.Lnd.IsSettled(invoice.PaymentHash)), SolverTimeout);
         Assert.That(settled, Is.True, "the solver settled the invoice it was paid to settle");
 
         var taken = await Poll(async () => (await GetVtxo(ctx, funded.LockupPkScript))?.SpentByTransactionId is
@@ -125,12 +136,43 @@ public class ArkadeLightningTests
 
         Assert.That(pending.Invoice, Is.Not.Empty, "the solver minted an invoice for the payer");
 
-        await ctx.Lnd.PayAsync(pending.Invoice);
+        // The solver pays out first on this corridor, so it needs float it is not already settling.
+        // Between the quote and the payment is the only window where we know its script and it has
+        // not yet been asked to fund.
+        if (pending.Quote.Profile?.SolverRefundPkScript is { Length: > 0 } solverScript)
+        {
+            var serverInfo = await ctx.Transport.GetServerInfoAsync();
+            if (!await SolverLiquidityHelper.EnsureBtcFloat(
+                    serverInfo.SignerKey.ToXOnlyPubKey(), solverScript, (ulong)SwapSats * 2))
+            {
+                Assert.Ignore(
+                    "the solver has no unencumbered float to fund the lockup with, and topping it " +
+                    "up did not land — its balance frees on the operator's settlement schedule.");
+            }
+        }
+
+        // The solver mints a HOLD invoice, so paying it does not complete here: the HTLC locks in,
+        // the solver funds Arkade against it, and the invoice only settles once our claim reveals the
+        // preimage. Awaiting the payment before claiming would wait for something only the claim can
+        // cause. Firing it and collecting the result after the claim is the corridor's actual shape.
+        var payment = Task.Run(() => ctx.Lnd.Pay(pending.Invoice));
 
         var lockupScript = pending.Contract.GetScriptPubKey().ToHex();
         var lockup = await WaitForVtxo(ctx, lockupScript);
         Assert.That(lockup.Amount, Is.GreaterThanOrEqualTo((ulong)pending.Quote.ToAmount),
             "the solver funded at least what it quoted");
+
+        // The claim reads the lockup out of IVtxoStorage, not off the chain directly. In a running
+        // app VtxoSynchronizationService keeps that fed from the intent storage's active scripts;
+        // without it here the claim would report the swap unfunded while the VTXO sits on the
+        // indexer in plain sight.
+        await using var sync = new VtxoSynchronizationService(
+            ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
+        await sync.StartAsync(default);
+
+        var stored = await Poll(async () => (await ctx.VtxoStorage.GetVtxos(
+            scripts: [lockupScript])).Any(v => !v.IsSpent() && !v.Swept), SolverTimeout);
+        Assert.That(stored, Is.True, "the lockup reached the wallet's own view of the chain");
 
         // Only reachable with the preimage, so a spend here is proof the claim script validated.
         var claimed = await ctx.Intents.ClaimLightningReceiveAsync(pending.RfqId);
@@ -139,6 +181,12 @@ public class ArkadeLightningTests
         var spent = await Poll(async () => (await GetVtxo(ctx, lockupScript))?.SpentByTransactionId is
             { Length: > 0 }, SolverTimeout);
         Assert.That(spent, Is.True, "the claim landed on the Arkade side");
+
+        // Only now can the payment finish: the preimage our claim published is what releases the
+        // hold. A settled invoice here is the proof the two sides of the swap are the same secret.
+        Assert.That(await Task.WhenAny(payment, Task.Delay(SolverTimeout)), Is.SameAs(payment),
+            "the payer's invoice settled once the claim published the preimage");
+        await payment;
     }
 
     /// <summary>
@@ -175,8 +223,10 @@ public class ArkadeLightningTests
         IClientTransport Transport,
         ArkadeIntentsService Intents,
         IRfqTransport Rfq,
-        LndRestClient Lnd,
-        Uri SolverUrl)
+        LndCliClient Lnd,
+        Uri CovclaimdUrl,
+        IVtxoStorage VtxoStorage,
+        IArkadeIntentStorage IntentStorage)
     {
         /// <summary>
         /// Reads covclaimd's key from the solver's own endpoint rather than hardcoding it.
@@ -188,24 +238,28 @@ public class ArkadeLightningTests
         /// </remarks>
         public async Task<string> ReadCovclaimdPubKeyAsync()
         {
-            using var http = new HttpClient { BaseAddress = SolverUrl };
+            using var http = new HttpClient { BaseAddress = CovclaimdUrl };
             var doc = await http.GetFromJsonAsync<JsonElement>("v1/preimage/covclaimd-pubkey");
-            return doc.GetProperty("pubkey").GetString()!;
+            return doc.GetProperty("covclaimd_pub_key").GetString()!;
         }
     }
 
     private static async Task<Ctx> SetUpAsync()
     {
         var solverUrl = Env("ARKADE_LN_SOLVER_URL");
-        var lndRest = Env("ARKADE_LND_REST");
-        var macaroon = Env("ARKADE_LND_MACAROON");
-
-        if (solverUrl is null || lndRest is null || macaroon is null)
+        if (solverUrl is null)
         {
             Assert.Ignore(
-                "needs a hand-started Lightning solver and an LND: set ARKADE_LN_SOLVER_URL, " +
-                "ARKADE_LND_REST and ARKADE_LND_MACAROON (hex). The solver is not part of the " +
-                "regtest stack.");
+                "needs a Lightning solver started by hand — set ARKADE_LN_SOLVER_URL. " +
+                "The solver is not part of the regtest stack.");
+        }
+
+        var lnd = new LndCliClient(Env("ARKADE_LND_CONTAINER") ?? "lnd");
+        if (!lnd.CanRoute())
+        {
+            Assert.Ignore(
+                "the Lightning node has no active channel — after a stack restart the peers need " +
+                "reconnecting before either corridor can move a payment.");
         }
 
         var w = await FundedWalletHelper.GetFundedWallet();
@@ -242,9 +296,10 @@ public class ArkadeLightningTests
 
         var solver = new Uri(solverUrl!.EndsWith('/') ? solverUrl : solverUrl + "/");
         var rfq = new HttpRfqTransport(new HttpClient(), solver);
+        var covclaimd = new Uri(Env("ARKADE_COVCLAIMD_URL") ?? "http://localhost:7271");
 
-        return new Ctx(w.walletIdentifier, w.clientTransport, intents, rfq,
-            new LndRestClient(new Uri(lndRest!), macaroon!), solver);
+        return new Ctx(w.walletIdentifier, w.clientTransport, intents, rfq, lnd, covclaimd,
+            w.vtxoStorage, intentStorage);
     }
 
     private static string? Env(string name) =>
@@ -282,67 +337,114 @@ public class ArkadeLightningTests
     }
 
     /// <summary>
-    /// Just enough LND REST to mint, pay and check an invoice.
+    /// Just enough of a Lightning node to mint, pay and check an invoice, over <c>docker exec</c>.
     /// </summary>
     /// <remarks>
-    /// Certificate validation is off because a regtest LND signs its own, and the alternative is
-    /// pinning a certificate that every stack rebuild replaces.
+    /// Shelling into the container instead of using LND's REST API is what keeps this honest: the
+    /// regtest stack does not publish that port, and the credentials needed to reach it are
+    /// regenerated by every rebuild, so a copy on disk is wrong more often than it is right.
     /// </remarks>
-    private sealed class LndRestClient(Uri baseAddress, string macaroonHex)
+    private sealed class LndCliClient(string container)
     {
-        private readonly HttpClient _http = CreateClient(baseAddress, macaroonHex);
-
-        private static HttpClient CreateClient(Uri baseAddress, string macaroonHex)
+        public (string Bolt11, string PaymentHash) CreateInvoice(long sats, string memo)
         {
-            var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-            };
-            var http = new HttpClient(handler)
-            {
-                BaseAddress = baseAddress.AbsolutePath.EndsWith('/') ? baseAddress : new Uri(baseAddress + "/"),
-                Timeout = TimeSpan.FromMinutes(2),
-            };
-            http.DefaultRequestHeaders.Add("Grpc-Metadata-macaroon", macaroonHex);
-            return http;
+            var json = Run("addinvoice", "--amt", sats.ToString(), "--memo", memo);
+            // lncli already renders r_hash as hex, unlike the REST interface's base64.
+            return (json.GetProperty("payment_request").GetString()!,
+                    json.GetProperty("r_hash").GetString()!);
         }
 
-        public async Task<(string Bolt11, string PaymentHash)> CreateInvoiceAsync(long sats, string memo)
+        public void Pay(string bolt11)
         {
-            var response = await PostAsync("v1/invoices", new { value = sats.ToString(), memo });
-            // LND returns the hash base64 over REST; the rest of the SDK speaks hex.
-            var hash = Convert.ToHexString(
-                Convert.FromBase64String(response.GetProperty("r_hash").GetString()!)).ToLowerInvariant();
-            return (response.GetProperty("payment_request").GetString()!, hash);
-        }
+            var hash = Run("decodepayreq", bolt11).GetProperty("payment_hash").GetString()!;
 
-        public async Task PayAsync(string bolt11)
-        {
-            var response = await PostAsync("v1/channels/transactions", new { payment_request = bolt11 });
-            var error = response.TryGetProperty("payment_error", out var e) ? e.GetString() : null;
-            if (!string.IsNullOrEmpty(error))
+            // A dropped RPC is not a failed payment, and on a regtest stack that degrades under load
+            // the two arrive looking identical. Asking the node what it actually did is the only way
+            // to tell them apart — retrying blind would risk paying twice, and failing blind would
+            // report a corridor bug for a socket that hiccuped.
+            for (var attempt = 1; ; attempt++)
             {
-                throw new InvalidOperationException($"LND could not pay the solver's invoice: {error}");
+                try
+                {
+                    // --force skips the interactive confirmation; without it lncli waits on a prompt
+                    // that never comes and the test hangs rather than failing.
+                    var json = Run("payinvoice", "--force", "--json", bolt11);
+                    var status = json.TryGetProperty("status", out var st) ? st.GetString() : null;
+                    if (string.Equals(status, "SUCCEEDED", StringComparison.OrdinalIgnoreCase)) return;
+
+                    var failure = json.TryGetProperty("failure_reason", out var f) ? f.GetString() : "unknown";
+                    throw new InvalidOperationException(
+                        $"the node refused the solver's invoice: {status ?? "no status"} ({failure})");
+                }
+                catch (InvalidOperationException) when (attempt < 3 && !Settled(hash))
+                {
+                    // The call died without the payment landing. Nothing was spent, so try again.
+                }
             }
         }
 
-        public async Task<bool> IsSettledAsync(string paymentHashHex)
+        /// <summary>Whether this node already paid the invoice, whatever the last call reported.</summary>
+        private bool Settled(string paymentHashHex)
         {
-            using var response = await _http.GetAsync($"v1/invoice/{paymentHashHex}");
-            response.EnsureSuccessStatusCode();
-            var doc = await response.Content.ReadFromJsonAsync<JsonElement>();
-            return doc.GetProperty("settled").GetBoolean();
+            try
+            {
+                return Run("listpayments").GetProperty("payments").EnumerateArray().Any(p =>
+                    string.Equals(p.GetProperty("payment_hash").GetString(), paymentHashHex,
+                        StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(p.GetProperty("status").GetString(), "SUCCEEDED",
+                        StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception)
+            {
+                // Unreachable node: report "not settled" so the caller retries rather than assuming
+                // a payment it cannot see actually happened.
+                return false;
+            }
         }
 
-        private async Task<JsonElement> PostAsync(string path, object body)
+        public bool IsSettled(string paymentHashHex) =>
+            Run("lookupinvoice", paymentHashHex).GetProperty("settled").GetBoolean();
+
+        /// <summary>Whether the node has a channel that can actually carry a payment.</summary>
+        public bool CanRoute()
         {
-            using var response = await _http.PostAsJsonAsync(path, body);
-            var payload = await response.Content.ReadAsStringAsync();
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                throw new InvalidOperationException($"LND {path} returned {(int)response.StatusCode}: {payload}");
+                return Run("listchannels").GetProperty("channels").EnumerateArray()
+                    .Any(c => c.GetProperty("active").GetBoolean());
             }
-            return JsonSerializer.Deserialize<JsonElement>(payload);
+            catch (Exception)
+            {
+                // No node reachable at all reads the same as no usable channel: either way this
+                // fixture cannot move a payment, and the caller skips rather than fails.
+                return false;
+            }
+        }
+
+        private JsonElement Run(params string[] args)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("docker")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var a in new[] { "exec", container, "lncli", "--network=regtest" }.Concat(args))
+            {
+                psi.ArgumentList.Add(a);
+            }
+
+            using var process = System.Diagnostics.Process.Start(psi)
+                ?? throw new InvalidOperationException("could not start docker");
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit((int)TimeSpan.FromMinutes(2).TotalMilliseconds);
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"lncli {string.Join(' ', args)} failed ({process.ExitCode}): {stderr}");
+            }
+            return JsonSerializer.Deserialize<JsonElement>(stdout);
         }
     }
 

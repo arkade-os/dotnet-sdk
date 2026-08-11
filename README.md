@@ -1253,14 +1253,15 @@ Claiming publishes the preimage, which is also how the solver gets paid — an u
 where it reclaims its lockup and the payer's money was never earned. The preimage is persisted
 before the invoice goes out, since nothing can re-derive it afterwards.
 
-> **Verified at the contract, not yet at the round trip.** Both corridors negotiate against the
-> reference solver and both reproduce its quoted `lockup_address` locally, but neither has been
-> driven through a full settlement yet.
-
-> The settlement harness exists — `ArkadeLightningTests` in `NArk.Tests.End2End` drives both
-> corridors through funding, fill and claim — but it needs a solver started by hand (it is not part
-> of the regtest stack) plus an LND to mint and settle invoices. Set `ARKADE_LN_SOLVER_URL`,
-> `ARKADE_LND_REST` and `ARKADE_LND_MACAROON`; without them the tests skip.
+> **Both corridors settle end to end against a live solver.** `ArkadeLightningTests` in
+> `NArk.Tests.End2End` drives each one through funding, fill and claim: on send the solver pays the
+> invoice and takes the lockup with the preimage; on receive the payer settles a hold invoice, the
+> solver funds Arkade, and our claim publishes the preimage that releases it.
+>
+> They are not part of CI — the solver is not in the regtest stack, so run them deliberately with
+> `--filter TestCategory=LightningCorridors` and point `ARKADE_LN_SOLVER_URL` at a solver you
+> started yourself. They also drive a Lightning node through `docker exec … lncli`
+> (`ARKADE_LND_CONTAINER`, default `lnd`) to mint and pay the invoices.
 
 Both corridors build the same eight-leaf `VHTLCv2Contract`. Because the contract is an agreement
 about bytes with no wire versioning, the derivation is pinned to golden vectors generated from the
