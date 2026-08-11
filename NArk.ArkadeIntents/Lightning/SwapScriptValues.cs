@@ -1,3 +1,4 @@
+using NBitcoin;
 namespace NArk.ArkadeIntents.Lightning;
 
 /// <summary>
@@ -37,6 +38,24 @@ public static class SwapScriptValues
     /// This is why the maker never needs to see the preimage: it can commit to the hash of a secret
     /// it does not hold, and paying the invoice is what reveals that secret to whoever claims.
     /// </remarks>
+    /// <summary>
+    /// The script's 20-byte hash, taken straight from a decoded invoice.
+    /// </summary>
+    /// <param name="paymentHash">The invoice's payment hash.</param>
+    /// <returns>RIPEMD160 of the payment hash, big-endian.</returns>
+    /// <remarks>
+    /// Always prefer this over the byte-array overload when the value came from a BOLT11.
+    /// <see cref="uint256"/> hands out its bytes little-endian by default, which is the opposite of
+    /// how a payment hash is written, hashed and agreed upon — and reversing it produces a perfectly
+    /// well-formed script committing to a hash no preimage will ever open. Nothing rejects that
+    /// locally: it surfaces as a lockup address the counterparty does not recognise, and would
+    /// surface as unspendable funds if anything ever funded it.
+    /// </remarks>
+    public static byte[] PreimageHashFromPaymentHash(uint256 paymentHash) =>
+        PreimageHashFromPaymentHash(paymentHash.ToBytes(lendian: false));
+
+    /// <param name="paymentHash">The payment hash, big-endian — as written, not as
+    /// <see cref="uint256.ToBytes(bool)"/> defaults to.</param>
     public static byte[] PreimageHashFromPaymentHash(byte[] paymentHash)
     {
         if (paymentHash.Length != 32)
