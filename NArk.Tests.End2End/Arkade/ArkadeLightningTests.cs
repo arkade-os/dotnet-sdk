@@ -457,6 +457,7 @@ public class ArkadeLightningTests
         public event EventHandler? ActiveScriptsChanged;
 
         public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+            string? id = null,
             ArkadeSwapIntentStatus? status = null,
             string? swapPkScript = null,
             string[]? walletIds = null,
@@ -465,6 +466,7 @@ public class ArkadeLightningTests
             CancellationToken cancellationToken = default)
         {
             IEnumerable<ArkadeSwapIntent> q = _byId.Values;
+            if (id is not null) q = q.Where(i => i.Id == id);
             if (status is { } s) q = q.Where(i => i.Status == s);
             if (swapPkScript is { }) q = q.Where(i => i.SwapPkScript == swapPkScript);
             if (walletIds is { Length: > 0 }) q = q.Where(i => walletIds.Contains(i.WalletId));

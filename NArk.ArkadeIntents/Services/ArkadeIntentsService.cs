@@ -157,8 +157,7 @@ public sealed class ArkadeIntentsService
     /// <returns>The swap, or <c>null</c>.</returns>
     public async Task<ArkadeSwapIntent?> GetAsync(
         string swapId, CancellationToken cancellationToken = default) =>
-        (await _intentStorage.GetArkadeSwapIntents(cancellationToken: cancellationToken))
-        .FirstOrDefault(s => s.Id == swapId);
+        await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken);
 
     /// <summary>
     /// Ask the solver where it thinks a negotiation stands.
