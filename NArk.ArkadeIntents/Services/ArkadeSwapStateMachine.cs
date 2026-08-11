@@ -24,20 +24,24 @@ public readonly record struct SwapObservation(bool Spent, bool Swept, long Now, 
     public bool PastLocktime => RefundLocktime is { } t && Now >= t;
 }
 
-/// <summary>Who or what moves a swap from one state to the next.</summary>
-public enum SwapActor
+/// <summary>What makes a step happen.</summary>
+/// <remarks>
+/// Deliberately not "who does it". Waiting out a locktime has no doer — nobody acts, a condition
+/// simply becomes true — and forcing that into an actor means inventing an agent that does not
+/// exist. Asking what causes a step instead covers both cases honestly, and it is the question a
+/// caller actually has: is this mine to do, am I waiting on someone, or am I waiting on nothing but
+/// time?
+/// </remarks>
+public enum SwapTrigger
 {
-    /// <summary>Us.</summary>
+    /// <summary>We do it.</summary>
     Client,
 
-    /// <summary>The counterparty quoting and filling.</summary>
+    /// <summary>The counterparty does it, and we find out by watching.</summary>
     Solver,
 
-    /// <summary>The chain, observed rather than asked.</summary>
-    Chain,
-
-    /// <summary>Time passing.</summary>
-    Clock,
+    /// <summary>Nobody does it; a deadline passes.</summary>
+    Time,
 }
 
 /// <summary>What happens at a step, as something a program can branch on.</summary>
@@ -98,10 +102,10 @@ public enum SwapStepKind
 /// <summary>One step in a corridor's lifecycle.</summary>
 /// <param name="Ordinal">Its position, from 1.</param>
 /// <param name="Kind">What happens.</param>
-/// <param name="Actor">Who makes it happen.</param>
+/// <param name="Trigger">What makes it happen.</param>
 /// <param name="Leaves">The status the swap sits in once this step is done, when it moves it.</param>
 public sealed record SwapStep(
-    int Ordinal, SwapStepKind Kind, SwapActor Actor, ArkadeSwapIntentStatus? Leaves);
+    int Ordinal, SwapStepKind Kind, SwapTrigger Trigger, ArkadeSwapIntentStatus? Leaves);
 
 /// <summary>
 /// The lifecycle of every Arkade intent swap, in one place: which states exist per corridor, what
@@ -234,34 +238,34 @@ public static class ArkadeSwapStateMachine
     {
         ArkadeSwapIntentType.BtcToLightning =>
         [
-            new(1, SwapStepKind.Negotiate, SwapActor.Client, null),
-            new(2, SwapStepKind.DeriveAndVerifyAddress, SwapActor.Client, null),
-            new(3, SwapStepKind.Gate, SwapActor.Client, null),
-            new(4, SwapStepKind.ImportContract, SwapActor.Client, null),
-            new(5, SwapStepKind.FundLockup, SwapActor.Client, ArkadeSwapIntentStatus.Pending),
-            new(6, SwapStepKind.CounterpartyFills, SwapActor.Solver, null),
-            new(7, SwapStepKind.CounterpartyClaims, SwapActor.Solver, ArkadeSwapIntentStatus.Fulfilled),
-            new(8, SwapStepKind.AwaitRefundLocktime, SwapActor.Clock, ArkadeSwapIntentStatus.Refundable),
-            new(9, SwapStepKind.Refund, SwapActor.Client, ArkadeSwapIntentStatus.Cancelled),
+            new(1, SwapStepKind.Negotiate, SwapTrigger.Client, null),
+            new(2, SwapStepKind.DeriveAndVerifyAddress, SwapTrigger.Client, null),
+            new(3, SwapStepKind.Gate, SwapTrigger.Client, null),
+            new(4, SwapStepKind.ImportContract, SwapTrigger.Client, null),
+            new(5, SwapStepKind.FundLockup, SwapTrigger.Client, ArkadeSwapIntentStatus.Pending),
+            new(6, SwapStepKind.CounterpartyFills, SwapTrigger.Solver, null),
+            new(7, SwapStepKind.CounterpartyClaims, SwapTrigger.Solver, ArkadeSwapIntentStatus.Fulfilled),
+            new(8, SwapStepKind.AwaitRefundLocktime, SwapTrigger.Time, ArkadeSwapIntentStatus.Refundable),
+            new(9, SwapStepKind.Refund, SwapTrigger.Client, ArkadeSwapIntentStatus.Cancelled),
         ],
 
         ArkadeSwapIntentType.LightningToBtc =>
         [
-            new(1, SwapStepKind.SealPreimage, SwapActor.Client, null),
-            new(2, SwapStepKind.Negotiate, SwapActor.Client, null),
-            new(3, SwapStepKind.VerifyQuote, SwapActor.Client, null),
-            new(4, SwapStepKind.DeriveAndVerifyAddress, SwapActor.Client, null),
-            new(5, SwapStepKind.ImportContract, SwapActor.Client, ArkadeSwapIntentStatus.Pending),
-            new(6, SwapStepKind.PublishInvoice, SwapActor.Client, null),
-            new(7, SwapStepKind.CounterpartyFunds, SwapActor.Solver, ArkadeSwapIntentStatus.Claimable),
-            new(8, SwapStepKind.Claim, SwapActor.Client, ArkadeSwapIntentStatus.Fulfilled),
+            new(1, SwapStepKind.SealPreimage, SwapTrigger.Client, null),
+            new(2, SwapStepKind.Negotiate, SwapTrigger.Client, null),
+            new(3, SwapStepKind.VerifyQuote, SwapTrigger.Client, null),
+            new(4, SwapStepKind.DeriveAndVerifyAddress, SwapTrigger.Client, null),
+            new(5, SwapStepKind.ImportContract, SwapTrigger.Client, ArkadeSwapIntentStatus.Pending),
+            new(6, SwapStepKind.PublishInvoice, SwapTrigger.Client, null),
+            new(7, SwapStepKind.CounterpartyFunds, SwapTrigger.Solver, ArkadeSwapIntentStatus.Claimable),
+            new(8, SwapStepKind.Claim, SwapTrigger.Client, ArkadeSwapIntentStatus.Fulfilled),
         ],
 
         _ =>
         [
-            new(1, SwapStepKind.FundLockup, SwapActor.Client, ArkadeSwapIntentStatus.Pending),
-            new(2, SwapStepKind.CounterpartyFills, SwapActor.Solver, ArkadeSwapIntentStatus.Fulfilled),
-            new(3, SwapStepKind.Cancel, SwapActor.Client, ArkadeSwapIntentStatus.Cancelled),
+            new(1, SwapStepKind.FundLockup, SwapTrigger.Client, ArkadeSwapIntentStatus.Pending),
+            new(2, SwapStepKind.CounterpartyFills, SwapTrigger.Solver, ArkadeSwapIntentStatus.Fulfilled),
+            new(3, SwapStepKind.Cancel, SwapTrigger.Client, ArkadeSwapIntentStatus.Cancelled),
         ],
     };
 }
