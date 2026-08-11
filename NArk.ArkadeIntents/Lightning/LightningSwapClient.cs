@@ -16,6 +16,7 @@ using NArk.Core.Transport;
 using NArk.Core.Contracts;
 using NBitcoin;
 using NBitcoin.Scripting;
+using NArk.ArkadeIntents.SolverRegistry;
 
 namespace NArk.ArkadeIntents.Lightning;
 
@@ -121,6 +122,7 @@ public sealed class LightningSwapClient
         string walletId,
         string invoice,
         IRfqTransport rfqTransport,
+        SolverCard? solverCard = null,
         CancellationToken cancellationToken = default)
     {
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
@@ -152,8 +154,25 @@ public sealed class LightningSwapClient
         var request = LightningSendProfile.Request(
             invoice, refundAddress,
             Convert.ToHexString(clientRefund.ToXOnlyPubKey().ToBytes()).ToLowerInvariant());
+        // Held to its own published terms where those exist. A size outside the advertised range is
+        // one the solver refuses anyway, and its refusal cannot say by how much — so this is asked
+        // before the request rather than after it.
+        if (solverCard is not null)
+        {
+            SolverTerms.AssertWithinLimits(solverCard, LightningSendProfile.Pair, (long)invoiceAmountSats);
+        }
+
         var quote = await rfqTransport.RequestQuoteAsync<LightningSendRequestProfile, LightningSendQuoteProfile>(
             request, cancellationToken);
+
+        // The card is the only statement of terms with provenance — signed, reviewed, tied to a
+        // discoverable identity — while a quote is whatever arrived on a socket. Comparing one
+        // against the other is the only way to catch a solver quoting differently from how it
+        // advertises, which no amount of checking a quote against itself can reveal.
+        if (solverCard is not null)
+        {
+            SolverTerms.AssertFeeWithinAdvertised(solverCard, quote);
+        }
 
         var contract = await DeriveLockupAsync(
             quote, decoded, refundPkScript, clientRefund, serverInfo, cancellationToken);

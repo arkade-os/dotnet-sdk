@@ -4,6 +4,7 @@ using NArk.ArkadeIntents.Lightning;
 using NArk.Core.Transport;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
+using NArk.ArkadeIntents.SolverRegistry;
 
 namespace NArk.ArkadeIntents.Services;
 
@@ -114,14 +115,22 @@ public sealed class ArkadeIntentsService
     /// <param name="walletId">The wallet paying.</param>
     /// <param name="invoice">The BOLT11 to pay.</param>
     /// <param name="rfqTransport">How to reach a solver.</param>
+    /// <param name="solverCard">
+    /// The solver's published card, when there is one. Supplying it holds the solver to its own
+    /// advertised limits and fee: a quote is whatever arrived on a socket, while the card is signed
+    /// and tied to a discoverable identity, and only comparing the two catches a solver quoting
+    /// differently from how it advertises. Omitting it is not a check skipped but a check that does
+    /// not apply — a deployment naming one solver outright has no published terms to hold it to.
+    /// </param>
     /// <param name="cancellationToken">Cancels before funding.</param>
     /// <returns>The funded swap.</returns>
     public Task<FundedLightningSwap> SendToLightningAsync(
         string walletId,
         string invoice,
         IRfqTransport rfqTransport,
+        SolverCard? solverCard = null,
         CancellationToken cancellationToken = default) =>
-        _lightningSend.SendToLightningAsync(walletId, invoice, rfqTransport, cancellationToken);
+        _lightningSend.SendToLightningAsync(walletId, invoice, rfqTransport, solverCard, cancellationToken);
 
     /// <summary>Be paid over Lightning and take delivery on Arkade.</summary>
     /// <param name="walletId">The wallet taking delivery.</param>
@@ -135,9 +144,10 @@ public sealed class ArkadeIntentsService
         long amountSats,
         IRfqTransport rfqTransport,
         string covclaimdPubKey,
+        SolverCard? solverCard = null,
         CancellationToken cancellationToken = default) =>
         _lightningReceive.ReceiveFromLightningAsync(
-            walletId, amountSats, rfqTransport, covclaimdPubKey, cancellationToken);
+            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, cancellationToken);
 
     // ─── Reading ──────────────────────────────────────────────────────
 
