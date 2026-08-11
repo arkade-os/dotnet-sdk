@@ -12,18 +12,18 @@ public class ArkadeSwapIntentMonitoringServiceTests
     // ─── Pure status mapping ──────────────────────────────────────────
 
     [Test]
-    public void ResolveTerminalStatus_Spent_IsFulfilled()
-        => Assert.That(ArkadeSwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s", spentBy: "tx")),
+    public void Machine_Spent_IsFulfilled()
+        => Assert.That(ArkadeSwapStateMachine.Next(ArkadeSwapIntentType.BtcToAsset, ArkadeSwapIntentStatus.Pending, SwapObservation.From(Vtxo("s", spentBy: "tx"), 0, null)),
             Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
 
     [Test]
-    public void ResolveTerminalStatus_Swept_IsRecoverable()
-        => Assert.That(ArkadeSwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s", swept: true)),
+    public void Machine_Swept_IsRecoverable()
+        => Assert.That(ArkadeSwapStateMachine.Next(ArkadeSwapIntentType.BtcToAsset, ArkadeSwapIntentStatus.Pending, SwapObservation.From(Vtxo("s", swept: true), 0, null)),
             Is.EqualTo(ArkadeSwapIntentStatus.Recoverable));
 
     [Test]
-    public void ResolveTerminalStatus_Open_IsNull()
-        => Assert.That(ArkadeSwapIntentMonitoringService.ResolveTerminalStatus(Vtxo("s")), Is.Null);
+    public void Machine_Open_IsNull()
+        => Assert.That(ArkadeSwapStateMachine.Next(ArkadeSwapIntentType.BtcToAsset, ArkadeSwapIntentStatus.Pending, SwapObservation.From(Vtxo("s"), 0, null)), Is.Null);
 
     // ─── Reactive → storage ───────────────────────────────────────────
 
@@ -75,10 +75,25 @@ public class ArkadeSwapIntentMonitoringServiceTests
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
-    private static (FakeVtxoStorage, FakeIntentStorage, ArkadeSwapIntentMonitoringService) Build()
+    private static (FakeVtxoStorage, FakeIntentStorage, ArkadeSwapIntentMonitoringService) Build(
+        ArkadeSwapIntentType type = ArkadeSwapIntentType.BtcToAsset, long? refundLocktime = null)
     {
         var vtxos = new FakeVtxoStorage();
         var intents = new FakeIntentStorage();
+        intents.Swaps["script1"] = new ArkadeSwapIntent
+        {
+            Id = "swap-1",
+            WalletId = "wallet-1",
+            Type = type,
+            OfferAmount = NBitcoin.Money.Satoshis(1000),
+            WantAmount = NBitcoin.Money.Satoshis(1000),
+            Status = ArkadeSwapIntentStatus.Pending,
+            CreatedAt = DateTimeOffset.UtcNow,
+            SwapPkScript = "script1",
+            SwapAddress = "tark1example",
+            OfferHex = "",
+            RefundLocktime = refundLocktime,
+        };
         return (vtxos, intents, new ArkadeSwapIntentMonitoringService(vtxos, intents));
     }
 
@@ -116,6 +131,17 @@ public class ArkadeSwapIntentMonitoringServiceTests
 
         public readonly List<(string Script, ArkadeSwapIntentStatus Status, string? SpentTxid)> Updates = new();
 
+        /// <summary>
+        /// Swaps this store knows about, keyed by lockup script.
+        /// </summary>
+        /// <remarks>
+        /// Seeded rather than empty on purpose. The monitor needs a swap's corridor and locktime to
+        /// decide anything — without them a spend on a Lightning lockup would read as a fill even
+        /// past the refund deadline, where it is genuinely ambiguous. A fake that returned nothing
+        /// let the tests pass through a path the real system never takes.
+        /// </remarks>
+        public readonly Dictionary<string, ArkadeSwapIntent> Swaps = new();
+
         public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
             ArkadeSwapIntentStatus? status = null,
             string? swapPkScript = null,
@@ -123,7 +149,10 @@ public class ArkadeSwapIntentMonitoringServiceTests
             int? skip = null,
             int? take = null,
             CancellationToken cancellationToken = default)
-            => Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(Array.Empty<ArkadeSwapIntent>());
+            => Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(
+                swapPkScript is not null && Swaps.TryGetValue(swapPkScript, out var one)
+                    ? [one]
+                    : Swaps.Values.ToArray());
 
         public Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
