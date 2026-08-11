@@ -16,6 +16,46 @@ public class OfferTests
     // ─── TLV codec ────────────────────────────────────────────────────
 
     [Test]
+    public void Tlv_IgnoresAFieldItDoesNotKnow()
+    {
+        // The counterparty adding a field must not break every client already deployed. TLV carries
+        // its own lengths so a reader can step over what it was not built for, and the alternative
+        // is a break nobody can ship a fix ahead of, because the change belongs to the other side.
+        var offer = new Offer
+        {
+            SwapPkScript = TaprootSpk(1),
+            WantAmount = 123_456,
+            WantAsset = AssetId.Create(Convert.ToHexString(XOnly(9)), 7),
+            MakerPkScript = TaprootSpk(2),
+            MakerPublicKey = XOnly(3),
+            EmulatorPubkey = XOnly(4),
+        };
+
+        // 0xfe is deliberately outside the known set; length is big-endian over two bytes.
+        var future = new byte[] { 0xfe, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef };
+        var extended = OfferCodec.Encode(offer).Concat(future).ToArray();
+
+        var decoded = OfferCodec.Decode(extended);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(decoded.SwapPkScript, Is.EqualTo(offer.SwapPkScript));
+            Assert.That(decoded.WantAmount, Is.EqualTo(123_456));
+            Assert.That(decoded.MakerPublicKey, Is.EqualTo(offer.MakerPublicKey));
+        });
+    }
+
+    [Test]
+    public void Tlv_StillRefusesAnOfferMissingSomethingItNeeds()
+    {
+        // Skipping the unknown must not turn into skipping the required — a truncated offer is still
+        // an offer this codec cannot honour.
+        var truncated = new byte[] { 0xfe, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef };
+
+        Assert.Throws<FormatException>(() => OfferCodec.Decode(truncated));
+    }
+
+    [Test]
     public void Tlv_RoundTrips_BtcToAsset()
     {
         var offer = new Offer

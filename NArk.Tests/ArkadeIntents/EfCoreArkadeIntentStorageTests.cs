@@ -4,6 +4,7 @@ using NArk.ArkadeIntents.Models;
 using NArk.Storage.EfCore;
 using NArk.Storage.EfCore.Storage;
 using NBitcoin;
+using NArk.ArkadeIntents;
 
 namespace NArk.Tests;
 
@@ -119,5 +120,29 @@ public class EfCoreArkadeIntentStorageTests
     {
         public Task<DbContext> CreateDbContextAsync(CancellationToken ct = default)
             => Task.FromResult<DbContext>(new TestDb(options));
+    }
+
+    [Test]
+    public async Task AnIdFilter_ReturnsOnlyThatIntent()
+    {
+        // The lookup that replaced "load every intent and pick in memory". If the filter were
+        // ignored the callers would still find their swap — among everyone else's — which is why
+        // this asserts the count, not just the hit.
+        var mine = Intent("swap-mine", "5120" + new string('a', 64));
+        var theirs = Intent("swap-theirs", "5120" + new string('b', 64));
+        await _storage.SaveArkadeSwapIntent(mine);
+        await _storage.SaveArkadeSwapIntent(theirs);
+
+        var found = await _storage.GetArkadeSwapIntents(id: "swap-mine");
+
+        Assert.That(found.Select(i => i.Id), Is.EqualTo(new[] { "swap-mine" }));
+    }
+
+    [Test]
+    public async Task TheSingleLookup_FindsNothingForAnUnknownId()
+    {
+        await _storage.SaveArkadeSwapIntent(Intent("swap-1", "5120" + new string('c', 64)));
+
+        Assert.That(await _storage.GetArkadeSwapIntent("no-such-swap"), Is.Null);
     }
 }

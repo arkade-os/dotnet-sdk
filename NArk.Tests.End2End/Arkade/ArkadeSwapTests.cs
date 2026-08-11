@@ -391,6 +391,7 @@ public class ArkadeSwapTests
         public event EventHandler? ActiveScriptsChanged;
 
         public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+            string? id = null,
             ArkadeSwapIntentStatus? status = null,
             string? swapPkScript = null,
             string[]? walletIds = null,
@@ -399,6 +400,7 @@ public class ArkadeSwapTests
             CancellationToken cancellationToken = default)
         {
             var query = _byId.Values.AsEnumerable();
+            if (id is not null) query = query.Where(x => x.Id == id);
             if (status is { } s) query = query.Where(x => x.Status == s);
             if (swapPkScript is not null) query = query.Where(x => x.SwapPkScript == swapPkScript);
             if (walletIds is not null) query = query.Where(x => walletIds.Contains(x.WalletId));

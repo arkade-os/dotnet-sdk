@@ -41,7 +41,7 @@ public class ArkadeIntentManagerTests
 
     private void HaveIntents(params ArkadeSwapIntent[] intents) =>
         _intents.GetArkadeSwapIntents(
-                Arg.Any<ArkadeSwapIntentStatus?>(), Arg.Any<string>(), Arg.Any<string[]>(),
+                Arg.Any<string>(), Arg.Any<ArkadeSwapIntentStatus?>(), Arg.Any<string>(), Arg.Any<string[]>(),
                 Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(intents));
 

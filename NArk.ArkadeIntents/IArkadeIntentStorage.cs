@@ -14,14 +14,29 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     /// <summary>Raised whenever a swap intent is saved or its status changes.</summary>
     event EventHandler<ArkadeSwapIntent>? SwapsChanged;
 
-    /// <summary>Query swap intents by status, covenant script and/or wallet.</summary>
+    /// <summary>Query swap intents by id, status, covenant script and/or wallet.</summary>
+    /// <param name="id">A single intent's id.</param>
+    /// <param name="status">Only intents in this status.</param>
+    /// <param name="swapPkScript">Only the intent on this covenant script.</param>
+    /// <param name="walletIds">Only intents belonging to these wallets.</param>
+    /// <param name="skip">Rows to skip.</param>
+    /// <param name="take">Rows to return.</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    /// <returns>The matching intents.</returns>
+    /// <remarks>
+    /// Implementations must apply every filter given. A store that ignores one does not merely return
+    /// too much: callers use these to identify a single swap before moving its money, so a filter
+    /// quietly dropped is a caller acting on somebody else's intent.
+    /// </remarks>
     Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+        string? id = null,
         ArkadeSwapIntentStatus? status = null,
         string? swapPkScript = null,
         string[]? walletIds = null,
         int? skip = null,
         int? take = null,
         CancellationToken cancellationToken = default);
+
 
     /// <summary>Insert or update a swap intent, keyed by <see cref="ArkadeSwapIntent.Id"/>.</summary>
     Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default);
@@ -55,4 +70,23 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
 
         return pending.Concat(refundable).Select(s => s.SwapPkScript).ToHashSet();
     }
+}
+
+/// <summary>Lookups over <see cref="IArkadeIntentStorage"/> that every store gets for free.</summary>
+public static class ArkadeIntentStorageExtensions
+{
+    /// <summary>Find one intent by id, or <c>null</c>.</summary>
+    /// <param name="storage">The store to ask.</param>
+    /// <param name="id">The intent's id.</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    /// <returns>The intent, or <c>null</c> when no such swap exists.</returns>
+    /// <remarks>
+    /// An extension rather than a member of the interface: it is a shorthand for one filtered query,
+    /// so there is nothing here an implementation could usefully do differently, and keeping it out
+    /// of the contract means no store — real or test double — can answer it inconsistently with the
+    /// filter it delegates to.
+    /// </remarks>
+    public static async Task<ArkadeSwapIntent?> GetArkadeSwapIntent(
+        this IArkadeIntentStorage storage, string id, CancellationToken cancellationToken = default) =>
+        (await storage.GetArkadeSwapIntents(id: id, cancellationToken: cancellationToken)).SingleOrDefault();
 }

@@ -10,6 +10,7 @@ using NArk.Core.Transport;
 using NArk.Arkade.Emulator;
 using NBitcoin;
 using NBitcoin.Scripting;
+using NArk.ArkadeIntents.Lightning;
 
 namespace NArk.ArkadeIntents.Services;
 
@@ -69,8 +70,11 @@ public sealed class ArkadeIntentManager
     {
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
         var emulatorInfo = await _emulator.GetInfoAsync(cancellationToken);
-        var emulatorBytes = Convert.FromHexString(emulatorInfo.SignerPubkey);
-        var emulatorPubkey = emulatorBytes.Length == 33 ? emulatorBytes[1..] : emulatorBytes;
+        // Parsed, not sliced. This corridor quotes no counterparty address to check the derivation
+        // against, so a key mangled here reaches the covenant unchallenged and the deposit lands
+        // under a co-signer that does not exist.
+        var emulatorPubkey = LightningCorridor.NormalizeToXOnly(
+            Convert.FromHexString(emulatorInfo.SignerPubkey)).ToBytes();
 
         var addressProvider = await _walletProvider.GetAddressProviderAsync(request.WalletId, cancellationToken)
             ?? throw new InvalidOperationException($"No address provider for wallet '{request.WalletId}'.");
@@ -131,8 +135,7 @@ public sealed class ArkadeIntentManager
     /// </summary>
     public async Task<ArkadeSwapIntent> CancelSwap(string swapId, CancellationToken cancellationToken = default)
     {
-        var intent = (await _intentStorage.GetArkadeSwapIntents(cancellationToken: cancellationToken))
-                         .FirstOrDefault(s => s.Id == swapId)
+        var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
                      ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
         if (intent.Status != ArkadeSwapIntentStatus.Pending)
             throw new InvalidOperationException($"Swap '{swapId}' is not pending (status {intent.Status}).");
