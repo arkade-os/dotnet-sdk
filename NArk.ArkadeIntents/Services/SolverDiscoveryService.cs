@@ -264,15 +264,9 @@ public sealed class SolverDiscoveryService
         1e15m, 1e16m, 1e17m, 1e18m, 1e19m, 1e20m,
         1e21m, 1e22m, 1e23m, 1e24m, 1e25m, 1e26m, 1e27m, 1e28m
     ];
-    /// <summary>Ten to the <paramref name="n"/>, for an exponent a registry supplied.</summary>
-    /// <param name="n">The decimal exponent from a solver's published market.</param>
-    /// <returns>The scale factor.</returns>
-    /// <exception cref="ArgumentOutOfRangeException">The exponent is outside what a decimal can hold.</exception>
-    /// <remarks>
-    /// Bounds-checked because the value is a stranger's: an out-of-range `price_decimals` on a
-    /// published card would otherwise surface as an IndexOutOfRangeException from inside a price
-    /// fetch, which reads as a bug in this SDK rather than as a card it should decline.
-    /// </remarks>
+    // The exponent comes off a published card, so it is a stranger's: unchecked, an out-of-range
+    // one surfaces as IndexOutOfRangeException from inside a price fetch, reading as a bug here
+    // rather than as a card to decline.
     private static decimal Pow10(int n) =>
         n >= 0 && n < Pow10Table.Length
             ? Pow10Table[n]
