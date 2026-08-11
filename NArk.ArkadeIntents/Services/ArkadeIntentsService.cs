@@ -195,6 +195,54 @@ public sealed class ArkadeIntentsService
         _assets.CancelSwap(swapId, cancellationToken);
 
     /// <summary>
+    /// Push a Lightning send swap's refund back to our own address.
+    /// </summary>
+    /// <param name="swapId">The swap to refund.</param>
+    /// <param name="cancellationToken">Cancels before the spend.</param>
+    /// <returns>The updated intent.</returns>
+    /// <remarks>
+    /// <para>
+    /// Takes <c>refundWithoutReceiver</c>: our key plus the Arkade server, once
+    /// <c>refund_locktime</c> has passed. Of the covenant's several refund leaves it is the only one
+    /// a client can start on its own, and that is worth being precise about rather than discovering
+    /// at the moment it is needed:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><c>refund</c> (immediate) and <c>refundWithoutServer</c> (after a CSV) both need the
+    /// solver's signature, and the RFQ protocol carries no message asking for one — the solver may
+    /// push a refund of its own accord, but that is an operator action on its side, not something
+    /// we can request.</item>
+    /// <item><c>nonInteractiveRefund</c> is the solver's to push, not ours.</item>
+    /// <item><c>unilateralRefundWithoutReceiver</c> needs nobody, but reaching it means unrolling
+    /// the VTXO to the chain, and an eight-leaf covenant lands there carrying enough script data
+    /// that the exit costs more than it recovers.</item>
+    /// </list>
+    /// <para>
+    /// So this is the recourse, and it is exposed directly rather than only through
+    /// <see cref="AdvanceAsync"/>, because wanting the money back now is the caller's call to make
+    /// at whatever moment they like — a sweep on a timer is a convenience, not the only way in.
+    /// </para>
+    /// </remarks>
+    public Task<ArkadeSwapIntent> RefundLightningSendAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        _lightningSend.RefundSwap(swapId, cancellationToken);
+
+    /// <summary>
+    /// Claim a funded Lightning receive swap, publishing the preimage.
+    /// </summary>
+    /// <param name="swapId">The swap to claim.</param>
+    /// <param name="cancellationToken">Cancels before the spend.</param>
+    /// <returns>The updated intent.</returns>
+    /// <remarks>
+    /// Exposed directly for the same reason as the refund, and with more urgency: the window closes
+    /// when the solver's own reclaim path opens, so a caller who wants to take delivery now should
+    /// not have to go through a sweep to do it.
+    /// </remarks>
+    public Task<ArkadeSwapIntent> ClaimLightningReceiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        _lightningReceive.ClaimAsync(swapId, cancellationToken);
+
+    /// <summary>
     /// Do whatever this swap's kind and status call for, if anything.
     /// </summary>
     /// <param name="swapId">The swap.</param>
