@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
@@ -17,6 +18,27 @@ public sealed record ArkadeIntentAdvance(
     bool Acted,
     string? Txid = null,
     string? Error = null);
+
+/// <summary>One swap whose recorded status was behind what the chain says.</summary>
+/// <param name="SwapId">The swap.</param>
+/// <param name="From">What we thought.</param>
+/// <param name="To">What it actually is.</param>
+public sealed record ArkadeIntentReconciled(
+    string SwapId, ArkadeSwapIntentStatus From, ArkadeSwapIntentStatus To);
+
+/// <summary>What a reconciliation pass found.</summary>
+/// <param name="Updated">Swaps whose status was corrected.</param>
+/// <param name="FundingUnconfirmed">
+/// Swaps recorded before their funding spend, whose lockup has still not appeared.
+/// </param>
+/// <remarks>
+/// The second list is reported rather than acted on. A spend that has not shown up is either still
+/// in flight or never landed, and nothing on our side can tell those apart — guessing either way
+/// would mean either abandoning a live swap or resurrecting a dead one.
+/// </remarks>
+public sealed record ArkadeReconciliation(
+    IReadOnlyList<ArkadeIntentReconciled> Updated,
+    IReadOnlyList<string> FundingUnconfirmed);
 
 /// <summary>
 /// One entry point for every kind of Arkade intent swap.
@@ -44,6 +66,8 @@ public sealed class ArkadeIntentsService
     private readonly LightningSwapClient _lightningSend;
     private readonly LightningReceiveClient _lightningReceive;
     private readonly IArkadeIntentStorage _intentStorage;
+    private readonly IVtxoStorage _vtxoStorage;
+    private readonly TimeProvider _time;
     private readonly ILogger<ArkadeIntentsService>? _logger;
 
     /// <summary>Creates the service.</summary>
@@ -51,18 +75,24 @@ public sealed class ArkadeIntentsService
     /// <param name="lightningSend">The <c>arkade:BTC-&gt;lightning:BTC</c> corridor.</param>
     /// <param name="lightningReceive">The <c>lightning:BTC-&gt;arkade:BTC</c> corridor.</param>
     /// <param name="intentStorage">Where every kind of swap is recorded.</param>
+    /// <param name="vtxoStorage">The chain view reconciliation compares against.</param>
+    /// <param name="time">Clock for the timelock comparisons; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
     public ArkadeIntentsService(
         ArkadeIntentManager assets,
         LightningSwapClient lightningSend,
         LightningReceiveClient lightningReceive,
         IArkadeIntentStorage intentStorage,
+        IVtxoStorage vtxoStorage,
+        TimeProvider? time = null,
         ILogger<ArkadeIntentsService>? logger = null)
     {
         _assets = assets;
         _lightningSend = lightningSend;
         _lightningReceive = lightningReceive;
         _intentStorage = intentStorage;
+        _vtxoStorage = vtxoStorage;
+        _time = time ?? TimeProvider.System;
         _logger = logger;
     }
 
@@ -190,6 +220,62 @@ public sealed class ArkadeIntentsService
             _logger?.LogWarning(e, "Swap {SwapId}: {Action} could not run", swapId, action);
             return new ArkadeIntentAdvance(swapId, action, Acted: false, Error: e.Message);
         }
+    }
+
+    /// <summary>
+    /// Re-derive every open swap's status from the chain, and report what was behind.
+    /// </summary>
+    /// <param name="walletId">Narrow to one wallet.</param>
+    /// <param name="cancellationToken">Cancels between swaps.</param>
+    /// <returns>What was corrected, and what is still unconfirmed.</returns>
+    /// <remarks>
+    /// The monitor only ever reacts to changes it is present for, so anything that happened while
+    /// this process was down is missed permanently — a claim window can open and close in that gap.
+    /// Run this at startup, before the first <see cref="AdvanceAllAsync"/>, or the sweep acts on a
+    /// picture that stopped being true when the process did.
+    /// </remarks>
+    public async Task<ArkadeReconciliation> ReconcileAsync(
+        string? walletId = null, CancellationToken cancellationToken = default)
+    {
+        var updated = new List<ArkadeIntentReconciled>();
+        var unconfirmed = new List<string>();
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
+
+        foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
+        {
+            if (ArkadeSwapStateMachine.Terminal.Contains(intent.Status)) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // includeSpent matters: a lockup the counterparty already took is exactly the outcome
+            // this pass exists to notice, and the default view hides it.
+            var vtxos = await _vtxoStorage.GetVtxos(
+                scripts: [intent.SwapPkScript], includeSpent: true, cancellationToken: cancellationToken);
+
+            // Prefer the live output; fall back to a spent one, which still carries the outcome.
+            var lockup = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept) ?? vtxos.FirstOrDefault();
+            if (lockup is null)
+            {
+                if (intent.Status == ArkadeSwapIntentStatus.Funding) unconfirmed.Add(intent.Id);
+                continue;
+            }
+
+            var next = ArkadeSwapStateMachine.Next(
+                intent.Type, intent.Status, SwapObservation.From(lockup, now, intent.RefundLocktime));
+            if (next is null) continue;
+
+            var from = intent.Status;
+            intent.Status = next.Value;
+            if (lockup.IsSpent())
+            {
+                intent.SpentTxid ??= lockup.ArkTxid ?? lockup.SpentByTransactionId;
+            }
+            await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+            _logger?.LogInformation("Swap {SwapId} reconciled: {From} → {To}", intent.Id, from, next.Value);
+            updated.Add(new ArkadeIntentReconciled(intent.Id, from, next.Value));
+        }
+
+        return new ArkadeReconciliation(updated, unconfirmed);
     }
 
     /// <summary>

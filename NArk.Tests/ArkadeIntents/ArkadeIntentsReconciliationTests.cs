@@ -1,0 +1,231 @@
+using NArk.Abstractions;
+using NArk.Abstractions.VTXOs;
+using NArk.ArkadeIntents;
+using NArk.ArkadeIntents.Models;
+using NArk.ArkadeIntents.Services;
+using NBitcoin;
+
+namespace NArk.Tests.ArkadeIntents;
+
+/// <summary>
+/// Catching up on everything that happened while nobody was watching.
+/// </summary>
+/// <remarks>
+/// The monitor is event-driven, so a process that was down missed whatever the chain did in the
+/// meantime — and on the receive leg a claim window can open and close inside that gap. Without a
+/// pass like this, a restart resumes from a picture that stopped being true when the process did,
+/// and the sweep that follows acts on it.
+/// </remarks>
+[TestFixture]
+public class ArkadeIntentsReconciliationTests
+{
+    private const long Locktime = 1_800_000_000;
+
+    [Test]
+    public async Task AFundingSwapWhoseLockupAppeared_IsPromoted()
+    {
+        // The swap was recorded before its own spend. Seeing the lockup is the only confirmation it
+        // ever gets that the money actually moved.
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Funding),
+            Vtxo());
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated.Single().To, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(storage.Saved.Single().Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(result.FundingUnconfirmed, Is.Empty);
+        });
+    }
+
+    [Test]
+    public async Task AFundingSwapWithNoLockup_IsReportedAndLeftAlone()
+    {
+        // Still in flight or never landed — nothing on our side tells those apart, and guessing
+        // either way abandons a live swap or resurrects a dead one.
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Funding),
+            vtxo: null);
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.FundingUnconfirmed, Is.EqualTo(new[] { "swap-1" }));
+            Assert.That(result.Updated, Is.Empty);
+            Assert.That(storage.Saved, Is.Empty, "nothing was written");
+        });
+    }
+
+    [Test]
+    public async Task AReceiveSwapFundedWhileWeWereDown_BecomesClaimable()
+    {
+        // The gap this exists for: the solver funded, the monitor was not running, and the claim
+        // window is finite.
+        var (service, _) = Build(
+            Intent(ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Pending),
+            Vtxo());
+
+        var result = await service.ReconcileAsync();
+
+        Assert.That(result.Updated.Single().To, Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
+    }
+
+    [Test]
+    public async Task ItLooksAtSpentOutputs()
+    {
+        // The default chain view hides them, and a lockup the counterparty already took is the one
+        // outcome this pass exists to notice.
+        var (service, _) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending), Vtxo());
+
+        await service.ReconcileAsync();
+
+        Assert.That(_lastVtxos.AskedForSpent, Is.True);
+    }
+
+    [Test]
+    public async Task ASwapFilledWhileWeWereDown_RecordsTheSpend()
+    {
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending),
+            Vtxo(spentBy: "spendtx", arkTxid: "arktx"));
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated.Single().To, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(storage.Saved.Single().SpentTxid, Is.EqualTo("arktx"));
+        });
+    }
+
+    [Test]
+    public async Task ATerminalSwap_IsNotReExamined()
+    {
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Fulfilled),
+            Vtxo(spentBy: "tx"));
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated, Is.Empty);
+            Assert.That(storage.Saved, Is.Empty);
+        });
+    }
+
+    [Test]
+    public async Task ASwapAlreadyInTheRightState_IsNotRewritten()
+    {
+        // Reconciliation is meant to be run on every startup, so a no-op pass must actually be one.
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending),
+            Vtxo());
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated, Is.Empty);
+            Assert.That(storage.Saved, Is.Empty);
+        });
+    }
+
+    // ─── Harness ──────────────────────────────────────────────────────
+
+    private static FakeVtxos _lastVtxos = new(null);
+
+    private static (ArkadeIntentsService, FakeIntents) Build(ArkadeSwapIntent intent, ArkVtxo? vtxo)
+    {
+        var intents = new FakeIntents(intent);
+        var vtxos = _lastVtxos = new FakeVtxos(vtxo);
+        var clock = new FakeClock(Locktime - 3600);
+
+        // Only the storages and the clock take part in reconciliation; the corridor clients are
+        // never reached, so they are left null rather than mocked into existence.
+        return (new ArkadeIntentsService(null!, null!, null!, intents, vtxos, clock), intents);
+    }
+
+    private static ArkadeSwapIntent Intent(ArkadeSwapIntentType type, ArkadeSwapIntentStatus status) => new()
+    {
+        Id = "swap-1",
+        WalletId = "wallet-1",
+        Type = type,
+        OfferAmount = Money.Satoshis(50_000),
+        WantAmount = Money.Satoshis(50_000),
+        Status = status,
+        CreatedAt = DateTimeOffset.UtcNow,
+        SwapPkScript = "5120" + new string('a', 64),
+        SwapAddress = "tark1example",
+        OfferHex = "",
+        RefundLocktime = Locktime,
+    };
+
+    private static ArkVtxo Vtxo(string? spentBy = null, string? arkTxid = null) =>
+        new(Script: "5120" + new string('a', 64), TransactionId: new string('b', 64),
+            TransactionOutputIndex: 0, Amount: 50_000,
+            SpentByTransactionId: spentBy, SettledByTransactionId: null, Swept: false,
+            CreatedAt: DateTimeOffset.UtcNow, ExpiresAt: null, ExpiresAtHeight: null, ArkTxid: arkTxid);
+
+    private sealed class FakeClock(long unixSeconds) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
+    }
+
+    private sealed class FakeIntents(ArkadeSwapIntent intent) : IArkadeIntentStorage
+    {
+        public readonly List<ArkadeSwapIntent> Saved = [];
+        public event EventHandler<ArkadeSwapIntent>? SwapsChanged;
+        public event EventHandler? ActiveScriptsChanged;
+
+        public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
+            ArkadeSwapIntentStatus? status = null, string? swapPkScript = null, string[]? walletIds = null,
+            int? skip = null, int? take = null, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>([intent]);
+
+        public Task SaveArkadeSwapIntent(ArkadeSwapIntent i, CancellationToken cancellationToken = default)
+        {
+            Saved.Add(i);
+            SwapsChanged?.Invoke(this, i);
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> UpdateStatus(
+            string swapPkScript, ArkadeSwapIntentStatus status, string? spentTxid = null,
+            CancellationToken cancellationToken = default) => Task.FromResult(true);
+    }
+
+    private sealed class FakeVtxos(ArkVtxo? vtxo) : IVtxoStorage
+    {
+        public event EventHandler<ArkVtxo>? VtxosChanged;
+        public event EventHandler? ActiveScriptsChanged;
+
+        /// <summary>Records what the caller asked for, so the query itself can be asserted.</summary>
+        public bool AskedForSpent;
+
+        public Task<IReadOnlyCollection<ArkVtxo>> GetVtxos(
+            IReadOnlyCollection<string>? scripts = null,
+            IReadOnlyCollection<NBitcoin.OutPoint>? outpoints = null,
+            string[]? walletIds = null,
+            bool includeSpent = false,
+            string? searchText = null,
+            int? skip = null,
+            int? take = null,
+            CancellationToken cancellationToken = default)
+        {
+            AskedForSpent = includeSpent;
+            return Task.FromResult<IReadOnlyCollection<ArkVtxo>>(vtxo is null ? [] : [vtxo]);
+        }
+
+        public Task<bool> UpsertVtxo(ArkVtxo v, CancellationToken cancellationToken = default)
+        {
+            VtxosChanged?.Invoke(this, v);
+            ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
+            return Task.FromResult(true);
+        }
+    }
+}
