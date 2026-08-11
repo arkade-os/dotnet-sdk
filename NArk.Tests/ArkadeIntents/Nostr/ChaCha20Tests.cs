@@ -1,17 +1,28 @@
 using System.Text;
+using System.Text.Json;
 using NArk.ArkadeIntents.Nostr;
 
 namespace NArk.Tests.ArkadeIntents.Nostr;
 
 /// <summary>
-/// ChaCha20 against RFC 8439's own vectors.
+/// ChaCha20 against RFC 8439's own vectors and a broad cross-checked set.
 /// </summary>
 /// <remarks>
-/// The NIP-44 vector exercises this cipher too, but only at one key, one nonce and one length —
-/// which leaves the parts most likely to be wrong in a hand-written implementation untested: the
-/// block counter advancing across a boundary, a non-zero initial counter, and a final partial
-/// block. Those are exactly the cases that produce output which is correct for short inputs and
-/// silently wrong for longer ones.
+/// <para>
+/// The NIP-44 cross-check exercises this cipher too, but only at one key, one nonce and one length.
+/// That leaves the parts most likely to be wrong in a hand-written implementation untested: the
+/// block counter advancing across a boundary, a non-zero initial counter, and a truncated final
+/// block. Each produces output that is correct for short inputs and silently wrong for longer ones,
+/// which is the worst failure shape a cipher has — the ciphertext still looks like noise either way.
+/// </para>
+/// <para>
+/// So there are three layers here. RFC 8439's Appendix A.2 is the authority, parsed from the
+/// published text rather than retyped. Around it sits a generated set spanning thirty lengths
+/// clustered on the 64-byte seams and seven counters up to the 32-bit ceiling, cross-checked against
+/// the implementation the reference solver itself seals with. The rest assert properties no single
+/// vector can: that decryption is the same operation, that block N of a long run equals a run
+/// started at block N, and that a partial block is a prefix of the full one.
+/// </para>
 /// </remarks>
 [TestFixture]
 public class ChaCha20Tests
@@ -88,6 +99,49 @@ public class ChaCha20Tests
         Assert.That(partial, Is.EqualTo(full[..37]));
     }
 
+    [TestCaseSource(nameof(Rfc8439AppendixA2))]
+    public void Rfc8439_AppendixA2(Vector v)
+    {
+        // Parsed from the published RFC text rather than retyped, and the three between them cover a
+        // single whole block, a 375-byte run from counter 1, and a 127-byte run from counter 42.
+        var data = Convert.FromHexString(v.Plaintext);
+
+        ChaCha20.XorKeyStream(
+            Convert.FromHexString(v.Key), Convert.FromHexString(v.Nonce), data, (uint)v.Counter);
+
+        Assert.That(Convert.ToHexString(data).ToLowerInvariant(), Is.EqualTo(v.Ciphertext));
+    }
+
+    [TestCaseSource(nameof(GeneratedVectors))]
+    public void CrossChecked_AgainstTheReferenceImplementation(Vector v)
+    {
+        var data = Convert.FromHexString(v.Plaintext);
+
+        ChaCha20.XorKeyStream(
+            Convert.FromHexString(v.Key), Convert.FromHexString(v.Nonce), data, (uint)v.Counter);
+
+        Assert.That(Convert.ToHexString(data).ToLowerInvariant(), Is.EqualTo(v.Ciphertext));
+    }
+
+    [Test]
+    public void TheGeneratedSet_CoversTheSeams()
+    {
+        // A guard on the fixture itself: if a regeneration ever narrowed the spread, the suite would
+        // still pass while testing far less than it looks like it does.
+        var all = Fixture.Vectors;
+        var lengths = all.Select(v => v.Plaintext.Length / 2).ToHashSet();
+        var counters = all.Select(v => v.Counter).ToHashSet();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(all, Has.Count.GreaterThan(100));
+            Assert.That(lengths, Does.Contain(0).And.Contains(63).And.Contains(64).And.Contains(65));
+            Assert.That(counters, Does.Contain(0L).And.Contains(1L));
+            Assert.That(counters.Max(), Is.GreaterThan(4_000_000_000L), "a counter near the 32-bit ceiling");
+            Assert.That(lengths.Max(), Is.GreaterThanOrEqualTo(4096));
+        });
+    }
+
     [TestCase(31)]
     [TestCase(33)]
     public void WrongKeyLength_IsRefused(int length)
@@ -103,4 +157,31 @@ public class ChaCha20Tests
         Assert.Throws<ArgumentException>(() =>
             ChaCha20.XorKeyStream(Key, new byte[length], new byte[16]));
     }
+
+    // ─── Fixture ──────────────────────────────────────────────────────
+
+    private static readonly Fixtures Fixture = LoadFixture();
+
+    public static IEnumerable<TestCaseData> Rfc8439AppendixA2() =>
+        Fixture.Rfc8439.Vectors.Select((v, i) => new TestCaseData(v).SetName($"RFC 8439 A.2 #{i + 1}"));
+
+    public static IEnumerable<TestCaseData> GeneratedVectors() =>
+        Fixture.Vectors.Select(v =>
+            new TestCaseData(v).SetName($"len {v.Plaintext.Length / 2}, counter {v.Counter}"));
+
+    private static Fixtures LoadFixture()
+    {
+        var path = Path.Combine(
+            TestContext.CurrentContext.TestDirectory, "ArkadeIntents", "Fixtures", "chacha20.json");
+        return JsonSerializer.Deserialize<Fixtures>(
+                   File.ReadAllText(path),
+                   new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+               ?? throw new InvalidOperationException($"Failed to load fixture {path}");
+    }
+
+    public sealed record Fixtures(List<Vector> Vectors, RfcSet Rfc8439);
+
+    public sealed record RfcSet(List<Vector> Vectors);
+
+    public sealed record Vector(string Key, string Nonce, long Counter, string Plaintext, string Ciphertext);
 }
