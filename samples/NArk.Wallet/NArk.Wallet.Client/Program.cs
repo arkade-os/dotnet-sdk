@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using NArk.Abstractions.Assets;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Safety;
+using NArk.Abstractions.Settlement;
 using NArk.Abstractions.Wallets;
 using NArk.Blockchain;
 using NArk.Abstractions.Intents;
@@ -82,6 +83,13 @@ builder.Services.AddSingleton<IAssetManager, AssetManager>();
 // ── Boarding UTXO sync (polls the chain for confirmed boarding UTXOs) ──
 builder.Services.AddSingleton<BoardingUtxoSyncService>();
 builder.Services.AddSingleton<BoardingUtxoPollService>();
+
+// ── Threshold-based settlement (auto-payout once the balance reaches a threshold) ──
+// The rule itself lives in browser local storage; the SDK persists none of its own.
+// EnableCollaborativeExit lets the built-in rail also pay out to on-chain addresses.
+builder.Services.AddArkSettlement(options => options.EnableCollaborativeExit = true);
+builder.Services.AddSingleton<LocalSettlementConfigProvider>();
+builder.Services.AddSingleton<ISettlementConfigProvider, LocalSettlementConfigAdapter>();
 
 // ── Wallet service (replaces gateway API client) ──
 builder.Services.AddSingleton<ArkWalletService>();
