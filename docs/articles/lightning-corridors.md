@@ -179,3 +179,37 @@ dotnet test NArk.Tests --filter VHTLCv2ContractTests
 
 If the vectors and this SDK disagree, **this SDK is what is wrong** — they come from the side that
 will or will not be able to spend.
+
+## In the sample wallet
+
+`samples/NArk.Wallet` exercises both corridors from a browser, and is the shortest way to see the
+shape of an integration. Send pays a BOLT11 or an LNURL address; Receive mints an invoice; the Swap
+page lists Lightning swaps alongside asset ones and carries the claim and refund buttons.
+
+It replaces what used to be Boltz submarine and reverse swaps in that sample. The Boltz chain swaps
+stay where they are — there is no intent corridor for on-chain BTC yet, so removing them would have
+cost the sample a feature rather than moved it.
+
+Everything corridor-specific lives in `Services/ArkadeLightningService.cs`, which owns three
+decisions worth copying:
+
+**The solver comes from the registry, not from configuration.** Nothing about a counterparty is
+baked into the build: the sample asks the public index which solvers advertise a Lightning corridor
+on its network and takes one. The index carries a solver's key but not its relays, so the relay is
+a configured default — an asymmetry of the current index format rather than a choice, and the one
+place a corridor found through discovery still cannot dial itself.
+
+**The transport is built per negotiation and disposed with it.** The RFQ kinds are ephemeral, so a
+relay stores nothing and there is no backlog a longer-lived connection could catch up from. Holding
+a socket open between swaps buys nothing and, in a browser tab that sleeps, costs something. No
+identity key is passed either, so each negotiation signs with a fresh one and the relay operator
+cannot link a wallet's swaps to each other.
+
+**covclaimd's key is read live, every time.** The daemon generates it at startup, so a restart
+invalidates any copy — and a preimage sealed to a key nobody holds fails silently: the swap works,
+and only its offline claim path quietly does not exist.
+
+The status labels are worth a look too. On these corridors `Resolved` means the sats moved without a
+preimage — a refund, not a payment — so the sample says "Refunded — the payment did not happen"
+rather than anything that reads like success. A wallet that collapses those two into "done" reports
+a failed payment as a completed one.

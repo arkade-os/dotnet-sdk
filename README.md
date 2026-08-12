@@ -1142,6 +1142,33 @@ Claiming publishes the preimage, which is also how the solver gets paid — an u
 where it reclaims its lockup and the payer's money was never earned. The preimage is persisted
 before the invoice goes out, since nothing can re-derive it afterwards.
 
+### In the sample wallet
+
+`samples/NArk.Wallet` runs both corridors in the browser — Send pays a BOLT11 or an LNURL address,
+Receive mints an invoice, and the Swap page claims and refunds. It is the Boltz submarine and
+reverse swaps this sample used to run, replaced; the Boltz chain swaps stay, having no intent
+corridor yet.
+
+The wiring is `Services/ArkadeLightningService.cs`, and all of it is one options object:
+
+```csharp
+builder.Services.AddSingleton(new ArkadeLightningOptions
+{
+    CovclaimdUrl = new Uri("http://…"),   // optional; see below
+});
+```
+
+**No solver is named.** Which ones exist is answered by the public registry at runtime, and the
+sample picks one advertising a Lightning corridor on its network. The one thing the registry cannot
+answer is where to reach it: a market entry carries the solver's key but not its relays, so
+`ArkadeLightningOptions.RelayUrl` supplies a default until the index carries transports. When the
+registry lists no Lightning market, the Receive page says so instead of offering an option that
+cannot work.
+
+covclaimd is optional. Both corridors work without it; what it adds is a daemon that races the
+wallet's own claim, so a funded receive is still collected while the browser tab is closed — worth
+having, because the claim window is a couple of hours.
+
 > **Both corridors settle end to end against a live solver.** `ArkadeLightningTests` in
 > `NArk.Tests.End2End` drives each one through funding, fill and claim: on send the solver pays the
 > invoice and takes the lockup with the preimage; on receive the payer settles a hold invoice, the

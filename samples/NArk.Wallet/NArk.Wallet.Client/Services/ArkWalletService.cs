@@ -44,7 +44,8 @@ public class ArkWalletService(
     ArkNetworkConfig networkConfig,
     NArk.ArkadeIntents.Services.ArkadeIntentManager arkadeSwaps,
     NArk.ArkadeIntents.Services.SolverDiscoveryService solverDiscovery,
-    NArk.ArkadeIntents.IArkadeIntentStorage arkadeIntentStorage)
+    NArk.ArkadeIntents.IArkadeIntentStorage arkadeIntentStorage,
+    ArkadeLightningService arkadeLightning)
 {
     // ── Wallets ──
 
@@ -160,16 +161,52 @@ public class ArkWalletService(
         => await swapsManagementService.ScanRecoverableSwapsAsync(walletId);
 
     /// <summary>
-    /// Initiates a reverse submarine swap (Lightning → Ark). Returns the Lightning invoice to pay.
+    /// Mints an invoice whose payment arrives as Arkade sats (<c>lightning:BTC→arkade:BTC</c>).
+    /// Returns the invoice to hand to the payer.
     /// </summary>
-    public async Task<string> InitiateReverseSwap(string walletId, long amountSats)
+    /// <remarks>
+    /// The solver funds the covenant before it is paid anything, and only our claim — which
+    /// publishes the preimage — lets it settle the payment it is holding. Claiming is this wallet's
+    /// job; a covclaimd, if one is configured, only races it so the claim still happens while the
+    /// wallet is closed.
+    /// </remarks>
+    public async Task<string> ReceiveOverLightning(string walletId, long amountSats)
     {
-        var invoiceParams = new CreateInvoiceParams(
-            LightMoney.Satoshis(amountSats),
-            "Arkade Wallet Receive",
-            TimeSpan.FromHours(1));
-        return await swapsManagementService.InitiateReverseSwap(walletId, invoiceParams);
+        var pending = await arkadeLightning.CreateInvoiceAsync(walletId, amountSats);
+        return pending.Invoice;
     }
+
+    /// <summary>
+    /// Whether a solver serving a Lightning corridor was found on the registry for this network.
+    /// </summary>
+    /// <remarks>
+    /// Asked rather than configured: no counterparty is named in this build, so the answer is a
+    /// registry lookup and can legitimately be "none today".
+    /// </remarks>
+    public Task<bool> LightningAvailable(CancellationToken ct = default) =>
+        arkadeLightning.IsAvailableAsync(ct);
+
+    /// <summary>
+    /// Whether a funded receive swap will still be claimed if this wallet is closed — i.e. whether
+    /// a covclaimd is configured. Receiving works either way; without one the claim is ours to make
+    /// inside the window.
+    /// </summary>
+    public bool LightningOfflineClaimCover => arkadeLightning.HasOfflineClaimCover;
+
+    /// <summary>This wallet's Lightning swaps, newest first.</summary>
+    public Task<IReadOnlyList<NArk.ArkadeIntents.Models.ArkadeSwapIntent>> GetLightningSwaps(
+        string walletId, CancellationToken ct = default)
+        => arkadeLightning.ListAsync(walletId, ct);
+
+    /// <summary>Take delivery of a funded receive swap now.</summary>
+    public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> ClaimLightningSwap(
+        string swapId, CancellationToken ct = default)
+        => arkadeLightning.ClaimAsync(swapId, ct);
+
+    /// <summary>Take back the deposit on a send swap the solver never filled.</summary>
+    public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> RefundLightningSwap(
+        string swapId, CancellationToken ct = default)
+        => arkadeLightning.RefundAsync(swapId, ct);
 
     /// <summary>
     /// Initiates a BTC→ARK chain swap. Returns the BTC address to send to.
@@ -275,13 +312,21 @@ public class ArkWalletService(
         return await onchainService.InitiateCollaborativeExit(walletId, output);
     }
 
-    // ── Submarine Swap (Ark → Lightning) ──
+    // ── Lightning send (arkade:BTC → lightning:BTC) ──
 
+    /// <summary>
+    /// Pays a BOLT11 out of the Arkade balance. Returns the funding txid of the covenant the
+    /// solver must reveal a preimage to claim.
+    /// </summary>
+    /// <remarks>
+    /// The txid means the sats are locked, not that the invoice is paid. Only the preimage proves
+    /// that, and it appears when the solver claims — until then the swap is still in flight and,
+    /// past its refund locktime, still refundable.
+    /// </remarks>
     public async Task<string> PayLightningInvoice(string walletId, string bolt11Invoice)
     {
-        var serverInfo = await transport.GetServerInfoAsync();
-        var invoice = BOLT11PaymentRequest.Parse(bolt11Invoice, serverInfo.Network);
-        return await swapsManagementService.InitiateSubmarineSwap(walletId, invoice);
+        var funded = await arkadeLightning.PayInvoiceAsync(walletId, bolt11Invoice);
+        return funded.FundingTxid;
     }
 
     // ── Chain Swap (Ark → BTC on-chain via Boltz) ──

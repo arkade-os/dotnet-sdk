@@ -380,8 +380,24 @@ public sealed class LightningSwapClient
     // them: the same descriptor that owns the refund destination, so the party who can push the
     // refund is exactly the party it pays.
     private static OutputDescriptor ClientRefundDescriptorOf(ArkContract receive) =>
-        receive is ArkPaymentContract payment
-            ? payment.User
-            : throw new InvalidOperationException(
-                $"expected a payment contract to take the client refund key from, got {receive.GetType().Name}");
+        UserKeyOf(receive, "client refund");
+
+    /// <summary>
+    /// The wallet's own key out of a derived receive contract, whatever shape it came back as.
+    /// </summary>
+    /// <remarks>
+    /// A wallet with payment tracking on derives <see cref="HashLockedArkPaymentContract"/> for
+    /// receiving, which carries the same user key but does not inherit
+    /// <see cref="ArkPaymentContract"/> — so matching only the plain shape refused a perfectly good
+    /// address and failed the swap before it started. Both are spendable by this wallet, which is
+    /// the only property this key is being read for.
+    /// </remarks>
+    private static OutputDescriptor UserKeyOf(ArkContract contract, string role) => contract switch
+    {
+        ArkPaymentContract payment => payment.User,
+        HashLockedArkPaymentContract hashLocked => hashLocked.User,
+        _ => throw new InvalidOperationException(
+            $"expected a payment contract to take the {role} key from, got {contract.GetType().Name}"),
+    };
+
 }
