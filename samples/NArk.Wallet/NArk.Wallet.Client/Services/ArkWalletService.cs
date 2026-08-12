@@ -138,14 +138,17 @@ public class ArkWalletService(
 
     // ── Balance & VTXOs ──
 
+    /// <summary>Spendable balance, in sats.</summary>
+    /// <remarks>
+    /// Failures are not swallowed. This used to return 0 on any exception, which reports "I could
+    /// not work out what you have" as "you have nothing" — the one answer a balance must never give
+    /// wrongly, because every decision the user makes next is based on it. A wallet that shows an
+    /// error is worse to look at and better to trust.
+    /// </remarks>
     public async Task<long> GetBalance(string walletId)
     {
-        try
-        {
-            var coins = await spendingService.GetAvailableCoins(walletId);
-            return coins.Sum(c => c.Amount.Satoshi);
-        }
-        catch { return 0; }
+        var coins = await spendingService.GetAvailableCoins(walletId);
+        return coins.Sum(c => c.Amount.Satoshi);
     }
 
     public async Task<IReadOnlyCollection<ArkVtxo>> GetVtxos(string walletId, int skip = 0, int take = 50)
