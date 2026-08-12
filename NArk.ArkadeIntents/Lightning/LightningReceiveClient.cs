@@ -67,6 +67,7 @@ public sealed record PendingLightningReceive(
 /// </remarks>
 public sealed class LightningReceiveClient
 {
+    private readonly IAeadCipher _cipher;
     private readonly IClientTransport _transport;
     private readonly IEmulatorProvider _emulator;
     private readonly IContractService _contractService;
@@ -95,9 +96,11 @@ public sealed class LightningReceiveClient
         IArkadeIntentStorage intentStorage,
         IContractStorage contractStorage,
         IVtxoStorage vtxoStorage,
+        IAeadCipher? cipher = null,
         TimeProvider? time = null,
         ILogger<LightningReceiveClient>? logger = null)
     {
+        _cipher = cipher ?? new AesGcmAeadCipher();
         _transport = transport;
         _emulator = emulator;
         _contractService = contractService;
@@ -148,7 +151,7 @@ public sealed class LightningReceiveClient
         var payoutAddress = payoutArkAddress.ToString(serverInfo.Network == Network.Main);
         var payoutDescriptor = UserKeyOf(payout, "payout");
 
-        var sealed_ = ClaimPacket.New(covclaimdPubKey);
+        var sealed_ = await ClaimPacket.NewAsync(covclaimdPubKey, _cipher, cancellationToken);
 
         var request = LightningReceiveProfile.Request(
             amountSats,
