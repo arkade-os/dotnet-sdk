@@ -69,6 +69,22 @@ public class SolverMarket
     /// <summary>Solver spread, in basis points.</summary>
     public int FeeBps { get; init; }
 
+    /// <summary>
+    /// A flat component of the solver's fee, in base-asset units, charged on top of
+    /// <see cref="FeeBps"/>.
+    /// </summary>
+    /// <remarks>
+    /// Absent on cards that charge proportionally only, which is why it is a nullable string rather
+    /// than a number defaulting to zero: an unset field and a declared zero are the same charge, and
+    /// treating a missing one as an error would refuse every card written before this existed.
+    /// Serialized as a decimal string for the same reason as the amount bounds below.
+    /// </remarks>
+    public string? FeeFlat { get; init; }
+
+    /// <summary>The flat fee as a number, or zero when the card declares none.</summary>
+    public long FeeFlatAmount =>
+        long.TryParse(FeeFlat, out var flat) && flat > 0 ? flat : 0;
+
     /// <summary>Minimum trade size, in base-asset units.</summary>
     /// <remarks>
     /// Serialized as a decimal string: these are base units of an asset whose precision the card

@@ -86,8 +86,8 @@ builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.LightningSwapClient>(
 // The receive corridor seals the swap preimage with AES-256-GCM, which the browser's .NET runtime
 // does not implement — so the browser's own is handed in. Everything else in the packet (ECDH,
 // HKDF) runs fine here; this is the single primitive that does not.
-builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.IAeadCipher>(sp =>
-    new WebCryptoAeadCipher(sp.GetRequiredService<IJSRuntime>()));
+builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.IAesGcmCipher>(sp =>
+    new WebCryptoAesGcmCipher(sp.GetRequiredService<IJSRuntime>()));
 builder.Services.AddSingleton(sp => new NArk.ArkadeIntents.Lightning.LightningReceiveClient(
     sp.GetRequiredService<NArk.Core.Transport.IClientTransport>(),
     sp.GetRequiredService<NArk.Arkade.Emulator.IEmulatorProvider>(),
@@ -96,7 +96,7 @@ builder.Services.AddSingleton(sp => new NArk.ArkadeIntents.Lightning.LightningRe
     sp.GetRequiredService<NArk.ArkadeIntents.IArkadeIntentStorage>(),
     sp.GetRequiredService<NArk.Abstractions.Contracts.IContractStorage>(),
     sp.GetRequiredService<NArk.Abstractions.VTXOs.IVtxoStorage>(),
-    sp.GetRequiredService<NArk.ArkadeIntents.Lightning.IAeadCipher>(),
+    sp.GetRequiredService<NArk.ArkadeIntents.Lightning.IAesGcmCipher>(),
     logger: sp.GetService<ILogger<NArk.ArkadeIntents.Lightning.LightningReceiveClient>>()));
 builder.Services.AddSingleton<NArk.ArkadeIntents.Services.ArkadeIntentsService>();
 // One solver, named outright: a registry market entry carries no relay or key for the solver
@@ -108,6 +108,8 @@ builder.Services.AddSingleton(new ArkadeLightningOptions
     CovclaimdUrl = builder.Configuration["ArkadeLightning:CovclaimdUrl"] is { Length: > 0 } covclaimd
         ? new Uri(covclaimd)
         : null,
+    // Development-only, from an untracked appsettings.Development.json. Empty in the repository.
+    SolverNostrPubkeyOverride = builder.Configuration["ArkadeLightning:SolverNostrPubkey"],
 });
 builder.Services.AddSingleton(sp => new ArkadeLightningService(
     sp.GetRequiredService<ArkadeLightningOptions>(),

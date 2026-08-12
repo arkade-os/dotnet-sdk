@@ -55,7 +55,7 @@ public class ClaimPacketTests
     public void Seal_RejectsAPreimageThatIsNotThirtyTwoBytes()
     {
         var ex = Assert.Throws<ArgumentException>(() =>
-            ClaimPacket.SealAsync(new byte[31], Fixture.Inputs.CovclaimdPublicKey, Ephemeral(), Nonce(), new AesGcmAeadCipher()).GetAwaiter().GetResult());
+            ClaimPacket.SealAsync(new byte[31], Fixture.Inputs.CovclaimdPublicKey, Ephemeral(), Nonce(), new AesGcmCipher()).GetAwaiter().GetResult());
 
         Assert.That(ex!.Message, Does.Contain("32 bytes"));
     }
@@ -78,7 +78,7 @@ public class ClaimPacketTests
         Fixture.Inputs.CovclaimdPublicKey,
         Ephemeral(),
         Nonce(),
-        new AesGcmAeadCipher());
+        new AesGcmCipher());
 
     private static Key Ephemeral() => new(Convert.FromHexString(Fixture.Inputs.EphemeralPrivateKey));
 

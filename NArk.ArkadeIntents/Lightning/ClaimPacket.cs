@@ -60,25 +60,25 @@ public static class ClaimPacket
     /// </remarks>
     /// <param name="cipher">
     /// Supplies AES-GCM. Defaults to the platform's, which is right everywhere except a browser —
-    /// see <see cref="IAeadCipher"/>.
+    /// see <see cref="IAesGcmCipher"/>.
     /// </param>
     /// <param name="cancellationToken">Cancels the encryption.</param>
     public static Task<SealedClaimPacket> SealAsync(
         byte[] preimage, string covclaimdPubKeyHex,
-        IAeadCipher? cipher = null, CancellationToken cancellationToken = default)
+        IAesGcmCipher? cipher = null, CancellationToken cancellationToken = default)
     {
         var ephemeral = new Key();
         var nonce = RandomNumberGenerator.GetBytes(NonceBytes);
         return SealAsync(
             preimage, covclaimdPubKeyHex, ephemeral, nonce,
-            cipher ?? new AesGcmAeadCipher(), cancellationToken);
+            cipher ?? new AesGcmCipher(), cancellationToken);
     }
 
     /// <summary>Generate a fresh 32-byte preimage and seal it — how a receive swap starts.</summary>
     /// <param name="covclaimdPubKeyHex">covclaimd's compressed secp256k1 key, hex.</param>
     /// <returns>The packet, the preimage and its payment hash.</returns>
     public static Task<SealedClaimPacket> NewAsync(
-        string covclaimdPubKeyHex, IAeadCipher? cipher = null, CancellationToken cancellationToken = default) =>
+        string covclaimdPubKeyHex, IAesGcmCipher? cipher = null, CancellationToken cancellationToken = default) =>
         SealAsync(RandomNumberGenerator.GetBytes(32), covclaimdPubKeyHex, cipher, cancellationToken);
 
     /// <summary>
@@ -91,7 +91,7 @@ public static class ClaimPacket
     /// </remarks>
     internal static async Task<SealedClaimPacket> SealAsync(
         byte[] preimage, string covclaimdPubKeyHex, Key ephemeral, byte[] nonce,
-        IAeadCipher cipher, CancellationToken cancellationToken = default)
+        IAesGcmCipher cipher, CancellationToken cancellationToken = default)
     {
         if (preimage.Length != 32)
         {
