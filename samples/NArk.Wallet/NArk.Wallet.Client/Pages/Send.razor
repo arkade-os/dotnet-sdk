@@ -91,9 +91,9 @@
                         </div>
                         <div class="method-info">
                             <div class="method-name">Pay Lightning Invoice</div>
-                            <div class="method-desc">Send from Ark wallet via Boltz submarine swap</div>
+                            <div class="method-desc">Pay from your Arkade balance via a solver</div>
                         </div>
-                        <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
+                        <span class="pill pill-info" style="font-size:9px;">ARKADE</span>
                     </div>
                 }
                 else if (_parsedType == "lnurl")
@@ -126,9 +126,9 @@
                             </div>
                             <div class="method-info">
                                 <div class="method-name">Pay via LNURL</div>
-                                <div class="method-desc">Send to Lightning Address via Boltz</div>
+                                <div class="method-desc">Resolve the address, then pay via a solver</div>
                             </div>
-                            <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
+                            <span class="pill pill-info" style="font-size:9px;">ARKADE</span>
                         </div>
                     }
                 }
@@ -355,7 +355,7 @@
         _sendMethodLabel = method switch
         {
             "ark" => "Sending via Ark...",
-            "lightning" => "Paying Lightning invoice via Boltz...",
+            "lightning" => "Locking sats for the solver to claim...",
             "collabexit" => "Collaborative exit to on-chain...",
             "chainswap" => "Sending via Boltz ARK→BTC chain swap...",
             _ => "Sending..."

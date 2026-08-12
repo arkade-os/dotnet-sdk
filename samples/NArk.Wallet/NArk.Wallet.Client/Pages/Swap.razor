@@ -95,7 +95,42 @@
             }
         </div>
 
-        <!-- ── Active / recent swaps ───────────────────────────────── -->
+        <!-- ── Lightning corridors ─────────────────────────────────── -->
+        @if (_lightning.Count > 0)
+        {
+            <p style="font-size:13px;font-weight:600;margin:4px 0 8px;">Lightning</p>
+            @foreach (var s in _lightning)
+            {
+                <div class="glass-card mb-8" style="padding:12px 14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                        <div style="min-width:0;">
+                            <p style="font-size:13px;font-weight:600;margin:0;">
+                                @(s.Type == ArkadeSwapIntentType.BtcToLightning
+                                    ? $"{s.OfferAmount.Satoshi} sats → Lightning"
+                                    : $"Lightning → {s.WantAmount.Satoshi} sats")
+                            </p>
+                            <p class="text-secondary" style="font-size:11px;margin:2px 0 0;">
+                                @LightningStatus(s) · @s.CreatedAt.LocalDateTime.ToString("g")
+                            </p>
+                        </div>
+                        @* Both actions are the caller's call, not the sweep's: claiming has a
+                           deadline, and wanting the money back is a decision only the user makes. *@
+                        @if (s.Status == ArkadeSwapIntentStatus.Claimable
+                             && s.Type == ArkadeSwapIntentType.LightningToBtc)
+                        {
+                            <button class="btn btn-sm btn-primary" @onclick="() => Claim(s.Id)" disabled="@_busy">Claim</button>
+                        }
+                        else if (s.Status == ArkadeSwapIntentStatus.Refundable
+                                 && s.Type == ArkadeSwapIntentType.BtcToLightning)
+                        {
+                            <button class="btn btn-sm btn-secondary" @onclick="() => Refund(s.Id)" disabled="@_busy">Refund</button>
+                        }
+                    </div>
+                </div>
+            }
+        }
+
+        <!-- ── Active / recent asset swaps ─────────────────────────── -->
         <p style="font-size:13px;font-weight:600;margin:4px 0 8px;">Your swaps</p>
         @if (_swaps.Count == 0)
         {
@@ -129,6 +164,7 @@
 @code {
     private readonly List<IndexedMarket> _markets = new();
     private readonly List<ArkadeSwapIntent> _swaps = new();
+    private readonly List<ArkadeSwapIntent> _lightning = new();
     private IndexedMarket? _selected;
     private long _depositSats;
     private long _wantAmount;
@@ -169,11 +205,59 @@
         {
             var swaps = await Ark.GetAssetSwaps(State.ActiveWalletId);
             _swaps.Clear();
-            _swaps.AddRange(swaps.OrderByDescending(s => s.CreatedAt));
+            _swaps.AddRange(swaps
+                .Where(s => s.Type is ArkadeSwapIntentType.BtcToAsset or ArkadeSwapIntentType.AssetToBtc)
+                .OrderByDescending(s => s.CreatedAt));
+
+            _lightning.Clear();
+            _lightning.AddRange(await Ark.GetLightningSwaps(State.ActiveWalletId));
         }
         catch { /* non-fatal */ }
         StateHasChanged();
     }
+
+    private async Task Claim(string swapId)
+    {
+        _busy = true; _error = null;
+        try
+        {
+            await Ark.ClaimLightningSwap(swapId);
+            await LoadSwaps();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task Refund(string swapId)
+    {
+        _busy = true; _error = null;
+        try
+        {
+            await Ark.RefundLightningSwap(swapId);
+            await LoadSwaps();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    // Lightning statuses read differently from asset ones: what a covenant proves here is whether
+    // a preimage was published, so "Resolved" means the sats moved without one — a refund, not a
+    // payment. Saying "done" for both would report a failed payment as a successful one.
+    private static string LightningStatus(ArkadeSwapIntent s) => s.Status switch
+    {
+        ArkadeSwapIntentStatus.Funding => "Funding the covenant…",
+        ArkadeSwapIntentStatus.Pending => s.Type == ArkadeSwapIntentType.BtcToLightning
+            ? "Locked — waiting for the solver to pay the invoice"
+            : "Waiting for the solver to fund",
+        ArkadeSwapIntentStatus.Claimable => "Funded — claim to take delivery",
+        ArkadeSwapIntentStatus.Refundable => "Not paid — refundable now",
+        ArkadeSwapIntentStatus.Fulfilled => s.Type == ArkadeSwapIntentType.BtcToLightning
+            ? "Paid — preimage published"
+            : "Received",
+        ArkadeSwapIntentStatus.Resolved => "Refunded — the payment did not happen",
+        ArkadeSwapIntentStatus.Recoverable => "Stuck — funds recoverable",
+        _ => s.Status.ToString(),
+    };
 
     private async Task OnMarketChanged(ChangeEventArgs e)
     {
