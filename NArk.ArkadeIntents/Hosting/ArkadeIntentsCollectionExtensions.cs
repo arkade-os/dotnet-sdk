@@ -21,7 +21,13 @@ public static class ArkadeIntentsCollectionExtensions
         services.AddSingleton<ArkadeIntentManager>();
         services.AddSingleton<LightningSwapClient>();
         services.AddSingleton<LightningReceiveClient>();
+        services.AddSingleton<ArkadeIntentsService>();
         services.AddHostedService<ArkadeSwapIntentMonitoringService>();
+        // Registered beside the monitor on purpose. The monitor only observes; without something
+        // acting on what it sees, a funded receive sits at Claimable until its window closes and
+        // the payment silently does not arrive. Opt out through ArkadeIntentAdvanceOptions if the
+        // host means to drive claims itself.
+        services.AddHostedService<ArkadeIntentAdvanceService>();
         return services;
     }
 }
