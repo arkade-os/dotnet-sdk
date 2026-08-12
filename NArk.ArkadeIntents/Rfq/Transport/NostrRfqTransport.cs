@@ -30,8 +30,11 @@ public sealed class NostrRelayException(string message) : Exception(message);
 /// </para>
 /// <para>
 /// Each negotiation uses a fresh identity key by default, which keeps separate swaps unlinkable to
-/// the relay operator. The cost is an ECDH per negotiation — the dominant per-message cost in this
-/// scheme — so pass a stable key when talking to one solver repeatedly.
+/// the relay operator and is also what keeps a busy client quotable: solvers meter quote creation
+/// per requester identity — the author key, on a relay — so one stable key spends a shared quota
+/// and starts drawing <c>rate_limited</c> refusals. A stable key costs one fewer ECDH per
+/// negotiation, which is the dominant per-message cost here, and is worth passing only where the
+/// traffic is low enough that the quota is not the binding constraint.
 /// </para>
 /// </remarks>
 public sealed class NostrRfqTransport : IRfqTransport, IDisposable

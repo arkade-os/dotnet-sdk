@@ -41,6 +41,18 @@ public sealed class ArkadeLightningOptions
 
     /// <summary>Base address of a covclaimd instance, or <c>null</c> to claim from this wallet only.</summary>
     public Uri? CovclaimdUrl { get; set; }
+
+    /// <summary>
+    /// Trade with this solver instead of asking the registry, when set.
+    /// </summary>
+    /// <remarks>
+    /// An escape hatch for development, not a way to configure a deployment. The registry indexes
+    /// no Lightning market on some networks yet, so without this there is nothing to test against;
+    /// with it, a solver you are running yourself is reachable by its Nostr key. Set it in a local
+    /// <c>appsettings.Development.json</c> that stays out of the repository — a solver's identity
+    /// is its operator's to publish, not ours to ship.
+    /// </remarks>
+    public string? SolverNostrPubkeyOverride { get; set; }
 }
 
 /// <summary>
@@ -80,6 +92,10 @@ public sealed class ArkadeLightningService(
     private async Task<string?> SolverPubkeyAsync(CancellationToken cancellationToken)
     {
         if (_solverPubkey is not null) return _solverPubkey;
+        if (!string.IsNullOrWhiteSpace(options.SolverNostrPubkeyOverride))
+        {
+            return _solverPubkey = options.SolverNostrPubkeyOverride;
+        }
 
         var markets = await discovery.DiscoverMarketsAsync(networkName, cancellationToken: cancellationToken);
         return _solverPubkey = markets

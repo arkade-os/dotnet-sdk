@@ -19,7 +19,7 @@ namespace NArk.Wallet.Client.Services;
 /// refuses before it starts.
 /// </para>
 /// </remarks>
-public sealed class WebCryptoAeadCipher(IJSRuntime js) : IAeadCipher, IAsyncDisposable
+public sealed class WebCryptoAesGcmCipher(IJSRuntime js) : IAesGcmCipher, IAsyncDisposable
 {
     private IJSObjectReference? _module;
 
