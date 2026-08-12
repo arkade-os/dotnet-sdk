@@ -55,7 +55,7 @@ public class ClaimPacketTests
     public void Seal_RejectsAPreimageThatIsNotThirtyTwoBytes()
     {
         var ex = Assert.Throws<ArgumentException>(() =>
-            ClaimPacket.Seal(new byte[31], Fixture.Inputs.CovclaimdPublicKey, Ephemeral(), Nonce()));
+            ClaimPacket.SealAsync(new byte[31], Fixture.Inputs.CovclaimdPublicKey, Ephemeral(), Nonce(), new AesGcmAeadCipher()).GetAwaiter().GetResult());
 
         Assert.That(ex!.Message, Does.Contain("32 bytes"));
     }
@@ -65,17 +65,20 @@ public class ClaimPacketTests
     {
         // The ephemeral key and nonce are per-packet. Reusing either would break GCM outright, so
         // two seals of the same secret must still differ.
-        var first = ClaimPacket.New(Fixture.Inputs.CovclaimdPublicKey);
-        var second = ClaimPacket.New(Fixture.Inputs.CovclaimdPublicKey);
+        var first = ClaimPacket.NewAsync(Fixture.Inputs.CovclaimdPublicKey).GetAwaiter().GetResult();
+        var second = ClaimPacket.NewAsync(Fixture.Inputs.CovclaimdPublicKey).GetAwaiter().GetResult();
 
         Assert.That(first.Packet, Is.Not.EqualTo(second.Packet));
     }
 
-    private static SealedClaimPacket Seal() => ClaimPacket.Seal(
+    private static SealedClaimPacket Seal() => SealAsync().GetAwaiter().GetResult();
+
+    private static Task<SealedClaimPacket> SealAsync() => ClaimPacket.SealAsync(
         Convert.FromHexString(Fixture.Inputs.Preimage),
         Fixture.Inputs.CovclaimdPublicKey,
         Ephemeral(),
-        Nonce());
+        Nonce(),
+        new AesGcmAeadCipher());
 
     private static Key Ephemeral() => new(Convert.FromHexString(Fixture.Inputs.EphemeralPrivateKey));
 

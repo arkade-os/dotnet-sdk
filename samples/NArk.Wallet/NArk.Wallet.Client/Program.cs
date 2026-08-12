@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.JSInterop;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using Microsoft.EntityFrameworkCore;
 using NArk.Abstractions.Assets;
@@ -82,7 +83,21 @@ builder.Services.AddSingleton<NArk.ArkadeIntents.Services.ArkadeSwapIntentMonito
 // reached per swap over RFQ, and a swap is settled by a covenant rather than by an account.
 // Boltz stays wired below for the chain swaps, which have no intent corridor yet.
 builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.LightningSwapClient>();
-builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.LightningReceiveClient>();
+// The receive corridor seals the swap preimage with AES-256-GCM, which the browser's .NET runtime
+// does not implement — so the browser's own is handed in. Everything else in the packet (ECDH,
+// HKDF) runs fine here; this is the single primitive that does not.
+builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.IAeadCipher>(sp =>
+    new WebCryptoAeadCipher(sp.GetRequiredService<IJSRuntime>()));
+builder.Services.AddSingleton(sp => new NArk.ArkadeIntents.Lightning.LightningReceiveClient(
+    sp.GetRequiredService<NArk.Core.Transport.IClientTransport>(),
+    sp.GetRequiredService<NArk.Arkade.Emulator.IEmulatorProvider>(),
+    sp.GetRequiredService<NArk.Core.Services.IContractService>(),
+    sp.GetRequiredService<NArk.Core.Services.ISpendingService>(),
+    sp.GetRequiredService<NArk.ArkadeIntents.IArkadeIntentStorage>(),
+    sp.GetRequiredService<NArk.Abstractions.Contracts.IContractStorage>(),
+    sp.GetRequiredService<NArk.Abstractions.VTXOs.IVtxoStorage>(),
+    sp.GetRequiredService<NArk.ArkadeIntents.Lightning.IAeadCipher>(),
+    logger: sp.GetService<ILogger<NArk.ArkadeIntents.Lightning.LightningReceiveClient>>()));
 builder.Services.AddSingleton<NArk.ArkadeIntents.Services.ArkadeIntentsService>();
 // One solver, named outright: a registry market entry carries no relay or key for the solver
 // behind it, so there is nothing to dial from discovery alone. Swap in your own solver's key.
