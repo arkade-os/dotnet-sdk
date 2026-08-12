@@ -498,7 +498,7 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
 
 Settlement moves value **out** of a wallet once its balance reaches a configured threshold — to an Arkade address, to on-chain Bitcoin, or to a rail you plug in yourself. It is separate from `SweeperService`, which consolidates VTXOs back into the same wallet.
 
-Three layers, each replaceable on its own: an `ISettlementPolicy` decides *when and how much*, `CompositeSettlementService` routes the plan to the first `ISettlementService` that accepts the destination, and that rail moves the funds. The background `SettlementService` joins them, re-evaluating a wallet on VTXO changes, intent transitions, and a periodic heartbeat.
+Three layers, each replaceable on its own: `ISettlementPolicy` instances yield plans (*when and how much*) the way `ISweepPolicy` yields coins, `CompositeSettlementService` routes each plan to the first `ISettlementService` that accepts the destination, and that rail moves the funds. The background `SettlementService` joins them, re-evaluating a wallet on VTXO changes, intent transitions, and a periodic heartbeat.
 
 ```csharp
 services.AddArkSettlement();

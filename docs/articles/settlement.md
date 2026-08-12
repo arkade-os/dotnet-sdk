@@ -8,7 +8,7 @@ It is a separate subsystem from the sweeper. `SweeperService` consolidates VTXOs
 
 | Layer | Question it answers | Contract |
 | --- | --- | --- |
-| Policy | *When should this wallet settle, and how much?* | `ISettlementPolicy` → `SettlementPlan?` |
+| Policy | *When should this wallet settle, and how much?* | `ISettlementPolicy` yields `SettlementPlan`s |
 | Routing | *Which rail handles this destination?* | `CompositeSettlementService` picks the first available `ISettlementService` whose `CanSettle` accepts it |
 | Rail | *How is the value actually moved?* | `ISettlementService.SettleAsync` |
 
@@ -117,29 +117,32 @@ Notes for rail authors:
 
 ## Custom policies
 
-Register another `ISettlementPolicy` to decide on something other than a balance threshold — a payout schedule, an expiry-driven sweep, a per-invoice rule. The engine takes the plan with the lowest `Priority` among the policies that produced one.
+Register another `ISettlementPolicy` to decide on something other than a balance threshold — a payout schedule, an expiry-driven sweep, a per-invoice rule.
+
+A policy yields plans rather than returning one, the same way an `ISweepPolicy` yields coins. The engine executes the union of what every policy yields, in order — there is no single winner, so settling a balance across two destinations is just two yields.
 
 ```csharp
 public class WeeklyPayoutPolicy(IMySchedule schedule) : ISettlementPolicy
 {
-    public async Task<SettlementPlan?> EvaluateAsync(
+    public async IAsyncEnumerable<SettlementPlan> EvaluateAsync(
         SettlementContext context,
-        CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (!await schedule.IsDue(context.WalletId, cancellationToken))
-            return null;
+            yield break;
 
-        return new SettlementPlan(
+        yield return new SettlementPlan(
             SettlementDestination.Ark(await schedule.GetDestination(context.WalletId)),
-            context.AvailableBalanceSats,
-            Priority: -1);
+            context.AvailableBalanceSats);
     }
 }
 ```
 
-A policy that does not read `ISettlementConfigProvider` also needs `SettlementOptions.AlwaysEvaluatePolicies = true`; otherwise the engine skips wallets with no configured rule before it computes a balance.
+Plans are executed against a balance that shrinks as each one commits, so two policies that independently plan the whole balance do not over-spend the wallet — the second is skipped. A plan whose settlement *failed* commits nothing and leaves the balance to the plans behind it.
 
-`SettlementContext` gives the policy the wallet's spendable coins, with coins locked by pending intents and coins past expiry already removed, plus the chain time they were computed against. Set `SettlementPlan.Coins` to pin the exact coins to spend — the destination sweep honours it, while the collaborative-exit path rejects it because it performs its own coin selection and fee estimation.
+The engine evaluates every queued wallet: a policy that ignores `ISettlementConfigProvider` and decides on its own needs no extra opt-in.
+
+`SettlementContext` gives the policy the wallet's spendable coins, with coins locked by pending intents and coins past expiry already removed, plus the chain time they were computed against. Set `SettlementPlan.Coins` to pin the exact coins to spend — the settlement counterpart of the coins a sweep policy yields. The destination sweep honours it, while the collaborative-exit path rejects it because it performs its own coin selection and fee estimation.
 
 ## Blocking settlement
 
@@ -197,7 +200,6 @@ A failed settlement is not retried immediately — the engine's heartbeat re-que
 | --- | --- | --- |
 | `Debounce` | 250 ms | Collapses a burst of VTXO and intent changes into one evaluation. |
 | `HeartbeatInterval` | 15 min | Re-queues every configured wallet; this is the retry behind the event-driven path. `TimeSpan.Zero` disables it. |
-| `AlwaysEvaluatePolicies` | `false` | Evaluate policies even for wallets with no rule from the config provider. |
 | `EnableCollaborativeExit` | `false` | Let the built-in rail settle on-chain Bitcoin destinations. |
 
 ## Settling on demand
