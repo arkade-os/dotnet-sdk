@@ -106,6 +106,38 @@ public class SolverTermsTests
     }
 
     [Test]
+    public void AFlatFeeTheCardDeclares_IsAllowedOnTopOfTheSpread()
+    {
+        // 30 bps on 50 000 is 150, plus a declared 100 flat. A solver quoting exactly what it
+        // advertises must not be refused: ignoring the flat part does not make this check stricter
+        // in any useful direction, it makes it reject honest pricing and fail the swap.
+        Assert.DoesNotThrow(() =>
+            SolverTerms.AssertFeeWithinAdvertised(CardWithFlatFee(), Quote(from: 50_000, to: 49_750)));
+    }
+
+    [Test]
+    public void AFlatFeeIsAnAllowance_NotABlankCheque()
+    {
+        // Still bounded: the flat component widens the allowance by exactly what the card declares
+        // and not by more.
+        var ex = Assert.Throws<SolverTermsException>(() =>
+            SolverTerms.AssertFeeWithinAdvertised(CardWithFlatFee(), Quote(from: 50_000, to: 49_500)));
+
+        Assert.That(ex!.Reason, Is.EqualTo(SolverTermsRefusal.FeeAboveAdvertised));
+    }
+
+    [Test]
+    public void ACardWithoutAFlatFee_ChargesNoneImplicitly()
+    {
+        // An absent fee_flat and a declared zero are the same charge — cards written before the
+        // field existed must keep working.
+        var ex = Assert.Throws<SolverTermsException>(() =>
+            SolverTerms.AssertFeeWithinAdvertised(Card(), Quote(from: 50_000, to: 49_750)));
+
+        Assert.That(ex!.Reason, Is.EqualTo(SolverTermsRefusal.FeeAboveAdvertised));
+    }
+
+    [Test]
     public void AFreeQuote_IsAccepted()
     {
         // Charging nothing is always within an advertised maximum, including on a card that
@@ -122,9 +154,13 @@ public class SolverTermsTests
             Card(), Quote(from: 50_000, to: 1, pair: "arkade:BTC->onchain:BTC")));
     }
 
-    private static SolverCard Card() =>
+    private static SolverCard Card(string json = CardJson) =>
         JsonSerializer.Deserialize<SolverCard>(
-            CardJson, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower })!;
+            json, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower })!;
+
+    /// <summary>The same card, with a flat component alongside the basis points.</summary>
+    private static SolverCard CardWithFlatFee() =>
+        Card(CardJson.Replace("\"fee_bps\": 30", "\"fee_bps\": 30,\n      \"fee_flat\": \"100\""));
 
     private static RfqQuote<LightningSendQuoteProfile> Quote(long from, long to, string pair = SendPair) => new()
     {

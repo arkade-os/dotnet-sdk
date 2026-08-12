@@ -102,9 +102,17 @@ public static class SolverTerms
     /// <param name="quote">The quote to check.</param>
     /// <exception cref="SolverTermsException">The spread exceeds the advertised fee.</exception>
     /// <remarks>
-    /// The spread is the fee — there is no separate field — so this compares the gap between the two
-    /// amounts against the basis points the card commits to. A rounding satoshi is tolerated because
-    /// a solver computing the same rate in integer arithmetic can legitimately land one either side.
+    /// <para>
+    /// The spread is the fee, so this compares the gap between the two amounts against what the
+    /// card commits to: basis points on the amount, plus a flat component where the card declares
+    /// one. A rounding satoshi is tolerated because a solver computing the same rate in integer
+    /// arithmetic can legitimately land one either side.
+    /// </para>
+    /// <para>
+    /// The flat part matters more than its size suggests. Ignoring it does not make the check
+    /// stricter in a useful direction — it makes it refuse quotes that match the card exactly,
+    /// turning an honest solver's advertised pricing into a failed swap.
+    /// </para>
     /// </remarks>
     public static void AssertFeeWithinAdvertised<TProfile>(SolverCard card, RfqQuote<TProfile> quote)
     {
@@ -113,12 +121,13 @@ public static class SolverTerms
         var charged = quote.FromAmount - quote.ToAmount;
         if (charged <= 0) return;
 
-        var advertised = quote.FromAmount * market.FeeBps / 10_000;
+        var advertised = quote.FromAmount * market.FeeBps / 10_000 + market.FeeFlatAmount;
         if (charged > advertised + 1)
         {
+            var flat = market.FeeFlatAmount > 0 ? $" + {market.FeeFlatAmount} flat" : "";
             throw new SolverTermsException(
                 SolverTermsRefusal.FeeAboveAdvertised,
-                $"the quote charges {charged} sats, more than the {market.FeeBps} bps " +
+                $"the quote charges {charged} sats, more than the {market.FeeBps} bps{flat} " +
                 $"({advertised} sats) this solver advertises");
         }
     }

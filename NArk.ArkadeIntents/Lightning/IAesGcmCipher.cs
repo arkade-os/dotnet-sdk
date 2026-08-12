@@ -17,8 +17,14 @@ namespace NArk.ArkadeIntents.Lightning;
 /// Hence a seam of exactly one operation. The wire format stays defined here and is not the host's
 /// business; what the host supplies is a way to compute it.
 /// </para>
+/// <para>
+/// Named for the algorithm rather than for AEAD in general, because the algorithm is not a choice:
+/// the packet has to open on the counterparty's side, where it is AES-256-GCM and nothing else. An
+/// interface promising to accept any AEAD would invite substituting one, and the resulting packet
+/// would be refused by a daemon rather than by a compiler.
+/// </para>
 /// </remarks>
-public interface IAeadCipher
+public interface IAesGcmCipher
 {
     /// <summary>
     /// Encrypts <paramref name="plaintext"/> under AES-256-GCM.
@@ -44,7 +50,7 @@ public interface IAeadCipher
 /// <summary>
 /// The platform implementation, used everywhere except the browser.
 /// </summary>
-public sealed class AesGcmAeadCipher : IAeadCipher
+public sealed class AesGcmCipher : IAesGcmCipher
 {
     private const int TagBytes = 16;
 

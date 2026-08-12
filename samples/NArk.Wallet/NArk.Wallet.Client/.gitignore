@@ -1,0 +1,3 @@
+
+# Local overrides — solver identities and endpoints belong to whoever runs them.
+wwwroot/appsettings.Development.json

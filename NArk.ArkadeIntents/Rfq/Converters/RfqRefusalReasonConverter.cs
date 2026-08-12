@@ -15,6 +15,7 @@ public sealed class RfqRefusalReasonConverter : JsonConverter<RfqRefusalReason>
         => reader.GetString() switch
         {
             "unsupported_pair" => RfqRefusalReason.UnsupportedPair,
+            "rate_limited" => RfqRefusalReason.RateLimited,
             "unsupported_payload" => RfqRefusalReason.UnsupportedPayload,
             "amount_out_of_range" => RfqRefusalReason.AmountOutOfRange,
             "exposure_cap" => RfqRefusalReason.ExposureCap,
@@ -29,6 +30,7 @@ public sealed class RfqRefusalReasonConverter : JsonConverter<RfqRefusalReason>
         => writer.WriteStringValue(value switch
         {
             RfqRefusalReason.UnsupportedPair => "unsupported_pair",
+            RfqRefusalReason.RateLimited => "rate_limited",
             RfqRefusalReason.UnsupportedPayload => "unsupported_payload",
             RfqRefusalReason.AmountOutOfRange => "amount_out_of_range",
             RfqRefusalReason.ExposureCap => "exposure_cap",
