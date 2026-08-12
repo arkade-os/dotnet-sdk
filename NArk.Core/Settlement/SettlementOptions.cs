@@ -18,15 +18,6 @@ public class SettlementOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
-    /// Evaluate policies for every queued wallet, even one with no rule from
-    /// <see cref="NArk.Abstractions.Settlement.ISettlementConfigProvider"/>. Leave this
-    /// off (the default) unless you registered a policy that decides on its own — with
-    /// it on, every VTXO change costs a balance computation for wallets that will never
-    /// settle.
-    /// </summary>
-    public bool AlwaysEvaluatePolicies { get; set; }
-
-    /// <summary>
     /// Let <see cref="DestinationSweepSettlementService"/> settle to on-chain Bitcoin
     /// addresses via a collaborative exit. Off by default, so an application that
     /// settles Bitcoin its own way — a swap, an exchange withdrawal — can register that

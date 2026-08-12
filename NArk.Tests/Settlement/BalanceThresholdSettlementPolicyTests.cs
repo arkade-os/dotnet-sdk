@@ -30,16 +30,20 @@ public class BalanceThresholdSettlementPolicyTests
     private static SettlementContext Context(long balanceSats) =>
         new(WalletId, Array.Empty<ArkCoin>(), balanceSats, CurrentTime);
 
-    private BalanceThresholdSettlementPolicy CreatePolicy() => new(_configProvider);
+    private async Task<List<SettlementPlan>> Evaluate(long balanceSats)
+    {
+        var plans = new List<SettlementPlan>();
+        await foreach (var plan in new BalanceThresholdSettlementPolicy(_configProvider).EvaluateAsync(Context(balanceSats)))
+            plans.Add(plan);
+        return plans;
+    }
 
     [Test]
     public async Task DoesNotFire_BelowThreshold()
     {
         Configure(new SettlementConfig(WalletId, Destination, 100_000));
 
-        var plan = await CreatePolicy().EvaluateAsync(Context(99_999));
-
-        Assert.That(plan, Is.Null);
+        Assert.That(await Evaluate(99_999), Is.Empty);
     }
 
     [Test]
@@ -47,15 +51,15 @@ public class BalanceThresholdSettlementPolicyTests
     {
         Configure(new SettlementConfig(WalletId, Destination, 100_000));
 
-        var plan = await CreatePolicy().EvaluateAsync(Context(250_000));
+        var plans = await Evaluate(250_000);
 
-        Assert.That(plan, Is.Not.Null);
+        Assert.That(plans, Has.Count.EqualTo(1));
         Assert.Multiple(() =>
         {
             // The threshold gates when a settlement fires, never how much it moves.
-            Assert.That(plan!.AmountSats, Is.EqualTo(250_000));
-            Assert.That(plan.Destination, Is.EqualTo(Destination));
-            Assert.That(plan.Coins, Is.Null);
+            Assert.That(plans[0].AmountSats, Is.EqualTo(250_000));
+            Assert.That(plans[0].Destination, Is.EqualTo(Destination));
+            Assert.That(plans[0].Coins, Is.Null);
         });
     }
 
@@ -64,9 +68,9 @@ public class BalanceThresholdSettlementPolicyTests
     {
         Configure(new SettlementConfig(WalletId, Destination, 100_000, MaxAmountSats: 150_000));
 
-        var plan = await CreatePolicy().EvaluateAsync(Context(250_000));
+        var plans = await Evaluate(250_000);
 
-        Assert.That(plan!.AmountSats, Is.EqualTo(150_000));
+        Assert.That(plans[0].AmountSats, Is.EqualTo(150_000));
     }
 
     [Test]
@@ -74,9 +78,7 @@ public class BalanceThresholdSettlementPolicyTests
     {
         Configure(new SettlementConfig(WalletId, Destination, 0, Enabled: false));
 
-        var plan = await CreatePolicy().EvaluateAsync(Context(250_000));
-
-        Assert.That(plan, Is.Null);
+        Assert.That(await Evaluate(250_000), Is.Empty);
     }
 
     [Test]
@@ -84,9 +86,7 @@ public class BalanceThresholdSettlementPolicyTests
     {
         Configure(new SettlementConfig("other-wallet", Destination, 0));
 
-        var plan = await CreatePolicy().EvaluateAsync(Context(250_000));
-
-        Assert.That(plan, Is.Null);
+        Assert.That(await Evaluate(250_000), Is.Empty);
     }
 
     [Test]
@@ -94,22 +94,22 @@ public class BalanceThresholdSettlementPolicyTests
     {
         Configure(new SettlementConfig(WalletId, Destination, 0));
 
-        var plan = await CreatePolicy().EvaluateAsync(Context(0));
-
-        Assert.That(plan, Is.Null);
+        Assert.That(await Evaluate(0), Is.Empty);
     }
 
     [Test]
-    public async Task PicksTheLowestMatchingThreshold()
+    public async Task YieldsEveryMatchingRule_LowestThresholdFirst()
     {
         var low = SettlementDestination.Ark("ark1qlow");
         var high = SettlementDestination.Ark("ark1qhigh");
         Configure(
-            new SettlementConfig(WalletId, high, 200_000),
-            new SettlementConfig(WalletId, low, 100_000));
+            new SettlementConfig(WalletId, high, 200_000, MaxAmountSats: 50_000),
+            new SettlementConfig(WalletId, low, 100_000, MaxAmountSats: 50_000));
 
-        var plan = await CreatePolicy().EvaluateAsync(Context(250_000));
+        var plans = await Evaluate(250_000);
 
-        Assert.That(plan!.Destination, Is.EqualTo(low));
+        // Union semantics: both rules get a plan, and the engine executes them against a
+        // shrinking balance rather than the policy picking a single winner.
+        Assert.That(plans.Select(plan => plan.Destination), Is.EqualTo(new[] { low, high }));
     }
 }

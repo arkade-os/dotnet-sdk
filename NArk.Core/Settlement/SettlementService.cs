@@ -166,13 +166,6 @@ public class SettlementService(
         if (policyList.Length == 0)
             return;
 
-        if (!options.Value.AlwaysEvaluatePolicies)
-        {
-            var configs = await configProvider.GetConfigs(walletId, cancellationToken);
-            if (configs.All(config => !config.Enabled || config.WalletId != walletId))
-                return;
-        }
-
         foreach (var gate in gates)
         {
             if (!await gate.IsBlockedAsync(walletId, cancellationToken))
@@ -186,28 +179,44 @@ public class SettlementService(
         if (context.AvailableBalanceSats <= 0)
             return;
 
-        SettlementPlan? plan = null;
-        foreach (var candidate in policyList)
+        // The union of what every policy yields, executed in order — the same shape as
+        // SweeperService running its ISweepPolicy instances. Unlike swept coins, which a
+        // HashSet deduplicates, amounts do not: two policies can independently plan the
+        // whole balance. Committing against a shrinking remainder is what keeps that from
+        // over-spending the wallet.
+        var remainingSats = context.AvailableBalanceSats;
+
+        foreach (var policy in policyList)
         {
-            var evaluated = await candidate.EvaluateAsync(context, cancellationToken);
-            if (evaluated is null)
-                continue;
+            await foreach (var plan in policy.EvaluateAsync(context, cancellationToken))
+            {
+                if (plan.AmountSats <= 0)
+                    continue;
 
-            if (plan is null || evaluated.Priority < plan.Priority)
-                plan = evaluated;
+                if (plan.AmountSats > remainingSats)
+                {
+                    logger?.LogDebug(
+                        "Skipping {Policy} plan of {AmountSats} sats for wallet {WalletId}: only {RemainingSats} sats left after earlier plans",
+                        policy.GetType().Name, plan.AmountSats, walletId, remainingSats);
+                    continue;
+                }
+
+                var request = new SettlementRequest(
+                    walletId,
+                    plan.AmountSats,
+                    plan.Destination,
+                    plan.Coins,
+                    plan.Reference);
+
+                // Only a settlement that actually committed funds consumes the balance;
+                // a failed one leaves the remainder for the plans behind it.
+                if (await SettleAsync(request, cancellationToken) is not null)
+                    remainingSats -= plan.AmountSats;
+
+                if (remainingSats <= 0)
+                    return;
+            }
         }
-
-        if (plan is null)
-            return;
-
-        var request = new SettlementRequest(
-            walletId,
-            plan.AmountSats,
-            plan.Destination,
-            plan.Coins,
-            plan.Reference);
-
-        await SettleAsync(request, cancellationToken);
     }
 
     /// <summary>

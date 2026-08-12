@@ -4,21 +4,30 @@ namespace NArk.Abstractions.Settlement;
 
 /// <summary>
 /// Decides <em>whether</em> a wallet should settle right now, and <em>how much</em>.
-/// The policy never moves funds — it returns a <see cref="SettlementPlan"/> that the
+/// The policy never moves funds — it yields <see cref="SettlementPlan"/>s that the
 /// settlement engine routes to an <see cref="ISettlementService"/>.
 /// <para>
-/// Register several policies to combine strategies (a balance threshold, a scheduled
-/// payout, an expiry-driven sweep); the engine takes the first non-null plan in
-/// <see cref="SettlementPlan.Priority"/> order.
+/// This mirrors <c>ISweepPolicy</c>: register several policies to combine strategies
+/// (a balance threshold, a scheduled payout, an expiry-driven sweep) and the engine
+/// executes the union of what they yield, rather than picking one winner. A policy
+/// may yield nothing, one plan, or several — settling a balance across two
+/// destinations is just two yields.
+/// </para>
+/// <para>
+/// Plans are executed in the order they are yielded, policy by policy, against a
+/// balance that shrinks as each one is committed; a plan that no longer fits the
+/// remaining balance is skipped.
 /// </para>
 /// </summary>
 public interface ISettlementPolicy
 {
     /// <summary>
-    /// Returns a plan when this policy wants the wallet settled, or <see langword="null"/>
-    /// to stand down. Must not have side effects — it runs on every wallet activity tick.
+    /// Yields the settlements this policy wants for the wallet, or nothing to stand
+    /// down. Must not have side effects — it runs on every wallet activity tick.
     /// </summary>
-    Task<SettlementPlan?> EvaluateAsync(SettlementContext context, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<SettlementPlan> EvaluateAsync(
+        SettlementContext context,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -41,16 +50,13 @@ public record SettlementContext(
 /// <param name="Destination">Where the funds should go.</param>
 /// <param name="AmountSats">How much to move, in satoshis.</param>
 /// <param name="Coins">
-/// The exact coins to spend, when the policy picked them. <see langword="null"/> leaves
-/// coin selection to the settlement rail.
-/// </param>
-/// <param name="Priority">
-/// Lower runs first when several policies produce a plan. Defaults to 0.
+/// The exact coins to spend, when the policy picked them — the settlement counterpart of
+/// the coins an <c>ISweepPolicy</c> yields. <see langword="null"/> leaves coin selection
+/// to the settlement rail.
 /// </param>
 /// <param name="Reference">Optional correlation id carried into <see cref="SettlementRequest.Reference"/>.</param>
 public record SettlementPlan(
     SettlementDestination Destination,
     long AmountSats,
     IReadOnlyCollection<ArkCoin>? Coins = null,
-    int Priority = 0,
     string? Reference = null);

@@ -123,7 +123,7 @@ public class SettlementServiceTests
     }
 
     [Test]
-    public async Task SkipsUnconfiguredWallets_WithoutComputingABalance()
+    public async Task DoesNotSettle_WhenNoPolicyYieldsAPlan()
     {
         _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>([]));
@@ -134,8 +134,95 @@ public class SettlementServiceTests
         RaiseVtxoChanged();
         await Task.Delay(300);
 
-        await _spendingService.DidNotReceive().GetAvailableCoins(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _rail.DidNotReceive().SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>());
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task ExecutesEveryPlanAPolicyYields()
+    {
+        var first = SettlementDestination.Ark("ark1qfirst");
+        var second = SettlementDestination.Ark("ark1qsecond");
+        _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>(
+            [
+                new SettlementConfig(WalletId, first, 0, MaxAmountSats: 40_000),
+                new SettlementConfig(WalletId, second, 10_000, MaxAmountSats: 25_000)
+            ]));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        RaiseVtxoChanged();
+        await Task.Delay(300);
+
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(r => r.Destination == first && r.AmountSats == 40_000),
+            Arg.Any<CancellationToken>());
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(r => r.Destination == second && r.AmountSats == 25_000),
+            Arg.Any<CancellationToken>());
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task SkipsAPlanThatNoLongerFitsTheRemainingBalance()
+    {
+        // Both rules plan the full balance; committing the first leaves nothing for the
+        // second, which must not be executed on top of it.
+        var first = SettlementDestination.Ark("ark1qfirst");
+        var second = SettlementDestination.Ark("ark1qsecond");
+        _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>(
+            [
+                new SettlementConfig(WalletId, first, 0),
+                new SettlementConfig(WalletId, second, 10_000)
+            ]));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        RaiseVtxoChanged();
+        await Task.Delay(300);
+
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(r => r.Destination == first && r.AmountSats == CoinAmount),
+            Arg.Any<CancellationToken>());
+        await _rail.DidNotReceive().SettleAsync(
+            Arg.Is<SettlementRequest>(r => r.Destination == second),
+            Arg.Any<CancellationToken>());
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task LeavesTheBalanceForLaterPlans_WhenASettlementFails()
+    {
+        var first = SettlementDestination.Ark("ark1qfirst");
+        var second = SettlementDestination.Ark("ark1qsecond");
+        _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>(
+            [
+                new SettlementConfig(WalletId, first, 0),
+                new SettlementConfig(WalletId, second, 10_000)
+            ]));
+
+        _rail.SettleAsync(
+                Arg.Is<SettlementRequest>(r => r.Destination == first), Arg.Any<CancellationToken>())
+            .Returns<Task<SettlementResult>>(_ => throw new InvalidOperationException("rail rejected the transfer"));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        RaiseVtxoChanged();
+        await Task.Delay(300);
+
+        // The failed plan committed nothing, so the whole balance is still available.
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(r => r.Destination == second && r.AmountSats == CoinAmount),
+            Arg.Any<CancellationToken>());
 
         await service.StopAsync(CancellationToken.None);
     }
