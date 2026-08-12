@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Fees;
 using NArk.Abstractions.Wallets;
@@ -9,7 +10,9 @@ using NArk.Core.Events;
 using NArk.Core.Fees;
 using NArk.Core.Models.Options;
 using NArk.Core.Recovery;
+using NArk.Abstractions.Settlement;
 using NArk.Core.Services;
+using NArk.Core.Settlement;
 using NArk.Core.Sweeper;
 using NArk.Abstractions.Services;
 using NArk.Core.Transformers;
@@ -175,6 +178,49 @@ public static class ServiceCollectionExtensions
                     sp.GetRequiredService<IClientTransport>(),
                     sp.GetService<ILogger<BoardingUtxoDiscoveryProvider>>())
                 : NullContractDiscoveryProvider.Instance);
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the threshold-based settlement engine: the background
+    /// <see cref="SettlementService"/>, destination routing via
+    /// <see cref="CompositeSettlementService"/>, the
+    /// <see cref="DestinationSweepSettlementService"/> rail, and the
+    /// <see cref="BalanceThresholdSettlementPolicy"/>.
+    /// <para>
+    /// Opt-in, and inert until the application registers an
+    /// <see cref="ISettlementConfigProvider"/> that returns rules. Settlement is
+    /// independent of <see cref="SweeperService"/>, which keeps consolidating VTXOs
+    /// within the wallet.
+    /// </para>
+    /// <para>
+    /// Add further destinations by registering more <see cref="ISettlementService"/>
+    /// implementations — a stablecoin transfer, an EVM chain, an exchange deposit. The
+    /// SDK never needs to know about them: they are matched by the network and asset
+    /// their <see cref="ISettlementService.CanSettle"/> accepts.
+    /// </para>
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">Optional tuning of <see cref="SettlementOptions"/>.</param>
+    public static IServiceCollection AddArkSettlement(
+        this IServiceCollection services,
+        Action<SettlementOptions>? configure = null)
+    {
+        if (configure is not null)
+            services.Configure(configure);
+        else
+            services.AddOptions<SettlementOptions>();
+
+        // Keeps the engine resolvable before the application supplies its rules; a
+        // provider registered either side of this call still wins.
+        services.TryAddSingleton<ISettlementConfigProvider, NullSettlementConfigProvider>();
+
+        services.AddSingleton<CompositeSettlementService>();
+        services.AddSingleton<ISettlementService, DestinationSweepSettlementService>();
+        services.AddSingleton<ISettlementPolicy, BalanceThresholdSettlementPolicy>();
+        services.AddSingleton<SettlementService>();
+        services.AddHostedService(sp => sp.GetRequiredService<SettlementService>());
 
         return services;
     }
