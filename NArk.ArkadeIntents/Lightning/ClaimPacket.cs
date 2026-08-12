@@ -58,18 +58,28 @@ public static class ClaimPacket
     /// same trap exists in the JS reference, whose ECDH helper returns the compressed point by
     /// default.
     /// </remarks>
-    public static SealedClaimPacket Seal(byte[] preimage, string covclaimdPubKeyHex)
+    /// <param name="cipher">
+    /// Supplies AES-GCM. Defaults to the platform's, which is right everywhere except a browser —
+    /// see <see cref="IAeadCipher"/>.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the encryption.</param>
+    public static Task<SealedClaimPacket> SealAsync(
+        byte[] preimage, string covclaimdPubKeyHex,
+        IAeadCipher? cipher = null, CancellationToken cancellationToken = default)
     {
         var ephemeral = new Key();
         var nonce = RandomNumberGenerator.GetBytes(NonceBytes);
-        return Seal(preimage, covclaimdPubKeyHex, ephemeral, nonce);
+        return SealAsync(
+            preimage, covclaimdPubKeyHex, ephemeral, nonce,
+            cipher ?? new AesGcmAeadCipher(), cancellationToken);
     }
 
     /// <summary>Generate a fresh 32-byte preimage and seal it — how a receive swap starts.</summary>
     /// <param name="covclaimdPubKeyHex">covclaimd's compressed secp256k1 key, hex.</param>
     /// <returns>The packet, the preimage and its payment hash.</returns>
-    public static SealedClaimPacket New(string covclaimdPubKeyHex) =>
-        Seal(RandomNumberGenerator.GetBytes(32), covclaimdPubKeyHex);
+    public static Task<SealedClaimPacket> NewAsync(
+        string covclaimdPubKeyHex, IAeadCipher? cipher = null, CancellationToken cancellationToken = default) =>
+        SealAsync(RandomNumberGenerator.GetBytes(32), covclaimdPubKeyHex, cipher, cancellationToken);
 
     /// <summary>
     /// The deterministic core, with the ephemeral key and nonce supplied rather than generated.
@@ -79,8 +89,9 @@ public static class ClaimPacket
     /// outside a test must use <see cref="Seal(byte[], string)"/>: reusing an ephemeral key or a
     /// nonce across two packets breaks GCM outright.
     /// </remarks>
-    internal static SealedClaimPacket Seal(
-        byte[] preimage, string covclaimdPubKeyHex, Key ephemeral, byte[] nonce)
+    internal static async Task<SealedClaimPacket> SealAsync(
+        byte[] preimage, string covclaimdPubKeyHex, Key ephemeral, byte[] nonce,
+        IAeadCipher cipher, CancellationToken cancellationToken = default)
     {
         if (preimage.Length != 32)
         {
@@ -105,20 +116,16 @@ public static class ClaimPacket
             salt: ephemeralPub,
             info: System.Text.Encoding.UTF8.GetBytes(HkdfInfo));
 
-        var ciphertext = new byte[preimage.Length];
-        var tag = new byte[TagBytes];
-        using (var gcm = new AesGcm(key, TagBytes))
-        {
-            gcm.Encrypt(nonce, preimage, ciphertext, tag, associatedData: ephemeralPub);
-        }
-
         // The tag trails the ciphertext — the usual ECIES convention, and the only reading under
-        // which `ciphertext` is a single trailing field in the documented layout.
-        var wire = new byte[ephemeralPub.Length + nonce.Length + ciphertext.Length + tag.Length];
+        // which `ciphertext` is a single trailing field in the documented layout. The cipher
+        // returns them already joined, which is also what WebCrypto and Go's Seal hand back.
+        var sealedBytes = await cipher.EncryptAsync(
+            key, nonce, preimage, associatedData: ephemeralPub, cancellationToken);
+
+        var wire = new byte[ephemeralPub.Length + nonce.Length + sealedBytes.Length];
         ephemeralPub.CopyTo(wire, 0);
         nonce.CopyTo(wire, ephemeralPub.Length);
-        ciphertext.CopyTo(wire, ephemeralPub.Length + nonce.Length);
-        tag.CopyTo(wire, ephemeralPub.Length + nonce.Length + ciphertext.Length);
+        sealedBytes.CopyTo(wire, ephemeralPub.Length + nonce.Length);
 
         return new SealedClaimPacket(
             Convert.ToBase64String(wire),
