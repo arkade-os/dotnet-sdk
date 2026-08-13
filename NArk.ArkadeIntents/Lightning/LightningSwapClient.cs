@@ -261,6 +261,51 @@ public sealed class LightningSwapClient
     /// The swap moves to <see cref="ArkadeSwapIntentStatus.Cancelling"/> before the spend so the
     /// monitor cannot read our own refund as something the solver did, and rolls back on failure.
     /// </remarks>
+    /// <summary>
+    /// How far median time past can trail the wall clock before a CLTV leaf is spendable.
+    /// </summary>
+    /// <remarks>
+    /// MTP is the median of the last eleven block times, so it lags real time by roughly half that
+    /// span and by more when blocks come slowly. A refund built the moment our own clock passes the
+    /// locktime is one the chain refuses, which surfaces as a failed spend rather than as "too
+    /// early". The reference implementation gives itself the same window, retrying across it.
+    /// </remarks>
+    internal const long MedianTimePastLagSeconds = 2 * 60 * 60;
+
+    /// <summary>
+    /// The outputs a refund may spend: every live output sitting at the lockup.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All of them, not the first. A lockup can hold more than one output — a retried funding, or a
+    /// counterparty that split it — and refunding one would leave the rest behind with no second
+    /// path to them: the leaf that made this possible is ours alone, and nothing else will come
+    /// looking. There is no amount gate here, unlike a claim: a refund publishes no secret and pays
+    /// an address the covenant already committed to, so taking more than was quoted costs nobody
+    /// anything and taking less strands it.
+    /// </para>
+    /// <para>
+    /// Swept outputs are named rather than skipped. Silently filtering them turns "the operator
+    /// swept your deposit, recover it elsewhere" into "there is nothing here", which is the same
+    /// sentence a wallet uses for an empty address.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">Nothing live is left at the lockup.</exception>
+    internal static IReadOnlyList<ArkVtxo> SelectRefundable(
+        IReadOnlyCollection<ArkVtxo> vtxos, string swapId)
+    {
+        var live = vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
+        if (live.Count > 0) return live;
+
+        var swept = vtxos.Where(v => v.Swept && !v.IsSpent()).ToList();
+        throw new InvalidOperationException(
+            swept.Count == 0
+                ? $"Swap '{swapId}' has no unspent output at its lockup address — there is nothing to refund."
+                : $"Swap '{swapId}' has {swept.Count} output(s) at its lockup address, but the operator "
+                  + "has swept them, so this leaf can no longer spend them: "
+                  + string.Join(", ", swept.Select(v => $"{v.TransactionId}:{v.TransactionOutputIndex}")));
+    }
+
     public async Task<ArkadeSwapIntent> RefundSwap(string swapId, CancellationToken cancellationToken = default)
     {
         var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
@@ -273,11 +318,19 @@ public sealed class LightningSwapClient
         if (intent.RefundLocktime is not { } locktime)
             throw new InvalidOperationException($"Swap '{swapId}' has no refund locktime recorded.");
 
+        // The leaf's CLTV matures against MEDIAN TIME PAST, which trails the wall clock — so a
+        // refund built the instant our own clock passes the locktime is one the chain still refuses.
+        // Waiting out the lag here costs a delay; not waiting costs a rejected spend that reads like
+        // a bug in the covenant. The reference implementation retries across the same window rather
+        // than gating on it, which comes to the same thing: the money is not takeable until MTP says so.
         var now = _time.GetUtcNow().ToUnixTimeSeconds();
-        if (now < locktime)
+        var takeableAt = locktime + MedianTimePastLagSeconds;
+        if (now < takeableAt)
         {
             throw new InvalidOperationException(
-                $"Swap '{swapId}' cannot be refunded for another {locktime - now}s.");
+                $"Swap '{swapId}' cannot be refunded for another {takeableAt - now}s — its locktime " +
+                $"passes in {Math.Max(0, locktime - now)}s, and median time past trails the clock by " +
+                $"up to {MedianTimePastLagSeconds}s after that.");
         }
 
         var previousStatus = intent.Status;
@@ -292,22 +345,24 @@ public sealed class LightningSwapClient
 
             var vtxos = await _vtxoStorage.GetVtxos(
                 scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-            var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept)
-                ?? throw new InvalidOperationException("no unspent VTXO at the swap address");
+            var refundable = SelectRefundable(vtxos, swapId);
 
             // `refundWithoutReceiver`: our own key plus the server, once the locktime checked above
             // has passed. Deliberately not the faster `nonInteractiveRefund` leaf — that one needs
             // the solver's signature, so it is a path the two of us take by agreement, not one we
             // can take alone. This is the exit that depends on no counterparty.
-            var coin = contract.ToRefundWithoutReceiverCoin(intent.WalletId, vtxo);
+            var coins = refundable
+                .Select(v => contract.ToRefundWithoutReceiverCoin(intent.WalletId, v))
+                .ToArray();
+            var total = refundable.Aggregate(0UL, (sum, v) => sum + v.Amount);
 
             // This leaf carries no covenant, so nothing on-chain pins the payout — we choose it. It
             // still goes to the address committed at funding time, read back off the contract rather
             // than derived afresh, so a refund can never land somewhere the swap never named.
             var destination = RefundAddressOf(contract, serverInfo.SignerKey.ToXOnlyPubKey());
-            var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)vtxo.Amount), destination);
+            var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)total), destination);
 
-            var txid = await _spendingService.Spend(intent.WalletId, [coin], [output], cancellationToken);
+            var txid = await _spendingService.Spend(intent.WalletId, coins, [output], cancellationToken);
 
             intent.Status = ArkadeSwapIntentStatus.Cancelled;
             intent.SpentTxid = txid.ToString();
