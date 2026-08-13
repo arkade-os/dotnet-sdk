@@ -1,6 +1,7 @@
 using BTCPayServer.Lightning;
 using NArk.Abstractions;
 using Microsoft.Extensions.Logging;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Extensions;
@@ -61,6 +62,7 @@ public sealed record FundedLightningSwap(
 /// </remarks>
 public sealed class LightningSwapClient
 {
+    private readonly IBitcoinBlockchain? _blockchain;
     private readonly IClientTransport _transport;
     private readonly IEmulatorProvider _emulator;
     private readonly IContractService _contractService;
@@ -92,9 +94,11 @@ public sealed class LightningSwapClient
         IContractStorage contractStorage,
         IVtxoStorage vtxoStorage,
         IWalletProvider walletProvider,
+        IBitcoinBlockchain? blockchain = null,
         TimeProvider? time = null,
         ILogger<LightningSwapClient>? logger = null)
     {
+        _blockchain = blockchain;
         _transport = transport;
         _emulator = emulator;
         _contractService = contractService;
@@ -306,6 +310,86 @@ public sealed class LightningSwapClient
                   + string.Join(", ", swept.Select(v => $"{v.TransactionId}:{v.TransactionOutputIndex}")));
     }
 
+    /// <summary>
+    /// Refuses until the chain will actually accept a spend of the CLTV leaf.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The leaf matures against MEDIAN TIME PAST — the median of the last eleven block times —
+    /// which trails real time and trails it further when blocks come slowly. A refund built the
+    /// instant our own clock passes the locktime is one the chain refuses, and that refusal arrives
+    /// as a failed spend rather than as "too early".
+    /// </para>
+    /// <para>
+    /// So the question is asked of the chain rather than answered from a clock, the same way
+    /// <c>VHTLCContractTransformer</c> asks it for the v1 contract. That makes the refund possible
+    /// exactly when it is possible, instead of after a fixed pessimistic wait.
+    /// </para>
+    /// <para>
+    /// Without a blockchain to ask, the wall clock plus the worst-case lag is the honest fallback:
+    /// it can only be too patient, never too eager, and being too eager here means broadcasting a
+    /// spend that cannot confirm.
+    /// </para>
+    /// </remarks>
+    private async Task AssertLocktimeReachedAsync(
+        string swapId, long locktime, CancellationToken cancellationToken)
+    {
+        var chainNow = _blockchain is null
+            ? (long?)null
+            : (await _blockchain.GetChainTime(cancellationToken)).Timestamp.ToUnixTimeSeconds();
+
+        AssertLocktimeReached(swapId, locktime, chainNow, _time.GetUtcNow().ToUnixTimeSeconds());
+    }
+
+    /// <summary>
+    /// Whether a refund may be built, given what the chain says and what our clock says.
+    /// </summary>
+    /// <param name="swapId">The swap, for the message.</param>
+    /// <param name="locktime">The covenant's refund locktime, unix seconds.</param>
+    /// <param name="chainNow">The chain's median time past, or <c>null</c> when unavailable.</param>
+    /// <param name="wallClockNow">Our own clock, unix seconds.</param>
+    /// <exception cref="InvalidOperationException">The leaf has not matured.</exception>
+    /// <remarks>
+    /// <para>
+    /// Separated from the fetch so the rule can be exercised without a client and its eight
+    /// dependencies — and so the decision is a function of its inputs rather than of whatever the
+    /// world happened to answer.
+    /// </para>
+    /// <para>
+    /// Median time past is the median of the last eleven block times. It trails real time, and
+    /// trails it further when blocks come slowly, so the two disagree exactly when it matters: a
+    /// spend built on the clock's word goes into a chain that will not confirm it, and the failure
+    /// reads like a broken covenant rather than an early attempt.
+    /// </para>
+    /// <para>
+    /// With no chain to ask, the clock plus the worst-case lag is the honest fallback. It can only
+    /// be too patient, and being too eager here means broadcasting a spend that cannot confirm.
+    /// </para>
+    /// </remarks>
+    internal static void AssertLocktimeReached(
+        string swapId, long locktime, long? chainNow, long wallClockNow)
+    {
+        if (chainNow is { } mtp)
+        {
+            if (mtp < locktime)
+            {
+                throw new InvalidOperationException(
+                    $"Swap '{swapId}' cannot be refunded yet: the chain's median time past is " +
+                    $"{locktime - mtp}s short of its refund locktime.");
+            }
+            return;
+        }
+
+        var takeableAt = locktime + MedianTimePastLagSeconds;
+        if (wallClockNow < takeableAt)
+        {
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' cannot be refunded for another {takeableAt - wallClockNow}s — its " +
+                $"locktime passes in {Math.Max(0, locktime - wallClockNow)}s, and with no chain time " +
+                $"available this waits out the {MedianTimePastLagSeconds}s median-time-past lag on top.");
+        }
+    }
+
     public async Task<ArkadeSwapIntent> RefundSwap(string swapId, CancellationToken cancellationToken = default)
     {
         var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
@@ -318,20 +402,7 @@ public sealed class LightningSwapClient
         if (intent.RefundLocktime is not { } locktime)
             throw new InvalidOperationException($"Swap '{swapId}' has no refund locktime recorded.");
 
-        // The leaf's CLTV matures against MEDIAN TIME PAST, which trails the wall clock — so a
-        // refund built the instant our own clock passes the locktime is one the chain still refuses.
-        // Waiting out the lag here costs a delay; not waiting costs a rejected spend that reads like
-        // a bug in the covenant. The reference implementation retries across the same window rather
-        // than gating on it, which comes to the same thing: the money is not takeable until MTP says so.
-        var now = _time.GetUtcNow().ToUnixTimeSeconds();
-        var takeableAt = locktime + MedianTimePastLagSeconds;
-        if (now < takeableAt)
-        {
-            throw new InvalidOperationException(
-                $"Swap '{swapId}' cannot be refunded for another {takeableAt - now}s — its locktime " +
-                $"passes in {Math.Max(0, locktime - now)}s, and median time past trails the clock by " +
-                $"up to {MedianTimePastLagSeconds}s after that.");
-        }
+        await AssertLocktimeReachedAsync(swapId, locktime, cancellationToken);
 
         var previousStatus = intent.Status;
         intent.Status = ArkadeSwapIntentStatus.Cancelling;
