@@ -48,7 +48,7 @@ public sealed record PendingLightningReceive(
 /// </summary>
 /// <remarks>
 /// <para>
-/// The mirror of <see cref="LightningSwapClient"/>, and the exposure mirrors with it. Here the
+/// The mirror of <see cref="LightningSendClient"/>, and the exposure mirrors with it. Here the
 /// <em>solver</em> pays out first: it funds the Arkade contract while the Lightning payment it is
 /// owed is still held, and only gets paid when the client's claim publishes the preimage. That is
 /// why the client chooses the secret — a solver that could settle the invoice on its own would be

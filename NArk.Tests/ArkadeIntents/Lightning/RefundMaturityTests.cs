@@ -50,7 +50,7 @@ public class RefundMaturityTests
     [Test]
     public void WithNoChainToAsk_TheFixedWaitEventuallyExpires()
     {
-        var past = Locktime + LightningSwapClient.MedianTimePastLagSeconds;
+        var past = Locktime + LightningSendClient.MedianTimePastLagSeconds;
 
         Assert.That(Reached(chainNow: null, wallClock: past), Is.True);
     }
@@ -67,7 +67,7 @@ public class RefundMaturityTests
     {
         try
         {
-            LightningSwapClient.AssertLocktimeReached("swap-1", Locktime, chainNow, wallClock);
+            LightningSendClient.AssertLocktimeReached("swap-1", Locktime, chainNow, wallClock);
             return true;
         }
         catch (InvalidOperationException)

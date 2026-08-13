@@ -129,7 +129,7 @@ public sealed class ArkadeLightningService(
     /// proves that it did — so the swap is reported as sent when that preimage appears, not when
     /// this returns.
     /// </remarks>
-    public async Task<FundedLightningSwap> PayInvoiceAsync(
+    public async Task<FundedLightningSend> PayInvoiceAsync(
         string walletId, string bolt11, CancellationToken cancellationToken = default)
     {
         using var rfq = await CreateTransportAsync(cancellationToken);
