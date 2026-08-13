@@ -17,9 +17,9 @@ namespace NArk.ArkadeIntents.Services;
 /// </summary>
 /// <remarks>
 /// A spent covenant VTXO means the solver fulfilled the swap; a swept one means it expired and the
-/// deposit is recoverable. Only pending swaps transition — <see cref="IArkadeIntentStorage.UpdateStatus"/>
-/// ignores non-pending swaps, so a swap moved to <see cref="ArkadeSwapIntentStatus.Cancelling"/> before its
-/// cancel-spend is never read as a fill.
+/// deposit is recoverable. Only in-flight swaps transition — <see cref="IArkadeIntentStorage.UpdateStatus"/>
+/// ignores terminal and <see cref="ArkadeSwapIntentStatus.Cancelling"/> swaps, so a swap moved to
+/// Cancelling before its cancel-spend is never read as a fill.
 /// </remarks>
 public sealed class ArkadeSwapIntentMonitoringService : IHostedService
 {

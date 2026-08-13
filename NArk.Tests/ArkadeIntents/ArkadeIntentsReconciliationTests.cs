@@ -1,4 +1,5 @@
 using NArk.Abstractions;
+using NArk.Abstractions.Helpers;
 using NSubstitute;
 using NArk.Core.Transport;
 using NArk.Abstractions.VTXOs;
@@ -124,6 +125,75 @@ public class ArkadeIntentsReconciliationTests
     }
 
     [Test]
+    public async Task ASpentLightningLockup_WithAProvenPreimage_IsFulfilled()
+    {
+        // The proof the monitor was wired for, through the reconciliation path.
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending, withPaymentHash: true),
+            Vtxo(spentBy: "spendtx", arkTxid: "arktx"),
+            TransportReturning(SpendOf(LockupOutpoint, Preimage)));
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated.Single().To, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(storage.Saved.Single().Status, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        });
+    }
+
+    [Test]
+    public async Task AResolvedSwap_WithAProvenPreimage_IsUpgradedToFulfilled()
+    {
+        // Resolved is terminal for everything except this: it may have been recorded on a
+        // transient indexer miss, and the preimage readable now proves it was a fill all along.
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Resolved, withPaymentHash: true),
+            Vtxo(spentBy: "spendtx", arkTxid: "arktx"),
+            TransportReturning(SpendOf(LockupOutpoint, Preimage)));
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated.Single(), Is.EqualTo(
+                new ArkadeIntentReconciled("swap-1", ArkadeSwapIntentStatus.Resolved, ArkadeSwapIntentStatus.Fulfilled)));
+            Assert.That(storage.Saved.Single().Status, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        });
+    }
+
+    [Test]
+    public async Task AResolvedSwap_WithNoProofReadable_StaysResolved()
+    {
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Resolved, withPaymentHash: true),
+            Vtxo(spentBy: "spendtx"));
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated, Is.Empty);
+            Assert.That(storage.Saved, Is.Empty);
+        });
+    }
+
+    [Test]
+    public async Task AReceiveSwapPastItsClaimWindow_IsResolvedOnTheAdvancePass()
+    {
+        // Deadlines raise no chain event, so only the clock can close this: without it the swap
+        // sits Claimable forever and every pass retries a claim that throws.
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Claimable),
+            Vtxo(),
+            clock: new FakeClock(Locktime + 3600));
+
+        await service.AdvanceAllAsync();
+
+        Assert.That(storage.Saved.Single().Status, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
     public async Task ASwapAlreadyInTheRightState_IsNotRewritten()
     {
         // Reconciliation is meant to be run on every startup, so a no-op pass must actually be one.
@@ -144,6 +214,31 @@ public class ArkadeIntentsReconciliationTests
 
     private static FakeVtxos _lastVtxos = new(null);
 
+    private static readonly byte[] Preimage =
+        Convert.FromHexString("1111111111111111111111111111111111111111111111111111111111111111");
+
+    private static readonly OutPoint LockupOutpoint = new(new uint256(new string('b', 64)), 0);
+
+    /// <summary>A PSBT spending the lockup, optionally revealing the preimage in its condition field.</summary>
+    private static string SpendOf(OutPoint prevOut, byte[]? preimage = null)
+    {
+        var tx = Network.Main.CreateTransaction();
+        tx.Inputs.Add(new TxIn(prevOut));
+        tx.Outputs.Add(new TxOut(Money.Satoshis(1000), new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
+
+        var psbt = PSBT.FromTransaction(tx, Network.Main);
+        if (preimage is not null) psbt.Inputs[0].SetArkFieldConditionWitness(new WitScript(Op.GetPushOp(preimage)));
+        return psbt.ToBase64();
+    }
+
+    private static IClientTransport TransportReturning(params string[] psbts)
+    {
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>(psbts));
+        return transport;
+    }
+
     /// <summary>
     /// A transport that yields no transactions, so nothing can be proven from a spend.
     /// </summary>
@@ -151,27 +246,23 @@ public class ArkadeIntentsReconciliationTests
     /// Deliberately silent rather than fabricating a witness: what these tests pin is that an
     /// unproven spend is never read as a fill.
     /// </remarks>
-    private static IClientTransport SilentTransport()
-    {
-        var transport = Substitute.For<IClientTransport>();
-        transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyList<string>>([]));
-        return transport;
-    }
+    private static IClientTransport SilentTransport() => TransportReturning();
 
-    private static (ArkadeIntentsService, FakeIntents) Build(ArkadeSwapIntent intent, ArkVtxo? vtxo)
+    private static (ArkadeIntentsService, FakeIntents) Build(
+        ArkadeSwapIntent intent, ArkVtxo? vtxo, IClientTransport? transport = null, FakeClock? clock = null)
     {
         var intents = new FakeIntents(intent);
         var vtxos = _lastVtxos = new FakeVtxos(vtxo);
-        var clock = new FakeClock(Locktime - 3600);
 
         // Only the storages and the clock take part in reconciliation; the corridor clients are
         // never reached, so they are left null rather than mocked into existence.
         return (new ArkadeIntentsService(
-            null!, null!, null!, intents, vtxos, SilentTransport(), clock), intents);
+            null!, null!, null!, intents, vtxos, transport ?? SilentTransport(),
+            clock ?? new FakeClock(Locktime - 3600)), intents);
     }
 
-    private static ArkadeSwapIntent Intent(ArkadeSwapIntentType type, ArkadeSwapIntentStatus status) => new()
+    private static ArkadeSwapIntent Intent(
+        ArkadeSwapIntentType type, ArkadeSwapIntentStatus status, bool withPaymentHash = false) => new()
     {
         Id = "swap-1",
         WalletId = "wallet-1",
@@ -184,6 +275,9 @@ public class ArkadeIntentsReconciliationTests
         SwapAddress = "tark1example",
         OfferHex = "",
         RefundLocktime = Locktime,
+        PaymentHash = withPaymentHash
+            ? Convert.ToHexString(NBitcoin.Crypto.Hashes.SHA256(Preimage)).ToLowerInvariant()
+            : null,
     };
 
     private static ArkVtxo Vtxo(string? spentBy = null, string? arkTxid = null) =>

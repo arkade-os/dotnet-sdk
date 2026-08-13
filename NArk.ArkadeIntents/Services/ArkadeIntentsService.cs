@@ -409,11 +409,26 @@ public sealed class ArkadeIntentsService
         string? walletId = null, CancellationToken cancellationToken = default)
     {
         var results = new List<ArkadeIntentAdvance>();
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
 
         foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
         {
-            if (ArkadeIntentPolicy.NextAction(intent) == ArkadeIntentAction.None) continue;
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Deadlines raise no chain event, so the monitor never sees them: a lockup sitting
+            // unspent past its locktime is only ever noticed by a pass that checks the clock.
+            // Without this a send swap would never become Refundable, and a receive swap whose
+            // claim window closed would be retried forever.
+            if (ArkadeSwapStateMachine.NextOnClock(intent.Type, intent.Status, now, intent.RefundLocktime)
+                    is { } timed)
+            {
+                _logger?.LogInformation("Swap {SwapId}: {From} → {To} on the clock",
+                    intent.Id, intent.Status, timed);
+                intent.Status = timed;
+                await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+            }
+
+            if (ArkadeIntentPolicy.NextAction(intent) == ArkadeIntentAction.None) continue;
             results.Add(await AdvanceAsync(intent.Id, cancellationToken));
         }
 
