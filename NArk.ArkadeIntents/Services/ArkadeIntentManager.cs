@@ -111,7 +111,9 @@ public sealed class ArkadeIntentManager
             Id = txid.ToString(),
             WalletId = request.WalletId,
             Type = request.Type,
-            OfferAmount = Money.Satoshis(request.DepositAmount),
+            // What the deposit is worth IN SATS. For AssetToBtc the deposit amount is asset units
+            // riding a dust-sat carrier, so the sats locked are the carrier, not the request's number.
+            OfferAmount = isBtcToAsset ? Money.Satoshis(request.DepositAmount) : serverInfo.Dust,
             WantAmount = Money.Satoshis(request.WantAmount),
             Status = ArkadeSwapIntentStatus.Pending,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -153,9 +155,23 @@ public sealed class ArkadeIntentManager
             var maker = OutputDescriptor.Parse(makerDescriptorStr, serverInfo.Network);
             var contract = OfferBuilder.BuildContract(offer, serverInfo.SignerKey, serverInfo.Network, maker);
 
+            // The rebuilt covenant must land on the script that was funded. It is rebuilt against
+            // the CURRENT server key, so a rotation between funding and cancel changes the tree —
+            // and spending against the wrong tree fails at the server with nothing pointing at why.
+            var rebuilt = contract.GetArkAddress().ScriptPubKey.ToHex();
+            if (!string.Equals(rebuilt, intent.SwapPkScript, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"the rebuilt covenant for swap '{swapId}' does not match the funded script " +
+                    $"(rebuilt {rebuilt}, funded {intent.SwapPkScript}) — has the Arkade server rotated its key?");
+            }
+
+            // Only this swap's own funding output, never "whatever sits at the address": identical
+            // offers derive identical addresses, so a fallback could spend somebody else's deposit.
             var vtxos = await _vtxoStorage.GetVtxos(scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-            var vtxo = vtxos.FirstOrDefault(v => v.TransactionId == intent.Id) ?? vtxos.FirstOrDefault()
-                ?? throw new InvalidOperationException("no spendable VTXO at the swap address");
+            var vtxo = vtxos.FirstOrDefault(v => v.TransactionId == intent.Id && !v.IsSpent() && !v.Swept)
+                ?? throw new InvalidOperationException(
+                    $"the funding output {intent.Id} of swap '{swapId}' is not spendable at the swap address");
 
             var coin = await new ArkProgramContractTransformer(_walletProvider)
                 .Transform(intent.WalletId, contract, vtxo, "cancel");
