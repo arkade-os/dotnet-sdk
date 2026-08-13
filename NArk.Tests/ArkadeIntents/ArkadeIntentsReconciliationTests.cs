@@ -256,9 +256,15 @@ public class ArkadeIntentsReconciliationTests
 
         // Only the storages and the clock take part in reconciliation; the corridor clients are
         // never reached, so they are left null rather than mocked into existence.
+        // Named throughout: this fixture passes nulls for what reconciliation never touches, and
+        // positionally that makes every future parameter a silent shift.
         return (new ArkadeIntentsService(
-            null!, null!, null!, intents, vtxos, transport ?? SilentTransport(),
-            clock ?? new FakeClock(Locktime - 3600)), intents);
+            assets: null!,
+            lightning: null!,
+            intentStorage: intents,
+            vtxoStorage: vtxos,
+            transport: transport ?? SilentTransport(),
+            time: clock ?? new FakeClock(Locktime - 3600)), intents);
     }
 
     private static ArkadeSwapIntent Intent(

@@ -19,8 +19,7 @@ public static class ArkadeIntentsCollectionExtensions
     {
         services.AddHttpClient<SolverDiscoveryService>();
         services.AddSingleton<ArkadeIntentManager>();
-        services.AddSingleton<LightningSendClient>();
-        services.AddSingleton<LightningReceiveClient>();
+        services.AddSingleton<LightningIntentsClient>();
         services.AddSingleton<ArkadeIntentsService>();
         services.AddHostedService<ArkadeSwapIntentMonitoringService>();
         // Registered beside the monitor on purpose. The monitor only observes; without something

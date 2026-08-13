@@ -1,23 +1,24 @@
 using BTCPayServer.Lightning;
-using NArk.Abstractions;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Abstractions;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
-using NArk.ArkadeIntents.Rfq;
-using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NArk.ArkadeIntents.Models;
-using NArk.Core;
+using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
+using NArk.ArkadeIntents.Rfq;
+using NArk.ArkadeIntents.SolverRegistry;
+using NArk.Core.Contracts;
 using NArk.Core.Services;
 using NArk.Core.Transport;
-using NArk.Core.Contracts;
-using NBitcoin;
+using NArk.Core;
 using NBitcoin.Scripting;
-using NArk.ArkadeIntents.SolverRegistry;
+using NBitcoin;
+using System.Security.Cryptography;
 
 namespace NArk.ArkadeIntents.Lightning;
 
@@ -60,56 +61,8 @@ public sealed record FundedLightningSend(
 /// maker's own address with no keys, messages or state held here.
 /// </para>
 /// </remarks>
-public sealed class LightningSendClient
+public sealed partial class LightningIntentsClient
 {
-    private readonly IBitcoinBlockchain? _blockchain;
-    private readonly IClientTransport _transport;
-    private readonly IEmulatorProvider _emulator;
-    private readonly IContractService _contractService;
-    private readonly ISpendingService _spendingService;
-    private readonly IArkadeIntentStorage _intentStorage;
-    private readonly IContractStorage _contractStorage;
-    private readonly IVtxoStorage _vtxoStorage;
-    private readonly IWalletProvider _walletProvider;
-    private readonly TimeProvider _time;
-    private readonly ILogger<LightningSendClient>? _logger;
-
-    /// <summary>Creates the client.</summary>
-    /// <param name="transport">The Arkade connection — the source of the server key and its exit delay.</param>
-    /// <param name="emulator">The covenant co-signer, fetched from the maker's own endpoint.</param>
-    /// <param name="contractService">Derives the maker's own receive address for the refund destination.</param>
-    /// <param name="spendingService">Funds the lockup.</param>
-    /// <param name="intentStorage">Records the swap so it survives a restart.</param>
-    /// <param name="contractStorage">Source of the imported lockup contract, for the refund path.</param>
-    /// <param name="vtxoStorage">Source of the lockup VTXO to refund.</param>
-    /// <param name="walletProvider">Needed by the program transformer on the refund path.</param>
-    /// <param name="time">Clock for the funding and refund gates; defaults to the system clock.</param>
-    /// <param name="logger">Optional logger.</param>
-    public LightningSendClient(
-        IClientTransport transport,
-        IEmulatorProvider emulator,
-        IContractService contractService,
-        ISpendingService spendingService,
-        IArkadeIntentStorage intentStorage,
-        IContractStorage contractStorage,
-        IVtxoStorage vtxoStorage,
-        IWalletProvider walletProvider,
-        IBitcoinBlockchain? blockchain = null,
-        TimeProvider? time = null,
-        ILogger<LightningSendClient>? logger = null)
-    {
-        _blockchain = blockchain;
-        _transport = transport;
-        _emulator = emulator;
-        _contractService = contractService;
-        _spendingService = spendingService;
-        _intentStorage = intentStorage;
-        _contractStorage = contractStorage;
-        _vtxoStorage = vtxoStorage;
-        _walletProvider = walletProvider;
-        _time = time ?? TimeProvider.System;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Negotiate, derive locally, verify, gate and fund — the whole maker flow in one call.
@@ -508,23 +461,5 @@ public sealed class LightningSendClient
     // refund is exactly the party it pays.
     private static OutputDescriptor ClientRefundDescriptorOf(ArkContract receive) =>
         UserKeyOf(receive, "client refund");
-
-    /// <summary>
-    /// The wallet's own key out of a derived receive contract, whatever shape it came back as.
-    /// </summary>
-    /// <remarks>
-    /// A wallet with payment tracking on derives <see cref="HashLockedArkPaymentContract"/> for
-    /// receiving, which carries the same user key but does not inherit
-    /// <see cref="ArkPaymentContract"/> — so matching only the plain shape refused a perfectly good
-    /// address and failed the swap before it started. Both are spendable by this wallet, which is
-    /// the only property this key is being read for.
-    /// </remarks>
-    private static OutputDescriptor UserKeyOf(ArkContract contract, string role) => contract switch
-    {
-        ArkPaymentContract payment => payment.User,
-        HashLockedArkPaymentContract hashLocked => hashLocked.User,
-        _ => throw new InvalidOperationException(
-            $"expected a payment contract to take the {role} key from, got {contract.GetType().Name}"),
-    };
 
 }
