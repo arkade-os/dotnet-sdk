@@ -295,6 +295,29 @@ public sealed class LightningSendClient
     /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">Nothing live is left at the lockup.</exception>
+    /// <summary>
+    /// The covenant's co-signer key: the network's pin, with the emulator's self-report as a check.
+    /// </summary>
+    /// <remarks>
+    /// Which key the covenant commits to decides who can co-sign it, so it must not be decided by
+    /// whichever host answers <c>/v1/info</c>. The pin is the network's own answer; the fetch is
+    /// kept only to notice when the two disagree, which is the last moment anyone can — after this
+    /// the address is derived, funded, and wrong in a way nothing downstream detects.
+    /// </remarks>
+    private string EmulatorKeyFor(ArkServerInfo serverInfo, EmulatorInfo emulatorInfo)
+    {
+        if (!EmulatorPubKeys.AgreesWithPin(serverInfo.NetworkName, emulatorInfo.SignerPubkey))
+        {
+            _logger?.LogWarning(
+                "The emulator at this deployment reports {Reported}, but {Network} is pinned to a "
+                + "different co-signer. Using the pin — a covenant built on the reported key would "
+                + "be one the rest of the network cannot co-sign.",
+                emulatorInfo.SignerPubkey, serverInfo.NetworkName);
+        }
+
+        return EmulatorPubKeys.DefaultFor(serverInfo.NetworkName);
+    }
+
     internal static IReadOnlyList<ArkVtxo> SelectRefundable(
         IReadOnlyCollection<ArkVtxo> vtxos, string swapId)
     {
@@ -497,7 +520,8 @@ public sealed class LightningSendClient
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            LightningCorridor.NormalizeToXOnly(Convert.FromHexString(emulatorInfo.SignerPubkey)),
+            LightningCorridor.NormalizeToXOnly(
+                Convert.FromHexString(EmulatorKeyFor(serverInfo, emulatorInfo))),
             nonInteractiveClaimPkScript: Convert.FromHexString(receiverPkScript),
             nonInteractiveRefundPkScript: refundPkScript);
     }

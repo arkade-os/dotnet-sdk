@@ -73,8 +73,19 @@ public sealed class ArkadeIntentManager
         // Parsed, not sliced. This corridor quotes no counterparty address to check the derivation
         // against, so a key mangled here reaches the covenant unchallenged and the deposit lands
         // under a co-signer that does not exist.
+        // The network's pinned co-signer, not whatever the emulator says about itself — the offer
+        // embeds this key, and an offer embedding the wrong one is filled by nobody.
+        if (!EmulatorPubKeys.AgreesWithPin(serverInfo.NetworkName, emulatorInfo.SignerPubkey))
+        {
+            throw new InvalidOperationException(
+                $"The emulator at this deployment reports {emulatorInfo.SignerPubkey}, but "
+                + $"'{serverInfo.NetworkName}' is pinned to a different co-signer. An offer embedding "
+                + "the reported key is one no solver on this network can fill, so this refuses rather "
+                + "than funding a deposit nobody will take.");
+        }
+
         var emulatorPubkey = LightningCorridor.NormalizeToXOnly(
-            Convert.FromHexString(emulatorInfo.SignerPubkey)).ToBytes();
+            Convert.FromHexString(EmulatorPubKeys.DefaultFor(serverInfo.NetworkName))).ToBytes();
 
         var addressProvider = await _walletProvider.GetAddressProviderAsync(request.WalletId, cancellationToken)
             ?? throw new InvalidOperationException($"No address provider for wallet '{request.WalletId}'.");
