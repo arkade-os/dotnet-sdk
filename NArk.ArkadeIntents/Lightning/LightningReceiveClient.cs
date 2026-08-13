@@ -182,6 +182,10 @@ public sealed class LightningReceiveClient
         var invoice = LightningReceiveGates.VerifyInvoice(
             quote, sealed_.PaymentHash, amountSats, serverInfo.Network);
 
+        // The last check before the invoice can reach a payer: paying into a window too short to
+        // claim in parks the payer's money in a held HTLC until it lapses.
+        LightningReceiveGates.AssertReceivable(quote, invoice, _time.GetUtcNow().ToUnixTimeSeconds());
+
         var contract = await DeriveLockupAsync(
             quote, sealed_.PaymentHash, payoutDescriptor, payoutPkScript, serverInfo, cancellationToken);
         var lockupAddress = contract.GetArkAddress().ToString(serverInfo.Network == Network.Main);
