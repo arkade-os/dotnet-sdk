@@ -17,6 +17,19 @@ public static class SwapScriptValues
     /// <summary>BIP68 encodes relative time in units of 512 seconds.</summary>
     public const uint SequenceGranularitySeconds = 512;
 
+    /// <summary>
+    /// How far the funder's solo refund opens after the claim, in seconds.
+    /// </summary>
+    /// <remarks>
+    /// The one leaf a funder can spend without anybody else, so the only one whose timing can take
+    /// money from a claimant who holds the preimage and did nothing wrong. Sized for what reaching
+    /// the claim actually costs with the Arkade server gone — an unroll broadcast per chain step,
+    /// each waiting on a confirmation, then the CSV spend. A single granularity tick never covered
+    /// that. Must match the reference solver's <c>SOLO_REFUND_HEADROOM_SECONDS</c>, and is a whole
+    /// number of BIP68 units so that stacking it cannot silently re-round.
+    /// </remarks>
+    public const uint SoloRefundHeadroomSeconds = 8 * SequenceGranularitySeconds;
+
     /// <summary>Round a duration up to the next whole BIP68 512-second unit.</summary>
     /// <param name="seconds">The duration to round, in seconds.</param>
     /// <returns>The smallest multiple of 512 greater than or equal to <paramref name="seconds"/>.</returns>

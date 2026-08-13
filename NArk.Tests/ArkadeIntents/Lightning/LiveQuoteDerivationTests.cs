@@ -18,6 +18,10 @@ namespace NArk.Tests.ArkadeIntents.Lightning;
 /// funding a script the solver could not spend.
 /// </remarks>
 [TestFixture]
+[Ignore("Captured before lightning-swap-service#81 (c904d44) re-spaced the unilateral ladder, so "
+        + "the quoted address no longer matches what either side derives. It has to be RE-CAPTURED "
+        + "from a solver running the new ladder — recomputing it from our own code would turn a "
+        + "transcript into a tautology, which is the one thing this test exists not to be.")]
 public class LiveQuoteDerivationTests
 {
     // Captured 2026-08-09 from `POST /v1/swap` against a live reference solver on the
@@ -40,7 +44,7 @@ public class LiveQuoteDerivationTests
     [Test]
     public void OurDerivation_ReproducesTheAddressTheSolverQuoted()
     {
-        var claim = SwapScriptValues.CeilToGranularity(OperatorExitDelay);
+        var delays = LightningCorridor.UnilateralDelays(TestServerInfo.WithSeconds(OperatorExitDelay));
 
         var contract = new VHTLCv2Contract(
             Descriptor(ArkdSigner),
@@ -49,9 +53,9 @@ public class LiveQuoteDerivationTests
             receiver: Descriptor("02" + SolverPubkey),
             new uint160(SwapScriptValues.PreimageHashFromPaymentHash(Convert.FromHexString(PaymentHash)), false),
             new LockTime(RefundLocktime),
-            new Sequence(TimeSpan.FromSeconds(claim)),
-            new Sequence(TimeSpan.FromSeconds(claim + SwapScriptValues.SequenceGranularitySeconds)),
-            new Sequence(TimeSpan.FromSeconds(claim + 2 * SwapScriptValues.SequenceGranularitySeconds)),
+            new Sequence(TimeSpan.FromSeconds(delays.Claim)),
+            new Sequence(TimeSpan.FromSeconds(delays.Refund)),
+            new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
             nonInteractiveClaimPkScript: Convert.FromHexString(ReceiverPkScript),
             nonInteractiveRefundPkScript: Convert.FromHexString(RefundPkScript));
@@ -77,7 +81,7 @@ public class LiveQuoteDerivationTests
     [Test]
     public void OurDerivation_KeepsTheTwoCovenantDestinationsApart()
     {
-        var claim = SwapScriptValues.CeilToGranularity(OperatorExitDelay);
+        var delays = LightningCorridor.UnilateralDelays(TestServerInfo.WithSeconds(OperatorExitDelay));
 
         var contract = new VHTLCv2Contract(
             Descriptor(ArkdSigner),
@@ -85,9 +89,9 @@ public class LiveQuoteDerivationTests
             receiver: Descriptor("02" + SolverPubkey),
             new uint160(SwapScriptValues.PreimageHashFromPaymentHash(Convert.FromHexString(DistinctPaymentHash)), false),
             new LockTime(DistinctRefundLocktime),
-            new Sequence(TimeSpan.FromSeconds(claim)),
-            new Sequence(TimeSpan.FromSeconds(claim + SwapScriptValues.SequenceGranularitySeconds)),
-            new Sequence(TimeSpan.FromSeconds(claim + 2 * SwapScriptValues.SequenceGranularitySeconds)),
+            new Sequence(TimeSpan.FromSeconds(delays.Claim)),
+            new Sequence(TimeSpan.FromSeconds(delays.Refund)),
+            new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
             // The solver's payout pins the claim leaf; the trader's own address pins the refund leaf.
             nonInteractiveClaimPkScript: Convert.FromHexString(SolverClaimPkScript),
@@ -113,7 +117,7 @@ public class LiveQuoteDerivationTests
         // The same construction with the roles swapped, which is the only thing separating the two
         // corridors. Getting it backwards would still build and still produce a plausible address —
         // one the solver funds and we could never claim.
-        var claim = SwapScriptValues.CeilToGranularity(OperatorExitDelay);
+        var delays = LightningCorridor.UnilateralDelays(TestServerInfo.WithSeconds(OperatorExitDelay));
 
         var contract = new VHTLCv2Contract(
             Descriptor(ArkdSigner),
@@ -122,9 +126,9 @@ public class LiveQuoteDerivationTests
             new uint160(
                 SwapScriptValues.PreimageHashFromPaymentHash(Convert.FromHexString(ReceivePaymentHash)), false),
             new LockTime(ReceiveRefundLocktime),
-            new Sequence(TimeSpan.FromSeconds(claim)),
-            new Sequence(TimeSpan.FromSeconds(claim + SwapScriptValues.SequenceGranularitySeconds)),
-            new Sequence(TimeSpan.FromSeconds(claim + 2 * SwapScriptValues.SequenceGranularitySeconds)),
+            new Sequence(TimeSpan.FromSeconds(delays.Claim)),
+            new Sequence(TimeSpan.FromSeconds(delays.Refund)),
+            new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
             nonInteractiveClaimPkScript: Convert.FromHexString(PayoutPkScript),
             nonInteractiveRefundPkScript: Convert.FromHexString(SolverRefundPkScript));
