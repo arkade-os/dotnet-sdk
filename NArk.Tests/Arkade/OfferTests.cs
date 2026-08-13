@@ -139,6 +139,22 @@ public class OfferTests
     }
 
     [Test]
+    public void CreateOffer_OnMainnet_EncodesTheMainnetHrp()
+    {
+        // The address string is what a user reads and what storage matches on, so it must carry the
+        // network's own HRP — a testnet string for a mainnet covenant is a wrong address, not a
+        // cosmetic one.
+        var mainnetServer = KeyExtensions.ParseOutputDescriptor(
+            "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88", Network.Main);
+
+        var created = OfferBuilder.CreateOffer(
+            TaprootSpk(2), XOnly(3), XOnly(4), mainnetServer, Network.Main,
+            wantAmount: 500, wantAsset: AssetId.Create(Convert.ToHexString(XOnly(9)), 7));
+
+        Assert.That(created.Address, Does.StartWith("ark1"));
+    }
+
+    [Test]
     public void BuildContract_ExplicitMakerDescriptor_DerivesSameAddress()
     {
         // Cancel rebuilds with the maker's real (wallet-spendable) descriptor rather than the
