@@ -50,7 +50,16 @@
             <div class="balance-slide">
                 <p class="balance-label">Ark Balance</p>
                 <p class="balance-amount">
-                    @FormatSats(_arkBalance)<span class="balance-unit">sats</span>
+                    @if (_balanceError is null)
+                    {
+                        @FormatSats(_arkBalance)<span class="balance-unit">sats</span>
+                    }
+                    else
+                    {
+                        <span class="balance-unit" style="color:var(--arkade-red,#e5484d);font-size:13px;">
+                            balance unavailable — @_balanceError
+                        </span>
+                    }
                 </p>
             </div>
             <div class="balance-slide">
@@ -148,6 +157,7 @@
 @code {
     private IReadOnlyCollection<ArkVtxo>? _vtxos;
     private long _arkBalance;
+    private string? _balanceError;
     private long _onchainBalance;
     private int _activeSlide;
     private int _slideCount = 3;
@@ -172,9 +182,22 @@
             {
                 var wallet = wallets.First();
                 State.SetActiveWallet(wallet.Id);
-                var balance = await Ark.GetBalance(wallet.Id);
-                State.UpdateBalance(balance);
-                _arkBalance = balance;
+                // Loaded independently: a balance that cannot be computed must not also cost the
+                // user the VTXO list that would let them see why.
+                try
+                {
+                    var balance = await Ark.GetBalance(wallet.Id);
+                    State.UpdateBalance(balance);
+                    _arkBalance = balance;
+                    _balanceError = null;
+                }
+                catch (Exception ex)
+                {
+                    // Shown rather than reported as zero. Coins exist or they do not; "I could not
+                    // tell" is a third answer and the user is entitled to it.
+                    _balanceError = ex.Message;
+                }
+
                 _onchainBalance = 0;
                 _vtxos = await Ark.GetVtxos(wallet.Id);
             }

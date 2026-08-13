@@ -16,46 +16,29 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IBitcoinBl
     {
         if (contract is not VHTLCContract htlc) return false;
 
-        // TEMP latency probe.
-        var swAddr = System.Diagnostics.Stopwatch.StartNew();
         var addressProvider = await walletProvider.GetAddressProviderAsync(walletIdentifier);
-        var addrMs = swAddr.ElapsedMilliseconds;
+        if (addressProvider is null) return false;
 
-        if (htlc.Preimage is not null)
+        // Claim: we hold the secret and the covenant pays us.
+        if (htlc.Preimage is not null && await addressProvider.IsOurs(htlc.Receiver))
         {
-            var swIsOurs = System.Diagnostics.Stopwatch.StartNew();
-            var isOurs = await addressProvider!.IsOurs(htlc.Receiver);
-            var isOursMs = swIsOurs.ElapsedMilliseconds;
-            if (isOurs)
-            {
-                var swSigner = System.Diagnostics.Stopwatch.StartNew();
-                var signer = await walletProvider.GetSignerAsync(walletIdentifier);
-                logger?.LogTrace(
-                    "[vhtlc-probe] CanTransform (claim path): GetAddressProvider={AddrMs}ms IsOurs={IsOursMs}ms GetSigner={SignerMs}ms",
-                    addrMs, isOursMs, swSigner.ElapsedMilliseconds);
-                return signer is not null;
-            }
+            return await walletProvider.GetSignerAsync(walletIdentifier) is not null;
         }
 
-        var swChainTime = System.Diagnostics.Stopwatch.StartNew();
+        // Refund: we funded it and the deadline has passed. Measured against the CHAIN's clock —
+        // an absolute locktime matures on median time past, which trails real time, so our own
+        // clock would offer a spend the chain still refuses.
         var chainTime = await chainTimeProvider.GetChainTime();
-        var chainMs = swChainTime.ElapsedMilliseconds;
-
         var refundElapsed = htlc.RefundLocktime.IsTimeLock
             ? htlc.RefundLocktime.Date < chainTime.Timestamp
             : chainTime.Height >= htlc.RefundLocktime.Value;
 
-        if (refundElapsed && await addressProvider!.IsOurs(htlc.Sender))
+        if (refundElapsed && await addressProvider.IsOurs(htlc.Sender))
         {
-            logger?.LogTrace(
-                "[vhtlc-probe] CanTransform (refund path): GetAddressProvider={AddrMs}ms GetChainTime={ChainMs}ms",
-                addrMs, chainMs);
             return await walletProvider.GetSignerAsync(walletIdentifier) is not null;
         }
 
-        logger?.LogTrace(
-            "[vhtlc-probe] CanTransform (neither): GetAddressProvider={AddrMs}ms GetChainTime={ChainMs}ms",
-            addrMs, chainMs);
+        // Neither path is open: this contract is ours to watch, not to spend.
         return false;
     }
 

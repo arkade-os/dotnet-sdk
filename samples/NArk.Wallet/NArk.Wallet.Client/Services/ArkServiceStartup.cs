@@ -46,6 +46,48 @@ public static class ArkServiceStartup
         }
         catch (Exception ex) { logger.LogWarning(ex, "SwapsManagementService failed to start"); }
 
+        // Start Arkade asset-swap monitoring (transitions covenant swaps: filled by a solver / cancelled).
+        try
+        {
+            var arkadeSwaps = services.GetRequiredService<NArk.ArkadeIntents.Services.ArkadeSwapIntentMonitoringService>();
+            await arkadeSwaps.StartAsync(cts.Token);
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "ArkadeSwapIntentMonitoringService failed to start"); }
+
+        // The monitor only moves a swap's status. Acting on that status — claiming a funded receive,
+        // refunding a send the solver never filled — is this loop, and it is not optional: the claim
+        // window is a couple of hours, and a swap that reaches Claimable while nobody is looking at
+        // the Swap page is a payment that quietly does not arrive. What to do is decided by
+        // ArkadeIntentPolicy; this only supplies a clock.
+        try
+        {
+            var intents = services.GetRequiredService<NArk.ArkadeIntents.Services.ArkadeIntentsService>();
+            _ = Task.Run(async () =>
+            {
+                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+                while (await timer.WaitForNextTickAsync(cts.Token))
+                {
+                    try
+                    {
+                        foreach (var advance in await intents.AdvanceAllAsync(cancellationToken: cts.Token))
+                        {
+                            if (advance.Action is not NArk.ArkadeIntents.Services.ArkadeIntentAction.None)
+                            {
+                                logger.LogInformation(
+                                    "{Action} on {SwapId}: {Outcome}", advance.Action, advance.SwapId,
+                                    advance.Acted ? "done" : advance.Error ?? "not yet");
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) { break; }
+                    // A pass over many swaps: one that cannot proceed must not stop the others,
+                    // and must not end the loop that will retry it in thirty seconds.
+                    catch (Exception ex) { logger.LogWarning(ex, "swap advance pass failed"); }
+                }
+            }, cts.Token);
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "swap advance loop failed to start"); }
+
         // Poll boarding UTXOs from the chain. Non-fatal if explorer is unavailable.
         try
         {

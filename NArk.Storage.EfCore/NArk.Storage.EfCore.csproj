@@ -18,6 +18,7 @@
     <ItemGroup>
         <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
         <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
+        <ProjectReference Include="..\NArk.ArkadeIntents\NArk.ArkadeIntents.csproj" />
     </ItemGroup>
 
 </Project>

@@ -30,6 +30,7 @@
     </ItemGroup>
 
     <ItemGroup>
+      <ProjectReference Include="..\NArk.ArkadeIntents\NArk.ArkadeIntents.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
       <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
       <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
@@ -44,6 +45,12 @@
         fails CI on both sides.
       -->
       <Content Include="Arkade\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+      <!--
+        Lightning covenant-swap vectors, generated from the solver side's own
+        derivation so a drift in either implementation fails the maker's
+        derivation test here.
+      -->
+      <Content Include="ArkadeIntents\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

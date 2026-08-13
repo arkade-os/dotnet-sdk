@@ -27,8 +27,13 @@ public class ArkTransactionBuilderSubmitRoutingTests
     public void SetUp()
     {
         _transport = Substitute.For<IClientTransport>();
+        // Echo back the txid of whatever was submitted, as an honest server does. A fixed string
+        // here would fail the check that the finalized transaction is the one we built — which is
+        // the point of that check, and worth a fake that behaves like the thing it stands in for.
         _transport.SubmitTx(Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(new SubmitTxResponse("arktxid", "finalarktx", [])));
+            .Returns(call => Task.FromResult(new SubmitTxResponse(
+                PSBT.Parse(call.ArgAt<string>(0), Network.RegTest).GetGlobalTransaction().GetHash().ToString(),
+                "finalarktx", [])));
         _transport.FinalizeTx(Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
             .Returns(Task.CompletedTask);
 
@@ -75,6 +80,46 @@ public class ArkTransactionBuilderSubmitRoutingTests
         await builder.SubmitArkTransaction([], AnyPsbt(), [], CancellationToken.None);
 
         await _transport.Received(1).SubmitTx(
+            Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public void AServerRenamingTheTransaction_IsRefusedBeforeFinalizing()
+    {
+        // The response's txid is the server's claim about which transaction our signed checkpoints
+        // belong to. Accepting a different one would apply them — and on a claim they carry the
+        // preimage — to something we never built.
+        _transport.SubmitTx(Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new SubmitTxResponse("not-the-txid-we-submitted", "finalarktx", [])));
+
+        var builder = new TransactionHelpers.ArkTransactionBuilder(
+            _transport, Substitute.For<ISafetyService>(), Substitute.For<IWalletProvider>(),
+            Substitute.For<IIntentStorage>());
+
+        Assert.ThrowsAsync<InvalidOperationException>(() =>
+            builder.SubmitArkTransaction([], AnyPsbt(), [], CancellationToken.None));
+    }
+
+    [Test]
+    public async Task ARenamedTransaction_IsNeverFinalized()
+    {
+        _transport.SubmitTx(Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new SubmitTxResponse("not-the-txid-we-submitted", "finalarktx", [])));
+
+        var builder = new TransactionHelpers.ArkTransactionBuilder(
+            _transport, Substitute.For<ISafetyService>(), Substitute.For<IWalletProvider>(),
+            Substitute.For<IIntentStorage>());
+
+        try
+        {
+            await builder.SubmitArkTransaction([], AnyPsbt(), [], CancellationToken.None);
+        }
+        catch (InvalidOperationException)
+        {
+            // The refusal is asserted above; what matters here is what did not happen next.
+        }
+
+        await _transport.DidNotReceive().FinalizeTx(
             Arg.Any<string>(), Arg.Any<string[]>(), Arg.Any<CancellationToken>());
     }
 

@@ -1,0 +1,63 @@
+{
+  "_comment": "GENERATED — do not hand-edit. Produced by generate-covenant-vectors.mjs from the solver side's own VHTLC.ScriptV2 derivation. Treat as a safety gate, not a regression baseline: if these disagree with our output, ours is what is wrong. Regenerate after every pull of the reference solver.",
+  "_sdk": "0.4.57",
+  "sharedInputs": {
+    "server": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+    "emulatorPubkey": "56b328b30c8bf5839e24058747879408bdb36241dc9c2e7c619faa12b2920967",
+    "preimageHash": "b566a3eecce809896361988823cd2f423fe800e7",
+    "refundLocktime": 1800000000,
+    "unilateralClaimDelay": 4096,
+    "unilateralRefundDelay": 4096,
+    "unilateralRefundWithoutReceiverDelay": 8192,
+    "hrp": "ark"
+  },
+  "preimageCondition": "82012088a914b566a3eecce809896361988823cd2f423fe800e787",
+  "corridors": {
+    "arkade:BTC->lightning:BTC": {
+      "inputs": {
+        "sender": "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394",
+        "receiver": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "nonInteractiveClaimPkScript": "51203b7f9c1e5a2d4068b1c3e5f7a9b0d2e4f60718293a4b5c6d7e8f90a1b2c3d4e5",
+        "nonInteractiveRefundPkScript": "512062c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7"
+      },
+      "leaves": {
+        "claim": "82012088a914b566a3eecce809896361988823cd2f423fe800e78769201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fad20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ac",
+        "refund": "207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ad201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fad20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ac",
+        "refundWithoutReceiver": "0400d2496bb175207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ad20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ac",
+        "unilateralClaim": "82012088a914b566a3eecce809896361988823cd2f423fe800e7876903080040b275201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fac",
+        "unilateralRefund": "03080040b275207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ad201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fac",
+        "unilateralRefundWithoutReceiver": "03100040b275207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ac",
+        "nonInteractiveClaim": "82012088a914b566a3eecce809896361988823cd2f423fe800e7876920531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ad2039fb8b84f382de025717fb2c7d8aaf67def9555f910c4d04a5c53a85b928a89aac",
+        "nonInteractiveRefund": "20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ad201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fad2080d629be41e1008917645787434410c211cf53baf9d00affccebae8e927d054eac"
+      },
+      "arkadeScripts": {
+        "nonInteractiveClaim": "cd76d15188203b7f9c1e5a2d4068b1c3e5f7a9b0d2e4f60718293a4b5c6d7e8f90a1b2c3d4e588cfcdc9a2",
+        "nonInteractiveRefund": "cd76d151882062c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f788cfcdc9a2"
+      },
+      "pkScript": "5120dd5bf349bb512239cb7ab182119b4148263f80e52904636e09740339df40839d"
+    },
+    "lightning:BTC->arkade:BTC": {
+      "inputs": {
+        "sender": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "receiver": "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394",
+        "nonInteractiveClaimPkScript": "512062c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+        "nonInteractiveRefundPkScript": "51203b7f9c1e5a2d4068b1c3e5f7a9b0d2e4f60718293a4b5c6d7e8f90a1b2c3d4e5"
+      },
+      "leaves": {
+        "claim": "82012088a914b566a3eecce809896361988823cd2f423fe800e78769207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ad20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ac",
+        "refund": "201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fad207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ad20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ac",
+        "refundWithoutReceiver": "0400d2496bb175201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fad20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ac",
+        "unilateralClaim": "82012088a914b566a3eecce809896361988823cd2f423fe800e7876903080040b275207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ac",
+        "unilateralRefund": "03080040b275201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fad207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ac",
+        "unilateralRefundWithoutReceiver": "03100040b275201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fac",
+        "nonInteractiveClaim": "82012088a914b566a3eecce809896361988823cd2f423fe800e7876920531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ad2080d629be41e1008917645787434410c211cf53baf9d00affccebae8e927d054eac",
+        "nonInteractiveRefund": "20531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337ad207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ad2039fb8b84f382de025717fb2c7d8aaf67def9555f910c4d04a5c53a85b928a89aac"
+      },
+      "arkadeScripts": {
+        "nonInteractiveClaim": "cd76d151882062c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f788cfcdc9a2",
+        "nonInteractiveRefund": "cd76d15188203b7f9c1e5a2d4068b1c3e5f7a9b0d2e4f60718293a4b5c6d7e8f90a1b2c3d4e588cfcdc9a2"
+      },
+      "pkScript": "51209666be9fb39f27d6b3f5d8657873fac7265a7e6789eaea8b72deac2eff7765ad"
+    }
+  }
+}

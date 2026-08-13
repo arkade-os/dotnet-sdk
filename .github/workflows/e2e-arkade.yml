@@ -7,25 +7,34 @@ jobs:
   test:
     name: Arkade E2E Tests
     runs-on: ubuntu-latest
+    env:
+      # solverd defaults to level 4 (info), which logs nothing once it is up — a swap the solver
+      # silently declines to fill is indistinguishable from one it never saw. Level 5 (debug) makes
+      # the fill decision visible in the solver logs collected below. A pre-set variable wins over
+      # regtest/.env.defaults (see lib/env.mjs), so this reaches the container.
+      SOLVER_LOG_LEVEL: '5'
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
-      # `emulator` pulls in `ark` (arkd) and starts the emulator co-signing overlay on :7073.
+      # `solver` pulls in `ark` (arkd) + `emulator`, brings up the mock pricefeed + solver, and runs
+      # solver-init (fund + mint asset + register pairs) so the swap fulfill E2E has a live market.
       # `boltz` adds fulmine (:7003) — the funding endpoint the shared test harness uses to top up
       # wallets. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
       - uses: ./.github/actions/e2e-setup
         with:
-          profile: emulator,boltz
+          profile: solver,boltz
       - name: Run Arkade E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade&TestCategory!=LightningCorridors"
         timeout-minutes: 15
       - name: Collect docker logs on failure
         if: failure()
         run: |
           docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
           docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs solver > /tmp/solver-logs.txt 2>&1 || true
+          docker logs solver-init > /tmp/solver-init-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
       - name: Upload logs
         if: failure()

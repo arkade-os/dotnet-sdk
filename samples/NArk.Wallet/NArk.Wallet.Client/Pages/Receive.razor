@@ -86,18 +86,24 @@
 
             @if (_selectedAssetId is null)
             {
-                @if (_amountSats > 0 && IsWithinReverseLimits())
+                @if (_amountSats > 0 && _lightningAvailable)
                 {
-                    <!-- Lightning (Reverse Swap via Boltz) -->
+                    <!-- Lightning (lightning:BTC → arkade:BTC, via a solver) -->
                     <div class="method-card lightning" @onclick="@(() => SelectMethod("lightning"))">
                         <div class="method-icon lightning">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg>
                         </div>
                         <div class="method-info">
                             <div class="method-name">Lightning</div>
-                            <div class="method-desc">Pay a Lightning invoice to receive into Ark.</div>
+                            <div class="method-desc">
+                                Pay a Lightning invoice to receive into Arkade.
+                                @if (!Ark.LightningOfflineClaimCover)
+                                {
+                                    <text> Claim within ~2h — this wallet does the claiming.</text>
+                                }
+                            </div>
                         </div>
-                        <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
+                        <span class="pill pill-info" style="font-size:9px;">ARKADE</span>
                     </div>
                 }
 
@@ -115,6 +121,7 @@
                         <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
                     </div>
                 }
+
 
                 @if (_amountSats == 0)
                 {
@@ -147,8 +154,8 @@
         @if (_selectedAssetId is null && _boltzLimits is not null)
         {
             <p class="text-secondary mt-16" style="font-size:10px;text-align:center;opacity:0.6;">
-                Boltz: @_boltzLimits.ReverseMinAmount.ToString("N0")–@_boltzLimits.ReverseMaxAmount.ToString("N0") sats (LN)@if (_boltzLimits.ChainBtcToArkMinAmount is not null)
-                {<text> · @_boltzLimits.ChainBtcToArkMinAmount.Value.ToString("N0")–@_boltzLimits.ChainBtcToArkMaxAmount!.Value.ToString("N0") sats (Chain)</text>}
+@if (_boltzLimits.ChainBtcToArkMinAmount is not null)
+                {<text>Boltz chain swap: @_boltzLimits.ChainBtcToArkMinAmount.Value.ToString("N0")–@_boltzLimits.ChainBtcToArkMaxAmount!.Value.ToString("N0") sats</text>}
             </p>
         }
     }
@@ -265,9 +272,13 @@
     private string? _swapError;
     private long _chainSwapExpectedSats;
     private BoltzAllLimits? _boltzLimits;
+    private bool _lightningAvailable;
 
     protected override async Task OnInitializedAsync()
     {
+        // A registry lookup, so it is asked once here rather than from the render path.
+        try { _lightningAvailable = await Ark.LightningAvailable(); } catch { _lightningAvailable = false; }
+
         if (State.ActiveWalletId is not null)
         {
             try
@@ -290,11 +301,6 @@
         _selectedAssetId = string.IsNullOrEmpty(val) ? null : val;
     }
 
-    private bool IsWithinReverseLimits()
-        => _boltzLimits is not null
-           && _amountSats >= _boltzLimits.ReverseMinAmount
-           && _amountSats <= _boltzLimits.ReverseMaxAmount;
-
     private bool IsWithinChainLimits()
         => _boltzLimits?.ChainBtcToArkMinAmount is not null
            && _amountSats >= _boltzLimits.ChainBtcToArkMinAmount
@@ -309,7 +315,7 @@
         if (method == "lightning")
         {
             _displayContractScript = null;
-            await InitiateReverseSwap();
+            await InitiateLightningReceive();
             return;
         }
 
@@ -335,7 +341,7 @@
         };
     }
 
-    private async Task InitiateReverseSwap()
+    private async Task InitiateLightningReceive()
     {
         if (State.ActiveWalletId is null) return;
         _initiatingSwap = true;
@@ -343,7 +349,7 @@
 
         try
         {
-            var invoice = await Ark.InitiateReverseSwap(State.ActiveWalletId, _amountSats);
+            var invoice = await Ark.ReceiveOverLightning(State.ActiveWalletId, _amountSats);
             _displayAddress = invoice;
         }
         catch (Exception ex)
