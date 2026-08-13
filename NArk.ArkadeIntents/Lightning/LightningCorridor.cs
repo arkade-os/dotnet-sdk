@@ -50,10 +50,49 @@ public static class LightningCorridor
                 "Lightning HTLC deadline against");
         }
 
-        var claim = SwapScriptValues.CeilToGranularity(checked((uint)exit.LockPeriod.TotalSeconds));
-        return (claim,
-            claim + SwapScriptValues.SequenceGranularitySeconds,
-            claim + 2 * SwapScriptValues.SequenceGranularitySeconds);
+        var seconds = checked((uint)exit.LockPeriod.TotalSeconds);
+
+        // Below the granularity the value is a block count by the SDK's own convention, not
+        // seconds. Reading 144 blocks (~a day) as 144 seconds would round to a 512s timelock
+        // against a day-long requirement — accepted at funding, refused at spend, money already
+        // locked. The LockType check above catches an operator that says so; this catches one
+        // whose seconds are too small to have been seconds.
+        if (seconds < SwapScriptValues.SequenceGranularitySeconds)
+        {
+            throw new InvalidOperationException(
+                $"the Arkade server's unilateral exit delay of {seconds} is below " +
+                $"{SwapScriptValues.SequenceGranularitySeconds}s, which makes it a block count " +
+                "rather than a number of seconds");
+        }
+
+        // BIP68 encodes at most 0xffff units of 512s, and the solo refund stacks its headroom on
+        // top of the base — so the ceiling has to leave room for that, not merely for the base.
+        var ceiling = 0xffff * SwapScriptValues.SequenceGranularitySeconds
+                      - SwapScriptValues.SoloRefundHeadroomSeconds;
+        if (seconds > ceiling)
+        {
+            throw new InvalidOperationException(
+                $"the Arkade server's unilateral exit delay of {seconds}s exceeds what BIP68 can " +
+                "encode once the solo refund's headroom is stacked above it");
+        }
+
+        // The three leaves time three DIFFERENT parties' recourse, so they are not interchangeable
+        // rungs on a ladder:
+        //
+        //   unilateralClaim                  the receiver alone, holding the preimage
+        //   unilateralRefund                 sender AND receiver — neither can spend it alone
+        //   unilateralRefundWithoutReceiver  the sender alone, needing nobody
+        //
+        // Only the last is a solo path for the funder, so it is the only one whose timing can
+        // steal: a funder able to refund before the claimant can claim takes money from someone
+        // who holds the preimage and did nothing wrong. It therefore gets real headroom — sized
+        // for what a claimant actually has to do with the server gone, which is an unroll
+        // broadcast per chain step, each waiting on a confirmation, then the CSV spend.
+        //
+        // Claim sits level with the two-signature refund. Separating them bought nothing, since
+        // neither party can spend that leaf alone, while spending headroom that does matter.
+        var claim = SwapScriptValues.CeilToGranularity(seconds);
+        return (claim, claim, claim + SwapScriptValues.SoloRefundHeadroomSeconds);
     }
 
     /// <summary>Accept an emulator key in either encoding and return its x-only form.</summary>
@@ -122,6 +161,21 @@ public static class LightningCorridor
                 $"the lockup contract for swap '{swapId}' is not in the contract store — " +
                 "without it the funded script cannot be rebuilt");
 
-        return (VHTLCv2Contract)VHTLCv2Contract.Parse(entity.AdditionalData, network);
+        var contract = (VHTLCv2Contract)VHTLCv2Contract.Parse(entity.AdditionalData, network);
+
+        // The parameters and the script are stored independently — the row's data builds the
+        // covenant, the key it was filed under is the script we funded. So a parameter written
+        // wrong, or dropped by a field-mapped backend, yields a contract that looks entirely
+        // valid and simply cannot sign for the money. Comparing them here turns that into a
+        // failure at load, rather than one discovered weeks later at a refund.
+        var rebuilt = contract.GetScriptPubKey().ToHex();
+        if (!string.Equals(rebuilt, swapPkScript, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"the stored lockup contract for swap '{swapId}' rebuilds to {rebuilt}, but it was " +
+                $"filed under {swapPkScript} — these parameters are not this swap's");
+        }
+
+        return contract;
     }
 }

@@ -11,9 +11,22 @@ namespace NArk.Transport.RestClient;
 
 public partial class RestClientTransport
 {
+    /// <summary>
+    /// Reads an operator delay into a relative locktime, rounding a seconds-based one UP.
+    /// </summary>
+    /// <remarks>
+    /// BIP68 encodes seconds in 512-second units and <see cref="Sequence"/> truncates, so an
+    /// operator advertising 3600s would come back as 3584 — a timelock SHORTER than the one it
+    /// requires, which its own validation then refuses. Rounding up is also what the reference
+    /// implementations do before deriving anything from this value, so flooring here additionally
+    /// puts every covenant built on it at a different address than the counterparty's.
+    /// </remarks>
     private static Sequence ParseSequence(long val)
     {
-        return val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
+        if (val < 512) return new Sequence((int)val);
+
+        var units = (val + 511) / 512;
+        return new Sequence(TimeSpan.FromSeconds(units * 512));
     }
 
     public async Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
