@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using NArk.Core.Assets;
 using NArk.ArkadeIntents.Models;
 
-namespace NArk.ArkadeIntents.Services;
+namespace NArk.ArkadeIntents.Assets;
 
 /// <summary>
 /// Wire format for Arkade <see cref="Offer"/>s: an Extension packet payload of

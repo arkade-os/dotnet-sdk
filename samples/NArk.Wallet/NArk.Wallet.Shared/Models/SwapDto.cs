@@ -1,3 +1,4 @@
+using NArk.ArkadeIntents.Assets;
 namespace NArk.Wallet.Shared.Models;
 
 public record SwapDto(

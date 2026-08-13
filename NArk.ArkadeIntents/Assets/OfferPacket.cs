@@ -1,7 +1,7 @@
 using NArk.ArkadeIntents.Models;
 using NArk.Core.Assets;
 
-namespace NArk.ArkadeIntents.Services;
+namespace NArk.ArkadeIntents.Assets;
 
 /// <summary>
 /// The Arkade offer as an <see cref="IExtensionPacket"/> (type

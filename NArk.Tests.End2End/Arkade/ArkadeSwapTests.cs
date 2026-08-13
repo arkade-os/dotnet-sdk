@@ -12,6 +12,7 @@ using NArk.Core.Transport;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.TestPersistance;
 
+using NArk.ArkadeIntents.Assets;
 namespace NArk.Tests.End2End.Arkade;
 
 /// <summary>
