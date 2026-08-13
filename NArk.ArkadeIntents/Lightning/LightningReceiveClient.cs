@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using NArk.Abstractions;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
@@ -75,6 +76,7 @@ public sealed class LightningReceiveClient
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IContractStorage _contractStorage;
     private readonly IVtxoStorage _vtxoStorage;
+    private readonly IWalletProvider _walletProvider;
     private readonly TimeProvider _time;
     private readonly ILogger<LightningReceiveClient>? _logger;
 
@@ -86,6 +88,7 @@ public sealed class LightningReceiveClient
     /// <param name="intentStorage">Records the swap — including the preimage, which lives nowhere else.</param>
     /// <param name="contractStorage">Source of the imported lockup contract, for the claim path.</param>
     /// <param name="vtxoStorage">Source of the lockup VTXO the solver funded.</param>
+    /// <param name="walletProvider">The claim key's signer — what makes the preimage re-derivable.</param>
     /// <param name="time">Clock for the claim's deadline check; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
     public LightningReceiveClient(
@@ -96,6 +99,7 @@ public sealed class LightningReceiveClient
         IArkadeIntentStorage intentStorage,
         IContractStorage contractStorage,
         IVtxoStorage vtxoStorage,
+        IWalletProvider walletProvider,
         IAesGcmCipher? cipher = null,
         TimeProvider? time = null,
         ILogger<LightningReceiveClient>? logger = null)
@@ -108,6 +112,7 @@ public sealed class LightningReceiveClient
         _intentStorage = intentStorage;
         _contractStorage = contractStorage;
         _vtxoStorage = vtxoStorage;
+        _walletProvider = walletProvider;
         _time = time ?? TimeProvider.System;
         _logger = logger;
     }
@@ -151,14 +156,19 @@ public sealed class LightningReceiveClient
         var payoutAddress = payoutArkAddress.ToString(serverInfo.Network == Network.Main);
         var payoutDescriptor = UserKeyOf(payout, "payout");
 
-        var sealed_ = await ClaimPacket.NewAsync(covclaimdPubKey, _cipher, cancellationToken);
+        // The negotiation id first: for a wallet whose claim key repeats across swaps it is also
+        // the preimage salt, so it has to exist before the preimage does.
+        var rfqId = RfqProtocol.NewRfqId();
+        var preimage = await ProvisionClaimPreimageAsync(walletId, payoutDescriptor, rfqId, cancellationToken);
+        var sealed_ = await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken);
 
         var request = LightningReceiveProfile.Request(
             amountSats,
             sealed_.PaymentHash,
             payoutAddress,
             Convert.ToHexString(payoutDescriptor.ToXOnlyPubKey().ToBytes()).ToLowerInvariant(),
-            sealed_.Packet);
+            sealed_.Packet,
+            rfqId);
 
         // Asked before the request: a size outside the advertised range is one the solver refuses
         // anyway, and its refusal cannot say by how much.
@@ -261,8 +271,6 @@ public sealed class LightningReceiveClient
 
         if (intent.Type != ArkadeSwapIntentType.LightningToBtc)
             throw new InvalidOperationException($"Swap '{swapId}' is not a Lightning receive ({intent.Type}).");
-        if (intent.Preimage is not { Length: > 0 } preimageHex)
-            throw new InvalidOperationException($"Swap '{swapId}' has no preimage recorded — it cannot be claimed.");
         if (intent.RefundLocktime is not { } locktime)
             throw new InvalidOperationException($"Swap '{swapId}' has no refund locktime recorded.");
 
@@ -279,10 +287,12 @@ public sealed class LightningReceiveClient
         var contract = await LightningCorridor.LoadLockupAsync(
             _contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
 
+        var preimage = intent.Preimage is { Length: > 0 } preimageHex
+            ? Convert.FromHexString(preimageHex)
+            : await RederivePreimageAsync(intent, contract, cancellationToken);
+
         var vtxos = await _vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-
-        var preimage = Convert.FromHexString(preimageHex);
         var claimable = SelectClaimable(vtxos, (ulong)intent.WantAmount.Satoshi, swapId);
         var coins = claimable.Select(v => contract.ToClaimCoin(intent.WalletId, v, preimage)).ToArray();
         var total = claimable.Aggregate(0UL, (sum, v) => sum + v.Amount);
@@ -319,6 +329,98 @@ public sealed class LightningReceiveClient
     /// leave the solver's watched outpoint unspent — the swap settled, yet the counterparty never
     /// sees the preimage it is owed.
     /// </remarks>
+    /// <summary>
+    /// The secret this swap will be claimed with, derived from the wallet wherever possible.
+    /// </summary>
+    /// <param name="walletId">The wallet taking delivery.</param>
+    /// <param name="payoutDescriptor">The claim key — what the derivation is anchored to.</param>
+    /// <param name="rfqId">The negotiation id, which doubles as the salt. See the remarks.</param>
+    /// <param name="cancellationToken">Cancels the signature.</param>
+    /// <returns>32 bytes.</returns>
+    /// <remarks>
+    /// <para>
+    /// Random bytes cannot be recovered. A preimage that exists only in a database is a swap whose
+    /// funds die with that database — the lockup stays payable to whoever holds the secret, and
+    /// nobody does. Deriving it from the wallet's own signature makes the seed enough.
+    /// </para>
+    /// <para>
+    /// Two arms, because one does not cover both wallet shapes. An HD wallet gets a fresh child
+    /// descriptor per swap, so the message can pin its index and still be unique. A single-key
+    /// wallet has one key: pinning an index there would hand <b>every</b> swap the same preimage,
+    /// and one counterparty learning its own would learn all of them. Uniqueness has to come from
+    /// the message instead, which is what the salt is for.
+    /// </para>
+    /// <para>
+    /// The salt is the negotiation id rather than fresh randomness. It is already unique per swap,
+    /// already public, and already the record's own key — so nothing extra has to be stored or
+    /// migrated for a swap to be re-derivable. It never reaches the wire; only the payment hash
+    /// does, so this choice is ours alone and costs no compatibility.
+    /// </para>
+    /// <para>
+    /// A wallet that cannot sign falls back to randomness. That swap is claimable and not
+    /// recoverable, which is the honest outcome for a wallet holding no key.
+    /// </para>
+    /// </remarks>
+    private async Task<byte[]> ProvisionClaimPreimageAsync(
+        string walletId, OutputDescriptor payoutDescriptor, string rfqId,
+        CancellationToken cancellationToken)
+    {
+        var signer = await _walletProvider.GetSignerAsync(walletId, cancellationToken);
+        if (signer is null)
+        {
+            _logger?.LogWarning(
+                "Wallet {WalletId} cannot sign, so this swap's preimage is random and will not "
+                + "survive the loss of its record", walletId);
+            return RandomNumberGenerator.GetBytes(32);
+        }
+
+        var salt = PreimageProvisioning.IsPerArtifactDescriptor(payoutDescriptor)
+            ? null
+            : Convert.FromHexString(rfqId);
+
+        return await PreimageProvisioning.DerivePreimageAsync(
+            signer, payoutDescriptor, salt, cancellationToken);
+    }
+
+    /// <summary>
+    /// Rebuilds a swap's preimage from the wallet, for a record that no longer carries it.
+    /// </summary>
+    /// <remarks>
+    /// Both inputs survive independently of the secret: the claim key is the covenant's own
+    /// <c>receiver</c>, read back off the contract, and the salt is the swap's id. So a record
+    /// stripped of its preimage — or one restored from a backup that never held one — can still
+    /// produce the secret, provided the wallet that made it is present.
+    /// </remarks>
+    private async Task<byte[]> RederivePreimageAsync(
+        ArkadeSwapIntent intent, VHTLCv2Contract contract, CancellationToken cancellationToken)
+    {
+        var signer = await _walletProvider.GetSignerAsync(intent.WalletId, cancellationToken)
+            ?? throw new InvalidOperationException(
+                $"Swap '{intent.Id}' has no stored preimage and its wallet cannot sign, so the "
+                + "secret that claims it cannot be rebuilt.");
+
+        var salt = PreimageProvisioning.IsPerArtifactDescriptor(contract.Receiver)
+            ? null
+            : Convert.FromHexString(intent.Id);
+
+        var preimage = await PreimageProvisioning.DerivePreimageAsync(
+            signer, contract.Receiver, salt, cancellationToken);
+
+        // Proven, not assumed: the covenant commits to hash160(sha256(P)), so a wrong derivation
+        // produces a witness the script rejects — and finding that out at broadcast, after the
+        // claim window has been spent, is the one place this must not be discovered.
+        var rebuilt = new uint160(SwapScriptValues.PreimageHashFromPaymentHash(
+            System.Security.Cryptography.SHA256.HashData(preimage)), false);
+        if (rebuilt != contract.Hash)
+        {
+            throw new InvalidOperationException(
+                $"Swap '{intent.Id}' has no stored preimage and the one derived from this wallet "
+                + "does not match the covenant's hash — it is not this swap's secret.");
+        }
+
+        return preimage;
+    }
+
     internal static IReadOnlyList<ArkVtxo> SelectClaimable(
         IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId)
     {
