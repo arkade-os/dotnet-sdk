@@ -18,8 +18,8 @@ namespace NArk.Tests.End2End.Arkade;
 /// <summary>
 /// End-to-end tests for the maker side of Arkade non-interactive swaps (against a live arkd +
 /// emulator, docker <c>--profile emulator</c>). Covers what the SDK controls without a solver:
-/// <see cref="ArkadeIntentManager.CreateSwap"/> (fund the covenant + attach the offer packet) and
-/// <see cref="ArkadeIntentManager.CancelSwap"/> (reclaim the deposit via the covenant's cancel path).
+/// <see cref="AssetIntentsManager.CreateSwap"/> (fund the covenant + attach the offer packet) and
+/// <see cref="AssetIntentsManager.CancelSwap"/> (reclaim the deposit via the covenant's cancel path).
 /// The fulfill path is the solver's job (a separate service) and needs a live solver to exercise.
 /// </summary>
 [TestFixture]
@@ -189,7 +189,7 @@ public class ArkadeSwapTests
 
     /// <summary>
     /// Cancel in the same production-shaped setup, proving the monitor does <b>not</b> misread a cancel
-    /// spend as a fill. <see cref="ArkadeIntentManager.CancelSwap"/> moves the intent out of
+    /// spend as a fill. <see cref="AssetIntentsManager.CancelSwap"/> moves the intent out of
     /// <see cref="ArkadeSwapIntentStatus.Pending"/> before spending the covenant's cancel path, and
     /// <see cref="IArkadeIntentStorage.UpdateStatus"/> only transitions pending swaps — so the monitor's
     /// reaction to the (now spent) covenant VTXO is a no-op and the intent stays
@@ -336,7 +336,7 @@ public class ArkadeSwapTests
         IClientTransport Transport,
         IVtxoStorage VtxoStorage,
         InMemoryIntentStorage IntentStorage,
-        ArkadeIntentManager Manager);
+        AssetIntentsManager Manager);
 
     private static async Task<Ctx> SetUpAsync()
     {
@@ -358,7 +358,7 @@ public class ArkadeSwapTests
             submitHandlers: [new ArkadeEmulatorSpendSubmitter(emulator)]);
 
         var intentStorage = new InMemoryIntentStorage();
-        var manager = new ArkadeIntentManager(
+        var manager = new AssetIntentsManager(
             w.clientTransport, emulator, w.contractService, w.walletProvider, spendingService, intentStorage,
             w.vtxoStorage);
 

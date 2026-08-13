@@ -42,7 +42,7 @@ public class ArkWalletService(
     HdWalletRecoveryService recoveryService,
     PendingArkTransactionRecoveryService pendingTxRecoveryService,
     ArkNetworkConfig networkConfig,
-    NArk.ArkadeIntents.Assets.ArkadeIntentManager arkadeSwaps,
+    NArk.ArkadeIntents.Assets.AssetIntentsManager arkadeSwaps,
     NArk.ArkadeIntents.Services.SolverDiscoveryService solverDiscovery,
     NArk.ArkadeIntents.IArkadeIntentStorage arkadeIntentStorage,
     ArkadeLightningService arkadeLightning)
