@@ -89,12 +89,18 @@ solver learns it by paying, so there is nothing to seal and nothing for covclaim
 
 The invoice it mints is checked, not trusted — `LightningReceiveGates.VerifyInvoice` refuses one for
 a different payment hash (your preimage could never settle it) or a different amount than the quote
-delivers.
+delivers. `LightningReceiveGates.AssertReceivable` then gates the deadlines before the invoice can
+reach a payer: the payment deadline is the earlier of the invoice's expiry and the quote's
+`valid_until`, and the solver's `refund_locktime` must leave at least 30 minutes of claim window
+after it — a payment into a window too short to claim in parks the payer's money in a held HTLC
+until it lapses.
 
 Claiming is not optional tidy-up. The preimage becomes public in the claim witness, and that is what
 lets the held invoice settle — so an unclaimed swap is one where the solver reclaims its lockup and
 the payer's money was never earned. The claim refuses once `refund_locktime` has passed rather
-than race that reclaim for the same output.
+than race that reclaim for the same output, and it refuses to publish the preimage for less than
+the quoted amount: the lockup address is public, so the gate is on what the lockup actually holds,
+with every live output claimed together.
 
 The preimage is persisted on the intent before the invoice is handed out, because there is no
 recovering it afterwards: you chose it, and the only other copy is sealed to a key you do not hold.
@@ -157,8 +163,11 @@ not a gap in this SDK: the contract is priced so that waiting for `refund_lockti
 scenario the arithmetic assumes away.
 
 The three CSV delays are **not carried on the wire**. Both sides derive them from the Arkade
-operator's own `unilateralExitDelay`, rounded up to a whole BIP68 unit and then one unit per rung —
-a delay the solver could dictate is a delay it could stretch.
+operator's own `unilateralExitDelay`, rounded up to a whole BIP68 unit: the claim and the two-party
+refund sit level at that base (neither of those leaves is spendable alone, so separating them buys
+nothing), and only the solo refund gets real headroom on top — 8 BIP68 units (4096 seconds), sized
+for what reaching the claim costs with the server gone. A delay the solver could dictate is a delay
+it could stretch.
 
 The key behind leaves 1–4 is the one that owns your refund address, so it is on your wallet's own
 derivation chain and survives a restart with no extra storage.
@@ -209,7 +218,11 @@ cannot link a wallet's swaps to each other.
 invalidates any copy — and a preimage sealed to a key nobody holds fails silently: the swap works,
 and only its offline claim path quietly does not exist.
 
-The status labels are worth a look too. On these corridors `Resolved` means the sats moved without a
-preimage — a refund, not a payment — so the sample says "Refunded — the payment did not happen"
-rather than anything that reads like success. A wallet that collapses those two into "done" reports
-a failed payment as a completed one.
+The status labels are worth a look too. On these corridors `Resolved` means the swap ended without
+a proven preimage — a spend that revealed none (a refund, not a payment), or a claim window that
+lapsed — so the sample says "Refunded — the payment did not happen" rather than anything that reads
+like success. `Fulfilled` is reserved for a spend whose witness carries a preimage hashing to the
+swap's payment hash, which is provable rather than inferred; the monitor checks it on every spend,
+and reconciliation re-checks it, so a `Resolved` recorded on a transient indexer miss is upgraded
+once the proof is readable. A wallet that collapses those two into "done" reports a failed payment
+as a completed one.

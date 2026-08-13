@@ -41,18 +41,8 @@ public static class SwapScriptValues
         (seconds + SequenceGranularitySeconds - 1) / SequenceGranularitySeconds * SequenceGranularitySeconds;
 
     /// <summary>
-    /// Bridge a BOLT11 payment hash to the 20-byte hash the script commits to: the invoice carries
+    /// The script's 20-byte hash, taken straight from a decoded invoice: the invoice carries
     /// <c>sha256(P)</c>, the script's HASH160 branch commits to <c>ripemd160(sha256(P))</c>.
-    /// </summary>
-    /// <param name="paymentHash">The invoice's 32-byte payment hash.</param>
-    /// <returns>The 20-byte HASH160 the covenant script commits to.</returns>
-    /// <exception cref="ArgumentException">The payment hash is not 32 bytes.</exception>
-    /// <remarks>
-    /// This is why the maker never needs to see the preimage: it can commit to the hash of a secret
-    /// it does not hold, and paying the invoice is what reveals that secret to whoever claims.
-    /// </remarks>
-    /// <summary>
-    /// The script's 20-byte hash, taken straight from a decoded invoice.
     /// </summary>
     /// <param name="paymentHash">The invoice's payment hash.</param>
     /// <returns>RIPEMD160 of the payment hash, big-endian.</returns>
@@ -67,8 +57,17 @@ public static class SwapScriptValues
     public static byte[] PreimageHashFromPaymentHash(uint256 paymentHash) =>
         PreimageHashFromPaymentHash(paymentHash.ToBytes(lendian: false));
 
+    /// <summary>
+    /// Bridge a BOLT11 payment hash to the 20-byte hash the script commits to.
+    /// </summary>
     /// <param name="paymentHash">The payment hash, big-endian — as written, not as
     /// <see cref="uint256.ToBytes(bool)"/> defaults to.</param>
+    /// <returns>The 20-byte HASH160 the covenant script commits to.</returns>
+    /// <exception cref="ArgumentException">The payment hash is not 32 bytes.</exception>
+    /// <remarks>
+    /// This is why the maker never needs to see the preimage: it can commit to the hash of a secret
+    /// it does not hold, and paying the invoice is what reveals that secret to whoever claims.
+    /// </remarks>
     public static byte[] PreimageHashFromPaymentHash(byte[] paymentHash)
     {
         if (paymentHash.Length != 32)
