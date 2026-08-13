@@ -159,7 +159,7 @@ public class ArkadeSwapTests
         // VtxoSynchronizationService consumes, and the monitor reacts to IVtxoStorage.VtxosChanged.
         await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
         await swapSync.StartAsync(default);
-        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage);
+        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage, ctx.Transport);
         await monitor.StartAsync(default);
 
         try
@@ -202,7 +202,7 @@ public class ArkadeSwapTests
 
         await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
         await swapSync.StartAsync(default);
-        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage);
+        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage, ctx.Transport);
         await monitor.StartAsync(default);
 
         try
@@ -257,7 +257,7 @@ public class ArkadeSwapTests
         var ctx = await SetUpAsync();
         await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
         await swapSync.StartAsync(default);
-        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage);
+        var monitor = new ArkadeSwapIntentMonitoringService(ctx.VtxoStorage, ctx.IntentStorage, ctx.Transport);
         await monitor.StartAsync(default);
 
         try
