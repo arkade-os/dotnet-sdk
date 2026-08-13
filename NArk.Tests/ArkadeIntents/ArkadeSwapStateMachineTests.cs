@@ -99,10 +99,11 @@ public class ArkadeSwapStateMachineTests
     }
 
     [Test]
-    public void Receive_UnspentPastTheDeadline_StopsBeingClaimable()
+    public void Receive_UnspentPastTheDeadline_IsOverNotClaimable()
     {
-        // The solver's own reclaim is open; calling it claimable would invite a spend racing it.
-        Assert.That(Next(Receive, Claimable, Open(After)), Is.Null);
+        // The solver's own reclaim is open and the claim refuses to race it, so the swap is over:
+        // leaving it claimable would retry a spend that throws, on every pass, forever.
+        Assert.That(Next(Receive, Claimable, Open(After)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
     }
 
     [Test]
@@ -191,6 +192,49 @@ public class ArkadeSwapStateMachineTests
     public void ASweptLockup_IsRecoverable()
     {
         Assert.That(Next(Send, Pending, Swept(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Recoverable));
+    }
+
+    // ─── What a clock alone can settle ────────────────────────────────
+
+    [Test]
+    public void OnTheClock_ASendSwapBecomesRefundablePastTheDeadline()
+    {
+        // Nothing moves on-chain when a locktime matures, so without a clock pass the refund
+        // would never open for a wallet that saw no vtxo change after it.
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Send, Pending, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+    }
+
+    [Test]
+    public void OnTheClock_AReceiveSwapPastItsClaimWindow_IsOver()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, Claimable, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void OnTheClock_NothingMovesBeforeTheDeadline()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(ArkadeSwapStateMachine.NextOnClock(Send, Pending, Before, Locktime), Is.Null);
+            Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, Claimable, Before, Locktime), Is.Null);
+        });
+    }
+
+    [Test]
+    public void OnTheClock_NeverFabricatesAClaimableSwap()
+    {
+        // A receive swap the solver never funded has no lockup to claim: only a chain sighting may
+        // promote it, or the advance loop would claim-throw on a swap that never existed on-chain.
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, Pending, Before, Locktime), Is.Null);
+    }
+
+    [Test]
+    public void OnTheClock_TerminalSwapsStayPut()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, ArkadeSwapIntentStatus.Fulfilled, After, Locktime),
+            Is.Null);
     }
 
     // ─── What we do about a state ─────────────────────────────────────

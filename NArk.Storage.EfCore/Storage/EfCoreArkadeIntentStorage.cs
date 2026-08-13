@@ -74,11 +74,14 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
 
         // Race guard lives here: only a swap still in flight on this script transitions. Refundable
         // counts as in flight — its deposit is unspent and the refund has yet to be pushed — so a
-        // Lightning swap that passes its deadline can still record the spend that ends it.
+        // Lightning swap that passes its deadline can still record the spend that ends it. Claimable
+        // counts too: a receive swap whose claim window closes, or whose lockup the solver reclaims,
+        // must be allowed to leave that state or it is watched and retried forever.
         var entity = await set.FirstOrDefaultAsync(
             x => x.SwapPkScript == swapPkScript
                  && (x.Status == ArkadeSwapIntentStatus.Pending
-                     || x.Status == ArkadeSwapIntentStatus.Refundable),
+                     || x.Status == ArkadeSwapIntentStatus.Refundable
+                     || x.Status == ArkadeSwapIntentStatus.Claimable),
             cancellationToken);
         if (entity is null)
             return false;

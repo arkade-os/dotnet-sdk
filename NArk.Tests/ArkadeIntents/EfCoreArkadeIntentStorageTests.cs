@@ -71,6 +71,20 @@ public class EfCoreArkadeIntentStorageTests
     }
 
     [Test]
+    public async Task UpdateStatus_Claimable_Transitions()
+    {
+        // A receive swap whose claim window closed mid-flight must be allowed to leave Claimable,
+        // or it is watched and retried forever.
+        await _storage.SaveArkadeSwapIntent(Intent("tx1", "script1", status: ArkadeSwapIntentStatus.Claimable));
+
+        var ok = await _storage.UpdateStatus("script1", ArkadeSwapIntentStatus.Resolved);
+
+        Assert.That(ok, Is.True);
+        var loaded = (await _storage.GetArkadeSwapIntents(swapPkScript: "script1")).Single();
+        Assert.That(loaded.Status, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
     public async Task UpdateStatus_NonPending_IsNoOp()
     {
         await _storage.SaveArkadeSwapIntent(Intent("tx1", "script1", status: ArkadeSwapIntentStatus.Cancelling));

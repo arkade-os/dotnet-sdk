@@ -44,9 +44,10 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     /// <summary>
     /// Transition the <b>in-flight</b> swap on the given covenant script to <paramref name="status"/>
     /// (recording <paramref name="spentTxid"/> when spent). Only swaps that are still
-    /// <see cref="ArkadeSwapIntentStatus.Pending"/> or <see cref="ArkadeSwapIntentStatus.Refundable"/>
-    /// are touched — so a swap already moved to <see cref="ArkadeSwapIntentStatus.Cancelling"/> is never
-    /// read as a fill (the race guard). Returns <c>false</c> when no in-flight swap matches.
+    /// <see cref="ArkadeSwapIntentStatus.Pending"/>, <see cref="ArkadeSwapIntentStatus.Refundable"/>
+    /// or <see cref="ArkadeSwapIntentStatus.Claimable"/> are touched — so a swap already moved to
+    /// <see cref="ArkadeSwapIntentStatus.Cancelling"/> is never read as a fill (the race guard).
+    /// Returns <c>false</c> when no in-flight swap matches.
     /// </summary>
     Task<bool> UpdateStatus(
         string swapPkScript,
