@@ -5,6 +5,7 @@ using NArk.Core.Assets;
 using NBitcoin;
 using NBitcoin.Scripting;
 
+using NArk.ArkadeIntents.Assets;
 namespace NArk.Tests.Arkade;
 
 [TestFixture]

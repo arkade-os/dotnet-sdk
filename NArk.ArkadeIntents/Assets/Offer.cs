@@ -1,6 +1,6 @@
 using NArk.Core.Assets;
 
-namespace NArk.ArkadeIntents.Models;
+namespace NArk.ArkadeIntents.Assets;
 
 /// <summary>
 /// An Arkade standing order — the maker's terms for a non-interactive covenant swap. Travels inside

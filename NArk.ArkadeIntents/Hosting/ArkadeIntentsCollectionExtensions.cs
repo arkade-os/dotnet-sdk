@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Services;
 
+using NArk.ArkadeIntents.Assets;
 namespace NArk.ArkadeIntents.Hosting;
 
 public static class ArkadeIntentsCollectionExtensions
