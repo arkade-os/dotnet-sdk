@@ -5,7 +5,9 @@ namespace NArk.ArkadeIntents.Models;
 
 public class ArkadeSwapIntent
 {
-    /// <summary>Identity — the funding txid that created the swap's covenant VTXO.</summary>
+    /// <summary>
+    /// Identity — the funding txid for an asset swap, the RFQ correlation id for a Lightning one.
+    /// </summary>
     public required string Id { get; set; }
 
     /// <summary>The wallet that owns this swap.</summary>

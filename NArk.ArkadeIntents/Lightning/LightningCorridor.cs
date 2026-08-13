@@ -31,11 +31,12 @@ public static class LightningCorridor
     /// influence them — a delay it could dictate would be a delay it could stretch.
     /// </para>
     /// <para>
-    /// Each rung sits one BIP68 unit above the last, which is what keeps the ladder ordered: the
-    /// receiver's claim opens first, then the two-party refund, then the recourse that needs nobody.
-    /// The base cannot be a constant — the server rejects any script below its configured minimum,
-    /// and that minimum spans orders of magnitude between deployments. Worse, the rejection lands
-    /// only when a spend is attempted, so a wrong constant surfaces once money is already committed.
+    /// The claim and the two-party refund sit level, and only the solo refund gets headroom on top:
+    /// the one leaf a funder can spend alone is the only one whose timing can take money from a
+    /// claimant. The base cannot be a constant — the server rejects any script below its configured
+    /// minimum, and that minimum spans orders of magnitude between deployments. Worse, the rejection
+    /// lands only when a spend is attempted, so a wrong constant surfaces once money is already
+    /// committed.
     /// </para>
     /// </remarks>
     public static (uint Claim, uint Refund, uint RefundWithoutReceiver) UnilateralDelays(
