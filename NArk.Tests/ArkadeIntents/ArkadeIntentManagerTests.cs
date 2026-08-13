@@ -13,24 +13,24 @@ using NArk.ArkadeIntents.Assets;
 namespace NArk.Tests.ArkadeIntents;
 
 /// <summary>
-/// Unit coverage for <see cref="ArkadeIntentManager"/>'s <see cref="ArkadeIntentManager.CancelSwap"/>
+/// Unit coverage for <see cref="AssetIntentsManager"/>'s <see cref="AssetIntentsManager.CancelSwap"/>
 /// preconditions — the guard rails that run before any transport/emulator/spend work, so they can be
 /// asserted without a live stack. The happy-path create/fulfill/cancel flow is exercised end-to-end by
 /// <c>NArk.Tests.End2End/Arkade/ArkadeSwapTests</c>.
 /// </summary>
 [TestFixture]
-public class ArkadeIntentManagerTests
+public class AssetIntentsManagerTests
 {
     private IArkadeIntentStorage _intents = null!;
     private ISpendingService _spending = null!;
-    private ArkadeIntentManager _manager = null!;
+    private AssetIntentsManager _manager = null!;
 
     [SetUp]
     public void SetUp()
     {
         _intents = Substitute.For<IArkadeIntentStorage>();
         _spending = Substitute.For<ISpendingService>();
-        _manager = new ArkadeIntentManager(
+        _manager = new AssetIntentsManager(
             Substitute.For<IClientTransport>(),
             Substitute.For<IEmulatorProvider>(),
             Substitute.For<IContractService>(),
