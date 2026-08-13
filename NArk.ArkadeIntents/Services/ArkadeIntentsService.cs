@@ -6,6 +6,7 @@ using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.SolverRegistry;
 
+using NArk.ArkadeIntents.Assets;
 namespace NArk.ArkadeIntents.Services;
 
 /// <summary>What <see cref="ArkadeIntentsService.AdvanceAsync"/> did about one swap.</summary>

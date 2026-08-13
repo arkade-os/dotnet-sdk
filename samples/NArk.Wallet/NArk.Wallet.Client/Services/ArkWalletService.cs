@@ -18,6 +18,7 @@ using NArk.Swaps.Boltz;
 using NArk.Swaps.Services;
 using NBitcoin;
 
+using NArk.ArkadeIntents.Assets;
 namespace NArk.Wallet.Client.Services;
 
 /// <summary>
@@ -41,7 +42,7 @@ public class ArkWalletService(
     HdWalletRecoveryService recoveryService,
     PendingArkTransactionRecoveryService pendingTxRecoveryService,
     ArkNetworkConfig networkConfig,
-    NArk.ArkadeIntents.Services.ArkadeIntentManager arkadeSwaps,
+    NArk.ArkadeIntents.Assets.ArkadeIntentManager arkadeSwaps,
     NArk.ArkadeIntents.Services.SolverDiscoveryService solverDiscovery,
     NArk.ArkadeIntents.IArkadeIntentStorage arkadeIntentStorage,
     ArkadeLightningService arkadeLightning)
@@ -291,7 +292,7 @@ public class ArkWalletService(
     public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> CreateBtcToAssetSwap(
         string walletId, NArk.ArkadeIntents.SolverRegistry.IndexedMarket market,
         long depositSats, long wantAssetAmount, CancellationToken ct = default)
-        => arkadeSwaps.CreateSwap(new NArk.ArkadeIntents.Services.CreateSwapRequest(
+        => arkadeSwaps.CreateSwap(new NArk.ArkadeIntents.Assets.CreateSwapRequest(
             walletId, NArk.ArkadeIntents.Models.ArkadeSwapIntentType.BtcToAsset,
             depositSats, wantAssetAmount, AssetId.FromString(market.QuoteAsset.Id)), ct);
 

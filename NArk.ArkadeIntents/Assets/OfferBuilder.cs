@@ -2,13 +2,13 @@ using NArk.Abstractions.Extensions;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Program.Models;
 using NArk.ArkadeIntents.Models;
-using NArk.ArkadeIntents.Programs;
 using NArk.Core.Assets;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 
-namespace NArk.ArkadeIntents.Services;
+using NArk.ArkadeIntents.Programs;
+namespace NArk.ArkadeIntents.Assets;
 
 /// <summary>The result of building an Arkade offer: the covenant contract plus its wire form.</summary>
 public sealed record CreatedOffer(

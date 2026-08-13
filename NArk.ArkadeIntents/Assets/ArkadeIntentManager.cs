@@ -12,7 +12,7 @@ using NBitcoin;
 using NBitcoin.Scripting;
 using NArk.ArkadeIntents.Lightning;
 
-namespace NArk.ArkadeIntents.Services;
+namespace NArk.ArkadeIntents.Assets;
 
 /// <summary>
 /// A request to create an Arkade swap. For <see cref="ArkadeSwapIntentType.BtcToAsset"/> the wallet deposits

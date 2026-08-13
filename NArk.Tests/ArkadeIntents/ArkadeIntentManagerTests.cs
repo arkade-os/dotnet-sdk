@@ -9,6 +9,7 @@ using NArk.Core.Transport;
 using NBitcoin;
 using NSubstitute;
 
+using NArk.ArkadeIntents.Assets;
 namespace NArk.Tests.ArkadeIntents;
 
 /// <summary>

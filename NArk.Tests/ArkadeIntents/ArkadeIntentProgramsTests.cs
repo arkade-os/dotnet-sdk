@@ -1,6 +1,7 @@
 using NArk.Arkade.Program.Models;
 using NArk.ArkadeIntents.Programs;
 
+using NArk.ArkadeIntents.Programs;
 namespace NArk.Tests.ArkadeIntents;
 
 [TestFixture]
