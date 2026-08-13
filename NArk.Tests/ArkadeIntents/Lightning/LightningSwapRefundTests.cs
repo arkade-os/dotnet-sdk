@@ -127,7 +127,8 @@ public class LightningSwapRefundTests
             Substitute.For<IContractStorage>(),
             Substitute.For<IVtxoStorage>(),
             Substitute.For<IWalletProvider>(),
-            new FixedClock(now));
+            // Named, so a future parameter cannot silently land in the clock's position.
+            time: new FixedClock(now));
     }
 
     private static ArkadeSwapIntent Swap() => new()
