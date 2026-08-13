@@ -19,6 +19,12 @@ public enum LightningReceiveRefusalReason
 
     /// <summary>The quote delivers less to us than we asked to receive.</summary>
     ShortPayout,
+
+    /// <summary>The invoice or the quote has already expired.</summary>
+    Expired,
+
+    /// <summary>Too little time between the payment deadline and the solver's reclaim opening.</summary>
+    ClaimWindowTooShort,
 }
 
 /// <summary>Thrown when a client's own checks refuse a receive quote.</summary>
@@ -38,6 +44,16 @@ public sealed class LightningReceiveNotUsableException(
 /// </remarks>
 public static class LightningReceiveGates
 {
+    /// <summary>
+    /// The minimum time the claim window must stay open after the payer's deadline, in seconds.
+    /// </summary>
+    /// <remarks>
+    /// Once the solver's reclaim opens the claim refuses to race it, so the window between "the
+    /// payer can still pay" and "the solver can take its lockup back" is the whole opportunity to
+    /// take delivery. Sized to the reference client's <c>MIN_CLAIM_WINDOW_SECONDS</c>.
+    /// </remarks>
+    public const long MinClaimWindowSeconds = 30 * 60;
+
     /// <summary>
     /// Check the solver's invoice against what was actually asked for, and return it decoded.
     /// </summary>
@@ -112,5 +128,44 @@ public static class LightningReceiveGates
         }
 
         return decoded;
+    }
+
+    /// <summary>
+    /// Check the quote's deadlines against the clock, and return when the payer must pay by.
+    /// </summary>
+    /// <param name="quote">The solver's quote.</param>
+    /// <param name="invoice">The decoded invoice the payer will pay.</param>
+    /// <param name="now">The current time, unix seconds.</param>
+    /// <returns>The payment deadline — the earlier of the invoice's expiry and the quote's
+    /// <c>valid_until</c> — unix seconds.</returns>
+    /// <exception cref="LightningReceiveNotUsableException">A deadline is already past, or the
+    /// claim window after it is too short to deliver in.</exception>
+    /// <remarks>
+    /// Run before the invoice is handed out. The invoice's amounts and hash say WHAT is being paid;
+    /// these deadlines say whether the swap can still complete at all: a payer who pays late, or a
+    /// lockup the solver can reclaim moments after funding it, turns the swap into money parked in
+    /// a held HTLC until it lapses. Checked here rather than at claim time because the payment is
+    /// the point of no return — once the payer has the invoice, refusing later helps nobody.
+    /// </remarks>
+    public static long AssertReceivable(
+        RfqQuote<LightningReceiveQuoteProfile> quote, BOLT11PaymentRequest invoice, long now)
+    {
+        var payDeadline = Math.Min(invoice.ExpiryDate.ToUnixTimeSeconds(), quote.ValidUntil);
+        if (now >= payDeadline)
+        {
+            throw new LightningReceiveNotUsableException(
+                LightningReceiveRefusalReason.Expired,
+                "the invoice or the quote has already expired — request a fresh one");
+        }
+
+        if (quote.RefundLocktime - payDeadline < MinClaimWindowSeconds)
+        {
+            throw new LightningReceiveNotUsableException(
+                LightningReceiveRefusalReason.ClaimWindowTooShort,
+                $"only {quote.RefundLocktime - payDeadline}s to claim after the payment deadline, " +
+                $"need {MinClaimWindowSeconds}s");
+        }
+
+        return payDeadline;
     }
 }
