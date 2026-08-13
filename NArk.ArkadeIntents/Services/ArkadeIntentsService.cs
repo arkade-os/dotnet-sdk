@@ -65,7 +65,7 @@ public sealed record ArkadeReconciliation(
 /// </remarks>
 public sealed class ArkadeIntentsService
 {
-    private readonly ArkadeIntentManager _assets;
+    private readonly AssetIntentsManager _assets;
     private readonly LightningIntentsClient _lightning;
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IVtxoStorage _vtxoStorage;
@@ -81,7 +81,7 @@ public sealed class ArkadeIntentsService
     /// <param name="time">Clock for the timelock comparisons; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
     public ArkadeIntentsService(
-        ArkadeIntentManager assets,
+        AssetIntentsManager assets,
         LightningIntentsClient lightning,
         IArkadeIntentStorage intentStorage,
         IVtxoStorage vtxoStorage,

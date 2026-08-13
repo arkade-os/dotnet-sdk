@@ -33,7 +33,7 @@ public sealed record CreateSwapRequest(
 /// persists the resulting <see cref="ArkadeSwapIntent"/> as pending — after which the storage-backed
 /// <see cref="ArkadeSwapIntentMonitoringService"/> drives it to a terminal status from the covenant VTXO.
 /// </summary>
-public sealed class ArkadeIntentManager
+public sealed class AssetIntentsManager
 {
     private readonly IClientTransport _transport;
     private readonly IEmulatorProvider _emulator;
@@ -43,7 +43,7 @@ public sealed class ArkadeIntentManager
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IVtxoStorage _vtxoStorage;
 
-    public ArkadeIntentManager(
+    public AssetIntentsManager(
         IClientTransport transport,
         IEmulatorProvider emulator,
         IContractService contractService,

@@ -73,7 +73,7 @@ builder.Services.AddSingleton(sp => new NArk.Arkade.Emulator.EmulatorClient(
 builder.Services.AddSingleton(sp => new NArk.ArkadeIntents.Services.SolverDiscoveryService(
     new HttpClient(),
     sp.GetService<ILogger<NArk.ArkadeIntents.Services.SolverDiscoveryService>>()));
-builder.Services.AddSingleton<NArk.ArkadeIntents.Assets.ArkadeIntentManager>();
+builder.Services.AddSingleton<NArk.ArkadeIntents.Assets.AssetIntentsManager>();
 // Watches pending swaps' covenant VTXOs and transitions their status (filled by a solver / cancelled).
 builder.Services.AddSingleton<NArk.ArkadeIntents.Services.ArkadeSwapIntentMonitoringService>();
 
