@@ -58,11 +58,20 @@ const SOLVER_PK_SCRIPT = hex('51203b7f9c1e5a2d4068b1c3e5f7a9b0d2e4f60718293a4b5c
 // The three-tier CSV ladder. Both sides derive it independently from the Arkade operator's own
 // `unilateralExitDelay` — it is deliberately NOT carried on the RFQ wire — via
 // The ladder both sides derive independently from the operator's exit delay: the base is rounded
-// UP to a whole BIP68 512-second unit, then each rung adds one more unit.
+// UP to a whole BIP68 512-second unit.
+//
+// The three leaves time three DIFFERENT parties' recourse, so they are not evenly spaced rungs.
+// unilateralRefund needs sender AND receiver, so neither can spend it alone and separating it from
+// the claim buys nothing. Only unilateralRefundWithoutReceiver is a solo path for the funder, so it
+// is the only one whose timing can take money from a claimant who holds the preimage — and it gets
+// real headroom, sized for an unroll broadcast per chain step with the server gone.
+//
+// Matches lightning-swap-service c904d44 (src/core/timelocks.ts) and ts-sdk 5ec2b719.
 const GRANULARITY = 512
+const SOLO_REFUND_HEADROOM = 8 * GRANULARITY
 const UNILATERAL_CLAIM_DELAY = 4096
-const UNILATERAL_REFUND_DELAY = UNILATERAL_CLAIM_DELAY + GRANULARITY
-const UNILATERAL_REFUND_WITHOUT_RECEIVER_DELAY = UNILATERAL_CLAIM_DELAY + 2 * GRANULARITY
+const UNILATERAL_REFUND_DELAY = UNILATERAL_CLAIM_DELAY
+const UNILATERAL_REFUND_WITHOUT_RECEIVER_DELAY = UNILATERAL_CLAIM_DELAY + SOLO_REFUND_HEADROOM
 
 const seconds = (value) => ({ type: 'seconds', value: BigInt(value) })
 
