@@ -281,18 +281,21 @@ public class ArkadeLightningTests
 
         var intentStorage = new InMemoryIntentStorage();
 
-        var send = new LightningSwapClient(
+        // One client for both directions now, so the two constructions that used to differ by a
+        // parameter cannot differ at all.
+        var lightning = new LightningIntentsClient(
             w.clientTransport, emulator, w.contractService, spendingService,
             intentStorage, w.contracts, w.vtxoStorage, w.walletProvider);
-
-        var receive = new LightningReceiveClient(
-            w.clientTransport, emulator, w.contractService, spendingService,
-            intentStorage, w.contracts, w.vtxoStorage);
 
         // The asset corridor is not exercised here, so its client is left out rather than
         // constructed to satisfy a signature.
         var intents = new ArkadeIntentsService(
-            null!, send, receive, intentStorage, w.vtxoStorage, w.clientTransport, TimeProvider.System);
+            assets: null!,
+            lightning: lightning,
+            intentStorage: intentStorage,
+            vtxoStorage: w.vtxoStorage,
+            transport: w.clientTransport,
+            time: TimeProvider.System);
 
         var solver = new Uri(solverUrl!.EndsWith('/') ? solverUrl : solverUrl + "/");
         var rfq = new HttpRfqTransport(new HttpClient(), solver);
