@@ -103,7 +103,7 @@ public static class OfferBuilder
         return new CreatedOffer(
             OfferHex: Convert.ToHexString(payload).ToLowerInvariant(),
             Payload: payload,
-            Address: address.ToString(false),
+            Address: address.ToString(network == Network.Main),
             SwapPkScript: offer.SwapPkScript,
             Contract: contract);
     }
