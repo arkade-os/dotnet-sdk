@@ -47,7 +47,7 @@ public class LightningSendRefundTests
             nonInteractiveClaimPkScript: P2tr(Key(2)),
             nonInteractiveRefundPkScript: refundPkScript);
 
-        var recovered = LightningSendClient.RefundAddressOf(
+        var recovered = LightningIntentsClient.RefundAddressOf(
             contract, NBitcoin.Secp256k1.ECXOnlyPubKey.Create(serverKey));
 
         // Same scriptPubKey the maker committed to at funding time, prefix and all.
@@ -108,7 +108,7 @@ public class LightningSendRefundTests
         Assert.That(swap.Status, Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
     }
 
-    private static LightningSendClient Refunder(
+    private static LightningIntentsClient Refunder(
         ArkadeSwapIntent swap, long now, IArkadeIntentStorage? storage = null)
     {
         if (storage is null)
@@ -118,7 +118,7 @@ public class LightningSendRefundTests
                 .Returns([swap]);
         }
 
-        return new LightningSendClient(
+        return new LightningIntentsClient(
             Substitute.For<IClientTransport>(),
             Substitute.For<IEmulatorProvider>(),
             Substitute.For<IContractService>(),

@@ -65,8 +65,7 @@ public sealed record ArkadeReconciliation(
 public sealed class ArkadeIntentsService
 {
     private readonly ArkadeIntentManager _assets;
-    private readonly LightningSendClient _lightningSend;
-    private readonly LightningReceiveClient _lightningReceive;
+    private readonly LightningIntentsClient _lightning;
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IClientTransport _transport;
@@ -75,16 +74,14 @@ public sealed class ArkadeIntentsService
 
     /// <summary>Creates the service.</summary>
     /// <param name="assets">The asset-swap corridors.</param>
-    /// <param name="lightningSend">The <c>arkade:BTC-&gt;lightning:BTC</c> corridor.</param>
-    /// <param name="lightningReceive">The <c>lightning:BTC-&gt;arkade:BTC</c> corridor.</param>
+    /// <param name="lightning">Both Lightning corridors.</param>
     /// <param name="intentStorage">Where every kind of swap is recorded.</param>
     /// <param name="vtxoStorage">The chain view reconciliation compares against.</param>
     /// <param name="time">Clock for the timelock comparisons; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
     public ArkadeIntentsService(
         ArkadeIntentManager assets,
-        LightningSendClient lightningSend,
-        LightningReceiveClient lightningReceive,
+        LightningIntentsClient lightning,
         IArkadeIntentStorage intentStorage,
         IVtxoStorage vtxoStorage,
         IClientTransport transport,
@@ -92,8 +89,7 @@ public sealed class ArkadeIntentsService
         ILogger<ArkadeIntentsService>? logger = null)
     {
         _assets = assets;
-        _lightningSend = lightningSend;
-        _lightningReceive = lightningReceive;
+        _lightning = lightning;
         _intentStorage = intentStorage;
         _vtxoStorage = vtxoStorage;
         _transport = transport;
@@ -130,7 +126,7 @@ public sealed class ArkadeIntentsService
         IRfqTransport rfqTransport,
         SolverCard? solverCard = null,
         CancellationToken cancellationToken = default) =>
-        _lightningSend.SendToLightningAsync(walletId, invoice, rfqTransport, solverCard, cancellationToken);
+        _lightning.SendToLightningAsync(walletId, invoice, rfqTransport, solverCard, cancellationToken);
 
     /// <summary>Be paid over Lightning and take delivery on Arkade.</summary>
     /// <param name="walletId">The wallet taking delivery.</param>
@@ -146,7 +142,7 @@ public sealed class ArkadeIntentsService
         string covclaimdPubKey,
         SolverCard? solverCard = null,
         CancellationToken cancellationToken = default) =>
-        _lightningReceive.ReceiveFromLightningAsync(
+        _lightning.ReceiveFromLightningAsync(
             walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, cancellationToken);
 
     // ─── Reading ──────────────────────────────────────────────────────
@@ -238,7 +234,7 @@ public sealed class ArkadeIntentsService
     /// </remarks>
     public Task<ArkadeSwapIntent> RefundLightningSendAsync(
         string swapId, CancellationToken cancellationToken = default) =>
-        _lightningSend.RefundSwap(swapId, cancellationToken);
+        _lightning.RefundSwap(swapId, cancellationToken);
 
     /// <summary>
     /// Claim a funded Lightning receive swap, publishing the preimage.
@@ -253,7 +249,7 @@ public sealed class ArkadeIntentsService
     /// </remarks>
     public Task<ArkadeSwapIntent> ClaimLightningReceiveAsync(
         string swapId, CancellationToken cancellationToken = default) =>
-        _lightningReceive.ClaimAsync(swapId, cancellationToken);
+        _lightning.ClaimAsync(swapId, cancellationToken);
 
     /// <summary>
     /// Do whatever this swap's kind and status call for, if anything.
@@ -285,9 +281,9 @@ public sealed class ArkadeIntentsService
             var updated = action switch
             {
                 ArkadeIntentAction.ClaimReceive =>
-                    await _lightningReceive.ClaimAsync(swapId, cancellationToken),
+                    await _lightning.ClaimAsync(swapId, cancellationToken),
                 ArkadeIntentAction.RefundSend =>
-                    await _lightningSend.RefundSwap(swapId, cancellationToken),
+                    await _lightning.RefundSwap(swapId, cancellationToken),
                 _ => throw new InvalidOperationException($"unhandled action {action}"),
             };
 

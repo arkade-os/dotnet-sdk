@@ -21,7 +21,7 @@ public class RefundSelectionTests
         // no second path to it.
         var vtxos = new[] { Live(3_000, vout: 0), Live(1_500, vout: 1) };
 
-        var selected = LightningSendClient.SelectRefundable(vtxos, "swap-1");
+        var selected = LightningIntentsClient.SelectRefundable(vtxos, "swap-1");
 
         Assert.That(selected.Sum(v => (long)v.Amount), Is.EqualTo(4_500));
     }
@@ -33,7 +33,7 @@ public class RefundSelectionTests
         // take back, and refusing because it is less than quoted would strand it.
         var vtxos = new[] { Live(7) };
 
-        Assert.That(LightningSendClient.SelectRefundable(vtxos, "swap-1"), Has.Count.EqualTo(1));
+        Assert.That(LightningIntentsClient.SelectRefundable(vtxos, "swap-1"), Has.Count.EqualTo(1));
     }
 
     [Test]
@@ -41,7 +41,7 @@ public class RefundSelectionTests
     {
         var vtxos = new[] { Live(1_000, vout: 0), Spent(2_000, vout: 1), Swept(3_000, vout: 2) };
 
-        var selected = LightningSendClient.SelectRefundable(vtxos, "swap-1");
+        var selected = LightningIntentsClient.SelectRefundable(vtxos, "swap-1");
 
         Assert.That(selected.Single().Amount, Is.EqualTo(1_000UL));
     }
@@ -54,7 +54,7 @@ public class RefundSelectionTests
         var vtxos = new[] { Swept(5_000) };
 
         var ex = Assert.Throws<InvalidOperationException>(
-            () => LightningSendClient.SelectRefundable(vtxos, "swap-1"));
+            () => LightningIntentsClient.SelectRefundable(vtxos, "swap-1"));
 
         Assert.Multiple(() =>
         {
@@ -68,7 +68,7 @@ public class RefundSelectionTests
     public void AnEmptyLockup_SaysSo()
     {
         var ex = Assert.Throws<InvalidOperationException>(
-            () => LightningSendClient.SelectRefundable([], "swap-1"));
+            () => LightningIntentsClient.SelectRefundable([], "swap-1"));
 
         Assert.That(ex!.Message, Does.Contain("nothing to refund"));
     }

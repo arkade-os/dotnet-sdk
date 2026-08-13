@@ -16,7 +16,7 @@ public class ClaimSelectionTests
     {
         var funding = Vtxo(amount: Quoted);
 
-        var selected = LightningReceiveClient.SelectClaimable([funding], Quoted, "swap-1");
+        var selected = LightningIntentsClient.SelectClaimable([funding], Quoted, "swap-1");
 
         Assert.That(selected, Is.EqualTo(new[] { funding }));
     }
@@ -29,7 +29,7 @@ public class ClaimSelectionTests
         var first = Vtxo(vout: 0, amount: Quoted - 10_000);
         var second = Vtxo(vout: 1, amount: 10_000);
 
-        var selected = LightningReceiveClient.SelectClaimable([first, second], Quoted, "swap-1");
+        var selected = LightningIntentsClient.SelectClaimable([first, second], Quoted, "swap-1");
 
         Assert.That(selected, Is.EquivalentTo(new[] { first, second }));
     }
@@ -42,7 +42,7 @@ public class ClaimSelectionTests
         var underfunded = Vtxo(amount: Quoted - 1);
 
         var ex = Assert.Throws<InvalidOperationException>(
-            () => LightningReceiveClient.SelectClaimable([underfunded], Quoted, "swap-1"));
+            () => LightningIntentsClient.SelectClaimable([underfunded], Quoted, "swap-1"));
 
         Assert.That(ex!.Message, Does.Contain("refusing to publish the preimage"));
     }
@@ -51,7 +51,7 @@ public class ClaimSelectionTests
     public void NothingFunded_SaysSo()
     {
         var ex = Assert.Throws<InvalidOperationException>(
-            () => LightningReceiveClient.SelectClaimable([], Quoted, "swap-1"));
+            () => LightningIntentsClient.SelectClaimable([], Quoted, "swap-1"));
 
         Assert.That(ex!.Message, Does.Contain("has not funded"));
     }
@@ -63,7 +63,7 @@ public class ClaimSelectionTests
         var swept = Vtxo(vout: 1, amount: Quoted, swept: true);
 
         Assert.Throws<InvalidOperationException>(
-            () => LightningReceiveClient.SelectClaimable([spent, swept], Quoted, "swap-1"));
+            () => LightningIntentsClient.SelectClaimable([spent, swept], Quoted, "swap-1"));
     }
 
     private static ArkVtxo Vtxo(uint vout = 0, ulong amount = Quoted, string? spentBy = null, bool swept = false) =>
