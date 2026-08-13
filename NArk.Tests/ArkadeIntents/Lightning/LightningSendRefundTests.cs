@@ -19,7 +19,7 @@ namespace NArk.Tests.ArkadeIntents.Lightning;
 /// The covenant refund: where it may pay, and when we may push it.
 /// </summary>
 [TestFixture]
-public class LightningSwapRefundTests
+public class LightningSendRefundTests
 {
     private const long Locktime = 1_800_605_184;
 
@@ -47,7 +47,7 @@ public class LightningSwapRefundTests
             nonInteractiveClaimPkScript: P2tr(Key(2)),
             nonInteractiveRefundPkScript: refundPkScript);
 
-        var recovered = LightningSwapClient.RefundAddressOf(
+        var recovered = LightningSendClient.RefundAddressOf(
             contract, NBitcoin.Secp256k1.ECXOnlyPubKey.Create(serverKey));
 
         // Same scriptPubKey the maker committed to at funding time, prefix and all.
@@ -108,7 +108,7 @@ public class LightningSwapRefundTests
         Assert.That(swap.Status, Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
     }
 
-    private static LightningSwapClient Refunder(
+    private static LightningSendClient Refunder(
         ArkadeSwapIntent swap, long now, IArkadeIntentStorage? storage = null)
     {
         if (storage is null)
@@ -118,7 +118,7 @@ public class LightningSwapRefundTests
                 .Returns([swap]);
         }
 
-        return new LightningSwapClient(
+        return new LightningSendClient(
             Substitute.For<IClientTransport>(),
             Substitute.For<IEmulatorProvider>(),
             Substitute.For<IContractService>(),

@@ -30,7 +30,7 @@ namespace NArk.ArkadeIntents.Lightning;
 /// <param name="PaymentHash">The invoice's payment hash (hex).</param>
 /// <param name="FundedSats">What was locked up.</param>
 /// <param name="FundingTxid">The Arkade transaction that funded the lockup.</param>
-public sealed record FundedLightningSwap(
+public sealed record FundedLightningSend(
     string RfqId,
     RfqQuote<LightningSendQuoteProfile> Quote,
     string LockupAddress,
@@ -60,7 +60,7 @@ public sealed record FundedLightningSwap(
 /// maker's own address with no keys, messages or state held here.
 /// </para>
 /// </remarks>
-public sealed class LightningSwapClient
+public sealed class LightningSendClient
 {
     private readonly IBitcoinBlockchain? _blockchain;
     private readonly IClientTransport _transport;
@@ -72,7 +72,7 @@ public sealed class LightningSwapClient
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IWalletProvider _walletProvider;
     private readonly TimeProvider _time;
-    private readonly ILogger<LightningSwapClient>? _logger;
+    private readonly ILogger<LightningSendClient>? _logger;
 
     /// <summary>Creates the client.</summary>
     /// <param name="transport">The Arkade connection — the source of the server key and its exit delay.</param>
@@ -85,7 +85,7 @@ public sealed class LightningSwapClient
     /// <param name="walletProvider">Needed by the program transformer on the refund path.</param>
     /// <param name="time">Clock for the funding and refund gates; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
-    public LightningSwapClient(
+    public LightningSendClient(
         IClientTransport transport,
         IEmulatorProvider emulator,
         IContractService contractService,
@@ -96,7 +96,7 @@ public sealed class LightningSwapClient
         IWalletProvider walletProvider,
         IBitcoinBlockchain? blockchain = null,
         TimeProvider? time = null,
-        ILogger<LightningSwapClient>? logger = null)
+        ILogger<LightningSendClient>? logger = null)
     {
         _blockchain = blockchain;
         _transport = transport;
@@ -121,8 +121,8 @@ public sealed class LightningSwapClient
     /// <returns>The funded swap.</returns>
     /// <exception cref="RfqRefusedException">The solver declined to quote.</exception>
     /// <exception cref="LockupAddressMismatchException">The solver's address is not ours — nothing was funded.</exception>
-    /// <exception cref="LightningSwapNotFundableException">A safety gate refused — nothing was funded.</exception>
-    public async Task<FundedLightningSwap> SendToLightningAsync(
+    /// <exception cref="LightningSendNotFundableException">A safety gate refused — nothing was funded.</exception>
+    public async Task<FundedLightningSend> SendToLightningAsync(
         string walletId,
         string invoice,
         IRfqTransport rfqTransport,
@@ -183,10 +183,10 @@ public sealed class LightningSwapClient
         var lockupArkAddress = contract.GetArkAddress();
         var lockupAddress = lockupArkAddress.ToString(serverInfo.Network == Network.Main);
 
-        LightningSwapGates.VerifyLockupAddress(quote, lockupAddress);
+        LightningSendGates.VerifyLockupAddress(quote, lockupAddress);
 
         // Checked here, immediately before the irreversible step — not when the quote arrived.
-        LightningSwapGates.AssertFundable(
+        LightningSendGates.AssertFundable(
             quote,
             (long)invoiceAmountSats,
             decoded.ExpiryDate.ToUnixTimeSeconds(),
@@ -240,7 +240,7 @@ public sealed class LightningSwapClient
         intent.Status = ArkadeSwapIntentStatus.Pending;
         await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
-        return new FundedLightningSwap(
+        return new FundedLightningSend(
             RfqId: request.RfqId,
             Quote: quote,
             LockupAddress: lockupAddress,

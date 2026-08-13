@@ -13,7 +13,7 @@ namespace NArk.Tests.ArkadeIntents.Lightning;
 /// an injected clock precisely so the boundary can be asserted to the second rather than inferred.
 /// </remarks>
 [TestFixture]
-public class LightningSwapGatesTests
+public class LightningSendGatesTests
 {
     private const long Now = 1_800_000_000;
     private const long InvoiceAmount = 50_000;
@@ -21,16 +21,16 @@ public class LightningSwapGatesTests
     [Test]
     public void Fundable_WhenEveryPreconditionHolds()
     {
-        Assert.DoesNotThrow(() => LightningSwapGates.AssertFundable(
+        Assert.DoesNotThrow(() => LightningSendGates.AssertFundable(
             Quote(), InvoiceAmount, Now + 3600, Now));
     }
 
     [Test]
     public void Headroom_OfExactlyNinetyMinutes_IsEnough()
     {
-        var quote = Quote(refundLocktime: Now + LightningSwapGates.MinHeadroomSeconds);
+        var quote = Quote(refundLocktime: Now + LightningSendGates.MinHeadroomSeconds);
 
-        Assert.DoesNotThrow(() => LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
+        Assert.DoesNotThrow(() => LightningSendGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
     }
 
     [Test]
@@ -38,10 +38,10 @@ public class LightningSwapGatesTests
     {
         // The refund deadline matures against median-time-past, which lags wall clock by about an
         // hour — shaving this margin is not a trade-off, it is removing the margin.
-        var quote = Quote(refundLocktime: Now + LightningSwapGates.MinHeadroomSeconds - 1);
+        var quote = Quote(refundLocktime: Now + LightningSendGates.MinHeadroomSeconds - 1);
 
-        var ex = Assert.Throws<LightningSwapNotFundableException>(() =>
-            LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
+        var ex = Assert.Throws<LightningSendNotFundableException>(() =>
+            LightningSendGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
 
         Assert.That(ex!.Reason, Is.EqualTo(FundingRefusal.InsufficientHeadroom));
     }
@@ -51,8 +51,8 @@ public class LightningSwapGatesTests
     {
         var quote = Quote(validUntil: Now);
 
-        var ex = Assert.Throws<LightningSwapNotFundableException>(() =>
-            LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
+        var ex = Assert.Throws<LightningSendNotFundableException>(() =>
+            LightningSendGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
 
         Assert.That(ex!.Reason, Is.EqualTo(FundingRefusal.QuoteExpired));
     }
@@ -62,14 +62,14 @@ public class LightningSwapGatesTests
     {
         var quote = Quote(validUntil: Now + 1);
 
-        Assert.DoesNotThrow(() => LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
+        Assert.DoesNotThrow(() => LightningSendGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
     }
 
     [Test]
     public void InvoiceExpiry_IsExclusiveAtTheBoundary()
     {
-        var ex = Assert.Throws<LightningSwapNotFundableException>(() =>
-            LightningSwapGates.AssertFundable(Quote(), InvoiceAmount, Now, Now));
+        var ex = Assert.Throws<LightningSendNotFundableException>(() =>
+            LightningSendGates.AssertFundable(Quote(), InvoiceAmount, Now, Now));
 
         Assert.That(ex!.Reason, Is.EqualTo(FundingRefusal.InvoiceExpired));
     }
@@ -81,8 +81,8 @@ public class LightningSwapGatesTests
         // help, the payee must issue a new invoice.
         var quote = Quote(validUntil: Now - 1);
 
-        var ex = Assert.Throws<LightningSwapNotFundableException>(() =>
-            LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now - 1, Now));
+        var ex = Assert.Throws<LightningSendNotFundableException>(() =>
+            LightningSendGates.AssertFundable(quote, InvoiceAmount, Now - 1, Now));
 
         Assert.That(ex!.Reason, Is.EqualTo(FundingRefusal.InvoiceExpired));
     }
@@ -94,8 +94,8 @@ public class LightningSwapGatesTests
         // misread the invoice or is quoting a different swap.
         var quote = Quote(toAmount: InvoiceAmount - 1);
 
-        var ex = Assert.Throws<LightningSwapNotFundableException>(() =>
-            LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
+        var ex = Assert.Throws<LightningSendNotFundableException>(() =>
+            LightningSendGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
 
         Assert.That(ex!.Reason, Is.EqualTo(FundingRefusal.AmountMismatch));
     }
@@ -105,8 +105,8 @@ public class LightningSwapGatesTests
     {
         var quote = Quote(fromAmount: InvoiceAmount - 1);
 
-        var ex = Assert.Throws<LightningSwapNotFundableException>(() =>
-            LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
+        var ex = Assert.Throws<LightningSendNotFundableException>(() =>
+            LightningSendGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
 
         Assert.That(ex!.Reason, Is.EqualTo(FundingRefusal.AmountMismatch));
     }
@@ -117,7 +117,7 @@ public class LightningSwapGatesTests
         // The fee lives in the gap between the amounts; there is no separate fee field.
         var quote = Quote(fromAmount: InvoiceAmount + 150);
 
-        Assert.DoesNotThrow(() => LightningSwapGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
+        Assert.DoesNotThrow(() => LightningSendGates.AssertFundable(quote, InvoiceAmount, Now + 3600, Now));
     }
 
     [Test]
@@ -125,7 +125,7 @@ public class LightningSwapGatesTests
     {
         var quote = Quote(lockupAddress: "ark1qlockup");
 
-        Assert.That(LightningSwapGates.VerifyLockupAddress(quote, "ark1qlockup"), Is.EqualTo("ark1qlockup"));
+        Assert.That(LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"), Is.EqualTo("ark1qlockup"));
     }
 
     [Test]
@@ -134,7 +134,7 @@ public class LightningSwapGatesTests
         var quote = Quote(lockupAddress: "ark1qsomewhere-else");
 
         var ex = Assert.Throws<LockupAddressMismatchException>(() =>
-            LightningSwapGates.VerifyLockupAddress(quote, "ark1qlockup"));
+            LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"));
 
         Assert.That(ex!.Derived, Is.EqualTo("ark1qlockup"));
         Assert.That(ex.Quoted, Is.EqualTo("ark1qsomewhere-else"));
@@ -147,7 +147,7 @@ public class LightningSwapGatesTests
         var quote = Quote(lockupAddress: null);
 
         Assert.Throws<LockupAddressMismatchException>(() =>
-            LightningSwapGates.VerifyLockupAddress(quote, "ark1qlockup"));
+            LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"));
     }
 
     private static RfqQuote<LightningSendQuoteProfile> Quote(
