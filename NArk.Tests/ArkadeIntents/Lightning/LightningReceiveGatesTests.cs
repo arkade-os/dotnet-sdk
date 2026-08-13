@@ -97,16 +97,71 @@ public class LightningReceiveGatesTests
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.UnusableInvoice));
     }
 
+    // ─── AssertReceivable: the deadlines around paying ────────────────
+
+    [Test]
+    public void AssertReceivable_AcceptsAWindowWideEnoughToClaimIn()
+    {
+        var invoice = BOLT11PaymentRequest.Parse(Invoice, Network.RegTest);
+        var expiry = invoice.ExpiryDate.ToUnixTimeSeconds();
+        var quote = Quote(Invoice, AmountSats, validUntil: expiry + 600, refundLocktime: expiry + 3600);
+
+        var payDeadline = LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 600);
+
+        Assert.That(payDeadline, Is.EqualTo(expiry));
+    }
+
+    [Test]
+    public void AssertReceivable_RefusesAnExpiredInvoiceOrQuote()
+    {
+        var invoice = BOLT11PaymentRequest.Parse(Invoice, Network.RegTest);
+        var expiry = invoice.ExpiryDate.ToUnixTimeSeconds();
+        var quote = Quote(Invoice, AmountSats, validUntil: expiry + 600, refundLocktime: expiry + 7200);
+
+        var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
+            LightningReceiveGates.AssertReceivable(quote, invoice, expiry));
+
+        Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.Expired));
+    }
+
+    [Test]
+    public void AssertReceivable_RefusesAClaimWindowTooShortToDeliverIn()
+    {
+        // A payment at the deadline must still leave room to claim before the solver's reclaim
+        // opens — otherwise the payer's money sits in a held HTLC until it lapses.
+        var invoice = BOLT11PaymentRequest.Parse(Invoice, Network.RegTest);
+        var expiry = invoice.ExpiryDate.ToUnixTimeSeconds();
+        var quote = Quote(Invoice, AmountSats, validUntil: expiry, refundLocktime: expiry + 60);
+
+        var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
+            LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 600));
+
+        Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.ClaimWindowTooShort));
+    }
+
+    [Test]
+    public void AssertReceivable_TakesTheEarlierOfInvoiceExpiryAndValidUntil()
+    {
+        var invoice = BOLT11PaymentRequest.Parse(Invoice, Network.RegTest);
+        var expiry = invoice.ExpiryDate.ToUnixTimeSeconds();
+        var quote = Quote(Invoice, AmountSats, validUntil: expiry - 900, refundLocktime: expiry + 3600);
+
+        var payDeadline = LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 1800);
+
+        Assert.That(payDeadline, Is.EqualTo(expiry - 900));
+    }
+
     private static RfqQuote<LightningReceiveQuoteProfile> Quote(
-        string? invoice, long toAmount, long? fromAmount = null) => new()
+        string? invoice, long toAmount, long? fromAmount = null,
+        long validUntil = 1_800_000_900, long refundLocktime = 1_800_605_184) => new()
     {
         RfqId = new string('9', 64),
         Pair = LightningReceiveProfile.Pair,
         FromAmount = fromAmount ?? toAmount,
         ToAmount = toAmount,
         SolverPubkey = new string('e', 64),
-        ValidUntil = 1_800_000_900,
-        RefundLocktime = 1_800_605_184,
+        ValidUntil = validUntil,
+        RefundLocktime = refundLocktime,
         Profile = new LightningReceiveQuoteProfile { Invoice = invoice },
     };
 
