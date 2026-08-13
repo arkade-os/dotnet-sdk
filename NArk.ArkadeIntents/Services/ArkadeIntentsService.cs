@@ -65,7 +65,7 @@ public sealed record ArkadeReconciliation(
 public sealed class ArkadeIntentsService
 {
     private readonly ArkadeIntentManager _assets;
-    private readonly LightningSwapClient _lightningSend;
+    private readonly LightningSendClient _lightningSend;
     private readonly LightningReceiveClient _lightningReceive;
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IVtxoStorage _vtxoStorage;
@@ -83,7 +83,7 @@ public sealed class ArkadeIntentsService
     /// <param name="logger">Optional logger.</param>
     public ArkadeIntentsService(
         ArkadeIntentManager assets,
-        LightningSwapClient lightningSend,
+        LightningSendClient lightningSend,
         LightningReceiveClient lightningReceive,
         IArkadeIntentStorage intentStorage,
         IVtxoStorage vtxoStorage,
@@ -124,7 +124,7 @@ public sealed class ArkadeIntentsService
     /// </param>
     /// <param name="cancellationToken">Cancels before funding.</param>
     /// <returns>The funded swap.</returns>
-    public Task<FundedLightningSwap> SendToLightningAsync(
+    public Task<FundedLightningSend> SendToLightningAsync(
         string walletId,
         string invoice,
         IRfqTransport rfqTransport,

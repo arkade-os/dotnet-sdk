@@ -20,12 +20,12 @@ public enum FundingRefusal
 }
 
 /// <summary>Thrown when a maker's own gates refuse to fund a quote.</summary>
-public sealed class LightningSwapNotFundableException : Exception
+public sealed class LightningSendNotFundableException : Exception
 {
     /// <summary>Creates the exception.</summary>
     /// <param name="reason">Which gate refused.</param>
     /// <param name="message">A human-readable elaboration.</param>
-    public LightningSwapNotFundableException(FundingRefusal reason, string message) : base(message)
+    public LightningSendNotFundableException(FundingRefusal reason, string message) : base(message)
         => Reason = reason;
 
     /// <summary>Which gate refused. Branch on this, never on the message.</summary>
@@ -68,7 +68,7 @@ public sealed class LockupAddressMismatchException : Exception
 /// before funding</b> rather than at quote time — quoting and funding are separated by network
 /// waits, and a check that passed when the quote arrived can be false by the time money moves.
 /// </remarks>
-public static class LightningSwapGates
+public static class LightningSendGates
 {
     /// <summary>
     /// The minimum time that must remain before the refund path opens, in seconds.
@@ -86,24 +86,24 @@ public static class LightningSwapGates
     /// <param name="invoiceAmountSats">The invoice's amount, which the solver must pay in full.</param>
     /// <param name="invoiceExpiresAt">The invoice's absolute expiry, unix seconds.</param>
     /// <param name="now">The current time, unix seconds.</param>
-    /// <exception cref="LightningSwapNotFundableException">A gate refused.</exception>
+    /// <exception cref="LightningSendNotFundableException">A gate refused.</exception>
     public static void AssertFundable(RfqQuote<LightningSendQuoteProfile> quote, long invoiceAmountSats, long invoiceExpiresAt, long now)
     {
         if (now >= invoiceExpiresAt)
         {
-            throw new LightningSwapNotFundableException(
+            throw new LightningSendNotFundableException(
                 FundingRefusal.InvoiceExpired, "the invoice has expired");
         }
 
         if (now >= quote.ValidUntil)
         {
-            throw new LightningSwapNotFundableException(
+            throw new LightningSendNotFundableException(
                 FundingRefusal.QuoteExpired, "the quote has expired — request a fresh one");
         }
 
         if (quote.RefundLocktime - now < MinHeadroomSeconds)
         {
-            throw new LightningSwapNotFundableException(
+            throw new LightningSendNotFundableException(
                 FundingRefusal.InsufficientHeadroom,
                 $"only {quote.RefundLocktime - now}s remain before the refund path opens, need {MinHeadroomSeconds}s");
         }
@@ -114,14 +114,14 @@ public static class LightningSwapGates
         // trusting.
         if (quote.ToAmount != invoiceAmountSats)
         {
-            throw new LightningSwapNotFundableException(
+            throw new LightningSendNotFundableException(
                 FundingRefusal.AmountMismatch,
                 $"quote pays {quote.ToAmount} sats, the invoice asks {invoiceAmountSats}");
         }
 
         if (quote.FromAmount < quote.ToAmount)
         {
-            throw new LightningSwapNotFundableException(
+            throw new LightningSendNotFundableException(
                 FundingRefusal.AmountMismatch,
                 $"quote asks {quote.FromAmount} sats for a {quote.ToAmount}-sat payout");
         }

@@ -40,7 +40,7 @@ public sealed class LightningReceiveNotUsableException(
 /// </summary>
 /// <remarks>
 /// Kept free of I/O so each check is testable at its exact boundary, the same way
-/// <see cref="LightningSwapGates"/> is on the send leg.
+/// <see cref="LightningSendGates"/> is on the send leg.
 /// </remarks>
 public static class LightningReceiveGates
 {
