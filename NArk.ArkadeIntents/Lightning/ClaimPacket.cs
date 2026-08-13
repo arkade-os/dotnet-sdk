@@ -30,7 +30,8 @@ public sealed record SealedClaimPacket(string Packet, byte[] Preimage, string Pa
 /// <para>
 /// The scheme is ECIES over secp256k1: an ephemeral key, ECDH, HKDF-SHA256, then AES-256-GCM with
 /// the ephemeral public key as additional data. One detail is easy to get wrong and impossible to
-/// catch locally — see <see cref="Seal(byte[], string)"/>.
+/// catch locally — the ECDH shared secret is the 32-byte X coordinate alone, not the compressed
+/// point some libraries hand back.
 /// </para>
 /// </remarks>
 public static class ClaimPacket
@@ -86,8 +87,8 @@ public static class ClaimPacket
     /// </summary>
     /// <remarks>
     /// Exposed so the construction can be pinned against the counterparty's own vectors. Callers
-    /// outside a test must use <see cref="Seal(byte[], string)"/>: reusing an ephemeral key or a
-    /// nonce across two packets breaks GCM outright.
+    /// outside a test must use <see cref="NewAsync"/>: reusing an ephemeral key or a nonce across
+    /// two packets breaks GCM outright.
     /// </remarks>
     internal static async Task<SealedClaimPacket> SealAsync(
         byte[] preimage, string covclaimdPubKeyHex, Key ephemeral, byte[] nonce,
