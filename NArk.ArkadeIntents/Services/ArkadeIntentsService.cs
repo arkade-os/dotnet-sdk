@@ -304,18 +304,6 @@ public sealed class ArkadeIntentsService
     }
 
     /// <summary>
-    /// Re-derive every open swap's status from the chain, and report what was behind.
-    /// </summary>
-    /// <param name="walletId">Narrow to one wallet.</param>
-    /// <param name="cancellationToken">Cancels between swaps.</param>
-    /// <returns>What was corrected, and what is still unconfirmed.</returns>
-    /// <remarks>
-    /// The monitor only ever reacts to changes it is present for, so anything that happened while
-    /// this process was down is missed permanently — a claim window can open and close in that gap.
-    /// Run this at startup, before the first <see cref="AdvanceAllAsync"/>, or the sweep acts on a
-    /// picture that stopped being true when the process did.
-    /// </remarks>
-    /// <summary>
     /// The preimage the spend of a lockup revealed, if it revealed one.
     /// </summary>
     /// <remarks>
@@ -339,6 +327,18 @@ public sealed class ArkadeIntentsService
             : await SwapPreimageReader.FindAsync(_transport, lockup.OutPoint, spender, hash, cancellationToken);
     }
 
+    /// <summary>
+    /// Re-derive every open swap's status from the chain, and report what was behind.
+    /// </summary>
+    /// <param name="walletId">Narrow to one wallet.</param>
+    /// <param name="cancellationToken">Cancels between swaps.</param>
+    /// <returns>What was corrected, and what is still unconfirmed.</returns>
+    /// <remarks>
+    /// The monitor only ever reacts to changes it is present for, so anything that happened while
+    /// this process was down is missed permanently — a claim window can open and close in that gap.
+    /// Run this at startup, before the first <see cref="AdvanceAllAsync"/>, or the sweep acts on a
+    /// picture that stopped being true when the process did.
+    /// </remarks>
     public async Task<ArkadeReconciliation> ReconcileAsync(
         string? walletId = null, CancellationToken cancellationToken = default)
     {
@@ -348,7 +348,11 @@ public sealed class ArkadeIntentsService
 
         foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
         {
-            if (ArkadeSwapStateMachine.Terminal.Contains(intent.Status)) continue;
+            // Resolved is the one terminal status worth re-examining: it may have been recorded on
+            // a transient read failure, before the spending transaction was fetchable, and a
+            // preimage found now upgrades it to the fill it always was.
+            if (ArkadeSwapStateMachine.Terminal.Contains(intent.Status)
+                && intent.Status != ArkadeSwapIntentStatus.Resolved) continue;
             cancellationToken.ThrowIfCancellationRequested();
 
             // includeSpent matters: a lockup the counterparty already took is exactly the outcome
@@ -364,8 +368,16 @@ public sealed class ArkadeIntentsService
                 continue;
             }
 
-            var next = ArkadeSwapStateMachine.Next(
-                intent.Type, intent.Status, SwapObservation.From(lockup, now, intent.RefundLocktime));
+            var preimage = await RevealedPreimageAsync(intent, lockup, cancellationToken);
+
+            ArkadeSwapIntentStatus? next = intent.Status == ArkadeSwapIntentStatus.Resolved
+                // Terminal to the machine, so the upgrade is decided here: a proven preimage on a
+                // swap written off as resolved means the earlier read was wrong, not that the
+                // swap reopened.
+                ? preimage is not null ? ArkadeSwapIntentStatus.Fulfilled : null
+                : ArkadeSwapStateMachine.Next(
+                    intent.Type, intent.Status,
+                    SwapObservation.From(lockup, now, intent.RefundLocktime, preimage is not null));
             if (next is null) continue;
 
             var from = intent.Status;

@@ -1,8 +1,11 @@
+using NArk.Abstractions.Helpers;
 using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Services;
+using NArk.Core.Transport;
 using NBitcoin;
+using NSubstitute;
 
 namespace NArk.Tests.ArkadeIntents;
 
@@ -73,13 +76,93 @@ public class ArkadeSwapIntentMonitoringServiceTests
         Assert.That(intents.Updates, Is.Empty);
     }
 
+    // ─── Lightning: a spend is a fill only when the preimage proves it ──
+
+    [Test]
+    public async Task SpentLightningLockup_WithRevealedPreimage_IsFulfilled()
+    {
+        var (vtxos, intents, svc) = Build(
+            ArkadeSwapIntentType.BtcToLightning,
+            transport: TransportReturning(SpendOf(LockupOutpoint, Preimage)));
+        await svc.StartAsync(default);
+
+        vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx", arkTxid: "arktx"));
+
+        Assert.That(intents.Updates, Has.Count.EqualTo(1));
+        Assert.That(intents.Updates[0], Is.EqualTo(("script1", ArkadeSwapIntentStatus.Fulfilled, "arktx")));
+    }
+
+    [Test]
+    public async Task SpentLightningLockup_WithoutAPreimage_IsResolvedNotFulfilled()
+    {
+        // The covenant's non-interactive refund carries no timelock and no preimage, so a bare
+        // spend says the script moved, not that the invoice was paid.
+        var (vtxos, intents, svc) = Build(
+            ArkadeSwapIntentType.BtcToLightning,
+            transport: TransportReturning(SpendOf(LockupOutpoint)));
+        await svc.StartAsync(default);
+
+        vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx"));
+
+        Assert.That(intents.Updates, Has.Count.EqualTo(1));
+        Assert.That(intents.Updates[0], Is.EqualTo(("script1", ArkadeSwapIntentStatus.Resolved, "spendtx")));
+    }
+
+    [Test]
+    public async Task SpentLightningLockup_WhenTheIndexerIsDown_IsResolvedButRecorded()
+    {
+        // A read failure is "no proof", not a crash: the transition still lands, and a later
+        // reconcile upgrades it once the spending transaction is fetchable.
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<string>>>(_ => throw new HttpRequestException("indexer down"));
+        var (vtxos, intents, svc) = Build(ArkadeSwapIntentType.BtcToLightning, transport: transport);
+        await svc.StartAsync(default);
+
+        vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx"));
+
+        Assert.That(intents.Updates, Has.Count.EqualTo(1));
+        Assert.That(intents.Updates[0].Status, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
     // ─── Helpers ──────────────────────────────────────────────────────
 
+    private static readonly byte[] Preimage =
+        Convert.FromHexString("1111111111111111111111111111111111111111111111111111111111111111");
+
+    private static readonly OutPoint LockupOutpoint = new(uint256.One, 0);
+
+    private static string PaymentHash =>
+        Convert.ToHexString(NBitcoin.Crypto.Hashes.SHA256(Preimage)).ToLowerInvariant();
+
+    /// <summary>A PSBT spending the lockup, optionally revealing the preimage in its condition field.</summary>
+    private static string SpendOf(OutPoint prevOut, byte[]? preimage = null)
+    {
+        var tx = Network.Main.CreateTransaction();
+        tx.Inputs.Add(new TxIn(prevOut));
+        tx.Outputs.Add(new TxOut(Money.Satoshis(1000), new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
+
+        var psbt = PSBT.FromTransaction(tx, Network.Main);
+        if (preimage is not null) psbt.Inputs[0].SetArkFieldConditionWitness(new WitScript(Op.GetPushOp(preimage)));
+        return psbt.ToBase64();
+    }
+
+    private static IClientTransport TransportReturning(params string[] psbts)
+    {
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>(psbts));
+        return transport;
+    }
+
     private static (FakeVtxoStorage, FakeIntentStorage, ArkadeSwapIntentMonitoringService) Build(
-        ArkadeSwapIntentType type = ArkadeSwapIntentType.BtcToAsset, long? refundLocktime = null)
+        ArkadeSwapIntentType type = ArkadeSwapIntentType.BtcToAsset,
+        long? refundLocktime = null,
+        IClientTransport? transport = null)
     {
         var vtxos = new FakeVtxoStorage();
         var intents = new FakeIntentStorage();
+        var isLightning = type is ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc;
         intents.Swaps["script1"] = new ArkadeSwapIntent
         {
             Id = "swap-1",
@@ -93,12 +176,14 @@ public class ArkadeSwapIntentMonitoringServiceTests
             SwapAddress = "tark1example",
             OfferHex = "",
             RefundLocktime = refundLocktime,
+            PaymentHash = isLightning ? PaymentHash : null,
         };
-        return (vtxos, intents, new ArkadeSwapIntentMonitoringService(vtxos, intents));
+        return (vtxos, intents, new ArkadeSwapIntentMonitoringService(
+            vtxos, intents, transport ?? TransportReturning()));
     }
 
     private static ArkVtxo Vtxo(string script, string? spentBy = null, bool swept = false, string? arkTxid = null) =>
-        new(Script: script, TransactionId: "tx", TransactionOutputIndex: 0, Amount: 1000,
+        new(Script: script, TransactionId: LockupOutpoint.Hash.ToString(), TransactionOutputIndex: 0, Amount: 1000,
             SpentByTransactionId: spentBy, SettledByTransactionId: null, Swept: swept,
             CreatedAt: DateTimeOffset.UtcNow, ExpiresAt: null, ExpiresAtHeight: null, ArkTxid: arkTxid);
 
