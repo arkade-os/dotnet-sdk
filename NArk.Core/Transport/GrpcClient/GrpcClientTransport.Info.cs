@@ -49,6 +49,7 @@ public partial class GrpcClientTransport
             DeprecatedSigners: response.DeprecatedSigners.ToDictionary(signer => signer.Pubkey.ToECXOnlyPubKey(),
                 signer => signer.CutoffDate, ECXOnlyPubKeyComparer.Instance),
             Network: network,
+            NetworkName: response.Network,
             UnilateralExit: ParseSequence(response.UnilateralExitDelay),
             BoardingExit: ParseSequence(response.BoardingExitDelay),
             ForfeitAddress: BitcoinAddress.Create(response.ForfeitAddress, network),
