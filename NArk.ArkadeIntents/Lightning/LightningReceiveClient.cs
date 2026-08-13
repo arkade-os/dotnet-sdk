@@ -282,35 +282,19 @@ public sealed class LightningReceiveClient
         var vtxos = await _vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
 
-        // Match the amount, never just the address. The lockup address is public from the moment we
-        // hold a quote, so anyone can put an output there — and claiming is not a neutral act: it
-        // publishes the preimage. Spending a stray output would hand over the secret that settles the
-        // payer's invoice in exchange for whatever that output happened to hold. The solver applies
-        // the same exact-value rule to its own side of this corridor for the same reason.
-        //
-        // It also keeps us on the same output the solver is watching. A retried funding can leave two
-        // outputs at one address, and claiming the one it did not record leaves it waiting on an
-        // outpoint nobody will ever spend — the swap stalls with both sides behaving correctly.
-        var expected = (ulong)intent.WantAmount.Satoshi;
-        var candidates = vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
-        var vtxo = candidates.FirstOrDefault(v => v.Amount == expected)
-            ?? throw new InvalidOperationException(
-                candidates.Count == 0
-                    ? $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet."
-                    : $"Swap '{swapId}' has {candidates.Count} unspent output(s) at its lockup address " +
-                      $"but none holding the quoted {expected} sats, so none of them is the funding " +
-                      "this swap was promised; refusing to publish the preimage for one of them.");
-
-        var coin = contract.ToClaimCoin(intent.WalletId, vtxo, Convert.FromHexString(preimageHex));
+        var preimage = Convert.FromHexString(preimageHex);
+        var claimable = SelectClaimable(vtxos, (ulong)intent.WantAmount.Satoshi, swapId);
+        var coins = claimable.Select(v => contract.ToClaimCoin(intent.WalletId, v, preimage)).ToArray();
+        var total = claimable.Aggregate(0UL, (sum, v) => sum + v.Amount);
 
         // Where the claim pays was fixed at negotiation time, in the leaf that pins our payout.
         // Reading it back rather than deriving afresh keeps a claim from ever landing somewhere the
         // swap did not name.
         var destination = ArkAddress.FromScriptPubKey(
             new Script(contract.NonInteractiveClaimPkScript), serverInfo.SignerKey.ToXOnlyPubKey());
-        var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)vtxo.Amount), destination);
+        var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)total), destination);
 
-        var txid = await _spendingService.Spend(intent.WalletId, [coin], [output], cancellationToken);
+        var txid = await _spendingService.Spend(intent.WalletId, coins, [output], cancellationToken);
 
         intent.Status = ArkadeSwapIntentStatus.Fulfilled;
         intent.SpentTxid = txid.ToString();
@@ -318,6 +302,42 @@ public sealed class LightningReceiveClient
 
         _logger?.LogInformation("Claimed Lightning receive swap {SwapId} in {Txid}", swapId, txid);
         return intent;
+    }
+
+    /// <summary>
+    /// The outputs a claim may spend: every live output at the lockup, provided they cover what the
+    /// swap promised.
+    /// </summary>
+    /// <remarks>
+    /// The gate is on the SUM, never on the address alone. The lockup address is public from the
+    /// moment we hold a quote, so anyone can put an output there — and claiming is not a neutral
+    /// act: it publishes the preimage. Claiming for less than the quoted amount would hand over the
+    /// secret that settles the payer's invoice in exchange for whatever happened to be there.
+    ///
+    /// Everything live is claimed together, the way the reference client does it. A retried or
+    /// split funding leaves several outputs at one address, and claiming only some of them can
+    /// leave the solver's watched outpoint unspent — the swap settled, yet the counterparty never
+    /// sees the preimage it is owed.
+    /// </remarks>
+    internal static IReadOnlyList<ArkVtxo> SelectClaimable(
+        IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId)
+    {
+        var live = vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
+        if (live.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet.");
+        }
+
+        var total = live.Aggregate(0UL, (sum, v) => sum + v.Amount);
+        if (total < expectedSats)
+        {
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' holds {total} sats across {live.Count} output(s), less than the " +
+                $"quoted {expectedSats} — refusing to publish the preimage for less than the swap promised.");
+        }
+
+        return live;
     }
 
     // Build the funding contract from the quote's binding fields and the client's own data. Roles
