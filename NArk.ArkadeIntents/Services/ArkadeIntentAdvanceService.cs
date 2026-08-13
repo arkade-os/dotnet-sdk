@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NArk.ArkadeIntents.Models;
 
 namespace NArk.ArkadeIntents.Services;
 
@@ -46,10 +47,56 @@ public sealed class ArkadeIntentAdvanceOptions
 /// </remarks>
 public sealed class ArkadeIntentAdvanceService(
     ArkadeIntentsService intents,
+    IArkadeIntentStorage intentStorage,
     IOptions<ArkadeIntentAdvanceOptions>? options = null,
     ILogger<ArkadeIntentAdvanceService>? logger = null) : BackgroundService
 {
     private readonly ArkadeIntentAdvanceOptions _options = options?.Value ?? new ArkadeIntentAdvanceOptions();
+
+    /// <summary>
+    /// Acts on a swap the moment its status says to, without waiting for the next pass.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The monitor is already event-driven: a covenant VTXO changes, and a swap becomes Claimable
+    /// within a round trip. Leaving the acting to a timer put a sleep between knowing and doing, for
+    /// no reason other than that nothing was listening.
+    /// </para>
+    /// <para>
+    /// On the receive corridor the delay is worse than it looks. A funded lockup sits at an address
+    /// no seed can rediscover — nothing of ours ever touched it — while the claim moves those sats
+    /// onto our own derivation chain, where a restore would find them. So claiming promptly is not
+    /// only about the window closing; it is how funds stop being unrecoverable.
+    /// </para>
+    /// <para>
+    /// Failures are swallowed after logging. This runs on someone else's event, and a storage
+    /// notification is no place to throw from.
+    /// </para>
+    /// </remarks>
+    private async void OnSwapChanged(object? sender, ArkadeSwapIntent swap)
+    {
+        if (ArkadeIntentPolicy.NextAction(swap) is ArkadeIntentAction.None) return;
+
+        try
+        {
+            var advance = await intents.AdvanceAsync(swap.Id, _stopping);
+            if (advance.Action is not ArkadeIntentAction.None)
+            {
+                logger?.LogInformation(
+                    "{Action} on {SwapId}: {Outcome}",
+                    advance.Action, advance.SwapId,
+                    advance.Acted ? "done" : advance.Error ?? "not yet");
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            // The timer pass will try again; one swap must not take the notification path down.
+            logger?.LogWarning(ex, "acting on swap {SwapId} failed", swap.Id);
+        }
+    }
+
+    private CancellationToken _stopping;
 
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -61,6 +108,30 @@ public sealed class ArkadeIntentAdvanceService(
             return;
         }
 
+        _stopping = stoppingToken;
+        intentStorage.SwapsChanged += OnSwapChanged;
+
+        try
+        {
+            await RunPassesAsync(stoppingToken);
+        }
+        finally
+        {
+            intentStorage.SwapsChanged -= OnSwapChanged;
+        }
+    }
+
+    /// <summary>
+    /// The periodic sweep behind the event.
+    /// </summary>
+    /// <remarks>
+    /// Still needed, and not merely as insurance. A refund becoming due has no chain event behind
+    /// it — nothing happens on-chain when a locktime passes — so a deadline can only ever be noticed
+    /// by looking. The event covers what the chain announces; this covers what it does not, and
+    /// picks up anything a restart or a failed notification left behind.
+    /// </remarks>
+    private async Task RunPassesAsync(CancellationToken stoppingToken)
+    {
         using var timer = new PeriodicTimer(_options.Interval);
         while (!stoppingToken.IsCancellationRequested)
         {
