@@ -207,12 +207,53 @@ public static class ArkadeSwapStateMachine
 
             // The solver funded and only our preimage moves it. An unspent lockup here is not a swap
             // waiting on someone else — it is money on a clock, ours until the solver's own reclaim
-            // path opens. Past that we stop calling it claimable rather than race the reclaim.
+            // path opens. Past that it is over, not claimable: the claim refuses to race the
+            // reclaim, so the only honest terminal reading of an unspendable lockup is that the
+            // window closed.
+            ArkadeSwapIntentType.LightningToBtc when o.PastLocktime =>
+                Changed(current, ArkadeSwapIntentStatus.Resolved),
+
             ArkadeSwapIntentType.LightningToBtc when !o.PastLocktime =>
                 Changed(current, ArkadeSwapIntentStatus.Claimable),
 
             _ => null,
         };
+
+    /// <summary>
+    /// The next status for a swap when only time has passed — no chain event either way.
+    /// </summary>
+    /// <param name="type">Which corridor.</param>
+    /// <param name="current">Where the swap is now.</param>
+    /// <param name="now">Unix seconds.</param>
+    /// <param name="refundLocktime">The corridor's refund locktime, if it has one.</param>
+    /// <returns>The status to move to, or <c>null</c> to stay put.</returns>
+    /// <remarks>
+    /// Chain events drive <see cref="Next"/>, but a locktime maturing raises no event: nothing
+    /// moves on-chain when a deadline passes, so a monitor that only reacts would never notice.
+    /// The advance loop calls this on every pass so time alone can open a refund and close a
+    /// claim window. Deliberately narrower than <see cref="Next"/>: with no lockup sighting there
+    /// is nothing to promote, so only states a clock can honestly settle are moved.
+    /// </remarks>
+    public static ArkadeSwapIntentStatus? NextOnClock(
+        ArkadeSwapIntentType type, ArkadeSwapIntentStatus current, long now, long? refundLocktime)
+    {
+        var pastLocktime = refundLocktime is { } t && now >= t;
+        if (!pastLocktime || Terminal.Contains(current)) return null;
+
+        return (type, current) switch
+        {
+            // Our deposit, our move: the refund path is open and nobody else will push it.
+            (ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending) =>
+                ArkadeSwapIntentStatus.Refundable,
+
+            // The claim window is closed and the claim itself refuses to race the reclaim, so
+            // keeping the swap actionable would just retry a spend that throws, forever.
+            (ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Claimable) =>
+                ArkadeSwapIntentStatus.Resolved,
+
+            _ => null,
+        };
+    }
 
     private static ArkadeSwapIntentStatus? Changed(
         ArkadeSwapIntentStatus current, ArkadeSwapIntentStatus next) => current == next ? null : next;
