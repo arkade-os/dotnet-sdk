@@ -58,6 +58,14 @@ public interface IArkadeWalletSigner
     /// Produces a BIP-340 Schnorr signature over <paramref name="hash"/> using the descriptor's private key,
     /// returning the x-only pubkey alongside the signature.
     /// </summary>
+    /// <remarks>
+    /// The returned x-only pubkey <b>must</b> be the key named by <paramref name="descriptor"/>
+    /// (i.e. <c>descriptor.ToXOnlyPubKey()</c>) — not a derived, rotated, or otherwise substituted
+    /// key. Signatures are stored in PSBTs keyed by this pubkey, and callers look them back up by
+    /// the descriptor's key; pending-tx recovery in particular relies on that to check the wallet
+    /// really signed a transaction before it signs the matching checkpoint. A signer returning a
+    /// different key makes its own signatures unfindable and gets valid transactions rejected.
+    /// </remarks>
     Task<(ECXOnlyPubKey, SecpSchnorrSignature)> Sign(
         OutputDescriptor descriptor,
         uint256 hash,
