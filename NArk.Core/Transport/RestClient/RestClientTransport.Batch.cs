@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
+using NArk.Core.Batches;
 using NArk.Core.Extensions;
 
 namespace NArk.Transport.RestClient;
@@ -149,10 +150,12 @@ public partial class RestClientTransport
 
             var expiry = GetInt64Flexible(bs.GetPropInvariantCase("batch_expiry"));
 
+            // Encode, not ParseSequence: same BIP-68 rule, typed error on unencodable values.
             return new BatchStartedEvent(
                 bs.GetProperty("id").GetString()!,
-                ParseSequence(expiry),
-                intentHashes);
+                BatchExpiryPolicy.Encode(expiry),
+                intentHashes,
+                expiry);
         }
 
         if (root.TryGetPropInvariantCase("batch_finalization", out var bf))

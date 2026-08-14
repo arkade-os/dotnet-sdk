@@ -6,6 +6,8 @@
   href: wallets.md
 - name: Spending
   href: spending.md
+- name: Batch Expiry Validation
+  href: batch-expiry.md
 - name: Assets
   href: assets.md
 - name: Swaps

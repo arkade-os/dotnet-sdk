@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using Grpc.Core;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
+using NArk.Core.Batches;
 
 namespace NArk.Transport.GrpcClient;
 
@@ -78,8 +79,10 @@ public partial class GrpcClientTransport
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.None:
                     break;
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.BatchStarted:
-                    yield return new BatchStartedEvent(e.BatchStarted.Id, ParseSequence(e.BatchStarted.BatchExpiry),
-                        e.BatchStarted.IntentIdHashes);
+                    // Encode, not ParseSequence: same BIP-68 rule, typed error on unencodable values.
+                    yield return new BatchStartedEvent(e.BatchStarted.Id,
+                        BatchExpiryPolicy.Encode(e.BatchStarted.BatchExpiry),
+                        e.BatchStarted.IntentIdHashes, e.BatchStarted.BatchExpiry);
                     break;
                 case Ark.V1.GetEventStreamResponse.EventOneofCase.BatchFinalization:
                     yield return new BatchFinalizationEvent(e.BatchFinalization.CommitmentTx, e.BatchFinalization.Id);
