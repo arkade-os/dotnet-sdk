@@ -170,16 +170,16 @@ public class PreimageDerivationTests
     /// </summary>
     [TestCaseSource(nameof(LoadVectorsFromFixture))]
     public async Task DerivePreimage_MatchesPinnedVector(
-        string network, int keyIndex, uint derivationIndex,
+        string network, int derivationIndex,
         string expectedMessageHex, string expectedPreimageHex)
     {
-        var net = network == "mainnet" ? Network.Main : Network.RegTest;
+        var net = network == "bitcoin" ? Network.Main : Network.RegTest;
         var wallet = SimpleSeedWallet.CreateForSigning(AbandonMnemonic, net);
         var svc = MakeService(new MockedSigningWalletProvider(wallet));
-        var descriptor = MakeDescriptor(AbandonMnemonic, net, keyIndex);
+        var descriptor = MakeDescriptor(AbandonMnemonic, net, derivationIndex);
 
-        var message = SwapsManagementService.BuildPreimageMessage(descriptor, derivationIndex);
-        var preimage = await svc.DerivePreimageAsync("wallet", descriptor, derivationIndex, CancellationToken.None);
+        var message = SwapsManagementService.BuildPreimageMessage(descriptor, index: 0);
+        var preimage = await svc.DerivePreimageAsync("wallet", descriptor, 0, CancellationToken.None);
 
         Assert.That(Convert.ToHexString(message).ToLowerInvariant(), Is.EqualTo(expectedMessageHex));
         Assert.That(Convert.ToHexString(preimage).ToLowerInvariant(), Is.EqualTo(expectedPreimageHex));
@@ -191,17 +191,15 @@ public class PreimageDerivationTests
         var root = JsonDocument.Parse(File.ReadAllText(path)).RootElement;
 
         foreach (var networkProp in root.GetProperty("vectors").EnumerateObject())
-        foreach (var keyProp in networkProp.Value.GetProperty("keyIndexed").EnumerateObject())
         {
             var networkName = networkProp.Name;
-            var keyIndex = int.Parse(keyProp.Name);
-            foreach (var entry in keyProp.Value.EnumerateArray())
+            foreach (var entry in networkProp.Value.EnumerateArray())
             {
-                var derivationIndex = entry.GetProperty("derivationIndex").GetUInt32();
+                var derivationIndex = entry.GetProperty("derivationIndex").GetInt32();
                 var msg = entry.GetProperty("expectedPreimageMessage").GetString()!;
                 var pre = entry.GetProperty("expectedPreimage").GetString()!;
-                yield return new TestCaseData(networkName, keyIndex, derivationIndex, msg, pre)
-                    .SetName($"{networkName}_key{keyIndex}_derivation{derivationIndex}");
+                yield return new TestCaseData(networkName, derivationIndex, msg, pre)
+                    .SetName($"{networkName}_derivation{derivationIndex}");
             }
         }
     }
