@@ -1,16 +1,19 @@
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Fees;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.Scripting;
+using NBitcoin.Secp256k1;
 using NSubstitute;
 
 namespace NArk.Tests;
@@ -175,6 +178,108 @@ public class IntentGenerationServiceTests
         await _intentScheduler.Received(1).GetIntentsToSubmit(
             Arg.Any<IReadOnlyCollection<ArkCoin>>(),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public void ComputeOnchainOutputIndexes_UsesPositionInTheOutputList_NotTheFilteredPosition()
+    {
+        // vtxo, onchain, vtxo, onchain -> the operator must be told 1 and 3, not 0 and 1.
+        ArkTxOut[] outputs =
+        [
+            Out(ArkTxOutType.Vtxo, 1000),
+            Out(ArkTxOutType.Onchain, 2000),
+            Out(ArkTxOutType.Vtxo, 3000),
+            Out(ArkTxOutType.Onchain, 4000)
+        ];
+
+        Assert.That(IntentGenerationService.ComputeOnchainOutputIndexes(outputs), Is.EqualTo(new[] { 1, 3 }));
+    }
+
+    [Test]
+    public void ComputeOnchainOutputIndexes_IsEmpty_WhenAllOutputsAreVtxos()
+    {
+        ArkTxOut[] outputs = [Out(ArkTxOutType.Vtxo, 1000), Out(ArkTxOutType.Vtxo, 2000)];
+
+        Assert.That(IntentGenerationService.ComputeOnchainOutputIndexes(outputs), Is.Empty);
+        Assert.That(IntentGenerationService.ComputeOnchainOutputIndexes(null), Is.Empty);
+    }
+
+    [Test]
+    public void ValidateOnchainOutputBounds_Throws_WhenServerHasOnchainOutputsDisabled()
+    {
+        var serverInfo = ServerInfoWithUtxoBounds(utxoMin: Money.Zero, utxoMax: Money.Zero);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 50_000)]));
+
+        Assert.That(ex!.Message, Does.Contain("on-chain outputs disabled"));
+    }
+
+    [Test]
+    public void ValidateOnchainOutputBounds_Throws_WhenOnchainOutputIsOutsideServerBounds()
+    {
+        var serverInfo = ServerInfoWithUtxoBounds(utxoMin: Money.Satoshis(10_000), utxoMax: Money.Satoshis(100_000));
+
+        Assert.Throws<InvalidOperationException>(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 9_999)]));
+        Assert.Throws<InvalidOperationException>(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 100_001)]));
+    }
+
+    [Test]
+    public void ValidateOnchainOutputBounds_DoesNotThrow_WhenOnchainOutputIsWithinBounds()
+    {
+        var serverInfo = ServerInfoWithUtxoBounds(utxoMin: Money.Satoshis(10_000), utxoMax: Money.Satoshis(100_000));
+
+        // The bounds are inclusive: only strictly below the min or strictly above the max is rejected.
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 10_000)]));
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 100_000)]));
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Onchain, 50_000)]));
+
+        // Mixed intent: the VTXO output is not subject to the on-chain bounds.
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(
+                serverInfo,
+                [Out(ArkTxOutType.Vtxo, 1), Out(ArkTxOutType.Onchain, 50_000)]));
+    }
+
+    [Test]
+    public void ValidateOnchainOutputBounds_IgnoresVtxoOutputs_WhenOnchainIsDisabled()
+    {
+        var serverInfo = ServerInfoWithUtxoBounds(utxoMin: Money.Zero, utxoMax: Money.Zero);
+
+        Assert.DoesNotThrow(() =>
+            IntentGenerationService.ValidateOnchainOutputBounds(serverInfo, [Out(ArkTxOutType.Vtxo, 50_000)]));
+    }
+
+    private static ArkTxOut Out(ArkTxOutType type, long sats) =>
+        new(type, Money.Satoshis(sats), new Key().GetAddress(ScriptPubKeyType.TaprootBIP86, Network.RegTest));
+
+    private static ArkServerInfo ServerInfoWithUtxoBounds(Money utxoMin, Money utxoMax)
+    {
+        var serverKey = NArk.Abstractions.Extensions.KeyExtensions.ParseOutputDescriptor(
+            "03aad52d58162e9eefeafc7ad8a1cdca8060b5f01df1e7583362d052e266208f88",
+            Network.RegTest);
+
+        var emptyMultisig = new NArk.Core.Scripts.NofNMultisigTapScript([]);
+
+        return new ArkServerInfo(
+            Dust: Money.Satoshis(546),
+            SignerKey: serverKey,
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+            Network: Network.RegTest,
+            UnilateralExit: new Sequence(144),
+            BoardingExit: new Sequence(144),
+            ForfeitAddress: BitcoinAddress.Create("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", Network.RegTest),
+            ForfeitPubKey: ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes()),
+            CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(new Sequence(144), emptyMultisig),
+            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "",
+            UtxoMinAmount: utxoMin,
+            UtxoMaxAmount: utxoMax);
     }
 
     private IntentGenerationService CreateService()
