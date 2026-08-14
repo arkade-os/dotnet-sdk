@@ -401,8 +401,8 @@ public partial class BoltzSwapProvider
     /// Cooperative refund of a BTC→ARK chain swap whose user-funded BTC
     /// lockup couldn't be redeemed (renegotiation refused, swap expired,
     /// etc.). Asks Boltz for a MuSig2 partial signature on a refund tx that
-    /// spends the lockup back to the user's stored BTC destination, signs
-    /// our half, broadcasts via Boltz's BTC broadcaster, and marks the
+    /// spends the lockup to a freshly-derived wallet-owned boarding address,
+    /// signs our half, broadcasts via Boltz's BTC broadcaster, and marks the
     /// swap <see cref="ArkSwapStatus.Refunded"/>. Returns <c>false</c> on
     /// any failure (Boltz refuses, lockup tx not yet observable, etc.) so
     /// the routine poll loop will retry on the next tick.
@@ -420,11 +420,9 @@ public partial class BoltzSwapProvider
 
         var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
         var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
-        var btcAddress = swap.Get(SwapMetadata.BtcAddress);
 
         if (string.IsNullOrEmpty(ephemeralKeyHex) ||
-            string.IsNullOrEmpty(boltzResponseJson) ||
-            string.IsNullOrEmpty(btcAddress))
+            string.IsNullOrEmpty(boltzResponseJson))
         {
             _logger?.LogWarning("Swap {SwapId}: missing chain-swap metadata for BTC refund", swap.SwapId);
             return false;
@@ -435,8 +433,10 @@ public partial class BoltzSwapProvider
             var response = BoltzSwapService.DeserializeChainResponse(boltzResponseJson);
             // For BTC→ARK refund the lockup is on BTC — held by `lockupDetails`,
             // not `claimDetails` (claimDetails is for the Ark side which Boltz
-            // is going to reverse). Refund spends the user's BTC lockup back
-            // to the user-supplied refund destination.
+            // is going to reverse). Refund spends the user's BTC lockup to a
+            // freshly-derived wallet-owned boarding address — NOT back to the
+            // lockup address itself, which would strand the funds in the
+            // shared HTLC script.
             var lockupDetails = response?.LockupDetails;
             if (lockupDetails?.SwapTree is null || string.IsNullOrEmpty(lockupDetails.ServerPublicKey))
             {
@@ -453,7 +453,10 @@ public partial class BoltzSwapProvider
             var spendInfo = BtcHtlcScripts.ReconstructTaprootSpendInfo(
                 lockupDetails.SwapTree, userPubKey, boltzPubKey,
                 lockupDetails.LockupAddress, serverInfo.Network);
-            var refundDest = BitcoinAddress.Create(btcAddress, serverInfo.Network);
+
+            BitcoinAddress refundDest;
+            (refundDest, swap) = await swap.GetOrDeriveBtcRefundDestinationAsync(
+                _contractService, _swapsStorage, serverInfo.Network, ct);
 
             var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, ct);
             if (string.IsNullOrEmpty(swapStatus?.Transaction?.Hex))
@@ -612,10 +615,8 @@ public partial class BoltzSwapProvider
 
         var ephemeralKeyHex = swap.Get(SwapMetadata.EphemeralKey);
         var boltzResponseJson = swap.Get(SwapMetadata.BoltzResponse);
-        var btcAddress = swap.Get(SwapMetadata.BtcAddress);
         if (string.IsNullOrEmpty(ephemeralKeyHex) ||
-            string.IsNullOrEmpty(boltzResponseJson) ||
-            string.IsNullOrEmpty(btcAddress))
+            string.IsNullOrEmpty(boltzResponseJson))
         {
             _logger?.LogWarning("Swap {SwapId}: missing metadata for unilateral BTC refund", swap.SwapId);
             return false;
@@ -658,7 +659,10 @@ public partial class BoltzSwapProvider
                 lockupDetails.SwapTree, ecPrivKey.CreatePubKey(), boltzPubKey,
                 lockupDetails.LockupAddress, serverInfo.Network);
             var refundLeaf = BtcHtlcScripts.GetRefundLeaf(lockupDetails.SwapTree);
-            var refundDest = BitcoinAddress.Create(btcAddress, serverInfo.Network);
+
+            BitcoinAddress refundDest;
+            (refundDest, swap) = await swap.GetOrDeriveBtcRefundDestinationAsync(
+                _contractService, _swapsStorage, serverInfo.Network, ct);
 
             var lockupTx = Transaction.Parse(swapStatus.Transaction.Hex, serverInfo.Network);
             var lockupScript = BitcoinAddress.Create(lockupDetails.LockupAddress, serverInfo.Network).ScriptPubKey;

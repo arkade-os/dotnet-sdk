@@ -8,6 +8,7 @@ using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models;
+using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
 using NArk.Swaps.Policies;
 using NArk.Swaps.Services;
@@ -951,6 +952,15 @@ public class ChainSwapTests
         var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single(s => s.SwapId == swapId);
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Refunded),
             "BTC→ARK swap should reach Refunded status after cooperative BTC refund");
+
+        // Regression guard: the refund must land on a freshly-derived, wallet-owned
+        // boarding address — never back on the swap's own BTC lockup/HTLC script,
+        // which would strand the funds in the shared Boltz HTLC.
+        var refundDestination = finalSwap.Get(SwapMetadata.BtcRefundAddress);
+        Assert.That(refundDestination, Is.Not.Null.And.Not.Empty,
+            "swap should have cached a derived BTC refund destination");
+        Assert.That(refundDestination, Is.Not.EqualTo(btcAddress),
+            "BTC refund must not be sent back to the swap's own lockup address");
     }
 
     // ─── Wave 3: provider routes ───────────────────────────────────────────
