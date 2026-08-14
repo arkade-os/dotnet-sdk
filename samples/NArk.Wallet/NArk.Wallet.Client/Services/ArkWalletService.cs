@@ -16,7 +16,6 @@ using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Services;
 using NBitcoin;
-using NBitcoin.Secp256k1;
 
 namespace NArk.Wallet.Client.Services;
 
@@ -47,13 +46,52 @@ public class ArkWalletService(
     public async Task<IReadOnlySet<ArkWalletInfo>> GetWallets()
         => await walletStorage.LoadAllWallets();
 
+    /// <summary>
+    /// Creates a wallet and persists it in local storage.
+    /// </summary>
+    /// <param name="secret">
+    /// An existing secret to import — a BIP39 mnemonic (HD wallet) or an <c>nsec1…</c>
+    /// (legacy single-key wallet). When <c>null</c>, a fresh 12-word BIP39 mnemonic is
+    /// generated and the wallet is created as HD, so every receive gives a new address
+    /// and the wallet can be recovered by gap-limit scan from the phrase alone.
+    /// </param>
     public async Task<ArkWalletInfo> CreateWallet(string? secret = null)
     {
         var serverInfo = await transport.GetServerInfoAsync();
-        var walletSecret = secret ?? GenerateNsec();
+        var walletSecret = secret ?? GenerateMnemonic();
         var wallet = await WalletFactory.CreateWallet(walletSecret, null, serverInfo);
         await walletStorage.SaveWallet(wallet);
         return wallet;
+    }
+
+    /// <summary>
+    /// Validates an imported secret before it reaches <see cref="CreateWallet"/>, so the UI
+    /// can show a precise message instead of a raw parser exception. Accepts a BIP39
+    /// mnemonic in the English wordlist, or an <c>nsec1…</c> single key.
+    /// </summary>
+    /// <returns><c>null</c> when the secret is valid, otherwise the reason it was rejected.</returns>
+    public static string? ValidateSecret(string secret)
+    {
+        secret = secret.Trim();
+        if (string.IsNullOrEmpty(secret))
+        {
+            return "Enter a recovery phrase or nsec.";
+        }
+
+        if (secret.StartsWith("nsec", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        try
+        {
+            _ = new Mnemonic(secret, Wordlist.English);
+            return null;
+        }
+        catch
+        {
+            return "Not a valid BIP39 recovery phrase (expected 12 or 24 English words) or nsec1… key.";
+        }
     }
 
     /// <summary>
@@ -257,14 +295,6 @@ public class ArkWalletService(
 
     // ── Helpers ──
 
-    private static string GenerateNsec()
-    {
-        var key = ECPrivKey.Create(RandomUtils.GetBytes(32));
-        var keyBytes = new byte[32];
-        key.WriteToSpan(keyBytes);
-        var encoder = NBitcoin.DataEncoders.Encoders.Bech32("nsec");
-        encoder.StrictLength = false;
-        encoder.SquashBytes = true;
-        return encoder.EncodeData(keyBytes, NBitcoin.DataEncoders.Bech32EncodingType.BECH32);
-    }
+    private static string GenerateMnemonic()
+        => new Mnemonic(Wordlist.English, WordCount.Twelve).ToString();
 }
