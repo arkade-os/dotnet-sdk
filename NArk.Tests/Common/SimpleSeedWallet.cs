@@ -156,16 +156,27 @@ public class SimpleSeedWallet : IArkadeWalletSigner, IArkadeAddressProvider
             return (boarding, boarding.ToEntity(_identifier, null, null, activityState));
         }
 
-        // For test wallet, simple recycling from inputs when SendToSelf
+        // For test wallet, simple recycling from inputs when SendToSelf. Mirrors
+        // HierarchicalDeterministicAddressProvider.SendToSelfContractAsync's contract:
+        // a recycled (already-known/tracked) descriptor needs no fresh tracking, so it's
+        // Inactive; a genuinely new descriptor must be watched until funds land, so it's
+        // AwaitingFundsBeforeDeactivate — regardless of whatever activityState the caller
+        // passed (SimpleIntentScheduler always passes Inactive here; production ignores it
+        // the same way). Getting this wrong makes the resulting VTXO permanently invisible
+        // to VtxoSynchronizationService/PostBatchVtxoPollingHandler, since both only look at
+        // isActive:true contracts (Active or AwaitingFundsBeforeDeactivate, never Inactive).
         OutputDescriptor? descriptor = null;
-        if (purpose == NextContractPurpose.SendToSelf && inputContracts is not null)
+        if (purpose == NextContractPurpose.SendToSelf)
         {
-            // Try to recycle from first ArkPaymentContract input
-            var firstPayment = inputContracts.OfType<ArkPaymentContract>().FirstOrDefault();
+            var firstPayment = inputContracts?.OfType<ArkPaymentContract>().FirstOrDefault();
             if (firstPayment is not null && await IsOurs(firstPayment.User, cancellationToken))
             {
                 descriptor = firstPayment.User;
                 activityState = ContractActivityState.Inactive;
+            }
+            else
+            {
+                activityState = ContractActivityState.AwaitingFundsBeforeDeactivate;
             }
         }
 

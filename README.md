@@ -352,10 +352,16 @@ services.AddArkDelegation("http://localhost:7012");
 // nsec wallets (hashlock/note contracts) are unaffected.
 ```
 
-The delegate contract has three spending paths:
+The delegate contract has three spending paths, committed to the taproot tree in this order
+(`[CollaborativePath, ExitPath, DelegatePath]`) to match the canonical Arkade SDK layout:
 - **CollaborativePath** (User + Server, 2-of-2) — collaborative spending, same as a regular payment contract
-- **DelegatePath** (User + Delegate + Server, 3-of-3) — used by the delegator for ACP forfeit txs
 - **ExitPath** (User only, after CSV delay) — unilateral recovery
+- **DelegatePath** (User + Delegate + Server, 3-of-3) — used by the delegator for ACP forfeit txs
+
+The auto-delegation monitor skips any VTXO whose value cannot cover the operator's intent fee and
+still leave at least the server dust threshold — the delegation would be rejected with
+`AMOUNT_TOO_LOW`. Consolidate bare-dust VTXOs (typically asset VTXOs) with a larger VTXO to make them
+delegable; the skip is not sticky, so the VTXO is re-evaluated on its next storage notification.
 
 ### Manual Delegation
 
