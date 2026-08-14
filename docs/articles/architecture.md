@@ -44,7 +44,16 @@ The SDK is built around pluggable interfaces. Provide your own implementations o
 | `ICoinSelector` | UTXO selection strategy | `DefaultCoinSelector` |
 | `IFeeEstimator` | Fee estimation | `DefaultFeeEstimator` |
 | `ISafetyService` | Transaction safety checks | User-provided |
-| `IBitcoinBlockchain` | Chain time, UTXO lookup, broadcast, fee estimation | `NBXplorerBlockchain` / `EsploraBlockchain` / `RpcBlockchain` |
+| `IBitcoinBlockchain` | Chain time, median time past, UTXO lookup, broadcast, fee estimation | `NBXplorerBlockchain` / `EsploraBlockchain` / `RpcBlockchain` |
+
+### Chain time and relative timelocks
+
+`IBitcoinBlockchain` exposes two clocks, and the distinction matters wherever a BIP-68 relative timelock is evaluated (chiefly the unilateral-exit CSV delay):
+
+- `GetChainTime` returns the tip's height plus its **median time past** (BIP 113). `TimeHeight.Timestamp` must be MTP, not the tip block's `nTime` — MTP is what consensus compares timelocks against.
+- `GetMedianTimePastAsync(blockHeight)` returns a historical block's MTP. It carries a default implementation that throws `NotSupportedException`, so a backend that can't answer fails loudly rather than reporting a timelock as perpetually immature.
+
+The delays arkd advertises (`unilateral_exit_delay`, `boarding_exit_delay`) decode into `NBitcoin.Sequence` values that may be **block-based** or **time-based** — arkd overloads one integer, treating values ≥ 512 as seconds. Their raw `Sequence.Value` is not a block count in the time-based case (bit 22 is set and the delay is stored in 512-second units), so consumers branch on `Sequence.LockType`. `NArk.Core.Exit.CsvMaturity` encapsulates that check; see the Unilateral Exit section of the README.
 
 ## Transport Layer
 

@@ -11,10 +11,7 @@ namespace NArk.Transport.RestClient;
 
 public partial class RestClientTransport
 {
-    private static Sequence ParseSequence(long val)
-    {
-        return val >= 512 ? new Sequence(TimeSpan.FromSeconds(val)) : new Sequence((int)val);
-    }
+    private static Sequence ParseSequence(long val) => val.ToExitDelaySequence();
 
     public async Task<ArkServerInfo> GetServerInfoAsync(CancellationToken cancellationToken = default)
     {

@@ -21,8 +21,38 @@ public interface IBitcoinBlockchain
     /// Current chain time + block height. Used by the SDK for batch-expiry
     /// math, CSV-maturity checks, sweep eligibility, and similar timing
     /// decisions across spending, swaps, and unilateral exit.
+    /// <para>
+    /// <see cref="TimeHeight.Timestamp"/> must be the tip's <b>median time
+    /// past</b> (BIP 113), not the tip block's own <c>nTime</c> — that's the
+    /// clock consensus uses for time-based locks, so anything comparing a
+    /// timelock against it (BIP-68 relative time locks, CLTV) would otherwise
+    /// be off by up to a couple of hours.
+    /// </para>
     /// </summary>
     Task<TimeHeight> GetChainTime(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Median time past (BIP 113) of the block at <paramref name="blockHeight"/>.
+    /// Returns <c>null</c> when the backend has no block at that height.
+    /// <para>
+    /// Needed to evaluate BIP-68 <i>time-based</i> relative locks: a
+    /// time-locked input matures once the spending block's MTP is at least
+    /// the MTP of the block that confirmed the input plus the lock period.
+    /// Block heights are meaningless for that comparison, so the unilateral
+    /// exit path calls this whenever the operator advertises a time-based
+    /// unilateral-exit delay (arkd's production default is 24 h).
+    /// </para>
+    /// </summary>
+    /// <exception cref="NotSupportedException">
+    /// Backend cannot resolve a historical block's median time past. Time-based
+    /// relative locks cannot be evaluated against such a backend; use NBXplorer,
+    /// Esplora, or Bitcoin Core RPC.
+    /// </exception>
+    Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException(
+            $"{GetType().Name} does not implement GetMedianTimePastAsync, so BIP-68 time-based " +
+            "relative locks (e.g. a time-based unilateral-exit delay) cannot be evaluated. " +
+            "Use NBXplorerBlockchain, EsploraBlockchain, or RpcBlockchain.");
 
     /// <summary>
     /// Lists confirmed + mempool UTXOs at a single on-chain address. Used to

@@ -53,6 +53,22 @@ public class EsploraBlockchain : IBitcoinBlockchain
             (uint)block.Height);
     }
 
+    public async Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
+    {
+        var hashResponse = await _httpClient.GetAsync($"block-height/{blockHeight}", cancellationToken);
+        if (!hashResponse.IsSuccessStatusCode)
+            return null;
+        var blockHash = (await hashResponse.Content.ReadAsStringAsync(cancellationToken)).Trim();
+        if (string.IsNullOrEmpty(blockHash))
+            return null;
+
+        var blockResponse = await _httpClient.GetAsync($"block/{blockHash}", cancellationToken);
+        if (!blockResponse.IsSuccessStatusCode)
+            return null;
+        var block = await blockResponse.Content.ReadFromJsonAsync<EsploraBlockResponse>(cancellationToken);
+        return block is null ? null : DateTimeOffset.FromUnixTimeSeconds(block.MedianTime);
+    }
+
     // ── UTXO lookup ──────────────────────────────────────────────────
 
     public async Task<IReadOnlyList<BoardingUtxo>> GetUtxosAsync(string address, CancellationToken cancellationToken = default)

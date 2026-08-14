@@ -304,13 +304,19 @@ public class UnilateralExitService(
                 $"Virtual-tx chain for VTXO {vtxoOutpoint} did not contain a row matching " +
                 "the VTXO's own txid — cannot identify the leaf tx.");
 
+        var exitDelay = serverInfo.UnilateralExit;
         return new ExitPlan(
             WalletId: walletId,
             VtxoTxid: vtxoOutpoint.Hash.ToString(),
             VtxoVout: vtxoOutpoint.N,
             ClaimAddress: claimAddress.ToString(),
             LeafTxid: leafTxid,
-            CsvDelay: (int)serverInfo.UnilateralExit.Value);
+            // Only meaningful for a height-based delay; a time-based one is
+            // 512-second units with BIP-68 bit 22 set, not a block count.
+            CsvDelay: exitDelay.IsRelativeLock && exitDelay.LockType == SequenceLockType.Height
+                ? exitDelay.LockHeight
+                : 0,
+            ExitSequence: exitDelay.Value);
     }
 
     /// <summary>
@@ -319,14 +325,27 @@ public class UnilateralExitService(
     /// <paramref name="plan"/> is confirmed and that the CSV timelock has
     /// matured, then builds, signs, and broadcasts the claim transaction.
     /// </summary>
+    /// <remarks>
+    /// The server's unilateral-exit delay is a BIP-68 relative timelock and may
+    /// be height- or time-based. Maturity is evaluated accordingly (heights for
+    /// the former, median time past for the latter) — see
+    /// <see cref="Exit.CsvMaturity"/>.
+    /// </remarks>
     /// <returns>
     /// Txid of the broadcast claim transaction, or <c>null</c> when CSV
     /// hasn't matured yet (caller should poll again later).
     /// </returns>
     /// <exception cref="InvalidOperationException">
     /// VTXO / contract / signer state required to build the claim is
-    /// unavailable or the leaf tx is not yet confirmed at all (callers should
-    /// distinguish "not yet" from a hard failure via the message).
+    /// unavailable, the leaf tx is not yet confirmed at all (callers should
+    /// distinguish "not yet" from a hard failure via the message), or the
+    /// exit delay is time-based and the backend could not resolve the leaf
+    /// block's median time past.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// The exit delay is time-based and the configured
+    /// <see cref="IBitcoinBlockchain"/> does not implement
+    /// <see cref="IBitcoinBlockchain.GetMedianTimePastAsync"/>.
     /// </exception>
     public async Task<string?> ClaimMaturedExitAsync(
         ExitPlan plan,
@@ -342,15 +361,16 @@ public class UnilateralExitService(
                 $"Leaf tx {plan.LeafTxid} is not yet confirmed; cannot claim. " +
                 "Wait for confirmation and retry.");
 
-        // 2. Verify CSV matured.
-        var chainTime = await blockchain.GetChainTime(cancellationToken);
-        var matureAt = leafStatus.BlockHeight.Value + plan.CsvDelay;
-        if (chainTime.Height < matureAt)
+        // 2. Verify CSV matured. The delay can be height- or time-based
+        //    (BIP 68); CsvMaturity branches on the lock type rather than doing
+        //    block arithmetic with the raw nSequence.
+        var maturity = await CsvMaturity.EvaluateAsync(
+            plan.ExitDelay, leafStatus.BlockHeight.Value, blockchain, cancellationToken);
+        if (!maturity.IsMatured)
         {
             logger?.LogDebug(
-                "Stateless claim: CSV not yet matured for VTXO {Txid}:{Vout} " +
-                "({Current}/{Matures})",
-                plan.VtxoTxid, plan.VtxoVout, chainTime.Height, matureAt);
+                "Stateless claim: CSV not yet matured for VTXO {Txid}:{Vout} ({Progress})",
+                plan.VtxoTxid, plan.VtxoVout, maturity.Progress);
             return null;
         }
 
@@ -692,19 +712,20 @@ public class UnilateralExitService(
                 return;
             }
 
-            // Get server info for CSV delay
+            // Get server info for CSV delay. It's a BIP-68 relative timelock,
+            // which the operator may configure either block-based or time-based
+            // (arkd's production default is 24 h) — CsvMaturity branches on the
+            // lock type rather than treating the raw nSequence as a block count.
             var serverInfo = await transport.GetServerInfoAsync(ct);
-            var csvDelay = serverInfo.UnilateralExit.Value;
-
-            // Check if CSV delay has passed
-            var chainTime = await blockchain.GetChainTime(ct);
             var confirmHeight = leafStatus.BlockHeight.Value;
+            var maturity = await CsvMaturity.EvaluateAsync(
+                serverInfo.UnilateralExit, confirmHeight, blockchain, ct);
 
-            if (chainTime.Height >= confirmHeight + csvDelay)
+            if (maturity.IsMatured)
             {
                 logger?.LogInformation(
-                    "CSV delay passed for session {SessionId} (confirm={ConfirmH}, current={CurrentH}, csv={Csv})",
-                    session.Id, confirmHeight, chainTime.Height, csvDelay);
+                    "CSV delay passed for session {SessionId} (leaf confirmed at {ConfirmH}, {Progress})",
+                    session.Id, confirmHeight, maturity.Progress);
 
                 await UpdateSession(session with
                 {
@@ -714,10 +735,9 @@ public class UnilateralExitService(
             }
             else
             {
-                var remaining = confirmHeight + csvDelay - chainTime.Height;
                 logger?.LogDebug(
-                    "CSV delay not yet passed for session {SessionId}, {Remaining} blocks remaining",
-                    session.Id, remaining);
+                    "CSV delay not yet passed for session {SessionId} ({Progress})",
+                    session.Id, maturity.Progress);
             }
         }
         catch (Exception ex)

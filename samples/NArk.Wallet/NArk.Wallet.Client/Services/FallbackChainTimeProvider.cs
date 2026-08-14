@@ -14,6 +14,11 @@ public class FallbackChainTimeProvider : IBitcoinBlockchain
     public Task<TimeHeight> GetChainTime(CancellationToken cancellationToken = default)
         => Task.FromResult(new TimeHeight(DateTimeOffset.UtcNow, 0));
 
+    public Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException(
+            "FallbackChainTimeProvider: no explorer configured, so BIP-68 time-based relative locks " +
+            "(e.g. a time-based unilateral-exit delay) cannot be evaluated.");
+
     public Task<IReadOnlyList<BoardingUtxo>> GetUtxosAsync(string address, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("FallbackChainTimeProvider: no explorer configured for UTXO lookup.");
 

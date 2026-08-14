@@ -270,14 +270,13 @@ public class UnilateralExitTests
         var unilateralExit = serverInfo.UnilateralExit;
         if (unilateralExit.LockType != SequenceLockType.Height)
         {
-            // Time-based CSV in regtest can only be matured via setmocktime
-            // (block timestamps + MTP), which arkd's CSV check itself doesn't
-            // currently reason about (it compares chainTime.Height to a raw
-            // encoded Sequence). Track that as separate work; for now exit
-            // after validating the don't-advance-early half.
+            // A time-based CSV can't be matured by mining — it tracks median
+            // time past, which needs setmocktime. That path has its own test
+            // (TimeBasedExitDelay_MaturesOnMedianTimePast_AndCompletes); here
+            // we stop after validating the don't-advance-early half.
             TestContext.WriteLine(
                 $"[Exit] CSV delay is time-based (LockPeriod={unilateralExit.LockPeriod}); " +
-                "skipping post-mature assertion until time-based CSV maturation is wired up.");
+                "post-mature assertion lives in TimeBasedExitDelay_MaturesOnMedianTimePast_AndCompletes.");
             return;
         }
 
@@ -356,15 +355,14 @@ public class UnilateralExitTests
 
         // arkd v0.9 may return a time-based unilateral-exit delay. A block-based
         // regtest config yields LockType=Height, which we mature by mining; a
-        // time-based delay can't be matured in a way arkd's CSV check honours,
-        // so there's nothing to complete — surface that as Ignore rather than a
-        // false failure. (Mirrors the guard in AwaitingCsvDelay_DoesNotAdvance…)
+        // time-based one matures on median time past and needs setmocktime, so
+        // it has its own test (TimeBasedExitDelay_MaturesOnMedianTimePast_AndCompletes).
         var serverInfo = await setup.ClientTransport.GetServerInfoAsync(token);
         if (serverInfo.UnilateralExit.LockType != SequenceLockType.Height)
         {
             Assert.Ignore(
                 $"Unilateral-exit delay is time-based (LockPeriod={serverInfo.UnilateralExit.LockPeriod}); " +
-                "full-claim path requires a block-based delay. Expected block-based regtest config.");
+                "mining-based maturation requires a block-based delay. Expected block-based regtest config.");
         }
 
         // Phase 2: mature the CSV delay by mining, then keep progressing so the
@@ -599,6 +597,118 @@ public class UnilateralExitTests
             // Bring arkd back for the rest of the suite and wait until it answers.
             await DockerHelper.StartContainer("arkd", CancellationToken.None);
             await WaitForArkdReady();
+        }
+    }
+
+    /// <summary>
+    /// Time-based unilateral-exit delay: the configuration arkd actually ships
+    /// (<c>defaultUnilateralExitDelay = 86400</c>, i.e. 24 h) and the one the
+    /// default regtest config — <c>ARKD_UNILATERAL_EXIT_DELAY=5</c>, block-based —
+    /// never exercises.
+    ///
+    /// BIP 68 encodes a time-based relative lock as 512-second units with bit 22
+    /// set, so its raw nSequence for 24 h is 4,194,472. Adding that to a block
+    /// height put maturity ~80 years out, and the exit sat in AwaitingCsvDelay
+    /// forever without ever raising. This test proves maturity now tracks median
+    /// time past: it advances MTP past the lock period while mining only a
+    /// handful of blocks, then requires the exit to complete and the funds to
+    /// land on-chain.
+    ///
+    /// Runs against a regtest started with <c>ARKD_UNILATERAL_EXIT_DELAY &gt;= 512</c>
+    /// (see <c>.github/workflows/e2e-unilateral-exit-timelock.yml</c>); ignored on
+    /// the default block-based config.
+    /// </summary>
+    [Test]
+    [Category("UnilateralExitTimeBased")]
+    [CancelAfter(360_000)]
+    public async Task TimeBasedExitDelay_MaturesOnMedianTimePast_AndCompletes(CancellationToken token)
+    {
+        // Probe the server config before any expensive setup — on a block-based
+        // regtest there is nothing here to exercise.
+        var probe = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
+        var probeInfo = await probe.GetServerInfoAsync(token);
+        if (probeInfo.UnilateralExit.LockType != SequenceLockType.Time)
+        {
+            Assert.Ignore(
+                $"Unilateral-exit delay is block-based ({probeInfo.UnilateralExit.LockHeight} blocks); " +
+                "this test needs a regtest started with ARKD_UNILATERAL_EXIT_DELAY >= 512.");
+        }
+
+        await using var setup = await SettleAVtxoAsync();
+        var vtxo = (await setup.VtxoStorage.GetVtxos()).First(v => !v.IsSpent() && !v.Unrolled);
+        var vtxoAmount = Money.Satoshis(vtxo.Amount);
+        var claimAddress = await GetFreshOnchainAddress();
+
+        await setup.ExitService.StartExitAsync(setup.WalletId, [vtxo.OutPoint], claimAddress, token);
+
+        // Phase 1: broadcast the branch root→leaf until every link confirms.
+        ExitSession? current = null;
+        for (var step = 0; !token.IsCancellationRequested; step++)
+        {
+            await setup.ExitService.ProgressExitsAsync(token);
+            await DockerHelper.MineBlocks(1, token);
+            current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+            if (current?.State is ExitSessionState.Failed)
+                Assert.Fail($"Exit failed during broadcast: {current.FailReason}");
+            if (current?.State is ExitSessionState.AwaitingCsvDelay or ExitSessionState.Claimable
+                or ExitSessionState.Claiming or ExitSessionState.Completed) break;
+        }
+        Assert.That(current, Is.Not.Null);
+
+        var lockPeriod = probeInfo.UnilateralExit.LockPeriod;
+        TestContext.WriteLine(
+            $"[Exit] time-based CSV delay: {lockPeriod} (nSequence={probeInfo.UnilateralExit.Value})");
+
+        var blocksBefore = await DockerHelper.BitcoinGetBlockCount(token);
+        try
+        {
+            // Phase 2: mining alone cannot mature a time-based lock — block
+            // times track the real clock, so MTP barely moves. Mock the node
+            // clock past the lock period instead, then mine enough blocks for
+            // MTP (median of the last 11 block times) to follow.
+            var mtpBefore = await DockerHelper.BitcoinGetMedianTime(token);
+            var target = mtpBefore + lockPeriod + TimeSpan.FromMinutes(1);
+            TestContext.WriteLine($"[Exit] advancing MTP {mtpBefore:u} → {target:u}");
+            await DockerHelper.AdvanceMedianTimePast(target, token);
+
+            var mtpAfter = await DockerHelper.BitcoinGetMedianTime(token);
+            Assert.That(mtpAfter, Is.GreaterThanOrEqualTo(mtpBefore + lockPeriod),
+                "setmocktime + 11 blocks should carry median time past beyond the lock period");
+
+            // Phase 3: the exit must now mature and claim.
+            for (var step = 0; current!.State != ExitSessionState.Completed && !token.IsCancellationRequested; step++)
+            {
+                await setup.ExitService.ProgressExitsAsync(token);
+                await DockerHelper.MineBlocks(1, token);
+                current = await setup.ExitSessionStorage.GetByVtxoAsync(vtxo.OutPoint, token);
+                TestContext.WriteLine(
+                    $"[Exit] time-based claim step={step} state={current?.State} " +
+                    $"claimTxid={current?.ClaimTxid ?? "-"} fail={current?.FailReason ?? "-"}");
+                if (current?.State is ExitSessionState.Failed)
+                    Assert.Fail($"Exit failed during claim: {current.FailReason}");
+            }
+
+            Assert.That(current!.State, Is.EqualTo(ExitSessionState.Completed),
+                $"A time-based exit delay must mature on MTP; observed={current.State}, " +
+                $"fail={current.FailReason ?? "-"}");
+
+            // The whole point of the regression: this completed after tens of
+            // blocks, not the ~4.2 million the raw nSequence used to demand.
+            var blocksMined = await DockerHelper.BitcoinGetBlockCount(token) - blocksBefore;
+            TestContext.WriteLine($"[Exit] matured after {blocksMined} blocks");
+            Assert.That(blocksMined, Is.LessThan(1000),
+                "Maturity must come from median time past, not from block-height arithmetic " +
+                "on a time-flagged nSequence");
+
+            var received = await DockerHelper.BitcoinGetReceivedByAddress(claimAddress.ToString(), minConf: 1, ct: token);
+            Assert.That(received, Is.GreaterThan(vtxoAmount - Money.Satoshis(10_000)),
+                $"Claimed funds ({received}) should land at the claim address");
+        }
+        finally
+        {
+            // Release the node clock — setmocktime is node-wide state and would
+            // otherwise freeze time for anything else sharing the container.
+            await DockerHelper.BitcoinSetMockTime(null, CancellationToken.None);
         }
     }
 
