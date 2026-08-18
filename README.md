@@ -13,7 +13,7 @@ The generated API reference is published at [arkade-os.github.io/dotnet-sdk](htt
 | Package | Description |
 |---------|-------------|
 | **NArk.Abstractions** | Interfaces and domain types (`IVtxoStorage`, `IContractStorage`, `IWalletProvider`, `ArkCoin`, `ArkVtxo`, etc.) |
-| **NArk.Core** | Core services: spending, batch management, VTXO sync, sweeping, wallet infrastructure, gRPC transport |
+| **NArk.Core** | Core services: spending, batch management, virtual output sync, sweeping, wallet infrastructure, gRPC transport |
 | **NArk.Swaps** | Multi-provider swap framework with pluggable providers ([Boltz](https://boltz.exchange) shipped; route-based architecture for adding others) |
 | **NArk.Storage.EfCore** | Entity Framework Core storage implementations (provider-agnostic — works with PostgreSQL, SQLite, etc.) |
 | **NArk** | Meta-package that pulls in `NArk.Core` + `NArk.Swaps` |
@@ -94,10 +94,10 @@ services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838"));
 ```
 NArk (meta-package)
  ├── NArk.Core
- │    ├── Services (spending, batches, VTXO sync, sweeping, intents)
+ │    ├── Services (spending, batches, virtual output sync, sweeping, intents)
  │    ├── Wallet (WalletFactory, signers, address providers)
  │    ├── Hosting (DI extensions, ArkApplicationBuilder)
- │    └── Transport (gRPC client for Arkade server communication)
+ │    └── Transport (gRPC client for operator communication)
  │
  ├── NArk.Swaps
  │    ├── Abstractions (ISwapProvider, SwapRoute, SwapAsset)
@@ -212,8 +212,8 @@ var txId = await spendingService.Spend(
 
 ## Wallet Recovery
 
-Rebuild a wallet's local state — contracts, the HD derivation index, funds (VTXOs)
-and boltz swap data — from on-chain / indexer / boltz sources, after importing a
+Rebuild a wallet's local state — contracts, the HD derivation index, funds (virtual outputs)
+and boltz swap data — from onchain / indexer / boltz sources, after importing a
 wallet into empty storage. Use the unified, wallet-type-agnostic
 `IWalletRecoveryService` (registered by `AddArkSwapServices`):
 
@@ -313,7 +313,7 @@ await assetManager.BurnAsync(walletId,
 
 ### Querying Assets
 
-Check asset balances from local VTXO storage:
+Check asset balances from local virtual output storage:
 
 ```csharp
 var coins = await spendingService.GetAvailableCoins(walletId);
@@ -324,7 +324,7 @@ foreach (var coin in coins.Where(c => c.Assets is { Count: > 0 }))
 }
 ```
 
-Query asset details from the Arkade server:
+Query asset details from the operator:
 
 ```csharp
 var details = await transport.GetAssetDetailsAsync(assetId);
@@ -335,13 +335,13 @@ var details = await transport.GetAssetDetailsAsync(assetId);
 
 ## Delegation
 
-Delegation solves the VTXO liveness problem: VTXOs expire if not renewed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batches on your behalf, rolling VTXOs over before expiry.
+Delegation solves the virtual output liveness problem: virtual outputs expire if not renewed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batches on your behalf, rolling virtual outputs over before expiry.
 
 ### Automated Delegation
 
 When `AddArkDelegation` is configured, the SDK automatically:
 1. **Derives delegate contracts** — HD wallets produce `ArkDelegateContract` instead of `ArkPaymentContract` for Receive/SendToSelf operations
-2. **Auto-delegates VTXOs** — when VTXOs arrive at delegate contract addresses, the SDK builds partially signed intent + ACP forfeit txs and sends them to the delegator
+2. **Auto-delegates virtual outputs** — when virtual outputs arrive at delegate contract addresses, the SDK builds partially signed intent + ACP forfeit txs and sends them to the delegator
 
 ```csharp
 services.AddArkCoreServices();
@@ -351,7 +351,7 @@ services.AddArkDelegation("http://localhost:7012");
 
 // That's it. HD wallets will now:
 // - Derive ArkDelegateContract for new receive/change addresses
-// - Auto-delegate incoming VTXOs to the delegator on receipt
+// - Auto-delegate incoming virtual outputs to the delegator on receipt
 // nsec wallets (hashlock/note contracts) are unaffected.
 ```
 
@@ -361,14 +361,14 @@ The delegate contract has three spending paths, committed to the taproot tree in
 - **ExitPath** (User only, after CSV delay) — unilateral recovery
 - **DelegatePath** (User + Delegate + Server, 3-of-3) — used by the delegator for ACP forfeit txs
 
-The auto-delegation monitor skips any VTXO whose value cannot cover the operator's intent fee and
+The auto-delegation monitor skips any virtual output whose value cannot cover the operator's intent fee and
 still leave at least the server dust threshold — the delegation would be rejected with
-`AMOUNT_TOO_LOW`. Consolidate bare-dust VTXOs (typically asset VTXOs) with a larger VTXO to make them
-delegable; the skip is not sticky, so the VTXO is re-evaluated on its next storage notification.
+`AMOUNT_TOO_LOW`. Consolidate bare-dust virtual outputs (typically asset virtual outputs) with a larger virtual output to make them
+delegable; the skip is not sticky, so the virtual output is re-evaluated on its next storage notification.
 
 ### Manual Delegation
 
-For fine-grained control, you can manually construct delegate contracts and delegate VTXOs:
+For fine-grained control, you can manually construct delegate contracts and delegate virtual outputs:
 
 ```csharp
 // Get delegator info
@@ -382,7 +382,7 @@ var delegateContract = new ArkDelegateContract(
     KeyExtensions.ParseOutputDescriptor(info.Pubkey, network),
     cltvLocktime: new LockTime(currentHeight + 100)); // optional safety window
 
-// Send VTXOs to the delegate contract address
+// Send virtual outputs to the delegate contract address
 await spendingService.Spend(walletId,
     outputs: [new ArkTxOut(delegateContract.GetArkAddress(), amount)]);
 
@@ -398,7 +398,7 @@ The CLTV locktime is optional — when set, it prevents the delegate from acting
 
 ### Custom Contract Delegation
 
-The SDK uses an `IDelegationTransformer` pattern to support delegating different contract types. The built-in `DelegateContractDelegationTransformer` handles `ArkDelegateContract` VTXOs and is registered by `AddArkDelegation`. Register additional transformers for other contract types *after* calling `AddArkDelegation`:
+The SDK uses an `IDelegationTransformer` pattern to support delegating different contract types. The built-in `DelegateContractDelegationTransformer` handles `ArkDelegateContract` virtual outputs and is registered by `AddArkDelegation`. Register additional transformers for other contract types *after* calling `AddArkDelegation`:
 
 ```csharp
 services.AddArkDelegation("http://localhost:7012");
@@ -411,7 +411,7 @@ Each transformer implements:
 - `CanDelegate(walletId, contract, delegatePubkey)` — check eligibility
 - `GetDelegationScriptBuilders(contract)` — return (intentScript, forfeitScript) for building delegation artifacts
 
-## Collaborative Exits (On-chain)
+## Collaborative Exits (Onchain)
 
 Move funds from Arkade back to the Bitcoin base layer:
 
@@ -436,9 +436,9 @@ var intents = await transport.GetIntentsByProofAsync(proof, message);
 
 The `IntentProofHelper.CreateBip322Psbt` and `IntentProofHelper.SignBip322Proof` building blocks are also available separately for delegation and other proof flows.
 
-## Boarding (On-chain → Arkade)
+## Boarding (Onchain → Arkade)
 
-Boarding lets users move onchain Bitcoin UTXOs into the Arkade VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the intent/batch pipeline automatically picks up the boarding UTXO — no manual intervention needed.
+Boarding lets users move onchain Bitcoin UTXOs into the Arkade batch tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the intent/batch pipeline automatically picks up the boarding UTXO — no manual intervention needed.
 
 ### 1. Derive a Boarding Address
 
@@ -447,13 +447,13 @@ var boardingContract = (ArkBoardingContract)await contractService.DeriveContract
     walletId,
     NextContractPurpose.Boarding);
 
-// Get the on-chain P2TR (bc1p...) address for the user to deposit BTC to
+// Get the onchain P2TR (bc1p...) address for the user to deposit BTC to
 var onchainAddress = boardingContract.GetOnchainAddress(network);
 ```
 
-### 2. Sync On-chain UTXOs
+### 2. Sync Onchain UTXOs
 
-`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It depends on `IBitcoinBlockchain` — register one of the built-in backends:
+`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into virtual output storage. It depends on `IBitcoinBlockchain` — register one of the built-in backends:
 
 ```csharp
 // Option A: Esplora (mempool.space, Chopsticks, etc.)
@@ -488,16 +488,16 @@ services.AddRpcBlockchain(rpcClient);
 services.AddSingleton<BoardingUtxoSyncService>();
 
 // Register the poll service — automatically polls every 30s
-// when unspent boarding VTXOs exist
+// when unspent boarding virtual outputs exist
 services.AddSingleton<BoardingUtxoPollService>();
 services.AddHostedService(sp => sp.GetRequiredService<BoardingUtxoPollService>());
 ```
 
-The `BoardingUtxoPollService` automatically checks for unspent boarding VTXOs every 30 seconds and syncs confirmation state changes. It complements event-driven sync (e.g., NBXplorer transaction events) to catch missed events during provider reconnects or block confirmations.
+The `BoardingUtxoPollService` automatically checks for unspent boarding virtual outputs every 30 seconds and syncs confirmation state changes. It complements event-driven sync (e.g., NBXplorer transaction events) to catch missed events during provider reconnects or block confirmations.
 
-Once a boarding UTXO is synced and confirmed, the SDK's `IntentGenerationService` automatically creates an intent for it. The next batch moves it into the VTXO tree.
+Once a boarding UTXO is synced and confirmed, the SDK's `IntentGenerationService` automatically creates an intent for it. The next batch moves it into the batch tree.
 
-While a boarding UTXO is still in the mempool it is stored with `Metadata["Confirmed"] = "False"`. Such VTXOs report `ArkVtxo.IsUnconfirmedOnchain() == true`, are excluded from `SpendingService.GetAvailableCoins`, and cannot be settled (arkd rejects unconfirmed boarding inputs). Display them as pending rather than spendable until the funding tx confirms.
+While a boarding UTXO is still in the mempool it is stored with `Metadata["Confirmed"] = "False"`. Such virtual outputs report `ArkVtxo.IsUnconfirmedOnchain() == true`, are excluded from `SpendingService.GetAvailableCoins`, and cannot be settled (arkd rejects unconfirmed boarding inputs). Display them as pending rather than spendable until the funding tx confirms.
 
 ### 3. Handle Expired Boarding UTXOs (Optional)
 
@@ -530,7 +530,7 @@ await sweepService.SweepExpiredUtxosAsync(ct);
 
 ## Unilateral Exit
 
-If the Arkade server goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their VTXO leaf, waiting a CSV timelock, then claiming funds onchain.
+If the operator goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their virtual output leaf, waiting a CSV timelock, then claiming funds onchain.
 
 ### Setup
 
@@ -539,7 +539,7 @@ services.AddUnilateralExit(
     configureVirtualTx: opts =>
     {
         opts.DefaultMode = VirtualTxMode.Lite;  // Default: txids + expiry only; hex fetched on exit
-        opts.MinExitWorthAmount = 1000;         // Skip tiny VTXOs not worth exiting
+        opts.MinExitWorthAmount = 1000;         // Skip tiny virtual outputs not worth exiting
     },
     configureWatchtower: opts =>
     {
@@ -559,7 +559,7 @@ services.AddNBXplorerBlockchain(explorerClient);
 // storage or the stateless one-shot API below.
 modelBuilder.ConfigureArkExitEntities();
 
-// Opt in to background pre-fetching of chain data on every VTXO arrival
+// Opt in to background pre-fetching of chain data on every virtual output arrival
 // (subscribes to IVtxoStorage.VtxosChanged). Without this, chains are
 // fetched lazily when StartExitAsync is invoked.
 services.AddVirtualTxAutoFetch();
@@ -573,14 +573,14 @@ services.AddExitWatchtowerBackgroundService();
 ```csharp
 var exitService = serviceProvider.GetRequiredService<UnilateralExitService>();
 
-// Exit specific VTXOs
+// Exit specific virtual outputs
 var sessions = await exitService.StartExitAsync(
     walletId,
     vtxoOutpoints,
     claimAddress,     // Bitcoin address to receive claimed funds
     cancellationToken);
 
-// Or exit all VTXOs in a wallet
+// Or exit all virtual outputs in a wallet
 var sessions = await exitService.StartExitForWalletAsync(
     walletId, claimAddress, cancellationToken);
 ```
@@ -626,7 +626,7 @@ else logger.LogDebug("CSV not matured: {Progress}", maturity.Progress);
 ### Virtual Tx Storage Modes
 
 - **Lite mode (default)**: Stores only txids + expiry. Fetches hex on demand when exit is actually started (saves storage, slower exit start). Right default for most wallets — the common case never exits unilaterally.
-- **Full mode**: Fetches and stores raw tx hex on VTXO receive. Ready for instant exit without any indexer round-trip. Opt in via `opts.DefaultMode = VirtualTxMode.Full` when offline-exit capability is a hard requirement.
+- **Full mode**: Fetches and stores raw tx hex on virtual output receive. Ready for instant exit without any indexer round-trip. Opt in via `opts.DefaultMode = VirtualTxMode.Full` when offline-exit capability is a hard requirement.
 
 ### No-Storage Modes
 
@@ -642,7 +642,7 @@ services.AddInMemoryExitStorage();  // registers InMemoryExitSessionStorage + In
 
 **2. Stateless API** — `UnilateralExitService.BroadcastExitChainAsync` + `ClaimMaturedExitAsync` skip both `IExitSessionStorage` and `IVirtualTxStorage` entirely. The SDK persists nothing exit-specific; the caller saves the returned `ExitPlan` record however they want and feeds it back to claim once the CSV timelock matures.
 
-`BroadcastExitChainAsync` broadcasts **at most one** not-yet-onchain tx per call, not the whole chain — call it repeatedly (like `ProgressExitsAsync`) until the chain is fully confirmed. This is required by Bitcoin Core's TRUC/v3 relay policy (BIP 431): each tx gets its own CPFP child to pay its zero fee, and a v3 tx can have at most 1 unconfirmed descendant, so the next tx in the chain can't be broadcast until the previous one confirms on-chain (the same constraint go-sdk and ts-sdk's unroll sessions are built around).
+`BroadcastExitChainAsync` broadcasts **at most one** not-yet-onchain tx per call, not the whole chain — call it repeatedly (like `ProgressExitsAsync`) until the chain is fully confirmed. This is required by Bitcoin Core's TRUC/v3 relay policy (BIP 431): each tx gets its own CPFP child to pay its zero fee, and a v3 tx can have at most 1 unconfirmed descendant, so the next tx in the chain can't be broadcast until the previous one confirms onchain (the same constraint go-sdk and ts-sdk's unroll sessions are built around).
 
 ```csharp
 // Call on an interval until the whole chain is confirmed (mirrors ProgressExitsAsync)
@@ -668,7 +668,7 @@ if (claimTxid is null)
 
 Trade-off vs. the stateful path: no idempotency (re-broadcasting an already-confirmed link is a no-op, but the caller must track when to stop polling), no automatic watchtower progression. The caller owns persistence and time-keeping in their own format.
 
-Virtual tx data is automatically pruned when VTXOs are spent. Sibling VTXOs sharing internal tree nodes naturally deduplicate — shared nodes are only cleaned up when no VTXO references them.
+Virtual tx data is automatically pruned when virtual outputs are spent. Sibling virtual outputs sharing internal tree nodes naturally deduplicate — shared nodes are only cleaned up when no virtual output references them.
 
 ## Contracts
 
@@ -698,7 +698,7 @@ is SQL-queryable. Filter by scope through `IContractStorage.GetContracts`:
 // On-chain contracts to poll/sweep (boarding UTXOs, etc.)
 var onchain = await contractStorage.GetContracts(scope: ContractScope.Onchain);
 
-// Off-chain contracts (VTXOs) — also matches dual-scope contracts
+// Offchain contracts (virtual outputs) — also matches dual-scope contracts
 var offchain = await contractStorage.GetContracts(scope: ContractScope.Offchain);
 ```
 
@@ -719,7 +719,7 @@ When importing an HD wallet from its mnemonic, the SDK has no record of contract
 
 The default providers ship with the SDK:
 
-- `IndexerVtxoDiscoveryProvider` (`AddArkCoreServices`) — asks arkd's indexer for VTXOs at the index's payment script.
+- `IndexerVtxoDiscoveryProvider` (`AddArkCoreServices`) — asks arkd's indexer for virtual outputs at the index's payment script.
 - `BoardingUtxoDiscoveryProvider` (`AddArkCoreServices`, opt-in via registering an `IBitcoinBlockchain` whose `GetUtxosAsync` is implemented — NBXplorer or Esplora) — asks for historical UTXOs at the index's boarding address.
 - `BoltzSwapDiscoveryProvider` (`AddArkSwapServices`) — asks Boltz `/v2/swap/restore` whether the index's user pubkey ever participated in a swap.
 
@@ -738,13 +738,13 @@ Custom discovery sources are added by implementing `IContractDiscoveryProvider` 
 
 ## Arkade Signer-Key Rotation
 
-When an Arkade server operator rotates its signing key, the SDK handles re-enrollment automatically — no consumer code required. Three regimes apply depending on when the rotation is detected relative to the cutoff:
+When an operator rotates its signing key, the SDK handles re-enrollment automatically — no consumer code required. Three regimes apply depending on when the rotation is detected relative to the cutoff:
 
 | Regime | Condition | Handled by |
 |--------|-----------|------------|
-| Collaborative sweep | Before cutoff (or no cutoff) | `ServerKeyRotationSweepPolicy` re-enrolls VTXOs under the current signer via the sweeper |
-| Wait | After cutoff, before VTXO expiry | `CanSpendOffchain` **and** `SimpleIntentScheduler` exclude the coin — it still needs a forfeit the operator won't co-sign — until it is forfeit-free (swept/unrolled) |
-| Recovery re-enroll | Expired VTXO | Intent scheduler; batch session skips forfeit so the old key is not needed |
+| Collaborative sweep | Before cutoff (or no cutoff) | `ServerKeyRotationSweepPolicy` re-enrolls virtual outputs under the current signer via the sweeper |
+| Wait | After cutoff, before virtual output expiry | `CanSpendOffchain` **and** `SimpleIntentScheduler` exclude the coin — it still needs a forfeit the operator won't co-sign — until it is forfeit-free (swept/unrolled) |
+| Recovery re-enroll | Expired virtual output | Intent scheduler; batch session skips forfeit so the old key is not needed |
 
 `ContractReconciliationService` keeps every SingleKey wallet's "Default" receive contract aligned with the current signer. It triggers automatically on startup, `WalletSaved`, and `ServerInfoChanged` — no extra registration needed beyond `AddArkCoreServices`.
 
@@ -755,7 +755,7 @@ public class MyService(IServerInfoCacheInvalidation serverInfoCache)
 {
     public void Start() =>
         serverInfoCache.ServerInfoChanged += (_, e) =>
-            Console.WriteLine($"Arkade server info changed: {e.Reason}");
+            Console.WriteLine($"Operator info changed: {e.Reason}");
 }
 ```
 
@@ -792,7 +792,7 @@ foreach (var txId in finalizedTxIds)
     Console.WriteLine($"Recovered & finalized pending tx {txId}");
 ```
 
-A pending transaction comes entirely from the server, so it is authorized locally **before anything is signed**: every checkpoint must pay the spent input's full value into the checkpoint contract this wallet would itself have built, and the accompanying final ark tx must spend exactly those checkpoint outputs while still carrying this wallet's own signature over it. Anything else is rejected with `UnauthorizedPendingArkTransactionException` and never signed, so recovery only ever completes a spend the wallet itself built and signed. That exception means the *server* presented something unauthorized; failures rooted in local state (no matching local VTXO for a checkpoint input, or a coin whose contract names no server key) surface as `InvalidOperationException` instead and imply nothing about the server.
+A pending transaction comes entirely from the server, so it is authorized locally **before anything is signed**: every checkpoint must pay the spent input's full value into the checkpoint contract this wallet would itself have built, and the accompanying final ark tx must spend exactly those checkpoint outputs while still carrying this wallet's own signature over it. Anything else is rejected with `UnauthorizedPendingArkTransactionException` and never signed, so recovery only ever completes a spend the wallet itself built and signed. That exception means the *server* presented something unauthorized; failures rooted in local state (no matching local virtual output for a checkpoint input, or a coin whose contract names no server key) surface as `InvalidOperationException` instead and imply nothing about the server.
 
 Per-tx failures are logged + raised on `RecoveryFailed` and the loop continues — one bad pending tx never blocks the rest, and the next host start retries any leftovers. Subscribe to surface a banner or telemetry:
 
@@ -938,7 +938,7 @@ var request = new ArkPaymentRequest(
 
 await paymentRequestStorage.SavePaymentRequest(request);
 
-// Look up by script (for matching incoming VTXOs)
+// Look up by script (for matching incoming virtual outputs)
 var matched = await paymentRequestStorage.GetPaymentRequestByScript(vtxoScript);
 ```
 
@@ -947,7 +947,7 @@ var matched = await paymentRequestStorage.GetPaymentRequestByScript(vtxoScript);
 The `PaymentTrackingService` subscribes to `VtxosChanged`, `IntentChanged`, and `SwapsChanged` events and automatically updates payment statuses:
 
 - **Outbound**: When an intent succeeds/fails or a swap settles/fails, the linked `ArkPayment` moves to `Completed` or `Failed`.
-- **Inbound**: When a VTXO arrives on a watched contract script, the `ArkPaymentRequest` accumulates `ReceivedAmount` and transitions to `Paid` (or `PartiallyPaid` for fixed-amount requests). Overpayment is tracked in the `Overpayment` property.
+- **Inbound**: When a virtual output arrives on a watched contract script, the `ArkPaymentRequest` accumulates `ReceivedAmount` and transitions to `Paid` (or `PartiallyPaid` for fixed-amount requests). Overpayment is tracked in the `Overpayment` property.
 
 It is registered by `AddArkPaymentTracking()` (see [Opt-In Setup](#opt-in-setup) above) and runs as an `IHostedService`, so its event subscriptions activate automatically on application startup — no manual resolution needed.
 
@@ -1042,7 +1042,7 @@ var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
 
 ### Executing a Reverse Swap (receive Lightning into Arkade)
 
-`InitiateReverseSwap` creates the Boltz reverse swap and returns the BOLT11 invoice to hand to the payer. The SDK watches the swap and materializes the VTXO automatically.
+`InitiateReverseSwap` creates the Boltz reverse swap and returns the BOLT11 invoice to hand to the payer. The SDK watches the swap and materializes the virtual output automatically.
 
 ```csharp
 var invoice = await swaps.InitiateReverseSwap(
@@ -1069,13 +1069,13 @@ var invoice = await swaps.InitiateReverseSwap(
     ct);
 ```
 
-Either way the SDK stores the actual on-chain amount Boltz delivers as `ArkSwap.ExpectedAmount`, so claim, refund, and payment tracking match the VTXO that arrives.
+Either way the SDK stores the actual onchain amount Boltz delivers as `ArkSwap.ExpectedAmount`, so claim, refund, and payment tracking match the virtual output that arrives.
 
 ### Providers
 
 | Provider | Routes | Features |
 |----------|--------|----------|
-| **Boltz** | Arkade &harr; Lightning, Arkade &harr; BTC on-chain | Submarine/reverse swaps, chain swaps with renegotiation, MuSig2 cooperative claiming **and refunding** (both BTC and Arkade sides), VHTLC management, WebSocket status updates |
+| **Boltz** | Arkade &harr; Lightning, Arkade &harr; BTC onchain | Submarine/reverse swaps, chain swaps with renegotiation, MuSig2 cooperative claiming **and refunding** (both BTC and Arkade sides), VHTLC management, WebSocket status updates |
 
 ### Recovery (Renegotiation + Cooperative Refund)
 
@@ -1156,7 +1156,7 @@ ECPubKey emulatorPubKey = ECPubKey.Create(Convert.FromHexString(info.SignerPubke
 TaprootPubKey signingKey = ArkadeTweak.Tweak(emulatorPubKey, bytes);
 ```
 
-Pin an ArkadeScript leaf to an `ArkContract`-based VTXO via the multisig wrapper:
+Pin an ArkadeScript leaf to an `ArkContract`-based virtual output via the multisig wrapper:
 
 ```csharp
 using NArk.Arkade.Scripts;
@@ -1194,7 +1194,7 @@ var info   = await emulator.GetInfoAsync();              // GET  /v1/info  (sign
 var signed = await emulator.SubmitTxAsync(...);          // POST /v1/tx
 var sig    = await emulator.SubmitIntentAsync(...);      // POST /v1/intent
 var fin    = await emulator.SubmitFinalizationAsync(...);// POST /v1/finalization
-var onchn  = await emulator.SubmitOnchainTxAsync(...);   // POST /v1/onchain-tx  (fully on-chain spends)
+var onchn  = await emulator.SubmitOnchainTxAsync(...);   // POST /v1/onchain-tx  (fully onchain spends)
 ```
 
 For a `/v1/onchain-tx` spend whose ArkadeScript introspects a previous output, attach that output's transaction to the PSBT input so the emulator can read it — via `PsbtHelpers.SetArkFieldPrevoutTx(input, prevTx)` (the `prevouttx` ark field, key type `0xde`).
@@ -1224,7 +1224,7 @@ The SDK uses a pluggable architecture. Register your implementations for:
 
 | Interface | Purpose | Default |
 |-----------|---------|---------|
-| `IVtxoStorage` | VTXO persistence | `EfCoreVtxoStorage` |
+| `IVtxoStorage` | virtual output persistence | `EfCoreVtxoStorage` |
 | `IContractStorage` | Contract persistence | `EfCoreContractStorage` |
 | `IIntentStorage` | Intent persistence | `EfCoreIntentStorage` |
 | `ISwapStorage` | Swap persistence | `EfCoreSwapStorage` |
@@ -1235,7 +1235,7 @@ The SDK uses a pluggable architecture. Register your implementations for:
 | `IBitcoinBlockchain` | Chain time, UTXO lookup, broadcast, fee estimation | `NBXplorerBlockchain` / `EsploraBlockchain` / `RpcBlockchain` |
 | `IFeeEstimator` | Transaction fee estimation | `DefaultFeeEstimator` |
 | `ICoinSelector` | UTXO selection strategy | `DefaultCoinSelector` |
-| `ISweepPolicy` | VTXO consolidation rules | Register zero or more |
+| `ISweepPolicy` | virtual output consolidation rules | Register zero or more |
 | `IContractTransformer` | Custom contract &rarr; coin transforms | Register zero or more |
 | `IEventHandler<T>` | React to batch/sweep/spend events | Register zero or more |
 
