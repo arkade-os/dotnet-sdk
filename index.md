@@ -4,9 +4,9 @@ _layout: landing
 
 # NArk .NET SDK
 
-> The official .NET SDK for the [Arkade](https://ark-protocol.org) protocol — build self-custodial, off-chain Bitcoin applications.
+> The official .NET SDK for [Arkade](https://arkadeos.com), an open execution engine for Bitcoin.
 
-NArk provides everything you need to integrate Arkade into .NET applications: wallet management, VTXO lifecycle, intent-based payments, asset support, Lightning swaps via Boltz, and pluggable storage.
+NArk gives .NET applications everything they need to build on Arkade: wallet management, the virtual output lifecycle, intent-based payments, asset support, Lightning swaps through Boltz, and pluggable storage. Every transaction it builds is a Bitcoin transaction.
 
 ## Packages
 
@@ -14,7 +14,7 @@ NArk provides everything you need to integrate Arkade into .NET applications: wa
 |---|---|
 | **[NArk](https://www.nuget.org/packages/NArk)** | Meta-package — pulls in Core + Swaps |
 | **[NArk.Abstractions](https://www.nuget.org/packages/NArk.Abstractions)** | Interfaces and domain types |
-| **[NArk.Core](https://www.nuget.org/packages/NArk.Core)** | Wallet, VTXO, intent, batch, and asset logic |
+| **[NArk.Core](https://www.nuget.org/packages/NArk.Core)** | Wallet, virtual output, intent, batch, and asset logic |
 | **[NArk.Swaps](https://www.nuget.org/packages/NArk.Swaps)** | Boltz submarine/reverse/chain swap client |
 | **[NArk.Storage.EfCore](https://www.nuget.org/packages/NArk.Storage.EfCore)** | EF Core persistence for all Arkade state |
 
@@ -35,6 +35,7 @@ NArk provides everything you need to integrate Arkade into .NET applications: wa
 
 - [GitHub Repository](https://github.com/arkade-os/dotnet-sdk)
 - [NuGet Packages](https://www.nuget.org/profiles/ArkLabs)
-- [Arkade Protocol](https://ark-protocol.org)
+- [Arkade](https://arkadeos.com)
+- [Arkade Documentation](https://docs.arkadeos.com)
 - [Live Wallet Demo](wallet/) — Blazor WASM sample app running entirely in-browser
 - [Sample Wallet Source](https://github.com/arkade-os/dotnet-sdk/tree/master/samples/NArk.Wallet)
