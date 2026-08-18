@@ -1,9 +1,12 @@
 # NArk .NET SDK
 
-A .NET SDK for building applications on [Arkade](https://arkadeos.com), an open execution engine for Bitcoin that enables instant, low-cost, programmable transactions using virtual UTXOs (VTXOs).
+A .NET SDK for building applications on [Arkade](https://arkadeos.com), an open execution engine for Bitcoin. Arkade makes transactions instant, low-cost, and programmable through virtual outputs, and every transaction it builds is a Bitcoin transaction.
 
 [![NuGet](https://img.shields.io/nuget/v/NArk.svg)](https://www.nuget.org/packages/NArk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![API Reference](https://img.shields.io/badge/API-reference-blue.svg)](https://arkade-os.github.io/dotnet-sdk/)
+
+The generated API reference is published at [arkade-os.github.io/dotnet-sdk](https://arkade-os.github.io/dotnet-sdk/).
 
 ## Packages
 
