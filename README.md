@@ -421,6 +421,66 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
     new ArkTxOut(bitcoinAddress, Money.Satoshis(50_000)));
 ```
 
+## Settlement (Threshold-Based Payouts)
+
+Settlement moves value **out** of a wallet once its balance reaches a configured threshold — to an Arkade address, to on-chain Bitcoin, or to a rail you plug in yourself. It is separate from `SweeperService`, which consolidates VTXOs back into the same wallet.
+
+Three layers, each replaceable on its own: `ISettlementPolicy` instances yield plans (*when and how much*) the way `ISweepPolicy` yields coins, `CompositeSettlementService` routes each plan to the first `ISettlementService` that accepts the destination, and that rail moves the funds. The background `SettlementService` joins them, re-evaluating a wallet on VTXO changes, intent transitions, and a periodic heartbeat.
+
+```csharp
+services.AddArkSettlement();
+
+// Optional: also settle to on-chain Bitcoin addresses via a collaborative exit.
+services.AddArkSettlement(options => options.EnableCollaborativeExit = true);
+```
+
+The engine stays inert until you supply the rules — the SDK persists none of its own:
+
+```csharp
+public class MySettlementConfigProvider(IMySettingsStore store) : ISettlementConfigProvider
+{
+    public async Task<IReadOnlyCollection<SettlementConfig>> GetConfigs(
+        string? walletId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await store.GetPayoutSettings(walletId, cancellationToken);
+
+        return settings
+            .Select(setting => new SettlementConfig(
+                setting.WalletId,
+                SettlementDestination.Ark(setting.PayoutAddress),
+                ThresholdSats: 100_000))
+            .ToArray();
+    }
+}
+
+services.AddSingleton<ISettlementConfigProvider, MySettlementConfigProvider>();
+```
+
+The threshold gates *when* a settlement fires, not *how much* moves: a wallet configured at 100 000 sats that reaches 250 000 settles all 250 000. Cap a single settlement with `SettlementConfig.MaxAmountSats`.
+
+A destination is just a network, an asset, and an address — all free-form strings. The SDK defines only the two it settles itself (`ark`, `bitcoin`); anything else is a rail you register, and the SDK never has to learn about it:
+
+```csharp
+// A destination the SDK knows nothing about
+var destination = new SettlementDestination("base", "USDC", "0x…");
+
+public class UsdcSettlementService : ISettlementService
+{
+    public bool Available => true;
+    public string? UnavailableReason => null;
+
+    public bool CanSettle(SettlementDestination destination) => destination.Is("base", "USDC");
+
+    public Task<SettlementResult> SettleAsync(
+        SettlementRequest request, CancellationToken cancellationToken = default) => /* … */;
+}
+
+services.AddSingleton<ISettlementService, UsdcSettlementService>();
+```
+
+`PostSettlementActionEvent` is raised for every attempt. See [docs/articles/settlement.md](docs/articles/settlement.md) for policies, gates, trigger sources, and options.
+
 ## Querying Intents by Proof
 
 Retrieve registered intents by proving ownership of any input coin via a BIP-322-style proof:

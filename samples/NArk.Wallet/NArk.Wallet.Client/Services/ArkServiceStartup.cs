@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NArk.Core.Services;
+using NArk.Core.Settlement;
 using NArk.Swaps.Services;
 
 namespace NArk.Wallet.Client.Services;
@@ -45,6 +46,15 @@ public static class ArkServiceStartup
             await swapMgr.StartAsync(cts.Token);
         }
         catch (Exception ex) { logger.LogWarning(ex, "SwapsManagementService failed to start"); }
+
+        // Threshold-based settlement. Registered as a hosted service by AddArkSettlement,
+        // which WASM never starts, so start it here like the rest.
+        try
+        {
+            var settlement = services.GetRequiredService<SettlementService>();
+            await settlement.StartAsync(cts.Token);
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "SettlementService failed to start"); }
 
         // Poll boarding UTXOs from the chain. Non-fatal if explorer is unavailable.
         try
