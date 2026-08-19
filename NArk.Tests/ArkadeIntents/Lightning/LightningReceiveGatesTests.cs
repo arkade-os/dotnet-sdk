@@ -23,7 +23,7 @@ public class LightningReceiveGatesTests
     public void VerifyInvoice_AcceptsAnInvoiceMatchingTheRequest()
     {
         var decoded = LightningReceiveGates.VerifyInvoice(
-            Quote(Invoice, AmountSats), PaymentHashOfInvoice, AmountSats, Network.RegTest);
+            Quote(Invoice, AmountSats), PaymentHashOfInvoice, AmountSats, RfqAmountSide.To, Network.RegTest);
 
         Assert.That(decoded.PaymentHash.ToString().ToLowerInvariant(), Is.EqualTo(PaymentHashOfInvoice));
     }
@@ -36,7 +36,7 @@ public class LightningReceiveGatesTests
         var somebodyElsesHash = new string('a', 64);
 
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
-            LightningReceiveGates.VerifyInvoice(Quote(Invoice, AmountSats), somebodyElsesHash, AmountSats, Network.RegTest));
+            LightningReceiveGates.VerifyInvoice(Quote(Invoice, AmountSats), somebodyElsesHash, AmountSats, RfqAmountSide.To, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.WrongPaymentHash));
     }
@@ -49,7 +49,7 @@ public class LightningReceiveGatesTests
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
             LightningReceiveGates.VerifyInvoice(
                 Quote(Invoice, AmountSats, fromAmount: AmountSats + 1_000),
-                PaymentHashOfInvoice, AmountSats, Network.RegTest));
+                PaymentHashOfInvoice, AmountSats, RfqAmountSide.To, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.AmountMismatch));
     }
@@ -63,7 +63,7 @@ public class LightningReceiveGatesTests
 
         Assert.DoesNotThrow(() =>
             LightningReceiveGates.VerifyInvoice(
-                withFee, PaymentHashOfInvoice, AmountSats - 500, Network.RegTest));
+                withFee, PaymentHashOfInvoice, AmountSats - 500, RfqAmountSide.To, Network.RegTest));
     }
 
     [Test]
@@ -74,16 +74,74 @@ public class LightningReceiveGatesTests
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
             LightningReceiveGates.VerifyInvoice(
                 Quote(Invoice, toAmount: AmountSats - 500, fromAmount: AmountSats),
-                PaymentHashOfInvoice, AmountSats, Network.RegTest));
+                PaymentHashOfInvoice, AmountSats, RfqAmountSide.To, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.ShortPayout));
+    }
+
+    // ─── The leg the request pinned ───────────────────────────────────
+
+    [Test]
+    public void VerifyInvoice_ExactIn_AcceptsAPayoutReducedByTheFee()
+    {
+        // Pinning the from leg is what a merchant does: the invoice is for the order total, and the
+        // spread comes out of what lands on Arkade. The payout is BELOW the number asked for, which
+        // is exactly what the exact-out check would have refused.
+        var quote = Quote(Invoice, toAmount: AmountSats - 500, fromAmount: AmountSats);
+
+        Assert.DoesNotThrow(() =>
+            LightningReceiveGates.VerifyInvoice(
+                quote, PaymentHashOfInvoice, AmountSats, RfqAmountSide.From, Network.RegTest));
+    }
+
+    [Test]
+    public void VerifyInvoice_ExactIn_RefusesAnInvoiceForMoreThanWasAskedFor()
+    {
+        // The failure this whole parameter exists to prevent. An invoice above the order total is
+        // one a LUD-06 wallet refuses, so the customer cannot pay it and the sale is simply lost —
+        // and on a checkout that does not run that check, they are silently overcharged instead.
+        // Read the other way round from the fixture: the invoice bills AmountSats, and we asked for
+        // 500 less than that.
+        var quote = Quote(Invoice, toAmount: AmountSats - 500, fromAmount: AmountSats);
+
+        var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
+            LightningReceiveGates.VerifyInvoice(
+                quote, PaymentHashOfInvoice, AmountSats - 500, RfqAmountSide.From, Network.RegTest));
+
+        Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.PayerChargeMismatch));
+    }
+
+    [Test]
+    public void VerifyInvoice_ExactIn_RefusesAnInvoiceForLessThanWasAskedFor()
+    {
+        // Under-billing is refused just as firmly as over-billing: the order would settle short, and
+        // nothing downstream would report it as anything other than paid.
+        var quote = Quote(Invoice, toAmount: AmountSats - 500, fromAmount: AmountSats);
+
+        var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
+            LightningReceiveGates.VerifyInvoice(
+                quote, PaymentHashOfInvoice, AmountSats + 500, RfqAmountSide.From, Network.RegTest));
+
+        Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.PayerChargeMismatch));
+    }
+
+    [Test]
+    public void VerifyInvoice_ExactIn_DoesNotApplyTheExactOutPayoutFloor()
+    {
+        // The two checks are mutually exclusive, not cumulative. Running both would refuse every
+        // exact-in quote that charged a fee, which is every exact-in quote.
+        var quote = Quote(Invoice, toAmount: 1, fromAmount: AmountSats);
+
+        Assert.DoesNotThrow(() =>
+            LightningReceiveGates.VerifyInvoice(
+                quote, PaymentHashOfInvoice, AmountSats, RfqAmountSide.From, Network.RegTest));
     }
 
     [Test]
     public void VerifyInvoice_RefusesAQuoteWithNoInvoiceAtAll()
     {
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
-            LightningReceiveGates.VerifyInvoice(Quote(null, AmountSats), new string('b', 64), AmountSats, Network.RegTest));
+            LightningReceiveGates.VerifyInvoice(Quote(null, AmountSats), new string('b', 64), AmountSats, RfqAmountSide.To, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.UnusableInvoice));
     }
@@ -92,7 +150,7 @@ public class LightningReceiveGatesTests
     public void VerifyInvoice_RefusesSomethingThatIsNotABolt11()
     {
         var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
-            LightningReceiveGates.VerifyInvoice(Quote("not-an-invoice", AmountSats), new string('c', 64), AmountSats, Network.RegTest));
+            LightningReceiveGates.VerifyInvoice(Quote("not-an-invoice", AmountSats), new string('c', 64), AmountSats, RfqAmountSide.To, Network.RegTest));
 
         Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.UnusableInvoice));
     }

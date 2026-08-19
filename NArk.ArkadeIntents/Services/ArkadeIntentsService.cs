@@ -131,9 +131,16 @@ public sealed class ArkadeIntentsService
 
     /// <summary>Be paid over Lightning and take delivery on Arkade.</summary>
     /// <param name="walletId">The wallet taking delivery.</param>
-    /// <param name="amountSats">What to receive, in sats.</param>
+    /// <param name="amountSats">The size to ask for, in sats — of the leg <paramref name="amountSide"/> names.</param>
     /// <param name="rfqTransport">How to reach a solver.</param>
     /// <param name="covclaimdPubKey">covclaimd's key, read live.</param>
+    /// <param name="solverCard">The solver's published card, when there is one.</param>
+    /// <param name="amountSide">
+    /// Which leg <paramref name="amountSats"/> pins, and so who absorbs the solver's spread — what
+    /// lands on Arkade (<see cref="RfqAmountSide.To"/>, the default) or what the payer is billed
+    /// (<see cref="RfqAmountSide.From"/>). A merchant minting an invoice for an order total wants
+    /// the latter.
+    /// </param>
     /// <param name="cancellationToken">Cancels the negotiation.</param>
     /// <returns>The invoice to hand to a payer, and what is needed to claim.</returns>
     public Task<PendingLightningReceive> ReceiveFromLightningAsync(
@@ -142,9 +149,10 @@ public sealed class ArkadeIntentsService
         IRfqTransport rfqTransport,
         string covclaimdPubKey,
         SolverCard? solverCard = null,
+        RfqAmountSide amountSide = RfqAmountSide.To,
         CancellationToken cancellationToken = default) =>
         _lightning.ReceiveFromLightningAsync(
-            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, cancellationToken);
+            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, amountSide, cancellationToken);
 
     // ─── Reading ──────────────────────────────────────────────────────
 

@@ -75,8 +75,17 @@ public sealed partial class LightningIntentsClient
     /// Negotiate a receive swap and verify everything the solver sent back.
     /// </summary>
     /// <param name="walletId">The wallet taking delivery.</param>
-    /// <param name="amountSats">What to receive on Arkade, in sats.</param>
+    /// <param name="amountSats">The size to ask for, in sats — of the leg <paramref name="amountSide"/> names.</param>
     /// <param name="rfqTransport">How to reach the solver.</param>
+    /// <param name="amountSide">
+    /// Which leg <paramref name="amountSats"/> pins, and so who absorbs the solver's spread.
+    /// <see cref="RfqAmountSide.To"/> fixes what lands on Arkade and bills the payer more;
+    /// <see cref="RfqAmountSide.From"/> fixes the payer's bill and nets the spread out of the payout.
+    /// Defaults to <see cref="RfqAmountSide.To"/>, which is what a caller asking to "receive N sats"
+    /// means. A merchant minting an invoice for an order total wants <see cref="RfqAmountSide.From"/>:
+    /// a LUD-06 wallet checks the invoice against the amount its user approved and refuses anything
+    /// larger.
+    /// </param>
     /// <param name="solverCard">
     /// The solver's published card, when there is one. Supplying it holds the solver to its own
     /// advertised limits and fee. Omitting it is not a check skipped but one that does not apply — a
@@ -97,6 +106,7 @@ public sealed partial class LightningIntentsClient
         IRfqTransport rfqTransport,
         string covclaimdPubKey,
         SolverCard? solverCard = null,
+        RfqAmountSide amountSide = RfqAmountSide.To,
         CancellationToken cancellationToken = default)
     {
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
@@ -118,6 +128,7 @@ public sealed partial class LightningIntentsClient
 
         var request = LightningReceiveProfile.Request(
             amountSats,
+            amountSide,
             sealed_.PaymentHash,
             payoutAddress,
             Convert.ToHexString(payoutDescriptor.ToXOnlyPubKey().ToBytes()).ToLowerInvariant(),
@@ -125,7 +136,11 @@ public sealed partial class LightningIntentsClient
             rfqId);
 
         // Asked before the request: a size outside the advertised range is one the solver refuses
-        // anyway, and its refusal cannot say by how much.
+        // anyway, and its refusal cannot say by how much. A card states its bounds on the to leg, so
+        // against an exact-in size this is indicative rather than exact — it reads the request's
+        // figure as a payout when the payout will in fact be a fee lower. Left approximate on
+        // purpose: the exact answer needs the quote, and the quote is what this pre-check exists to
+        // avoid spending on a size that was never servable.
         if (solverCard is not null)
         {
             SolverTerms.AssertWithinLimits(solverCard, LightningReceiveProfile.Pair, amountSats);
@@ -144,7 +159,7 @@ public sealed partial class LightningIntentsClient
         }
 
         var invoice = LightningReceiveGates.VerifyInvoice(
-            quote, sealed_.PaymentHash, amountSats, serverInfo.Network);
+            quote, sealed_.PaymentHash, amountSats, amountSide, serverInfo.Network);
 
         // The last check before the invoice can reach a payer: paying into a window too short to
         // claim in parks the payer's money in a held HTLC until it lapses.
