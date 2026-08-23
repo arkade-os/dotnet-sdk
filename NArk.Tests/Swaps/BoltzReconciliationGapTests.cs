@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
@@ -41,13 +42,15 @@ public class BoltzReconciliationGapTests
             {
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("""{"swap-a":{"status":"invoice.pending"}}"""),
+                    Content = new StringContent(
+                        """{"swap-a":{"status":"invoice.pending"}}""", Encoding.UTF8, "application/json"),
                 };
             }
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("""{"status":"invoice.pending"}"""),
+                Content = new StringContent(
+                    """{"status":"invoice.pending"}""", Encoding.UTF8, "application/json"),
             };
         });
 

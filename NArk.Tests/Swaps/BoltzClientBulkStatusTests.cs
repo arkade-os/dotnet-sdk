@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using Microsoft.Extensions.Options;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
@@ -23,7 +24,9 @@ public class BoltzClientBulkStatusTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    """{"swap-a":{"status":"invoice.pending"},"swap-b":{"status":"transaction.claimed"}}"""),
+                    """{"swap-a":{"status":"invoice.pending"},"swap-b":{"status":"transaction.claimed"}}""",
+                    Encoding.UTF8,
+                    "application/json"),
             };
         }));
         var statuses = await client.GetSwapStatusesAsync(["swap-a", "swap-b"]);
