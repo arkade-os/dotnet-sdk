@@ -26,6 +26,22 @@ public class BoltzWebsocketClient : IBoltzWebsocketClient
     private readonly Func<Uri, CancellationToken, Task<WebSocket>> _connect;
     private readonly TimeSpan _requestResponseTimeout;
     private readonly TimeSpan? _heartbeatInterval;
+    /// <summary>
+    /// Serializes every request/response exchange on the socket — heartbeat pings and
+    /// subscribe/unsubscribe alike — so a reply can be matched to the one operation in
+    /// flight.
+    /// </summary>
+    /// <remarks>
+    /// Sharing it costs heartbeat punctuality: a subscribe that stalls holds the
+    /// semaphore for up to <c>RequestResponseTimeout</c>, delaying the next ping by that
+    /// much, so worst-case detection of a half-open socket is
+    /// <c>HeartbeatInterval + RequestResponseTimeout</c>. That is bounded and acceptable
+    /// at the current defaults. It does not double-fire teardown: the stalled operation
+    /// calls <see cref="Invalidate"/>, which cancels the lifetime token the queued ping is
+    /// waiting on, so the ping fails its <c>WaitAsync</c> with the token already cancelled
+    /// and is swallowed by the heartbeat loop rather than invalidating a second time.
+    /// Give the heartbeat its own semaphore only if the detection window has to shrink.
+    /// </remarks>
     private readonly SemaphoreSlim _operationSemaphore = new(1, 1);
     private readonly TaskCompletionSource _disconnected =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
