@@ -265,6 +265,19 @@ public partial class BoltzSwapProvider : ISwapProvider
                         _logger?.LogError(ex, "Swap {SwapId}: reconciliation failed", swapId);
                     }
                 }
+
+                // A 200 OK that quietly drops IDs is not a 404, so it never reaches the
+                // handler below: the omitted swaps would get no status, no unknown-count
+                // increment, and would sit in _swapsIdToWatch for the provider's lifetime.
+                // Re-ask for them one by one so a genuinely unknown ID trips the 404 path.
+                var missing = chunk.Where(id => !statuses.ContainsKey(id)).ToArray();
+                if (missing.Length > 0)
+                {
+                    _logger?.LogWarning(
+                        "Boltz batch status omitted {Count} of {Total} requested swap(s) ({Ids}) — polling them individually",
+                        missing.Length, chunk.Length, string.Join(", ", missing));
+                    await PollSwapState(missing, cancellationToken);
+                }
             }
             catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
