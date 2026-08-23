@@ -26,6 +26,7 @@ public class EfCoreContractStorage : IContractStorage
         string? searchText = null,
         int? skip = null,
         int? take = null,
+        ContractScope? scope = null,
         CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -71,6 +72,13 @@ public class EfCoreContractStorage : IContractStorage
             query = query.Where(c => contractTypes.Contains(c.Type));
         }
 
+        if (scope is { } s)
+        {
+            // Bitwise include: a row whose scope carries every bit of `s` matches.
+            // Must NOT use HasFlag — EF Core does not translate it to SQL.
+            query = query.Where(c => (c.Scope & s) == s);
+        }
+
         query = query.OrderByDescending(c => c.CreatedAt);
 
         if (skip.HasValue)
@@ -94,33 +102,80 @@ public class EfCoreContractStorage : IContractStorage
             c => c.Script == walletEntity.Script && c.WalletId == walletEntity.WalletIdentifier,
             cancellationToken);
 
+        bool changed;
         if (existing != null)
         {
-            existing.ActivityState = walletEntity.ActivityState;
-            existing.Type = walletEntity.Type;
-            existing.ContractData = walletEntity.AdditionalData;
-            existing.Metadata = walletEntity.Metadata ?? existing.Metadata;
+            ApplyUpdate(existing, walletEntity);
+            changed = await db.SaveChangesAsync(cancellationToken) > 0;
         }
         else
         {
-            var entity = new ArkWalletContractEntity
+            contracts.Add(NewEntity(walletEntity));
+            try
             {
-                Script = walletEntity.Script,
-                WalletId = walletEntity.WalletIdentifier,
-                ActivityState = walletEntity.ActivityState,
-                Type = walletEntity.Type,
-                ContractData = walletEntity.AdditionalData,
-                Metadata = walletEntity.Metadata,
-                CreatedAt = walletEntity.CreatedAt
-            };
-            contracts.Add(entity);
+                changed = await db.SaveChangesAsync(cancellationToken) > 0;
+            }
+            catch (DbUpdateException)
+            {
+                // Possibly lost a concurrent first-time insert race on the {Script, WalletId} PK
+                // (e.g. setup's synchronous ensure + a WalletSaved handler + background recovery
+                // all inserting the same default at once). If the row another writer committed now
+                // exists, convert our losing insert into an update against a fresh context; if it
+                // doesn't, the failure was something else — let it propagate.
+                if (!await RowExistsAsync(walletEntity, cancellationToken))
+                    throw;
+                changed = await UpdateExistingAfterRaceAsync(walletEntity, cancellationToken);
+            }
         }
 
-        if (await db.SaveChangesAsync(cancellationToken) > 0)
+        if (changed)
         {
             ContractsChanged?.Invoke(this, walletEntity);
             ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
         }
+    }
+
+    private static void ApplyUpdate(ArkWalletContractEntity target, ArkContractEntity source)
+    {
+        target.ActivityState = source.ActivityState;
+        target.Type = source.Type;
+        target.ContractData = source.AdditionalData;
+        target.Metadata = source.Metadata ?? target.Metadata;
+        target.Scope = source.Scope;
+    }
+
+    private static ArkWalletContractEntity NewEntity(ArkContractEntity source) => new()
+    {
+        Script = source.Script,
+        WalletId = source.WalletIdentifier,
+        ActivityState = source.ActivityState,
+        Type = source.Type,
+        ContractData = source.AdditionalData,
+        Metadata = source.Metadata,
+        Scope = source.Scope,
+        CreatedAt = source.CreatedAt
+    };
+
+    private async Task<bool> RowExistsAsync(ArkContractEntity walletEntity, CancellationToken cancellationToken)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await db.Set<ArkWalletContractEntity>().AsNoTracking().AnyAsync(
+            c => c.Script == walletEntity.Script && c.WalletId == walletEntity.WalletIdentifier,
+            cancellationToken);
+    }
+
+    private async Task<bool> UpdateExistingAfterRaceAsync(
+        ArkContractEntity walletEntity, CancellationToken cancellationToken)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var existing = await db.Set<ArkWalletContractEntity>().FirstOrDefaultAsync(
+            c => c.Script == walletEntity.Script && c.WalletId == walletEntity.WalletIdentifier,
+            cancellationToken);
+        if (existing is null)
+            return false; // raced away again (deleted in between) — nothing to do.
+
+        ApplyUpdate(existing, walletEntity);
+        return await db.SaveChangesAsync(cancellationToken) > 0;
     }
 
     public async Task<bool> UpdateContractActivityState(
@@ -177,7 +232,8 @@ public class EfCoreContractStorage : IContractStorage
             CreatedAt: entity.CreatedAt
         )
         {
-            Metadata = entity.Metadata
+            Metadata = entity.Metadata,
+            Scope = entity.Scope
         };
     }
 

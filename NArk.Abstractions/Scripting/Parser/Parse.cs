@@ -1,8 +1,3 @@
-using System.Linq;
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-
 namespace NBitcoin.Scripting.Parser
 {
 	internal static partial class Parse

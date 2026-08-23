@@ -4,7 +4,6 @@ using NArk.Abstractions.Recovery;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Transport;
 using NArk.Core.Wallet;
-using NBitcoin;
 using NBitcoin.Scripting;
 
 namespace NArk.Core.Recovery;

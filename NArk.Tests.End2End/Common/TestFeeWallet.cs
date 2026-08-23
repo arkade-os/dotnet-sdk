@@ -53,16 +53,15 @@ internal sealed class TestFeeWallet : IFeeWallet
             ?? throw new InvalidOperationException("TestFeeWallet: failed to derive P2TR address from BIP86 scriptPubKey");
         var wallet = new TestFeeWallet(scriptPubKey, address.ToString(), key);
 
-        var btcAmount = fundAmountBtc.ToString("0.########", CultureInfo.InvariantCulture);
-        var fundTxid = (await DockerHelper.Exec(
-            "bitcoin", ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", wallet.Address, btcAmount], ct)).Trim();
+        var fundTxid = await DockerHelper.BitcoinSendToAddress(
+            wallet.Address, Money.FromUnit(fundAmountBtc, MoneyUnit.BTC), ct);
         if (string.IsNullOrEmpty(fundTxid))
             throw new InvalidOperationException("TestFeeWallet: bitcoin-cli sendtoaddress returned empty txid");
 
         await DockerHelper.MineBlocks(1, ct);
 
-        var rawTx = (await DockerHelper.Exec(
-            "bitcoin", ["bitcoin-cli", "-rpcwallet=", "getrawtransaction", fundTxid, "1"], ct)).Trim();
+        var rawTx = await DockerHelper.BitcoinCli(
+            ["getrawtransaction", fundTxid, "1"], ct);
         var doc = JsonDocument.Parse(rawTx);
         var matchedVout = -1;
         Money? amount = null;

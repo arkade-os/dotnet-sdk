@@ -41,8 +41,11 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IBitcoinBl
         var chainTime = await chainTimeProvider.GetChainTime();
         var chainMs = swChainTime.ElapsedMilliseconds;
 
-        if (htlc.RefundLocktime.IsTimeLock &&
-            htlc.RefundLocktime.Date < chainTime.Timestamp && await addressProvider!.IsOurs(htlc.Sender))
+        var refundElapsed = htlc.RefundLocktime.IsTimeLock
+            ? htlc.RefundLocktime.Date < chainTime.Timestamp
+            : chainTime.Height >= htlc.RefundLocktime.Value;
+
+        if (refundElapsed && await addressProvider!.IsOurs(htlc.Sender))
         {
             logger?.LogTrace(
                 "[vhtlc-probe] CanTransform (refund path): GetAddressProvider={AddrMs}ms GetChainTime={ChainMs}ms",
@@ -71,8 +74,11 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IBitcoinBl
         }
 
         var chainTime = await chainTimeProvider.GetChainTime();
-        if (htlc.RefundLocktime.IsTimeLock &&
-            htlc.RefundLocktime.Date < chainTime.Timestamp && await addressProvider!.IsOurs(htlc.Sender))
+        var refundElapsed = htlc.RefundLocktime.IsTimeLock
+            ? htlc.RefundLocktime.Date < chainTime.Timestamp
+            : chainTime.Height >= htlc.RefundLocktime.Value;
+        
+        if (refundElapsed && await addressProvider!.IsOurs(htlc.Sender))
         {
             logger?.LogInformation("VHTLC refund: wallet={WalletId}, sender={Sender}, receiver={Receiver}, outpoint={Outpoint}, refundLocktime={RefundLocktime}",
                 walletIdentifier, htlc.Sender, htlc.Receiver, vtxo.OutPoint, htlc.RefundLocktime);

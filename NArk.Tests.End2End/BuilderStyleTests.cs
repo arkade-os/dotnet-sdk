@@ -8,6 +8,7 @@ using NArk.Core.Models.Options;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Core.Services;
 using NArk.Storage.EfCore.Hosting;
+using NArk.Tests.Common;
 using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 

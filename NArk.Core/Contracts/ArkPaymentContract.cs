@@ -1,7 +1,7 @@
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
-using NArk.Core.Extensions;
+
 using NArk.Core.Scripts;
 using NBitcoin;
 using NBitcoin.Scripting;
@@ -20,6 +20,9 @@ public class ArkPaymentContract(OutputDescriptor server, Sequence exitDelay, Out
 
     public override string Type => ContractType;
     public const string ContractType = "Payment";
+
+    /// <summary>Payment funds live off-chain as a VTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
 
 
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()

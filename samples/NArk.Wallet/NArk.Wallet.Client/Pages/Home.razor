@@ -5,29 +5,66 @@
 @inject IJSRuntime JS
 
 <div class="hero-gradient">
-    @if (State.ActiveWalletId is null)
+    @if (_newWallet is not null)
+    {
+        <!-- Seed backup gate: the freshly generated BIP39 phrase is the only way back
+             into this wallet, so it is shown once before the wallet becomes active. -->
+        <p class="balance-label">Back up your wallet</p>
+        <p style="font-size:15px;font-weight:500;margin-bottom:6px;">
+            Write these @_newWords.Length words down in order.
+        </p>
+        <p class="text-secondary" style="font-size:13px;margin-bottom:16px;">
+            This recovery phrase restores your funds on any device. Anyone who has it can spend them.
+        </p>
+
+        <div class="mnemonic-grid mb-16">
+            @for (int i = 0; i < _newWords.Length; i++)
+            {
+                var idx = i;
+                <div class="mnemonic-word">
+                    <span class="mnemonic-index">@(idx + 1)</span>
+                    <span class="mnemonic-text">@_newWords[idx]</span>
+                </div>
+            }
+        </div>
+
+        <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" style="flex:1;" @onclick="CopyNewMnemonic">
+                @(_copied ? "Copied!" : "Copy phrase")
+            </button>
+            <button class="btn btn-primary" style="flex:1;" @onclick="ConfirmBackup">
+                I've written it down
+            </button>
+        </div>
+    }
+    else if (State.ActiveWalletId is null)
     {
         <p class="balance-label">Welcome to Arkade</p>
         <p style="font-size:18px;font-weight:500;margin-bottom:20px;">Create or restore a wallet to get started</p>
-        <button class="btn btn-primary" @onclick="CreateWallet" disabled="@_creating || _restoring">
+        <button class="btn btn-primary" @onclick="CreateWallet" disabled="@(_creating || _restoring)">
             @(_creating ? "Creating..." : "Create Wallet")
         </button>
+        <p class="text-secondary" style="font-size:12px;margin-top:8px;">
+            Generates a 12-word BIP39 recovery phrase (HD wallet).
+        </p>
 
-        <details style="margin-top:24px;text-align:left;max-width:420px;margin-left:auto;margin-right:auto;">
-            <summary style="cursor:pointer;font-size:14px;color:#64748b;">Restore from mnemonic / nsec</summary>
-            <textarea class="form-control" rows="3" placeholder="12 or 24 word mnemonic, or nsec1..."
-                      style="margin-top:12px;width:100%;font-family:monospace;font-size:13px;"
-                      @bind="_restoreSecret" disabled="@(_creating || _restoring)"></textarea>
-            <button class="btn btn-secondary" style="margin-top:8px;width:100%;"
-                    @onclick="RestoreWallet" disabled="@(_creating || _restoring || string.IsNullOrWhiteSpace(_restoreSecret))">
-                @(_restoring ? "Scanning derivation indices…" : "Restore Wallet")
-            </button>
-            @if (_restoreReport is not null)
-            {
-                <p style="margin-top:8px;font-size:13px;color:#16a34a;">
-                    Recovered @_restoreReport.DiscoveredContracts.Count contract(s) up to index @_restoreReport.HighestUsedIndex.
-                </p>
-            }
+        <details class="restore-panel">
+            <summary>Restore from recovery phrase / nsec</summary>
+            <div class="restore-body">
+                <textarea class="input-field" rows="3" placeholder="12 or 24 word recovery phrase, or nsec1..."
+                          style="font-family:var(--font-mono);font-size:13px;resize:vertical;"
+                          @bind="_restoreSecret" @bind:event="oninput" disabled="@(_creating || _restoring)"></textarea>
+                <button class="btn btn-secondary btn-full" style="margin-top:8px;"
+                        @onclick="RestoreWallet" disabled="@(_creating || _restoring || string.IsNullOrWhiteSpace(_restoreSecret))">
+                    @(_restoring ? "Scanning derivation indices…" : "Restore Wallet")
+                </button>
+                @if (_restoreReport is not null)
+                {
+                    <p style="margin-top:8px;font-size:13px;color:var(--arkade-green);">
+                        Recovered @_restoreReport.DiscoveredContracts.Count contract(s) up to index @_restoreReport.HighestUsedIndex.
+                    </p>
+                }
+            </div>
         </details>
 
         @if (_error is not null)
@@ -151,9 +188,12 @@
     private int _slideCount = 3;
     private bool _creating;
     private bool _restoring;
+    private bool _copied;
     private string? _error;
     private string _restoreSecret = string.Empty;
     private NArk.Abstractions.Recovery.RecoveryReport? _restoreReport;
+    private NArk.Abstractions.Wallets.ArkWalletInfo? _newWallet;
+    private string[] _newWords = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -186,8 +226,19 @@
         _error = null;
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var wallet = await Ark.CreateWallet();
+
+            // A generated wallet is always HD, so hold it behind the backup screen until
+            // the user confirms they wrote the phrase down. Anything else (an imported
+            // nsec, a watch-only wallet) has nothing new to back up here.
+            if (wallet.WalletType == NArk.Abstractions.Wallets.WalletType.HD
+                && !string.IsNullOrEmpty(wallet.Secret))
+            {
+                _newWallet = wallet;
+                _newWords = wallet.Secret.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                return;
+            }
+
             State.SetActiveWallet(wallet.Id);
             await LoadWallet();
         }
@@ -198,15 +249,44 @@
         finally { _creating = false; }
     }
 
+    private async Task CopyNewMnemonic()
+    {
+        if (_newWallet?.Secret is null) return;
+        await JS.InvokeVoidAsync("arkade.copyToClipboard", _newWallet.Secret);
+        _copied = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _copied = false;
+    }
+
+    private async Task ConfirmBackup()
+    {
+        if (_newWallet is null) return;
+        var walletId = _newWallet.Id;
+        _newWallet = null;
+        _newWords = [];
+        State.SetActiveWallet(walletId);
+        await LoadWallet();
+    }
+
     private async Task RestoreWallet()
     {
-        _restoring = true;
         _error = null;
         _restoreReport = null;
+
+        var secret = _restoreSecret.Trim();
+        var validationError = ArkWalletService.ValidateSecret(secret);
+        if (validationError is not null)
+        {
+            _error = validationError;
+            return;
+        }
+
+        _restoring = true;
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-            var wallet = await Ark.CreateWallet(_restoreSecret.Trim());
+            var wallet = await Ark.CreateWallet(secret);
             State.SetActiveWallet(wallet.Id);
 
             // Sweep derivation indices through every registered IContractDiscoveryProvider
@@ -216,6 +296,9 @@
             {
                 _restoreReport = await Ark.RestoreWallet(wallet.Id, cancellationToken: cts.Token);
             }
+
+            // Don't leave the phrase sitting in the textarea once it's persisted.
+            _restoreSecret = string.Empty;
 
             await LoadWallet();
         }

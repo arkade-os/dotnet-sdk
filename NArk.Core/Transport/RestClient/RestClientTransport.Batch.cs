@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
-using NBitcoin;
+using NArk.Core.Extensions;
 
 namespace NArk.Transport.RestClient;
 
@@ -119,21 +119,6 @@ public partial class RestClientTransport
     }
 
     /// <summary>
-    /// Case-insensitive property lookup for JsonElement.
-    /// arkd SSE uses camelCase, gRPC-gateway uses snake_case.
-    /// </summary>
-    private static bool TryGetProp(JsonElement el, string snakeCase, string camelCase, out JsonElement value)
-    {
-        return el.TryGetProperty(snakeCase, out value) || el.TryGetProperty(camelCase, out value);
-    }
-
-    private static JsonElement GetProp(JsonElement el, string snakeCase, string camelCase)
-    {
-        if (el.TryGetProperty(snakeCase, out var v)) return v;
-        return el.GetProperty(camelCase);
-    }
-
-    /// <summary>
     /// Gets an int64 from a JsonElement, handling proto3 JSON encoding where int64 values
     /// may be encoded as strings to avoid JavaScript precision loss.
     /// </summary>
@@ -152,17 +137,17 @@ public partial class RestClientTransport
         if (root.TryGetProperty("heartbeat", out _))
             return null;
 
-        if (TryGetProp(root, "stream_started", "streamStarted", out var ss))
+        if (root.TryGetPropInvariantCase("stream_started", out var ss))
             return new StreamStartedEvent(ss.GetProperty("id").GetString()!);
 
-        if (TryGetProp(root, "batch_started", "batchStarted", out var bs))
+        if (root.TryGetPropInvariantCase("batch_started", out var bs))
         {
             var intentHashes = new List<string>();
-            if (TryGetProp(bs, "intent_id_hashes", "intentIdHashes", out var ih))
+            if (bs.TryGetPropInvariantCase("intent_id_hashes", out var ih))
                 foreach (var h in ih.EnumerateArray())
                     if (h.GetString() is { } s) intentHashes.Add(s);
 
-            var expiry = GetInt64Flexible(GetProp(bs, "batch_expiry", "batchExpiry"));
+            var expiry = GetInt64Flexible(bs.GetPropInvariantCase("batch_expiry"));
 
             return new BatchStartedEvent(
                 bs.GetProperty("id").GetString()!,
@@ -170,37 +155,37 @@ public partial class RestClientTransport
                 intentHashes);
         }
 
-        if (TryGetProp(root, "batch_finalization", "batchFinalization", out var bf))
+        if (root.TryGetPropInvariantCase("batch_finalization", out var bf))
             return new BatchFinalizationEvent(
-                GetProp(bf, "commitment_tx", "commitmentTx").GetString()!,
+                bf.GetPropInvariantCase("commitment_tx").GetString()!,
                 bf.GetProperty("id").GetString()!);
 
-        if (TryGetProp(root, "batch_finalized", "batchFinalized", out var bfd))
+        if (root.TryGetPropInvariantCase("batch_finalized", out var bfd))
             return new BatchFinalizedEvent(
-                GetProp(bfd, "commitment_txid", "commitmentTxid").GetString()!,
+                bfd.GetPropInvariantCase("commitment_txid").GetString()!,
                 bfd.GetProperty("id").GetString()!);
 
-        if (TryGetProp(root, "batch_failed", "batchFailed", out var bfl))
+        if (root.TryGetPropInvariantCase("batch_failed", out var bfl))
             return new BatchFailedEvent(
                 bfl.GetProperty("id").GetString()!,
                 bfl.GetProperty("reason").GetString()!);
 
-        if (TryGetProp(root, "tree_signing_started", "treeSigningStarted", out var tss))
+        if (root.TryGetPropInvariantCase("tree_signing_started", out var tss))
         {
             var cosigners = Array.Empty<string>();
-            if (TryGetProp(tss, "cosigners_pubkeys", "cosignersPubkeys", out var cp))
+            if (tss.TryGetPropInvariantCase("cosigners_pubkeys", out var cp))
                 cosigners = cp.EnumerateArray().Select(e => e.GetString()!).ToArray();
 
             return new TreeSigningStartedEvent(
-                GetProp(tss, "unsigned_commitment_tx", "unsignedCommitmentTx").GetString()!,
+                tss.GetPropInvariantCase("unsigned_commitment_tx").GetString()!,
                 tss.GetProperty("id").GetString()!,
                 cosigners);
         }
 
-        if (TryGetProp(root, "tree_nonces_aggregated", "treeNoncesAggregated", out var tna))
+        if (root.TryGetPropInvariantCase("tree_nonces_aggregated", out var tna))
         {
             var nonces = new Dictionary<string, string>();
-            if (TryGetProp(tna, "tree_nonces", "treeNonces", out var tn) && tn.ValueKind == JsonValueKind.Object)
+            if (tna.TryGetPropInvariantCase("tree_nonces", out var tn) && tn.ValueKind == JsonValueKind.Object)
                 foreach (var prop in tn.EnumerateObject())
                     nonces[prop.Name] = prop.Value.GetString()!;
 
@@ -209,7 +194,7 @@ public partial class RestClientTransport
                 nonces);
         }
 
-        if (TryGetProp(root, "tree_tx", "treeTx", out var ttx))
+        if (root.TryGetPropInvariantCase("tree_tx", out var ttx))
         {
             var children = new Dictionary<uint, string>();
             if (ttx.TryGetProperty("children", out var ch) && ch.ValueKind == JsonValueKind.Object)
@@ -224,13 +209,13 @@ public partial class RestClientTransport
 
             return new TreeTxEvent(
                 ttx.GetProperty("id").GetString()!,
-                GetProp(ttx, "batch_index", "batchIndex").GetInt32(),
+                ttx.GetPropInvariantCase("batch_index").GetInt32(),
                 children, topics,
                 ttx.GetProperty("tx").GetString()!,
                 ttx.GetProperty("txid").GetString()!);
         }
 
-        if (TryGetProp(root, "tree_signature", "treeSignature", out var tsig))
+        if (root.TryGetPropInvariantCase("tree_signature", out var tsig))
         {
             var topics = new List<string>();
             if (tsig.TryGetProperty("topic", out var tp) && tp.ValueKind == JsonValueKind.Array)
@@ -238,14 +223,14 @@ public partial class RestClientTransport
                     if (t.GetString() is { } s) topics.Add(s);
 
             return new TreeSignatureEvent(
-                GetProp(tsig, "batch_index", "batchIndex").GetInt32(),
+                tsig.GetPropInvariantCase("batch_index").GetInt32(),
                 tsig.GetProperty("id").GetString()!,
                 tsig.GetProperty("signature").GetString()!,
                 topics,
                 tsig.GetProperty("txid").GetString()!);
         }
 
-        if (TryGetProp(root, "tree_nonces", "treeNonces", out var tnonces))
+        if (root.TryGetPropInvariantCase("tree_nonces", out var tnonces))
         {
             var nonces = new Dictionary<string, string>();
             if (tnonces.TryGetProperty("nonces", out var n) && n.ValueKind == JsonValueKind.Object)

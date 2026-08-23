@@ -4,8 +4,10 @@ using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
 using NArk.Abstractions.Scripts;
+using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
+using NArk.Core.Extensions;
 using NArk.Core.Models;
 using NArk.Core.Scripts;
 using NArk.Core.Transport;
@@ -24,7 +26,9 @@ public static class TransactionHelpers
         IClientTransport clientTransport,
         ISafetyService safetyService,
         IWalletProvider walletProvider,
-        IIntentStorage intentStorage)
+        IIntentStorage intentStorage,
+        IVirtualTxStorage? virtualTxStorage = null,
+        IEnumerable<ISpendSubmitHandler>? submitHandlers = null)
     {
         private async Task<PSBT> FinalizeCheckpointTx(PSBT checkpointTx, PSBT receivedCheckpointTx, ArkCoin coin,
             CancellationToken cancellationToken)
@@ -36,15 +40,35 @@ public static class TransactionHelpers
 
             receivedCheckpointTx.UpdateFrom(checkpointTx);
 
-            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
-                ?? throw new InvalidOperationException(
-                    $"Cannot sign checkpoint tx: wallet '{coin.WalletIdentifier}' has no signer " +
-                    "(watch-only wallet, or its remote signer transport is unavailable).");
+            var signer = await walletProvider.GetSignerOrThrowAsync(coin.WalletIdentifier, cancellationToken,
+                $"Cannot sign checkpoint tx: wallet '{coin.WalletIdentifier}' has no signer (watch-only or remote signer unavailable).");
 
             await PsbtHelpers.SignAndFillPsbt(signer, coin, receivedCheckpointTx, checkpointPrecomputedTransactionData,
                 cancellationToken: cancellationToken);
 
             return receivedCheckpointTx;
+        }
+
+        /// <summary>
+        /// Attach the wallet's own signature to a freshly-built checkpoint's input
+        /// (before any arkd round-trip). Used by the covenant submit path, where the
+        /// emulator co-signer requires user-signed checkpoints up front — unlike the
+        /// cooperative arkd flow, which signs checkpoints only after arkd co-signs
+        /// (see <see cref="FinalizeCheckpointTx"/>).
+        /// </summary>
+        private async Task<PSBT> UserSignCheckpoint(PSBT checkpointTx, ArkCoin coin, CancellationToken cancellationToken)
+        {
+            var precomputed = checkpointTx.GetGlobalTransaction().PrecomputeTransactionData([coin.TxOut]);
+
+            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Cannot sign checkpoint tx: wallet '{coin.WalletIdentifier}' has no signer " +
+                    "(watch-only wallet, or its remote signer transport is unavailable).");
+
+            await PsbtHelpers.SignAndFillPsbt(signer, coin, checkpointTx, precomputed,
+                cancellationToken: cancellationToken);
+
+            return checkpointTx;
         }
 
         /// <summary>
@@ -61,8 +85,6 @@ public static class TransactionHelpers
             ArkServerInfo serverInfo,
             CancellationToken cancellationToken)
         {
-            var p2A = Script.FromHex("51024e73"); // Standard Ark protocol marker
-
             List<PSBT> checkpoints = [];
             List<ArkCoin> checkpointCoins = [];
             foreach (var coin in coins)
@@ -71,21 +93,15 @@ public static class TransactionHelpers
                 var checkpointContract = CreateCheckpointContract(coin, serverInfo.CheckpointTapScript);
 
                 // Build checkpoint transaction
-                var checkpoint = serverInfo.Network.CreateTransactionBuilder();
-                checkpoint.SetVersion(3);
-                checkpoint.SetFeeWeight(0);
-                checkpoint.AddCoin(coin, new CoinOptions()
-                {
-                    Sequence = coin.Sequence
-                });
-                checkpoint.DustPrevention = false;
+                var checkpoint = CreateArkTxBuilder(serverInfo.Network);
+                checkpoint.AddCoin(coin, new CoinOptions() { Sequence = coin.Sequence });
                 checkpoint.Send(checkpointContract.GetArkAddress(), coin.Amount);
                 checkpoint.SetLockTime(coin.LockTime ?? LockTime.Zero);
                 var checkpointTx = checkpoint.BuildPSBT(false, PSBTVersion.PSBTv0);
 
                 //checkpoints MUST have the p2a output at index '1' and NBitcoin tx builder does not assure it, so we hack our way there
                 var ctx = checkpointTx.GetGlobalTransaction();
-                ctx.Outputs.Add(new TxOut(Money.Zero, p2A));
+                ctx.Outputs.Add(new TxOut(Money.Zero, Constants.ArkP2A));
                 checkpointTx = PSBT.FromTransaction(ctx, serverInfo.Network, PSBTVersion.PSBTv0);
                 checkpoint.UpdatePSBT(checkpointTx);
 
@@ -119,14 +135,43 @@ public static class TransactionHelpers
 
             // Build the Ark transaction that spends from all checkpoint outputs
 
-            var arkTx = serverInfo.Network.CreateTransactionBuilder();
-            arkTx.SetVersion(3);
-            arkTx.SetFeeWeight(0);
-            arkTx.DustPrevention = false;
-            arkTx.ShuffleInputs = false;
-            arkTx.ShuffleOutputs = false;
+            var arkTx = CreateArkTxBuilder(serverInfo.Network);
             // arkTx.Send(p2a, Money.Zero);
-            arkTx.AddCoins(checkpointCoins);
+            // The checkpoint's collaborative leaf preserves the original VTXO leaf's CLTV, so arkd's
+            // offchain.buildArkTx re-derives the ark tx's locktime + a non-final input sequence
+            // (cltvSequence = 0xFFFFFFFE) from that closure when rebuilding it. We must match exactly or
+            // arkd rejects the spend with ARK_TX_MISMATCH (the checkpoint txids already agree; only the
+            // ark tx diverges). A non-CLTV path (e.g. a hashlock claim) leaves LockTime null → locktime
+            // 0 and final sequences, so this is a no-op there.
+            var arkLockTime = LockTime.Zero;
+            foreach (var cc in checkpointCoins)
+            {
+                if (cc.LockTime is not { } lt || lt == LockTime.Zero) continue;
+                // Match arkd/ts-sdk buildVirtualTx: absolute locktimes across inputs must share a unit
+                // (all block-height or all timestamp) — nLockTime is a single field that can't encode
+                // both, so a mixed tx is unrepresentable. Fail loudly rather than emit a tx arkd rejects.
+                if (arkLockTime != LockTime.Zero && arkLockTime.IsTimeLock != lt.IsTimeLock)
+                    throw new InvalidOperationException(
+                        "cannot mix seconds and blocks absolute locktimes across inputs of one ark tx");
+                if (lt.Value > arkLockTime.Value)
+                    arkLockTime = lt;
+            }
+            if (arkLockTime != LockTime.Zero)
+            {
+                arkTx.SetLockTime(arkLockTime);
+                foreach (var cc in checkpointCoins)
+                {
+                    var hasLocktime = cc.LockTime is not null && cc.LockTime != LockTime.Zero;
+                    arkTx.AddCoin(cc, new CoinOptions
+                    {
+                        Sequence = cc.Sequence ?? (hasLocktime ? new Sequence(0xFFFFFFFE) : new Sequence(0xFFFFFFFF)),
+                    });
+                }
+            }
+            else
+            {
+                arkTx.AddCoins(checkpointCoins);
+            }
 
             // Track OP_RETURN outputs to enforce the limit
             // Use server-configured limit, falling back to the const default
@@ -173,7 +218,7 @@ public static class TransactionHelpers
 
             var tx = arkTx.BuildPSBT(false, PSBTVersion.PSBTv0);
             var gtx = tx.GetGlobalTransaction();
-            gtx.Outputs.Add(new TxOut(Money.Zero, p2A));
+            gtx.Outputs.Add(new TxOut(Money.Zero, Constants.ArkP2A));
 
             // NBitcoin's TransactionBuilder may reorder inputs (e.g. by amount) even
             // with ShuffleInputs=false. If asset packets are present, their input
@@ -233,10 +278,8 @@ public static class TransactionHelpers
 
             foreach (var (_, coin) in sortedCheckpointCoins)
             {
-                var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
-                    ?? throw new InvalidOperationException(
-                        $"Cannot sign Arkade tx checkpoint input: wallet '{coin.WalletIdentifier}' has no signer " +
-                        "(watch-only wallet, or its remote signer transport is unavailable).");
+                var signer = await walletProvider.GetSignerOrThrowAsync(coin.WalletIdentifier, cancellationToken,
+                    $"Cannot sign Arkade tx checkpoint input: wallet '{coin.WalletIdentifier}' has no signer (watch-only or remote signer unavailable).");
                 await PsbtHelpers.SignAndFillPsbt(signer, coin, tx, precomputedTransactionData, cancellationToken: cancellationToken);
             }
 
@@ -244,7 +287,7 @@ public static class TransactionHelpers
 
             return (tx, new SortedSet<IndexedPSBT>(checkpoints.Select(psbt =>
             {
-                var output = psbt.Outputs.Single(output => output.ScriptPubKey != p2A);
+                var output = psbt.Outputs.Single(output => output.ScriptPubKey != Constants.ArkP2A);
                 var outpoint = new OutPoint(psbt.GetGlobalTransaction(), output.Index);
                 var index = tx.Inputs.FindIndexedInput(outpoint)!.Index;
                 return new IndexedPSBT(psbt, (int)index);
@@ -254,11 +297,21 @@ public static class TransactionHelpers
         /// <summary>
         /// Creates a checkpoint contract based on the input contract type
         /// </summary>
+        private static TransactionBuilder CreateArkTxBuilder(Network network)
+        {
+            var b = network.CreateTransactionBuilder();
+            b.SetVersion(3);
+            b.SetFeeWeight(0);
+            b.DustPrevention = false;
+            b.ShuffleInputs = false;
+            b.ShuffleOutputs = false;
+            return b;
+        }
+
         private ArkContract CreateCheckpointContract(ArkCoin coin, UnilateralPathArkTapScript serverUnrollScript)
         {
             if (coin.Contract.Server is null)
                 throw new ArgumentException("Server key is required for checkpoint contract creation");
-
 
             var scriptBuilders = new List<ScriptBuilder>
             {
@@ -278,6 +331,27 @@ public static class TransactionHelpers
         {
             var network = arkTx.Network;
 
+            // Covenant spends: hand off to a submit handler (the emulator co-signer,
+            // which fronts arkd) instead of submitting to arkd directly. The handler
+            // needs the checkpoints already user-signed, then owns co-sign + finalize.
+            if (submitHandlers?.FirstOrDefault(h => h.ShouldHandle(arkCoins)) is { } handler)
+            {
+                var signedCheckpointTxs = new List<PSBT>(checkpoints.Count);
+                foreach (var checkpoint in checkpoints)
+                {
+                    var coin = arkCoins.Single(x => x.Outpoint == checkpoint.Psbt.Inputs.Single().PrevOut);
+                    // Only add the wallet's signature when the leaf actually names the user as
+                    // a signer. Covenant paths like an HTLC claim (server + emulator only) have
+                    // no user key, so the wallet must not sign — the emulator + arkd suffice.
+                    signedCheckpointTxs.Add(coin.SignerDescriptor is not null
+                        ? await UserSignCheckpoint(checkpoint.Psbt, coin, cancellationToken)
+                        : checkpoint.Psbt);
+                }
+
+                await handler.SubmitAsync(arkCoins, arkTx, signedCheckpointTxs, cancellationToken);
+                return;
+            }
+
             var response = await clientTransport.SubmitTx(arkTx.ToBase64(),
                 [.. checkpoints.Select(c => c.Psbt.ToBase64())], cancellationToken);
 
@@ -296,8 +370,38 @@ public static class TransactionHelpers
                 signedCheckpoints.Add(signedCheckpoint with { Psbt = psbt });
             }
 
-            await clientTransport.FinalizeTx(response.ArkTxId, [.. signedCheckpoints.Select(x => x.Psbt.ToBase64())],
+            // Finalize against the transaction we submitted, not the one the server names. The two
+            // are the same in every honest exchange, so checking costs nothing — and a response that
+            // renames it is the shape of an attempt to have our signed checkpoints, which carry the
+            // preimage on a claim, applied to a transaction we never built.
+            var submittedArkTxId = arkTx.GetGlobalTransaction().GetHash().ToString();
+            if (!string.Equals(response.ArkTxId, submittedArkTxId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Server returned ark txid {response.ArkTxId} for a transaction submitted as " +
+                    $"{submittedArkTxId}; refusing to finalize a transaction we did not build.");
+            }
+
+            await clientTransport.FinalizeTx(submittedArkTxId, [.. signedCheckpoints.Select(x => x.Psbt.ToBase64())],
                 cancellationToken: cancellationToken);
+
+            // Capture the signed off-chain txs we just produced, keyed by txid,
+            // so a later unilateral exit of the resulting preconfirmed VTXO
+            // broadcasts them straight from storage. The
+            // auto-fetch that builds the exit branch preserves these signed rows
+            // (see VirtualTxService.FetchAndStoreBranchAsync), and they are
+            // pruned on spend like any other virtual-tx row.
+            if (virtualTxStorage is not null)
+            {
+                var captured = new List<VirtualTx>
+                {
+                    new(arkTx.GetGlobalTransaction().GetHash().ToString(), arkTx.ToBase64(), null, ChainedTxType.Ark),
+                };
+                captured.AddRange(signedCheckpoints.Select(c => new VirtualTx(
+                    c.Psbt.GetGlobalTransaction().GetHash().ToString(), c.Psbt.ToBase64(), null, ChainedTxType.Checkpoint)));
+
+                await virtualTxStorage.UpsertVirtualTxsAsync(captured, cancellationToken);
+            }
         }
 
 
@@ -305,7 +409,7 @@ public static class TransactionHelpers
             IReadOnlyCollection<ArkCoin> arkCoins,
             ArkTxOut[] arkOutputs,
             CancellationToken cancellationToken,
-            TxOut? assetPacketOutput = null)
+            TxOut? extensionOutput = null)
         {
             if (arkOutputs.Any(o => o.Type is not ArkTxOutType.Vtxo))
                 throw new InvalidOperationException();
@@ -321,8 +425,8 @@ public static class TransactionHelpers
                 }
             }
 
-            TxOut[] allOutputs = assetPacketOutput is not null
-                ? [.. arkOutputs, assetPacketOutput]
+            TxOut[] allOutputs = extensionOutput is not null
+                ? [.. arkOutputs, extensionOutput]
                 : [.. arkOutputs];
 
             var (arkTx, checkpoints) =
@@ -361,7 +465,7 @@ public static class TransactionHelpers
         public async Task<PSBT> ConstructForfeitTx(ArkServerInfo arkServerInfo, ArkCoin coin, Coin? connector,
             IDestination forfeitDestination, CancellationToken cancellationToken = default)
         {
-            var p2A = Script.FromHex("51024e73"); // Standard Ark protocol marker
+            var p2A = Constants.ArkP2A;
 
             // Determine sighash based on whether we have a connector
             // Without connector: ANYONECANPAY|ALL (allows adding connector later)
@@ -371,24 +475,31 @@ public static class TransactionHelpers
                 : TaprootSigHash.Default;
 
             // Build forfeit transaction
-            var txBuilder = arkServerInfo.Network.CreateTransactionBuilder();
-            txBuilder.SetVersion(3);
-            txBuilder.SetFeeWeight(0);
-            txBuilder.DustPrevention = false;
-            txBuilder.ShuffleInputs = false;
-            txBuilder.ShuffleOutputs = false;
+            var txBuilder = CreateArkTxBuilder(arkServerInfo.Network);
             txBuilder.SetLockTime(coin.LockTime ?? LockTime.Zero);
 
-            // Add VTXO input
+            // Sequences must match arkd's tree.BuildForfeitTx exactly, or the txid
+            // diverges and the forfeit is rejected (INVALID_FORFEIT_TXS). arkd uses
+            // 0xFFFFFFFE on the VTXO input when the forfeit closure has a CLTV
+            // (non-final, so nLockTime applies) and 0xFFFFFFFF otherwise.
+            var hasLocktime = coin.LockTime is not null && coin.LockTime != LockTime.Zero;
+            var vtxoSequence = coin.Sequence
+                ?? (hasLocktime ? new Sequence(0xFFFFFFFE) : new Sequence(0xFFFFFFFF));
             txBuilder.AddCoin(coin, new CoinOptions()
             {
-                Sequence = coin.Sequence
+                Sequence = vtxoSequence
             });
 
-            // Add connector input if provided
+            // Connector is always final (0xFFFFFFFF), set explicitly: with a non-zero
+            // nLockTime and no explicit sequence, NBitcoin defaults inputs to
+            // Sequence.FeeSnipping (0xFFFFFFFE), which would skew
+            // the txid here.
             if (connector is not null)
             {
-                txBuilder.AddCoin(connector);
+                txBuilder.AddCoin(connector, new CoinOptions()
+                {
+                    Sequence = new Sequence(0xFFFFFFFF)
+                });
             }
 
             // Calculate total input amount based on connector + input OR assumed connector amount (dust)
@@ -410,7 +521,6 @@ public static class TransactionHelpers
                 : new[] { coin.TxOut };
 
             //sort the checkpoint coins based on the input index in arkTx
-
             var sortedCheckpointCoins =
                 forfeitTx
                     .Inputs
@@ -421,15 +531,47 @@ public static class TransactionHelpers
             var precomputedTransactionData =
                 gtx.PrecomputeTransactionData(sortedCheckpointCoins.OrderBy(x => x.Key).Select(x => x.Value).ToArray());
 
-            var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken)
-                ?? throw new InvalidOperationException(
-                    $"Cannot sign forfeit tx: wallet '{coin.WalletIdentifier}' has no signer " +
-                    "(watch-only wallet, or its remote signer transport is unavailable). " +
-                    "Watch-only wallets cannot participate in batches that demand a forfeit.");
+            var signer = await walletProvider.GetSignerOrThrowAsync(coin.WalletIdentifier, cancellationToken,
+                $"Cannot sign forfeit tx: wallet '{coin.WalletIdentifier}' has no signer. Watch-only wallets cannot participate in batches that demand a forfeit.");
 
             await PsbtHelpers.SignAndFillPsbt(signer, coin, forfeitTx, precomputedTransactionData, sighash, cancellationToken);
 
             return forfeitTx;
         }
+    }
+    
+    /// <summary>
+    /// Builds a version-2 transaction that spends a single P2TR output via a script-path
+    /// unilateral exit (CSV timelock). Fee is deducted from the output amount.
+    /// </summary>
+    public static Transaction BuildCsvSpendTransaction(
+        OutPoint vtxoOutpoint,
+        TxOut vtxoTxOut,
+        BitcoinAddress destinationAddress,
+        Sequence csvDelay,
+        TapScript tapScript,
+        ControlBlock controlBlock,
+        FeeRate feeRate,
+        Network network)
+    {
+        var tx = Transaction.Create(network);
+        tx.Version = 2;
+
+        var input = tx.Inputs.Add(vtxoOutpoint);
+        input.Sequence = csvDelay;
+
+        // P2TR script-path spend: ~64 sig + script + control block ≈ 150-200 wu
+        var witnessSize = 64 + tapScript.Script.Length + controlBlock.ToBytes().Length + 10;
+        var txBaseSize = 10 + 41 + 43; // version + input + output overhead
+        var vsize = txBaseSize + (witnessSize + 3) / 4;
+        var fee = feeRate.GetFee(vsize);
+
+        var outputAmount = vtxoTxOut.Value - fee;
+        if (outputAmount <= Money.Zero)
+            throw new InvalidOperationException(
+                $"VTXO amount ({vtxoTxOut.Value}) is too small to cover fees ({fee})");
+
+        tx.Outputs.Add(new TxOut(outputAmount, destinationAddress));
+        return tx;
     }
 }

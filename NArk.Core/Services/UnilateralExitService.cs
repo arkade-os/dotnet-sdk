@@ -8,6 +8,7 @@ using NArk.Abstractions.Wallets;
 using NArk.Core.Contracts;
 using NArk.Core.Exit;
 using NArk.Core.Transport;
+using NArk.Core.VirtualTxs;
 using NBitcoin;
 
 namespace NArk.Core.Services;
@@ -25,6 +26,7 @@ public class UnilateralExitService(
     IBitcoinBlockchain blockchain,
     IWalletProvider walletProvider,
     VirtualTxService virtualTxService,
+    IVtxoChainProofProvider proofProvider,
     IFeeWallet? feeWallet = null,
     ILogger<UnilateralExitService>? logger = null)
 {
@@ -181,18 +183,29 @@ public class UnilateralExitService(
     // across restarts. Gain: zero exit-specific persistence cost.
 
     /// <summary>
-    /// One-shot, stateless equivalent of <see cref="StartExitAsync"/> +
+    /// Stateless equivalent of <see cref="StartExitAsync"/> +
     /// the Broadcasting phase of <see cref="ProgressExitsAsync"/>: fetches the
-    /// virtual-tx chain from arkd, broadcasts every off-chain row that isn't
+    /// virtual-tx chain from arkd, broadcasts the next off-chain row that isn't
     /// already on-chain, and returns an <see cref="ExitPlan"/> the caller
     /// persists in whatever form they prefer.
     /// </summary>
     /// <remarks>
     /// The SDK doesn't write anything exit-specific in this call —
     /// <see cref="IExitSessionStorage"/> and <see cref="IVirtualTxStorage"/>
-    /// are not touched. Once the leaf-tx confirms on-chain and the CSV
-    /// timelock has matured, feed the returned <see cref="ExitPlan"/> back
-    /// to <see cref="ClaimMaturedExitAsync"/> to finalise the exit.
+    /// are not touched.
+    /// <para>
+    /// Broadcasts at most one off-chain row per call, not the whole chain.
+    /// Bitcoin Core's TRUC/v3 policy (BIP 431) caps a transaction at 1
+    /// unconfirmed descendant; since every off-chain row gets its own CPFP
+    /// child, broadcasting two chained rows before the first confirms would
+    /// give it a second unconfirmed descendant and get rejected — the same
+    /// constraint go-sdk and ts-sdk's unroll sessions are built around.
+    /// Callers must call this repeatedly (polling <c>GetTxStatusAsync</c> or
+    /// simply retrying on an interval) until the whole chain has confirmed.
+    /// </para>
+    /// Once the leaf-tx confirms on-chain and the CSV timelock has matured,
+    /// feed the returned <see cref="ExitPlan"/> to <see cref="ClaimMaturedExitAsync"/>
+    /// to finalise the exit.
     /// </remarks>
     public async Task<ExitPlan> BroadcastExitChainAsync(
         string walletId,
@@ -201,9 +214,10 @@ public class UnilateralExitService(
         CancellationToken cancellationToken = default)
     {
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
-
-        // 1. Fetch the chain fresh from arkd — no virtualTxStorage hit.
-        var chainEntries = await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+        
+        var proof = await proofProvider.TryCreateProofAsync(vtxoOutpoint, cancellationToken);
+        var chainEntries = await transport.GetVtxoChainAsync(
+            vtxoOutpoint, proof?.Proof, proof?.Message, cancellationToken);
         if (chainEntries.Count == 0)
             throw new InvalidOperationException(
                 $"arkd returned an empty virtual-tx chain for VTXO {vtxoOutpoint}; " +
@@ -227,31 +241,53 @@ public class UnilateralExitService(
             .Zip(hexList, (id, hex) => (id, hex))
             .ToDictionary(t => t.id, t => t.hex);
 
-        // 3. Walk the chain root→leaf, broadcast each off-chain row that
-        //    isn't already in mempool / confirmed. Commitment rows are
-        //    skipped (already on-chain by the operator at batch finalize).
-        string? leafTxid = null;
-        foreach (var entry in chainEntries)
+        // 3. arkd's GetVtxoChainAsync returns the chain leaf→root (the VTXO's
+        //    own tx first, walking back via ancestry to the Commitment
+        //    anchor last) — the leaf is therefore identified by its txid
+        //    matching the VTXO's own outpoint, not by position in the list.
+        var leafTxid = chainEntries
+            .FirstOrDefault(e => e.Txid == vtxoOutpoint.Hash.ToString())?.Txid;
+
+        // Broadcast at most ONE off-chain row per call, root→leaf (chainEntries
+        // is leaf→root, so reverse), skipping already-confirmed/in-mempool rows
+        // and Commitment (already on-chain by the operator at batch finalize).
+        //
+        // Bitcoin Core's TRUC/v3 policy (BIP 431) caps a v3 tx at 1 unconfirmed
+        // descendant. Every off-chain row gets its own CPFP child, so a row
+        // already has one unconfirmed descendant the moment it's broadcast —
+        // broadcasting the *next* row (which spends this one's output) in the
+        // same call would make it a second, and get rejected. go-sdk/ts-sdk
+        // avoid this by only ever having one unconfirmed link in flight:
+        // broadcast one, then wait for it to fully confirm before touching
+        // the next. Callers must call this repeatedly (like ProgressExitsAsync)
+        // until every row confirms, rather than expecting one call to finish
+        // the whole chain.
+        foreach (var entry in chainEntries.Reverse())
         {
             if (entry.Type == ChainedTxType.Commitment)
                 continue;
 
-            leafTxid = entry.Txid;
             if (!hexByTxid.TryGetValue(entry.Txid, out var hex))
                 throw new InvalidOperationException(
                     $"Missing hex for virtual tx {entry.Txid} in chain of VTXO {vtxoOutpoint}");
 
             var txid = uint256.Parse(entry.Txid);
             var status = await blockchain.GetTxStatusAsync(txid, cancellationToken);
-            if (status.Confirmed || status.InMempool)
+            if (status.Confirmed)
             {
-                logger?.LogDebug(
-                    "Stateless exit: virtual tx {Txid} already {Status}, skipping broadcast",
-                    entry.Txid, status.Confirmed ? "confirmed" : "in mempool");
+                logger?.LogDebug("Stateless exit: virtual tx {Txid} already confirmed", entry.Txid);
                 continue;
             }
 
-            var tx = ParseVirtualTx(hex, serverInfo.Network, entry.Type);
+            if (status.InMempool)
+            {
+                logger?.LogDebug(
+                    "Stateless exit: virtual tx {Txid} in mempool, waiting for confirmation before broadcasting further",
+                    entry.Txid);
+                break;
+            }
+
+            var tx = VirtualTxFinalizer.Parse(hex, serverInfo.Network);
             var success = await BroadcastWithCpfpAsync(tx, cancellationToken);
             if (!success)
                 throw new InvalidOperationException(
@@ -260,20 +296,27 @@ public class UnilateralExitService(
             logger?.LogInformation(
                 "Stateless exit: broadcast virtual tx {Txid} for VTXO {Outpoint}",
                 entry.Txid, vtxoOutpoint);
+            break;
         }
 
         if (leafTxid is null)
             throw new InvalidOperationException(
-                $"Virtual-tx chain for VTXO {vtxoOutpoint} contained no off-chain rows " +
-                "— nothing to broadcast.");
+                $"Virtual-tx chain for VTXO {vtxoOutpoint} did not contain a row matching " +
+                "the VTXO's own txid — cannot identify the leaf tx.");
 
+        var exitDelay = serverInfo.UnilateralExit;
         return new ExitPlan(
             WalletId: walletId,
             VtxoTxid: vtxoOutpoint.Hash.ToString(),
             VtxoVout: vtxoOutpoint.N,
             ClaimAddress: claimAddress.ToString(),
             LeafTxid: leafTxid,
-            CsvDelay: (int)serverInfo.UnilateralExit.Value);
+            // Only meaningful for a height-based delay; a time-based one is
+            // 512-second units with BIP-68 bit 22 set, not a block count.
+            CsvDelay: exitDelay.IsRelativeLock && exitDelay.LockType == SequenceLockType.Height
+                ? exitDelay.LockHeight
+                : 0,
+            ExitSequence: exitDelay.Value);
     }
 
     /// <summary>
@@ -282,14 +325,27 @@ public class UnilateralExitService(
     /// <paramref name="plan"/> is confirmed and that the CSV timelock has
     /// matured, then builds, signs, and broadcasts the claim transaction.
     /// </summary>
+    /// <remarks>
+    /// The server's unilateral-exit delay is a BIP-68 relative timelock and may
+    /// be height- or time-based. Maturity is evaluated accordingly (heights for
+    /// the former, median time past for the latter) — see
+    /// <see cref="Exit.CsvMaturity"/>.
+    /// </remarks>
     /// <returns>
     /// Txid of the broadcast claim transaction, or <c>null</c> when CSV
     /// hasn't matured yet (caller should poll again later).
     /// </returns>
     /// <exception cref="InvalidOperationException">
     /// VTXO / contract / signer state required to build the claim is
-    /// unavailable or the leaf tx is not yet confirmed at all (callers should
-    /// distinguish "not yet" from a hard failure via the message).
+    /// unavailable, the leaf tx is not yet confirmed at all (callers should
+    /// distinguish "not yet" from a hard failure via the message), or the
+    /// exit delay is time-based and the backend could not resolve the leaf
+    /// block's median time past.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// The exit delay is time-based and the configured
+    /// <see cref="IBitcoinBlockchain"/> does not implement
+    /// <see cref="IBitcoinBlockchain.GetMedianTimePastAsync"/>.
     /// </exception>
     public async Task<string?> ClaimMaturedExitAsync(
         ExitPlan plan,
@@ -305,15 +361,16 @@ public class UnilateralExitService(
                 $"Leaf tx {plan.LeafTxid} is not yet confirmed; cannot claim. " +
                 "Wait for confirmation and retry.");
 
-        // 2. Verify CSV matured.
-        var chainTime = await blockchain.GetChainTime(cancellationToken);
-        var matureAt = leafStatus.BlockHeight.Value + plan.CsvDelay;
-        if (chainTime.Height < matureAt)
+        // 2. Verify CSV matured. The delay can be height- or time-based
+        //    (BIP 68); CsvMaturity branches on the lock type rather than doing
+        //    block arithmetic with the raw nSequence.
+        var maturity = await CsvMaturity.EvaluateAsync(
+            plan.ExitDelay, leafStatus.BlockHeight.Value, blockchain, cancellationToken);
+        if (!maturity.IsMatured)
         {
             logger?.LogDebug(
-                "Stateless claim: CSV not yet matured for VTXO {Txid}:{Vout} " +
-                "({Current}/{Matures})",
-                plan.VtxoTxid, plan.VtxoVout, chainTime.Height, matureAt);
+                "Stateless claim: CSV not yet matured for VTXO {Txid}:{Vout} ({Progress})",
+                plan.VtxoTxid, plan.VtxoVout, maturity.Progress);
             return null;
         }
 
@@ -353,10 +410,7 @@ public class UnilateralExitService(
             throw new InvalidOperationException(
                 $"arkd didn't return hex for leaf tx {plan.LeafTxid}; cannot build claim.");
 
-        var leafChainType = (await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken))
-            .LastOrDefault(e => e.Type is ChainedTxType.Tree or ChainedTxType.Ark or ChainedTxType.Checkpoint)?.Type
-            ?? ChainedTxType.Unspecified;
-        var parsedLeafTx = ParseVirtualTx(leafHexList[0], serverInfo.Network, leafChainType);
+        var parsedLeafTx = VirtualTxFinalizer.Parse(leafHexList[0], serverInfo.Network);
         var vtxoTxOut = parsedLeafTx.Outputs.AsIndexedOutputs()
             .FirstOrDefault(o => o.TxOut.ScriptPubKey.ToHex() == vtxo.Script)
             ?? throw new InvalidOperationException(
@@ -365,7 +419,7 @@ public class UnilateralExitService(
         // 5. Build, sign, broadcast claim.
         var claimAddress = BitcoinAddress.Create(plan.ClaimAddress, serverInfo.Network);
         var feeRate = await blockchain.EstimateFeeRateAsync(6, cancellationToken);
-        var claimTx = BuildClaimTransaction(
+        var claimTx = Helpers.TransactionHelpers.BuildCsvSpendTransaction(
             vtxoOutpoint, vtxoTxOut.TxOut, claimAddress, serverInfo.UnilateralExit,
             tapScript, controlBlock, feeRate, serverInfo.Network);
 
@@ -411,10 +465,17 @@ public class UnilateralExitService(
             var serverInfo = await transport.GetServerInfoAsync(ct);
             var network = serverInfo.Network;
 
+            // arkd's GetVtxoChainAsync (and thus the stored branch) is
+            // ordered leaf→root (the VTXO's own tx first, walking back to
+            // the Commitment anchor). Broadcasting must go the other way —
+            // each tx's parent needs to be on-chain/in-mempool before the
+            // mempool will accept it — so reverse to root→leaf here.
+            var orderedBranch = branch.Reverse().ToList();
+
             // Process from NextTxIndex onwards
-            for (var i = session.NextTxIndex; i < branch.Count; i++)
+            for (var i = session.NextTxIndex; i < orderedBranch.Count; i++)
             {
-                var vtx = branch[i];
+                var vtx = orderedBranch[i];
 
                 // Commitment is the on-chain anchor — already published by
                 // the operator at batch finalize. Nothing to broadcast for
@@ -454,15 +515,55 @@ public class UnilateralExitService(
                     return;
                 }
 
-                // Not seen — broadcast. arkd's GetVirtualTxs returns the
-                // tree txs as PSBT-encoded strings (the same format that
-                // BatchSession parses across the rest of the codebase) —
-                // not raw consensus-encoded transactions. Parse + extract.
-                var tx = ParseVirtualTx(vtx.Hex, network, vtx.Type);
+                // Wait for checkpoint
+                if (vtx.Type == ChainedTxType.Checkpoint)
+                {
+                    logger?.LogDebug(
+                        "Checkpoint {Txid} not yet published by the server; waiting for arkd to broadcast it",
+                        vtx.Txid);
+                    await UpdateSession(session with
+                    {
+                        NextTxIndex = i,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    }, ct);
+                    return;
+                }
+
+
+                // Broadcast from the stored hex. The auto-fetch captures a
+                // broadcast-ready copy while the operator is online (self-healing
+                // in VirtualTxService), so a settled VTXO's exit broadcasts
+                // straight from storage — no operator call here, which is the
+                // whole point.
+                var tx = VirtualTxFinalizer.Parse(vtx.Hex, network);
                 var success = await BroadcastWithCpfpAsync(tx, ct);
 
                 if (!success)
                 {
+                    // Stored copy didn't broadcast — refetch a fresh copy from the
+                    // operator and persist it, so this retry (and future exits)
+                    // use a usable copy. Only reached when the persisted copy is
+                    // stale/unusable; a signed capture broadcasts on the first try.
+                    try
+                    {
+                        var freshHex = await transport.GetVirtualTxsAsync([vtx.Txid], ct);
+                        if (freshHex.Count > 0 && !string.IsNullOrEmpty(freshHex[0]) && freshHex[0] != vtx.Hex)
+                        {
+                            await virtualTxStorage.UpsertVirtualTxsAsync(
+                                [new VirtualTx(vtx.Txid, freshHex[0], vtx.ExpiresAt, vtx.Type)], ct);
+                            logger?.LogWarning(
+                                "Stored hex for {Type} tx {Txid} failed to broadcast; refetched a fresh copy from " +
+                                "the operator and persisted it (persisted capture was stale/unusable)",
+                                vtx.Type, vtx.Txid);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogDebug(ex,
+                            "Operator refetch after broadcast failure failed for {Type} tx {Txid}",
+                            vtx.Type, vtx.Txid);
+                    }
+
                     var retries = session.RetryCount + 1;
                     logger?.LogWarning(
                         "Failed to broadcast virtual tx {Txid} for session {SessionId} (retry {Retry}/{Max})",
@@ -485,7 +586,25 @@ public class UnilateralExitService(
                 }
 
                 logger?.LogInformation("Broadcast virtual tx {Txid} ({Index}/{Total}) for session {SessionId}",
-                    vtx.Txid, i + 1, branch.Count, session.Id);
+                    vtx.Txid, i + 1, orderedBranch.Count, session.Id);
+
+                // Bitcoin Core's TRUC/v3 policy (BIP 431) caps a v3 tx at 1
+                // unconfirmed descendant. This tx just got its own CPFP
+                // child, so it already has one — broadcasting the *next*
+                // tx in the chain right now (which spends this tx's output)
+                // would make it a second unconfirmed descendant and get
+                // rejected. go-sdk/ts-sdk avoid this by only ever having one
+                // unconfirmed link in flight: broadcast one, then wait for
+                // it to fully confirm before touching the next. Pause here;
+                // the next ProgressExitsAsync call re-checks this same
+                // index and only proceeds once it's confirmed.
+                await UpdateSession(session with
+                {
+                    NextTxIndex = i,
+                    RetryCount = 0,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                }, ct);
+                return;
             }
 
             // All txs broadcast/confirmed — transition to AwaitingCsvDelay
@@ -494,7 +613,7 @@ public class UnilateralExitService(
             await UpdateSession(session with
             {
                 State = ExitSessionState.AwaitingCsvDelay,
-                NextTxIndex = branch.Count,
+                NextTxIndex = orderedBranch.Count,
                 UpdatedAt = DateTimeOffset.UtcNow
             }, ct);
         }
@@ -574,8 +693,15 @@ public class UnilateralExitService(
                 return;
             }
 
-            // Check that the leaf tx (last in branch) is confirmed
-            var leafTx = branch[^1];
+            // Check that the leaf tx (the VTXO's own tx — arkd returns the
+            // chain leaf-first, so it's identified by txid, not position)
+            // is confirmed.
+            var leafTx = branch.FirstOrDefault(tx => tx.Txid == session.VtxoTxid);
+            if (leafTx is null)
+            {
+                await FailSession(session, "Leaf tx not found in virtual tx branch", ct);
+                return;
+            }
             var leafTxid = uint256.Parse(leafTx.Txid);
             var leafStatus = await blockchain.GetTxStatusAsync(leafTxid, ct);
 
@@ -586,19 +712,20 @@ public class UnilateralExitService(
                 return;
             }
 
-            // Get server info for CSV delay
+            // Get server info for CSV delay. It's a BIP-68 relative timelock,
+            // which the operator may configure either block-based or time-based
+            // (arkd's production default is 24 h) — CsvMaturity branches on the
+            // lock type rather than treating the raw nSequence as a block count.
             var serverInfo = await transport.GetServerInfoAsync(ct);
-            var csvDelay = serverInfo.UnilateralExit.Value;
-
-            // Check if CSV delay has passed
-            var chainTime = await blockchain.GetChainTime(ct);
             var confirmHeight = leafStatus.BlockHeight.Value;
+            var maturity = await CsvMaturity.EvaluateAsync(
+                serverInfo.UnilateralExit, confirmHeight, blockchain, ct);
 
-            if (chainTime.Height >= confirmHeight + csvDelay)
+            if (maturity.IsMatured)
             {
                 logger?.LogInformation(
-                    "CSV delay passed for session {SessionId} (confirm={ConfirmH}, current={CurrentH}, csv={Csv})",
-                    session.Id, confirmHeight, chainTime.Height, csvDelay);
+                    "CSV delay passed for session {SessionId} (leaf confirmed at {ConfirmH}, {Progress})",
+                    session.Id, confirmHeight, maturity.Progress);
 
                 await UpdateSession(session with
                 {
@@ -608,10 +735,9 @@ public class UnilateralExitService(
             }
             else
             {
-                var remaining = confirmHeight + csvDelay - chainTime.Height;
                 logger?.LogDebug(
-                    "CSV delay not yet passed for session {SessionId}, {Remaining} blocks remaining",
-                    session.Id, remaining);
+                    "CSV delay not yet passed for session {SessionId} ({Progress})",
+                    session.Id, maturity.Progress);
             }
         }
         catch (Exception ex)
@@ -677,16 +803,18 @@ public class UnilateralExitService(
                 return;
             }
 
-            // Get the leaf tx to find the VTXO output
+            // Get the leaf tx to find the VTXO output. arkd returns the
+            // chain leaf-first, so the leaf is identified by txid matching
+            // the VTXO's own outpoint, not by position in the branch.
             var branch = await virtualTxStorage.GetBranchAsync(vtxoOutpoint, ct);
-            var leafTx = branch.Count > 0 ? branch[^1] : null;
+            var leafTx = branch.FirstOrDefault(tx => tx.Txid == session.VtxoTxid);
             if (leafTx?.Hex is null)
             {
                 await FailSession(session, "Leaf tx hex not available", ct);
                 return;
             }
 
-            var parsedLeafTx = ParseVirtualTx(leafTx.Hex, serverInfo.Network, leafTx.Type);
+            var parsedLeafTx = VirtualTxFinalizer.Parse(leafTx.Hex, serverInfo.Network);
 
             // Find the VTXO output in the leaf tx
             var vtxoTxOut = parsedLeafTx.Outputs.AsIndexedOutputs()
@@ -701,7 +829,7 @@ public class UnilateralExitService(
             var claimAddress = BitcoinAddress.Create(session.ClaimAddress, serverInfo.Network);
             var feeRate = await blockchain.EstimateFeeRateAsync(6, ct);
 
-            var claimTx = BuildClaimTransaction(
+            var claimTx = Helpers.TransactionHelpers.BuildCsvSpendTransaction(
                 vtxoOutpoint,
                 vtxoTxOut.TxOut,
                 claimAddress,
@@ -806,111 +934,6 @@ public class UnilateralExitService(
         catch (Exception ex)
         {
             logger?.LogError(ex, "Error checking claim tx for session {SessionId}", session.Id);
-        }
-    }
-
-    private static Transaction BuildClaimTransaction(
-        OutPoint vtxoOutpoint,
-        TxOut vtxoTxOut,
-        BitcoinAddress claimAddress,
-        Sequence csvDelay,
-        TapScript tapScript,
-        ControlBlock controlBlock,
-        FeeRate feeRate,
-        Network network)
-    {
-        var claimTx = Transaction.Create(network);
-        claimTx.Version = 2;
-
-        // Input: VTXO output with CSV sequence
-        var input = claimTx.Inputs.Add(vtxoOutpoint);
-        input.Sequence = csvDelay;
-
-        // Estimate size for fee calculation
-        // P2TR script-path spend: ~64 sig + script + control block ≈ 150-200 wu
-        var witnessSize = 64 + tapScript.Script.Length + controlBlock.ToBytes().Length + 10;
-        var txBaseSize = 10 + 41 + 43; // version + input + output overhead
-        var vsize = txBaseSize + (witnessSize + 3) / 4;
-        var fee = feeRate.GetFee(vsize);
-
-        var claimAmount = vtxoTxOut.Value - fee;
-        if (claimAmount <= Money.Zero)
-            throw new InvalidOperationException(
-                $"VTXO amount ({vtxoTxOut.Value}) is too small to cover fees ({fee})");
-
-        claimTx.Outputs.Add(new TxOut(claimAmount, claimAddress));
-
-        return claimTx;
-    }
-
-    /// <summary>
-    /// Parse a virtual tx as returned by arkd's <c>GetVirtualTxs</c>
-    /// indexer endpoint into a signed, broadcastable transaction.
-    /// </summary>
-    /// <remarks>
-    /// arkd emits the tx as a PSBT-encoded string and the witness layout
-    /// depends on which kind of tx we're looking at — mirroring the
-    /// approach in arkade-os/ts-sdk's <c>Unroll.Session</c>:
-    ///
-    /// - <c>Tree</c>: cosigned via the taproot key-path (MuSig2). The
-    ///   aggregated Schnorr signature is carried in
-    ///   <c>PSBT_IN_TAP_KEY_SIG</c> (<see cref="PSBTInput.TaprootKeySignature"/>).
-    ///   The final witness is just <c>[sig]</c>; we synthesize it
-    ///   manually because the PSBT doesn't carry <c>witness_utxo</c>
-    ///   (which NBitcoin's <c>Finalize()</c> requires).
-    /// - <c>Ark</c> / <c>Checkpoint</c> / fallback: try standard
-    ///   <c>Finalize() + ExtractTransaction()</c>; if that throws (e.g.
-    ///   missing prevouts), fall back to lifting <c>FinalScriptWitness</c>
-    ///   straight off each input.
-    /// </remarks>
-    private static Transaction ParseVirtualTx(string hex, Network network, ChainedTxType type)
-    {
-        var psbt = PSBT.Parse(hex, network);
-
-        if (type == ChainedTxType.Tree)
-        {
-            var tx = psbt.GetGlobalTransaction();
-            for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
-            {
-                var sig = psbt.Inputs[i].TaprootKeySignature;
-                if (sig is null)
-                {
-                    throw new InvalidOperationException(
-                        $"Tree tx {tx.GetHash()} input {i} is missing the MuSig2 " +
-                        "taproot key-path signature (PSBT_IN_TAP_KEY_SIG); arkd should " +
-                        "have populated it during the batch round.");
-                }
-                // The `true` flag tells NBitcoin these bytes are stack
-                // pushes, not a pre-serialized witness — same idiom as
-                // ChainSwapMusigSession / P2ACpfpBuilder elsewhere in
-                // the codebase. Without it the constructor tries to
-                // deserialize the sig bytes as a witness with a count
-                // prefix and throws "No more byte to read".
-                tx.Inputs[i].WitScript = new WitScript(new[] { sig.ToBytes() }, true);
-            }
-            return tx;
-        }
-
-        // Ark / Checkpoint / Unspecified: try the standard PSBT finalize
-        // path first. If the PSBT lacks witness_utxo it'll throw — fall
-        // back to lifting whatever FinalScriptWitness arkd populated.
-        try
-        {
-            psbt.Finalize();
-            return psbt.ExtractTransaction();
-        }
-        catch (PSBTException)
-        {
-            var tx = psbt.GetGlobalTransaction();
-            for (var i = 0; i < psbt.Inputs.Count && i < tx.Inputs.Count; i++)
-            {
-                var psbtInput = psbt.Inputs[i];
-                if (psbtInput.FinalScriptWitness is not null)
-                    tx.Inputs[i].WitScript = psbtInput.FinalScriptWitness;
-                if (psbtInput.FinalScriptSig is not null)
-                    tx.Inputs[i].ScriptSig = psbtInput.FinalScriptSig;
-            }
-            return tx;
         }
     }
 

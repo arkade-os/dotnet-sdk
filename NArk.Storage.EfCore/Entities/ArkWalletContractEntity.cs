@@ -13,6 +13,13 @@ public class ArkWalletContractEntity
     public ContractActivityState ActivityState { get; set; } = ContractActivityState.Inactive;
     public string Type { get; set; } = "";
 
+    /// <summary>
+    /// The effective layer this contract's funds live on (on-chain vs off-chain).
+    /// Indexed so sync/recovery/sweep can filter by scope in SQL. Defaults to
+    /// <see cref="ContractScope.Offchain"/> for rows written before this column existed.
+    /// </summary>
+    public ContractScope Scope { get; set; } = ContractScope.Offchain;
+
     [Column("ContractData", TypeName = "jsonb")]
     public string ContractDataJson { get; set; } = "{}";
 
@@ -44,6 +51,8 @@ public class ArkWalletContractEntity
     {
         builder.ToTable(options.WalletContractsTable, options.Schema);
         builder.HasKey(w => new { w.Script, w.WalletId });
+
+        builder.HasIndex(w => w.Scope);
 
         builder.HasOne(w => w.Wallet)
             .WithMany(w => w.Contracts)

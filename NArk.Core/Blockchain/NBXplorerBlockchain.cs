@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Blockchain;
 using NBitcoin;
-using NBitcoin.RPC;
 using NBXplorer;
 using NBXplorer.Models;
 using Newtonsoft.Json;
@@ -65,6 +64,23 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         }
     }
 
+    public async Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
+    {
+        var rpc = _explorerClient.RPCClient;
+        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, blockHeight);
+        if (hashResponse.Error is not null)
+            return null;
+        var blockHash = (string?)hashResponse.Result;
+        if (blockHash is null)
+            return null;
+
+        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, blockHash, true);
+        if (headerResponse.Error is not null)
+            return null;
+        var medianTime = (long?)headerResponse.Result?["mediantime"];
+        return medianTime is null ? null : DateTimeOffset.FromUnixTimeSeconds(medianTime.Value);
+    }
+
     // ── UTXO lookup (NBXplorer TrackedSource) ───────────────────────
 
     public async Task<IReadOnlyList<BoardingUtxo>> GetUtxosAsync(string address, CancellationToken cancellationToken = default)
@@ -121,15 +137,42 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     {
         try
         {
+            // maxfeerate=0 (unlimited) + maxburnamount=21e6 so Ark P2A anchor
+            // outputs (non-zero value, non-standard script) are not rejected by
+            // Bitcoin Core's burn-output check (default maxburnamount=0).
             var response = await _explorerClient.RPCClient.SendCommandAsync(
                 "submitpackage",
                 cancellationToken,
-                new object[] { new[] { parent.ToHex(), child.ToHex() } });
+                new[] { parent.ToHex(), child.ToHex() },
+                0m,
+                21_000_000m);
 
             if (response.Error is not null)
             {
                 _logger?.LogWarning("submitpackage failed: {Error}", response.Error.Message);
                 return await BroadcastSequentialFallbackAsync(parent, child, cancellationToken);
+            }
+
+            // submitpackage returns HTTP/RPC success even when individual txs in the package are rejected
+            var packageMsg = (string?)response.Result?["package_msg"];
+            if (!string.Equals(packageMsg, "success", StringComparison.OrdinalIgnoreCase))
+            {
+                var txErrors = new List<string>();
+                if (response.Result?["tx-results"] is Newtonsoft.Json.Linq.JObject txResults)
+                {
+                    foreach (var kv in txResults)
+                    {
+                        var err = (string?)kv.Value?["error"];
+                        if (!string.IsNullOrEmpty(err))
+                            txErrors.Add($"{kv.Key}: {err}");
+                    }
+                }
+
+                _logger?.LogWarning(
+                    "submitpackage rejected: package_msg={Msg}; parent={Parent}; tx-errors=[{TxErrors}]",
+                    packageMsg ?? "(none)", parent.GetHash(),
+                    txErrors.Count > 0 ? string.Join("; ", txErrors) : "none reported");
+                return false;
             }
 
             _logger?.LogDebug("Package broadcast successful: parent={Parent}, child={Child}",
@@ -147,12 +190,39 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     private async Task<bool> BroadcastSequentialFallbackAsync(Transaction parent, Transaction child, CancellationToken ct)
     {
-        var parentOk = await BroadcastAsync(parent, ct);
+        // Use direct RPC for the parent so we can pass maxburnamount — NBXplorer's
+        // HTTP broadcast endpoint does not expose that parameter.
+        var parentOk = await BroadcastRpcAsync(parent, ct);
         if (!parentOk) return false;
         var childOk = await BroadcastAsync(child, ct);
         if (!childOk)
             _logger?.LogDebug("Sequential fallback: child CPFP broadcast failed, but parent was accepted");
         return true;
+    }
+
+    // Broadcasts via direct Bitcoin Core RPC with maxburnamount set so Ark P2A
+    // anchor outputs are not rejected by the burn-output check.
+    private async Task<bool> BroadcastRpcAsync(Transaction tx, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _explorerClient.RPCClient.SendCommandAsync(
+                "sendrawtransaction", ct,
+                tx.ToHex(),
+                0m,
+                21_000_000m);
+            if (response.Error is not null)
+            {
+                _logger?.LogWarning("Broadcast failed for tx {Txid}: {Error}", tx.GetHash(), response.Error.Message);
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(0, ex, "Failed to broadcast tx {Txid}", tx.GetHash());
+            return false;
+        }
     }
 
     // ── Tx status (RPC getrawtransaction) ────────────────────────────
@@ -168,12 +238,26 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
                 return new TxStatus(false, null, false);
 
             var confirmations = (int?)response.Result?["confirmations"] ?? 0;
-            var blockHeight = (uint?)(long?)response.Result?["blockheight"];
+            if (confirmations <= 0)
+                return new TxStatus(false, null, true); // In mempool
 
-            if (confirmations > 0)
-                return new TxStatus(true, blockHeight, false);
+            // Bitcoin Core's getrawtransaction does not return a "blockheight"
+            // field — only "blockhash" + "confirmations". Resolve the height
+            // via the block header rather than trusting a field that never
+            // populates (previously left BlockHeight permanently null, which
+            // stalls any caller — e.g. UnilateralExitService's CSV maturity
+            // check — that requires a non-null height to proceed).
+            var blockHash = (string?)response.Result?["blockhash"];
+            uint? blockHeight = null;
+            if (blockHash is not null)
+            {
+                var headerResponse = await _explorerClient.RPCClient.SendCommandAsync(
+                    "getblockheader", cancellationToken, blockHash, true);
+                if (headerResponse.Error is null)
+                    blockHeight = (uint?)(long?)headerResponse.Result?["height"];
+            }
 
-            return new TxStatus(false, null, true); // In mempool
+            return new TxStatus(true, blockHeight, false);
         }
         catch
         {

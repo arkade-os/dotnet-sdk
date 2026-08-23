@@ -12,13 +12,15 @@ using NArk.Core.Wallet;
 using NArk.Core.Payments;
 using NArk.Hosting;
 using NArk.Storage.EfCore.Hosting;
-using NArk.Swaps.Hosting;
 using NArk.Wallet.Client;
 using NArk.Wallet.Client.Services;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
+
+builder.Logging.AddFilter("NArk", LogLevel.Debug);
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning);
 
 // ── Network ──
 var networkConfig = ArkNetworkConfig.Mutinynet;
@@ -48,19 +50,38 @@ builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.BoltzClient>(sp =>
     sp.GetRequiredService<NArk.Swaps.Boltz.Client.CachedBoltzClient>());
 
 // ── SDK infrastructure ──
+builder.Services.Configure<NArk.Core.Models.Options.SimpleIntentSchedulerOptions>(opts =>
+{
+    // Trigger re-boarding for VTXOs expiring within 7 days.
+    // Boarding UTXOs (Unrolled=true) are always batched regardless of this threshold.
+    opts.Threshold = TimeSpan.FromDays(1);
+});
+
+if (networkConfig == ArkNetworkConfig.Mutinynet)
+{
+    builder.Services.Configure<NArk.Core.Models.Options.IntentGenerationServiceOptions>(opts =>
+    {
+        opts.PollInterval = TimeSpan.FromSeconds(30);
+    });
+}
+
 builder.Services.AddSingleton<IIntentScheduler, SimpleIntentScheduler>();
 builder.Services.AddSingleton<ISafetyService, WasmSafetyService>();
 builder.Services.AddSingleton<IBitcoinBlockchain>(sp =>
 {
-    if (!string.IsNullOrWhiteSpace(networkConfig.ExplorerUri))
+    if (!string.IsNullOrWhiteSpace(networkConfig.EsploraUri))
     {
-        var baseUri = networkConfig.ExplorerUri.TrimEnd('/') + "/api/";
+        var baseUri = networkConfig.EsploraUri.TrimEnd('/') + "/";
         return new EsploraBlockchain(new Uri(baseUri));
     }
     return new FallbackChainTimeProvider();
 });
 builder.Services.AddSingleton<IWalletProvider, DefaultWalletProvider>();
 builder.Services.AddSingleton<IAssetManager, AssetManager>();
+
+// ── Boarding UTXO sync (polls the chain for confirmed boarding UTXOs) ──
+builder.Services.AddSingleton<BoardingUtxoSyncService>();
+builder.Services.AddSingleton<BoardingUtxoPollService>();
 
 // ── Wallet service (replaces gateway API client) ──
 builder.Services.AddSingleton<ArkWalletService>();

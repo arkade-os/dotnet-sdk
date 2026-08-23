@@ -8,6 +8,7 @@ using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
+using NArk.Swaps.Models;
 using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Crypto;
@@ -17,7 +18,7 @@ using KeyExtensions = NArk.Swaps.Extensions.KeyExtensions;
 
 namespace NArk.Swaps.Boltz;
 
-internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport clientTransport)
+internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport clientTransport, BoltzLimitsValidator limitsValidator)
 {
     private static Sequence ParseSequence(long val)
     {
@@ -73,6 +74,8 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
 
     public async Task<ReverseSwapResult> CreateReverseSwap(CreateInvoiceParams createInvoiceRequest,
         OutputDescriptor receiver,
+        byte[]? preimage = null,
+        ReverseSwapFeePayer feePayer = ReverseSwapFeePayer.Recipient,
         CancellationToken cancellationToken = default)
     {
         var extractedReceiver = receiver.Extract();
@@ -80,18 +83,24 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         // Get operator terms
         var operatorTerms = await clientTransport.GetServerInfoAsync(cancellationToken);
 
-        //TODO: deterministic hash somehow instead?
-        // Generate preimage and compute preimage hash using SHA256 for Boltz
-        var preimage = RandomUtils.GetBytes(32);
+        // Caller-supplied preimage enables deterministic derivation (so restored wallets can
+        // re-derive and claim outstanding swaps); null falls back to random for watch-only or
+        // any other no-signer scenario.
+        preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
 
-        // First make the Boltz request to get the swap details including timeout block heights
-        // Use OnchainAmount so the merchant receives the full requested amount (user pays swap fees)
+        var requestedAmountSats = (long)createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi);
+
+        // The fee payer decides which amount we pin: Recipient pins InvoiceAmount (invoice == requested,
+        // receiver nets requested − fee); Sender pins OnchainAmount (receiver gets
+        // exactly requested, invoice == requested + fee).
+        var (invoiceAmount, onchainAmount) = BuildReverseAmounts(feePayer, requestedAmountSats);
         var request = new ReverseRequest
         {
             From = "BTC",
             To = "ARK",
-            OnchainAmount = (long)createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi),
+            InvoiceAmount = invoiceAmount,
+            OnchainAmount = onchainAmount,
             ClaimPublicKey =
                 (extractedReceiver.PubKey?.ToBytes() ??
                                          extractedReceiver.XOnlyPubKey.ToBytes()).ToHexStringLower(), // Receiver will claim the VTXO
@@ -122,16 +131,14 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new InvalidOperationException("Boltz did not provide the correct preimage hash");
         }
 
-        // Verify the invoice amount is greater than onchain amount (includes fees)
-        var invoiceAmountSats = bolt11.MinimumAmount.ToUnit(LightMoneyUnit.Satoshi);
-        var onchainAmountSats = createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi);
-        if (invoiceAmountSats < onchainAmountSats)
-        {
-            throw new InvalidOperationException(
-                $"Invoice amount ({invoiceAmountSats} sats) must be greater than onchain amount ({onchainAmountSats} sats) to cover swap fees");
-        }
+        var invoiceAmountSats = (long)bolt11.MinimumAmount.ToUnit(LightMoneyUnit.Satoshi);
+        ValidateReverseAmounts(feePayer, requestedAmountSats, invoiceAmountSats, response.OnchainAmount);
 
-        var swapFee = invoiceAmountSats - onchainAmountSats;
+        var receiverOnchainSats = ResolveExpectedOnchainAmount(feePayer, requestedAmountSats, response.OnchainAmount);
+        var (feesValid, feeError) = await limitsValidator.ValidateFeesAsync(
+            invoiceAmountSats, receiverOnchainSats, isReverse: true, cancellationToken);
+        if (!feesValid)
+            throw new InvalidOperationException(feeError);
 
         var vhtlcContract = new VHTLCContract(
             server: operatorTerms.SignerKey,
@@ -160,6 +167,58 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         return new ReverseSwapResult(vhtlcContract, response, preimageHash);
     }
 
+    // Maps the fee payer to the single Boltz amount field we pin
+    internal static (long? InvoiceAmount, long? OnchainAmount) BuildReverseAmounts(
+        ReverseSwapFeePayer feePayer, long requestedAmountSats) => feePayer switch
+    {
+        ReverseSwapFeePayer.Recipient => (requestedAmountSats, (long?)null),
+        ReverseSwapFeePayer.Sender => ((long?)null, requestedAmountSats),
+        _ => throw new ArgumentOutOfRangeException(nameof(feePayer), feePayer, "Unknown reverse-swap fee payer")
+    };
+
+    // Validates the amounts Boltz returned against what the fee payer requires
+    internal static void ValidateReverseAmounts(
+        ReverseSwapFeePayer feePayer, long requestedAmountSats, long invoiceAmountSats, long? responseOnchainSats)
+    {
+        switch (feePayer)
+        {
+            case ReverseSwapFeePayer.Recipient:
+                if (invoiceAmountSats != requestedAmountSats)
+                    throw new InvalidOperationException(
+                        $"Invoice amount ({invoiceAmountSats} sats) does not match the requested amount ({requestedAmountSats} sats)");
+                if (responseOnchainSats is not { } onchain)
+                    throw new InvalidOperationException(
+                        "Boltz did not return an onchain amount for a recipient-pays reverse swap");
+                if (onchain <= 0 || onchain > invoiceAmountSats)
+                    throw new InvalidOperationException(
+                        $"Onchain amount ({onchain} sats) must be greater than zero and not exceed invoice amount ({invoiceAmountSats} sats)");
+                break;
+
+            case ReverseSwapFeePayer.Sender:
+                if (invoiceAmountSats < requestedAmountSats)
+                    throw new InvalidOperationException(
+                        $"Invoice amount ({invoiceAmountSats} sats) must be greater than or equal to the requested amount ({requestedAmountSats} sats) to cover swap fees");
+                
+                if (responseOnchainSats is { } senderOnchain && senderOnchain != requestedAmountSats)
+                    throw new InvalidOperationException(
+                        $"Onchain amount ({senderOnchain} sats) returned by Boltz does not match the pinned requested amount ({requestedAmountSats} sats)");
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(feePayer), feePayer, "Unknown reverse-swap fee payer");
+        }
+    }
+
+    // The on-chain amount receiver will actually claim, stored as ArkSwap.ExpectedAmount
+    internal static long ResolveExpectedOnchainAmount(
+        ReverseSwapFeePayer feePayer, long requestedAmountSats, long? responseOnchainSats) => feePayer switch
+    {
+        ReverseSwapFeePayer.Recipient => responseOnchainSats
+            ?? throw new InvalidOperationException("Boltz did not return an onchain amount for a recipient-pays reverse swap"),
+        ReverseSwapFeePayer.Sender => requestedAmountSats,
+        _ => throw new ArgumentOutOfRangeException(nameof(feePayer), feePayer, "Unknown reverse-swap fee payer")
+    };
+
     // Chain Swaps
 
     /// <summary>
@@ -169,6 +228,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     public async Task<ChainSwapResult> CreateBtcToArkSwapAsync(
         long amountSats,
         OutputDescriptor claimDescriptor,
+        byte[]? preimage = null,
         CancellationToken ct = default)
     {
         var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
@@ -176,7 +236,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         var claimPubKeyHex = (extractedClaim.PubKey?.ToBytes() ?? extractedClaim.XOnlyPubKey.ToBytes())
             .ToHexStringLower();
 
-        var preimage = RandomUtils.GetBytes(32);
+        preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
         var ephemeralKey = new Key();
 
@@ -243,12 +303,19 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
     /// </summary>
     public async Task<ChainSwapResult> CreateArkToBtcSwapAsync(
         long amountSats,
-        string refundPubKeyHex,
+        OutputDescriptor refundDescriptor,
+        byte[]? preimage = null,
         CancellationToken ct = default)
     {
-        await clientTransport.GetServerInfoAsync(ct);
+        var operatorTerms = await clientTransport.GetServerInfoAsync(ct);
+        var extracted = OutputDescriptorHelpers.Extract(refundDescriptor);
+        var refundPubKeyHex = Convert.ToHexString(
+            extracted.PubKey?.ToBytes()
+            ?? extracted.XOnlyPubKey.ToBytes()
+        ).ToLowerInvariant();
 
-        var preimage = RandomUtils.GetBytes(32);
+
+        preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
         var ephemeralKey = new Key();
 
@@ -273,7 +340,34 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new InvalidOperationException(
                 $"Chain swap {response.Id}: missing claim details (BTC side). Raw: {SerializeChainResponse(response)}");
 
-        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey);
+        // Reconstruct the VHTLC that Boltz/Fulmine created on the ARK side.
+        // For ARK→BTC: user is the sender (refundDescriptor), Fulmine is the receiver.
+        var lockupDetails = response.LockupDetails;
+        var timeouts = lockupDetails.Timeouts ?? lockupDetails.TimeoutBlockHeights
+            ?? throw new InvalidOperationException(
+                $"Chain swap {response.Id}: missing timeouts in ARK lockup details");
+
+        var receiverDescriptor = KeyExtensions.ParseOutputDescriptor(
+            lockupDetails.ServerPublicKey!, operatorTerms.Network);
+
+        var vhtlcContract = new VHTLCContract(
+            server: operatorTerms.SignerKey,
+            sender: refundDescriptor,
+            receiver: receiverDescriptor,
+            preimage: preimage,
+            refundLocktime: new LockTime(timeouts.Refund),
+            unilateralClaimDelay: ParseSequence(timeouts.UnilateralClaim),
+            unilateralRefundDelay: ParseSequence(timeouts.UnilateralRefund),
+            unilateralRefundWithoutReceiverDelay: ParseSequence(timeouts.UnilateralRefundWithoutReceiver));
+
+        var computedAddress = vhtlcContract.GetArkAddress()
+            .ToString(operatorTerms.Network.ChainName == ChainName.Mainnet);
+        if (computedAddress != lockupDetails.LockupAddress)
+            throw new InvalidOperationException(
+                $"Chain swap {response.Id}: ARK lockup address mismatch. " +
+                $"Computed {computedAddress}, Boltz expects {lockupDetails.LockupAddress}");
+
+        return new ChainSwapResult(response, preimage, preimageHash, ephemeralKey, vhtlcContract);
     }
 
     // Chain Swap Serialization

@@ -68,9 +68,13 @@ public record ArkPaymentRequest(
 /// </summary>
 public enum ArkPaymentRequestStatus
 {
+    /// <summary>Request created, no payment received yet.</summary>
     Pending,
+    /// <summary>Some payment received, but less than the requested amount.</summary>
     PartiallyPaid,
+    /// <summary>Full requested amount received.</summary>
     Paid,
+    /// <summary>Request passed its expiry time without full payment.</summary>
     Expired,
     /// <summary>Request was explicitly cancelled by the user or application.</summary>
     Cancelled

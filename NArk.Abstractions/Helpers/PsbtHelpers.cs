@@ -1,3 +1,4 @@
+#pragma warning disable CS1591
 using System.Text;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Wallets;
@@ -15,6 +16,8 @@ public static class PsbtHelpers
     private const string VtxoTreeExpiry = "expiry";
     private const string Cosigner = "cosigner";
     private const string ConditionWitness = "condition";
+    private const string PrevArkTx = "prevarktx";
+    private const string PrevoutTx = "prevouttx";
     private const byte ArkPsbtFieldKeyType = 222;
 
     /// <summary>
@@ -34,17 +37,21 @@ public static class PsbtHelpers
 
 
     public static void SetTaprootScriptSpendSignature(this PSBTInput input, ECXOnlyPubKey key, uint256 leafHash,
-        SecpSchnorrSignature signature)
+        SecpSchnorrSignature signature, TaprootSigHash sigHash = TaprootSigHash.Default)
     {
-        var (keyBytes, valueBytes) = GetTaprootScriptSpendSignature(key, leafHash, signature);
+        var (keyBytes, valueBytes) = GetTaprootScriptSpendSignature(key, leafHash, signature, sigHash);
         input.Unknown[keyBytes] = valueBytes;
     }
 
     private static (byte[] key, byte[] value) GetTaprootScriptSpendSignature(ECXOnlyPubKey key, uint256 leafHash,
-        SecpSchnorrSignature signature)
+        SecpSchnorrSignature signature, TaprootSigHash sigHash)
     {
         byte[] keyBytes = [PsbtInTapScriptSig, .. key.ToBytes(), .. leafHash.ToBytes()];
-        var valueBytes = signature.ToBytes();
+        // BIP341: a non-default sighash needs its type byte appended to the 64-byte Schnorr
+        // signature (65 bytes total), or a verifier reads the witness as SIGHASH_DEFAULT.
+        var valueBytes = sigHash == TaprootSigHash.Default
+            ? signature.ToBytes()
+            : [.. signature.ToBytes(), (byte)sigHash];
         return (keyBytes, valueBytes);
     }
 
@@ -56,12 +63,80 @@ public static class PsbtHelpers
         psbtInput.Unknown[new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(VtxoTaprootTree)).ToArray()] =
             EncodeTaprootTree(leaves);
 
+    /// <summary>
+    /// Sets the <c>prevarktx</c> ark field — the raw previous Arkade transaction
+    /// an introspection opcode reads for this input. Stored under
+    /// <c>[0xde]||"prevarktx"</c> (emulator <c>ArkFieldPrevArkTx</c>).
+    /// </summary>
+    /// <param name="psbtInput">The PSBT input to write the field to.</param>
+    /// <param name="prevArkTx">The previous Arkade transaction to store.</param>
+    public static void SetArkFieldPrevArkTx(this PSBTInput psbtInput, Transaction prevArkTx)
+    {
+        ArgumentNullException.ThrowIfNull(prevArkTx);
+        psbtInput.Unknown[new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(PrevArkTx)).ToArray()] =
+            prevArkTx.ToBytes();
+    }
 
     /// <summary>
-    /// Encodes a collection of taproot script leaves into a byte array following PSBT spec
-    /// Format: {<depth> <version> <script_length> <script>}* (no leaf count prefix)
+    /// Sets the <c>prevouttx</c> ark field — the raw previous output transaction
+    /// an introspection opcode reads for this input (e.g. on the emulator's
+    /// <c>/v1/onchain-tx</c> path). Stored under <c>[0xde]||"prevouttx"</c>
+    /// (emulator <c>ArkFieldPrevoutTx</c>).
     /// </summary>
-    /// <param name="leaves">Array of tapscript byte arrays</param>
+    /// <param name="psbtInput">The PSBT input to write the field to.</param>
+    /// <param name="prevoutTx">The previous output transaction to store.</param>
+    public static void SetArkFieldPrevoutTx(this PSBTInput psbtInput, Transaction prevoutTx)
+    {
+        ArgumentNullException.ThrowIfNull(prevoutTx);
+        psbtInput.Unknown[new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(PrevoutTx)).ToArray()] =
+            prevoutTx.ToBytes();
+    }
+
+    /// <summary>Reads the <c>prevarktx</c> ark field.</summary>
+    /// <param name="psbtInput">The PSBT input to read the field from.</param>
+    /// <param name="network">The network to deserialize the transaction against.</param>
+    /// <returns>
+    /// The previous Arkade transaction, or <c>null</c> if the field is absent or malformed.
+    /// </returns>
+    public static Transaction? GetArkFieldPrevArkTx(this PSBTInput psbtInput, Network network) =>
+        GetArkFieldTransaction(psbtInput, PrevArkTx, network);
+
+    /// <summary>Reads the <c>prevouttx</c> ark field.</summary>
+    /// <param name="psbtInput">The PSBT input to read the field from.</param>
+    /// <param name="network">The network to deserialize the transaction against.</param>
+    /// <returns>
+    /// The previous output transaction, or <c>null</c> if the field is absent or malformed.
+    /// </returns>
+    public static Transaction? GetArkFieldPrevoutTx(this PSBTInput psbtInput, Network network) =>
+        GetArkFieldTransaction(psbtInput, PrevoutTx, network);
+
+    private static Transaction? GetArkFieldTransaction(PSBTInput psbtInput, string fieldName, Network network)
+    {
+        ArgumentNullException.ThrowIfNull(psbtInput);
+        ArgumentNullException.ThrowIfNull(network);
+        var key = new[] { ArkPsbtFieldKeyType }.Concat(Encoding.UTF8.GetBytes(fieldName)).ToArray();
+        if (!psbtInput.Unknown.TryGetValue(key, out var value))
+            return null;
+
+        // These fields arrive from untrusted PSBT data (an emulator response or a remote
+        // counterparty) and Transaction.Load throws on truncated/corrupt bytes. A caller
+        // reading an optional field shouldn't have to guard against that, so a malformed
+        // field reads the same as an absent one.
+        try
+        {
+            return Transaction.Load(value, network);
+        }
+        catch (Exception ex) when (
+            ex is EndOfStreamException or FormatException or OverflowException
+                or ArgumentException or IndexOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+
+    // Encodes taproot script leaves per PSBT spec: {depth version script_length script}* (no leaf count prefix).
+    // Param: leaves — array of tapscript byte arrays.
     /// <returns>Encoded taproot tree as byte array</returns>
     private static byte[] EncodeTaprootTree(TapScript[] leaves)
     {
@@ -106,9 +181,101 @@ public static class PsbtHelpers
 
         var (pubKey, sig) = await signer.Sign(coin.SignerDescriptor, hash, cancellationToken);
 
-        psbtInput.SetTaprootScriptSpendSignature(pubKey, coin.SpendingScript.LeafHash, sig);
+        psbtInput.SetTaprootScriptSpendSignature(pubKey, coin.SpendingScript.LeafHash, sig, sigHash);
     }
 
+    /// <summary>
+    /// Reads the taproot leaf script (PSBT_IN_TAP_LEAF_SCRIPT, <c>0x15</c>) set by
+    /// <see cref="SetTaprootLeafScript"/> back out of a PSBT input.
+    /// </summary>
+    /// <returns><c>true</c> when the input carries a leaf script.</returns>
+    public static bool TryGetTaprootLeafScript(this PSBTInput input, out byte[] controlBlock, out Script leafScript)
+    {
+        foreach (var pair in input.Unknown)
+        {
+            if (pair.Key.Length > 1 && pair.Key[0] == PsbtInTapLeafScript && pair.Value.Length > 1)
+            {
+                controlBlock = pair.Key[1..];
+                // value = script bytes + 1-byte leaf version
+                leafScript = new Script(pair.Value[..^1]);
+                return true;
+            }
+        }
 
+        controlBlock = [];
+        leafScript = Script.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Reads all taproot script-spend signatures (PSBT_IN_TAP_SCRIPT_SIG, <c>0x14</c>)
+    /// set by <see cref="SetTaprootScriptSpendSignature"/>, keyed by lowercase
+    /// hex-encoded x-only public key.
+    /// </summary>
+    public static IReadOnlyDictionary<string, byte[]> GetTaprootScriptSpendSignatures(this PSBTInput input)
+    {
+        var result = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in input.Unknown)
+        {
+            if (pair.Key.Length == 1 + 32 + 32 && pair.Key[0] == PsbtInTapScriptSig)
+                result[Convert.ToHexString(pair.Key.AsSpan(1, 32)).ToLowerInvariant()] = pair.Value;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reads back the taproot script-spend signature (PSBT_IN_TAP_SCRIPT_SIG, <c>0x14</c>)
+    /// for one specific key + leaf pair — the exact counterpart of
+    /// <see cref="SetTaprootScriptSpendSignature"/>. Unlike
+    /// <see cref="GetTaprootScriptSpendSignatures"/> this also matches the leaf hash, so a
+    /// signature made for a different tapscript leaf is not returned.
+    /// </summary>
+    /// <param name="input">The PSBT input to read from.</param>
+    /// <param name="key">
+    /// The x-only public key the signature is expected from. The field is keyed by whatever
+    /// <see cref="IArkadeWalletSigner.Sign"/> returned when the signature was written, which is
+    /// required to be the key named by the signing descriptor — so callers looking up a wallet's
+    /// own signature pass <c>coin.SignerDescriptor.ToXOnlyPubKey()</c>. A signer that returned a
+    /// derived or rotated key instead would not be found here.
+    /// </param>
+    /// <param name="leafHash">The tapscript leaf hash the signature is expected to cover.</param>
+    /// <param name="signature">The raw signature bytes; empty when none is present.</param>
+    /// <returns><c>true</c> when the input carries a signature for that key + leaf.</returns>
+    public static bool TryGetTaprootScriptSpendSignature(this PSBTInput input, ECXOnlyPubKey key,
+        uint256 leafHash, out byte[] signature)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(leafHash);
+
+        byte[] keyBytes = [PsbtInTapScriptSig, .. key.ToBytes(), .. leafHash.ToBytes()];
+        if (input.Unknown.TryGetValue(keyBytes, out var value))
+        {
+            signature = value;
+            return true;
+        }
+
+        signature = [];
+        return false;
+    }
+
+    /// <summary>
+    /// Reads the Arkade condition-witness field set by
+    /// <see cref="SetArkFieldConditionWitness"/>, or <c>null</c> when absent.
+    /// </summary>
+    public static WitScript? GetArkFieldConditionWitness(this PSBTInput input)
+    {
+        var conditionKey = new[] { ArkPsbtFieldKeyType }
+            .Concat(Encoding.UTF8.GetBytes(ConditionWitness)).ToArray();
+
+        foreach (var pair in input.Unknown)
+        {
+            if (pair.Key.SequenceEqual(conditionKey))
+                return new WitScript(pair.Value);
+        }
+
+        return null;
+    }
 
 }

@@ -1,3 +1,5 @@
+using NBitcoin;
+
 namespace NArk.Core;
 
 internal class Constants
@@ -7,4 +9,6 @@ internal class Constants
 
     internal static readonly byte[] UnspendableKey = Convert.FromHexString(UnspendableKeyHex);
 
+    // OP_1 PUSH2 "Ns" Arkade protocol P2A anchor marker (BIP 431 variant)
+    internal static readonly Script ArkP2A = Script.FromHex("51024e73");
 }

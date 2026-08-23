@@ -2,7 +2,6 @@ using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
-using NArk.Core.Extensions;
 using NArk.Core.Scripts;
 using NBitcoin;
 using NBitcoin.Scripting;
@@ -21,6 +20,9 @@ public class ArkBoardingContract(OutputDescriptor server, Sequence exitDelay, Ou
 
     public override string Type => ContractType;
     public const string ContractType = "Boarding";
+
+    /// <summary>Boarding funds live on-chain as a boarding UTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Onchain;
 
 
     /// <summary>

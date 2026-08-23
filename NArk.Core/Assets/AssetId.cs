@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace NArk.Core.Assets;
 
 /// <summary>

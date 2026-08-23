@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-using System;
 using System.Collections;
 
 namespace NBitcoin.Scripting.Parser

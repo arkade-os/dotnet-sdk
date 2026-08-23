@@ -61,13 +61,13 @@ public class SweeperService(
             try
             {
 
-            await (reason switch
-            {
-                SweepVtxoTrigger vtxoTrigger => TrySweepVtxos(vtxoTrigger.Vtxos, loopShutdownToken),
-                SweepContractTrigger contractTrigger => TrySweepContracts(contractTrigger.Contracts, loopShutdownToken),
-                SweepTimerTrigger _ => TrySweepContracts(null, loopShutdownToken),
-                _ => throw new ArgumentOutOfRangeException()
-            });
+                await (reason switch
+                {
+                    SweepVtxoTrigger vtxoTrigger => TrySweepVtxos(vtxoTrigger.Vtxos, loopShutdownToken),
+                    SweepContractTrigger contractTrigger => TrySweepContracts(contractTrigger.Contracts, loopShutdownToken),
+                    SweepTimerTrigger _ => TrySweepContracts(null, loopShutdownToken),
+                    _ => throw new ArgumentOutOfRangeException()
+                });
 
             }
             catch (Exception e)
@@ -103,7 +103,7 @@ public class SweeperService(
         {
 
             var contractScripts = contracts.Select(c => c.Script).ToHashSet();
-            var unspentVtxos = await vtxoStorage.GetVtxos(includeSpent: false, scripts: contractScripts , cancellationToken: cancellationToken);
+            var unspentVtxos = await vtxoStorage.GetVtxos(includeSpent: false, scripts: contractScripts, cancellationToken: cancellationToken);
             var spendableVtxos = unspentVtxos.Where(v => v.CanSpendOffchain(timeHeight)).ToArray();
             matchingVtxos =
                 spendableVtxos

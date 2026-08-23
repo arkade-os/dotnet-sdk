@@ -13,7 +13,7 @@ namespace NArk.Core.Transport;
 /// Server info (network, dust limit, signer key) rarely changes during operation.
 /// All other methods are passed through to the underlying transport.
 /// </summary>
-public class CachingClientTransport : IClientTransport
+public class CachingClientTransport : IClientTransport, IServerInfoCacheInvalidation
 {
     private readonly IClientTransport _inner;
     private readonly ILogger? _logger;
@@ -26,6 +26,8 @@ public class CachingClientTransport : IClientTransport
 
     public static readonly TimeSpan DefaultCacheExpiry = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan DefaultFetchTimeout = TimeSpan.FromSeconds(10);
+
+    public event EventHandler<ServerInfoChangedEventArgs>? ServerInfoChanged;
 
     public CachingClientTransport(
         IClientTransport inner,
@@ -51,6 +53,9 @@ public class CachingClientTransport : IClientTransport
         }
 
         await _lock.WaitAsync(cancellationToken);
+        // Captured under the lock, fired AFTER release to prevent deadlock if a handler
+        // calls GetServerInfoAsync (SemaphoreSlim(1,1) is not reentrant).
+        ServerInfoChangedEventArgs? postLockEvent = null;
         try
         {
             // Double-check after acquiring lock
@@ -64,6 +69,12 @@ public class CachingClientTransport : IClientTransport
 
             _logger?.LogDebug("Fetching server info from Ark operator");
 
+            // Capture the digest of whatever we held (if anything) BEFORE swapping in the fresh
+            // value, so a routine TTL refresh that happens to observe a rotated signer is detected
+            // — not just the DigestMismatchException path. A null previous digest means this is the
+            // first populate, which is not a "change".
+            var previousDigest = _cachedServerInfo?.Digest;
+
             var serverInfo = await _inner.GetServerInfoAsync(cts.Token);
 
             _cachedServerInfo = serverInfo;
@@ -72,7 +83,31 @@ public class CachingClientTransport : IClientTransport
             _logger?.LogDebug("Cached server info: Network={Network}, Dust={Dust}",
                 serverInfo.Network.Name, serverInfo.Dust);
 
+            // Refresh-path rotation detection: if we had a previous value and the digest changed,
+            // schedule ServerInfoChanged for after the lock is released.
+            if (previousDigest is not null && previousDigest != serverInfo.Digest)
+            {
+                _logger?.LogInformation(
+                    "Server info digest changed on TTL refresh ({Previous} -> {New}); raising ServerInfoChanged",
+                    previousDigest, serverInfo.Digest);
+                postLockEvent = new ServerInfoChangedEventArgs
+                {
+                    Reason = ServerInfoChangedReason.TtlExpiry,
+                    PreviousDigest = previousDigest,
+                    NewDigest = serverInfo.Digest,
+                };
+            }
+
             return serverInfo;
+        }
+        catch (DigestMismatchException)
+        {
+            // Clear cache state under the lock for consistency; the event fires after release
+            // via postLockEvent so handlers can safely call GetServerInfoAsync without deadlocking.
+            ClearCacheCore();
+            _logger?.LogDebug("Server info cache invalidated ({Reason})", ServerInfoChangedReason.DigestMismatch);
+            postLockEvent = new ServerInfoChangedEventArgs { Reason = ServerInfoChangedReason.DigestMismatch };
+            throw;
         }
         catch (Exception ex)
         {
@@ -90,18 +125,28 @@ public class CachingClientTransport : IClientTransport
         finally
         {
             _lock.Release();
+            if (postLockEvent is not null)
+                ServerInfoChanged?.Invoke(this, postLockEvent);
         }
+    }
+
+    private void ClearCacheCore()
+    {
+        _cachedServerInfo = null;
+        _serverInfoExpiresAt = DateTimeOffset.MinValue;
     }
 
     /// <summary>
     /// Invalidates the server info cache, forcing the next call to fetch fresh data.
     /// Call this on wallet setup/clear or when connection errors occur.
+    /// Raises <see cref="ServerInfoChanged"/> so consumers can react (e.g. signer rotation).
     /// </summary>
-    public void InvalidateServerInfoCache()
+    public void InvalidateServerInfoCache(ServerInfoChangedEventArgs? args = null)
     {
-        _cachedServerInfo = null;
-        _serverInfoExpiresAt = DateTimeOffset.MinValue;
-        _logger?.LogDebug("Server info cache invalidated");
+        ClearCacheCore();
+        var eventArgs = args ?? new ServerInfoChangedEventArgs();
+        _logger?.LogDebug("Server info cache invalidated ({Reason})", eventArgs.Reason);
+        ServerInfoChanged?.Invoke(this, eventArgs);
     }
 
     /// <summary>
@@ -109,73 +154,104 @@ public class CachingClientTransport : IClientTransport
     /// </summary>
     public bool HasValidServerInfoCache => _cachedServerInfo != null && DateTimeOffset.UtcNow < _serverInfoExpiresAt;
 
-    // Pass-through methods - no caching needed for these
+    // Pass-through methods — digest mismatch invalidates the server info cache before propagating.
+    
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
+    public IAsyncEnumerable<VtxoSubscriptionEvent> OpenSubscriptionStreamAsync(IReadOnlySet<string>? initialScripts, string? existingSubscriptionId, CancellationToken cancellationToken = default)
+        => GuardStream(_inner.OpenSubscriptionStreamAsync(initialScripts, existingSubscriptionId, cancellationToken));
 
-    public Task<string> SubscribeForScriptsAsync(IReadOnlySet<string> scripts, string? subscriptionId, CancellationToken cancellationToken = default)
-        => _inner.SubscribeForScriptsAsync(scripts, subscriptionId, cancellationToken);
-
-    public Task UnsubscribeForScriptsAsync(string subscriptionId, IReadOnlySet<string>? scripts, CancellationToken cancellationToken = default)
-        => _inner.UnsubscribeForScriptsAsync(subscriptionId, scripts, cancellationToken);
-
-    public IAsyncEnumerable<HashSet<string>> GetVtxoSubscriptionStreamAsync(string subscriptionId, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoSubscriptionStreamAsync(subscriptionId, cancellationToken);
+    public Task UpdateSubscriptionScriptsAsync(string subscriptionId, IReadOnlySet<string>? add, IReadOnlySet<string>? remove, CancellationToken cancellationToken = default)
+        => Guard(() => _inner.UpdateSubscriptionScriptsAsync(subscriptionId, add, remove, cancellationToken));
 
     public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken);
+        => GuardStream(_inner.GetVtxoByScriptsAsSnapshot(scripts, cancellationToken));
 
     public IAsyncEnumerable<ArkVtxo> GetVtxoByScriptsAsSnapshot(IReadOnlySet<string> scripts,
         DateTimeOffset? after, DateTimeOffset? before, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoByScriptsAsSnapshot(scripts, after, before, cancellationToken);
+        => GuardStream(_inner.GetVtxoByScriptsAsSnapshot(scripts, after, before, cancellationToken));
 
     public IAsyncEnumerable<ArkVtxo> GetVtxosByOutpoints(IReadOnlyCollection<OutPoint> outpoints, bool spentOnly = false, CancellationToken cancellationToken = default)
-        => _inner.GetVtxosByOutpoints(outpoints, spentOnly, cancellationToken);
+        => GuardStream(_inner.GetVtxosByOutpoints(outpoints, spentOnly, cancellationToken));
 
     public Task<string> RegisterIntent(ArkIntent intent, CancellationToken cancellationToken = default)
-        => _inner.RegisterIntent(intent, cancellationToken);
+        => Guard(() => _inner.RegisterIntent(intent, cancellationToken));
 
     public Task DeleteIntent(ArkIntent intent, CancellationToken cancellationToken = default)
-        => _inner.DeleteIntent(intent, cancellationToken);
+        => Guard(() => _inner.DeleteIntent(intent, cancellationToken));
 
     public Task<SubmitTxResponse> SubmitTx(string signedArkTx, string[] checkpointTxs, CancellationToken cancellationToken = default)
-        => _inner.SubmitTx(signedArkTx, checkpointTxs, cancellationToken);
+        => Guard(() => _inner.SubmitTx(signedArkTx, checkpointTxs, cancellationToken));
 
     public Task FinalizeTx(string arkTxId, string[] finalCheckpointTxs, CancellationToken cancellationToken)
-        => _inner.FinalizeTx(arkTxId, finalCheckpointTxs, cancellationToken);
+        => Guard(() => _inner.FinalizeTx(arkTxId, finalCheckpointTxs, cancellationToken));
 
     public Task SubmitTreeNoncesAsync(SubmitTreeNoncesRequest treeNonces, CancellationToken cancellationToken)
-        => _inner.SubmitTreeNoncesAsync(treeNonces, cancellationToken);
+        => Guard(() => _inner.SubmitTreeNoncesAsync(treeNonces, cancellationToken));
 
     public Task SubmitTreeSignaturesRequest(SubmitTreeSignaturesRequest treeSigs, CancellationToken cancellationToken)
-        => _inner.SubmitTreeSignaturesRequest(treeSigs, cancellationToken);
+        => Guard(() => _inner.SubmitTreeSignaturesRequest(treeSigs, cancellationToken));
 
     public Task SubmitSignedForfeitTxsAsync(SubmitSignedForfeitTxsRequest req, CancellationToken cancellationToken)
-        => _inner.SubmitSignedForfeitTxsAsync(req, cancellationToken);
+        => Guard(() => _inner.SubmitSignedForfeitTxsAsync(req, cancellationToken));
 
     public Task ConfirmRegistrationAsync(string intentId, CancellationToken cancellationToken)
-        => _inner.ConfirmRegistrationAsync(intentId, cancellationToken);
+        => Guard(() => _inner.ConfirmRegistrationAsync(intentId, cancellationToken));
 
     public IAsyncEnumerable<BatchEvent> GetEventStreamAsync(GetEventStreamRequest req, CancellationToken cancellationToken)
-        => _inner.GetEventStreamAsync(req, cancellationToken);
+        => GuardStream(_inner.GetEventStreamAsync(req, cancellationToken));
 
     public Task<ArkAssetDetails> GetAssetDetailsAsync(string assetId, CancellationToken cancellationToken = default)
-        => _inner.GetAssetDetailsAsync(assetId, cancellationToken);
+        => Guard(() => _inner.GetAssetDetailsAsync(assetId, cancellationToken));
 
     public Task UpdateStreamTopicsAsync(string streamId, string[]? addTopics, string[]? removeTopics, CancellationToken cancellationToken = default)
-        => _inner.UpdateStreamTopicsAsync(streamId, addTopics, removeTopics, cancellationToken);
+        => Guard(() => _inner.UpdateStreamTopicsAsync(streamId, addTopics, removeTopics, cancellationToken));
 
     public Task<ArkIntent[]> GetIntentsByProofAsync(string proof, string message, CancellationToken cancellationToken = default)
-        => _inner.GetIntentsByProofAsync(proof, message, cancellationToken);
+        => Guard(() => _inner.GetIntentsByProofAsync(proof, message, cancellationToken));
 
-    public Task<Models.PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
+    public Task<PendingArkTransaction[]> GetPendingTxAsync(string proof, string message,
         CancellationToken cancellationToken = default)
-        => _inner.GetPendingTxAsync(proof, message, cancellationToken);
+        => Guard(() => _inner.GetPendingTxAsync(proof, message, cancellationToken));
 
-    public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+    public Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(OutPoint vtxoOutpoint,
+        string? intentProof = null, string? intentMessage = null, CancellationToken cancellationToken = default)
+        => Guard(() => _inner.GetVtxoChainAsync(vtxoOutpoint, intentProof, intentMessage, cancellationToken));
 
     public Task<IReadOnlyList<string>> GetVirtualTxsAsync(IReadOnlyList<string> txids, CancellationToken cancellationToken = default)
-        => _inner.GetVirtualTxsAsync(txids, cancellationToken);
+        => Guard(() => _inner.GetVirtualTxsAsync(txids, cancellationToken));
 
     public Task<IReadOnlyList<VtxoTreeNode>> GetVtxoTreeAsync(OutPoint batchOutpoint, CancellationToken cancellationToken = default)
-        => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken);
+        => Guard(() => _inner.GetVtxoTreeAsync(batchOutpoint, cancellationToken));
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
+
+    private static readonly ServerInfoChangedEventArgs DigestMismatchArgs =
+        new() { Reason = ServerInfoChangedReason.DigestMismatch };
+
+    private async Task<T> Guard<T>(Func<Task<T>> action)
+    {
+        try { return await action(); }
+        catch (DigestMismatchException) { InvalidateServerInfoCache(DigestMismatchArgs); throw; }
+    }
+
+    private async Task Guard(Func<Task> action)
+    {
+        try { await action(); }
+        catch (DigestMismatchException) { InvalidateServerInfoCache(DigestMismatchArgs); throw; }
+    }
+
+    private async IAsyncEnumerable<T> GuardStream<T>(IAsyncEnumerable<T> source)
+    {
+        var e = source.GetAsyncEnumerator();
+        await using (e.ConfigureAwait(false))
+        {
+            while (true)
+            {
+                bool hasNext;
+                try { hasNext = await e.MoveNextAsync(); }
+                catch (DigestMismatchException) { InvalidateServerInfoCache(DigestMismatchArgs); throw; }
+                if (!hasNext) yield break;
+                yield return e.Current;
+            }
+        }
+    }
 }

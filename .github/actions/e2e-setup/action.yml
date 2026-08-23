@@ -1,0 +1,60 @@
+name: E2E Setup
+description: Configure .NET + Node, start regtest infrastructure, build. Requires checkout to have already run.
+
+inputs:
+  profile:
+    description: regtest compose profile(s) to start, comma-separated (e.g. "boltz,delegate" or "solver,boltz").
+    required: false
+    default: boltz,delegate
+  start-attempts:
+    description: >-
+      How many times to try bringing the regtest stack up before failing the job. Docker on hosted
+      runners is flaky (registry pulls, embedded-DNS hiccups, container health races), and a failed
+      attempt is torn down with `regtest.mjs clean` so each retry starts from an empty project.
+    required: false
+    default: '3'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 9.0.x
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Start regtest infrastructure
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        ATTEMPTS: ${{ inputs.start-attempts }}
+      run: |
+        set -uo pipefail
+        for attempt in $(seq 1 "$ATTEMPTS"); do
+          echo "::group::regtest start (attempt $attempt/$ATTEMPTS, profiles: $PROFILE)"
+          node regtest/regtest.mjs start --profile "$PROFILE"
+          status=$?
+          echo "::endgroup::"
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          echo "::warning::regtest start failed with exit code $status (attempt $attempt/$ATTEMPTS)"
+
+          echo "::group::container state after failed attempt $attempt"
+          docker ps -a || true
+          echo "::endgroup::"
+
+          if [ "$attempt" -lt "$ATTEMPTS" ]; then
+            # A partial start leaves containers and volumes behind (arkd-wallet keeps its signer
+            # state, nbxplorer its half-migrated db). Wipe both so the retry is a true cold boot.
+            echo "Tearing down the partial stack before retrying..."
+            node regtest/regtest.mjs clean || true
+            sleep 10
+          fi
+        done
+        echo "::error::regtest infrastructure failed to start after $ATTEMPTS attempts"
+        exit 1
+    - name: Restore and build
+      shell: bash
+      run: dotnet build NArk.CI.slnf

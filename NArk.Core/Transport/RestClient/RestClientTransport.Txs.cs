@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using NArk.Core.Extensions;
 using NArk.Core.Transport.Models;
 
 namespace NArk.Transport.RestClient;
@@ -20,9 +21,9 @@ public partial class RestClientTransport
         var json = await response.Content.ReadFromJsonAsync<JsonElement>(JsonOpts, cancellationToken);
 
         return new SubmitTxResponse(
-            json.GetProperty("ark_txid").GetString()!,
-            json.GetProperty("final_ark_tx").GetString()!,
-            json.TryGetProperty("signed_checkpoint_txs", out var scts)
+            json.GetPropInvariantCase("ark_txid").GetString()!,
+            json.GetPropInvariantCase("final_ark_tx").GetString()!,
+            json.TryGetPropInvariantCase("signed_checkpoint_txs", out var scts) && scts.ValueKind == JsonValueKind.Array
                 ? scts.EnumerateArray().Select(e => e.GetString()!).ToArray()
                 : Array.Empty<string>()
         );

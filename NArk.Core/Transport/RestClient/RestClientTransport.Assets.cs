@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using NArk.Core.Assets;
+using NArk.Core.Extensions;
 using NArk.Core.Transport.Models;
 
 namespace NArk.Transport.RestClient;
@@ -29,11 +30,11 @@ public partial class RestClientTransport
         }
 
         var supply = json.TryGetProperty("supply", out var s) && ulong.TryParse(s.GetString(), out var sup) ? sup : 0UL;
-        var controlAsset = json.TryGetProperty("control_asset", out var ca) ? ca.GetString() : null;
+        var controlAsset = json.TryGetPropInvariantCase("control_asset", out var ca) ? ca.GetString() : null;
         if (string.IsNullOrEmpty(controlAsset)) controlAsset = null;
 
         return new ArkAssetDetails(
-            AssetId: json.GetProperty("asset_id").GetString()!,
+            AssetId: json.GetPropInvariantCase("asset_id").GetString()!,
             Supply: supply,
             ControlAssetId: controlAsset,
             Metadata: metadata);

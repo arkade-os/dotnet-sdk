@@ -14,7 +14,5 @@ public record ChainSwapResult(
     byte[] Preimage,
     byte[] PreimageHash,
     Key EphemeralBtcKey,
-    /// <summary>
-    /// VHTLC contract for the ARK side (BTC→ARK only). Null for ARK→BTC.
-    /// </summary>
+    // VHTLC contract for the ARK side (BTC→ARK only). Null for ARK→BTC.
     VHTLCContract? Contract = null);

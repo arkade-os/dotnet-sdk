@@ -2,9 +2,6 @@
 @inject ArkWalletService Ark
 @inject WalletState State
 @inject IJSRuntime JS
-@using NArk.Wallet.Client.Services
-@using NArk.Swaps.Boltz
-@using Microsoft.AspNetCore.Components
 
 <div class="page-header">
     <a href="./" class="back-btn">
@@ -244,10 +241,10 @@
         }
 
         <div style="display:flex;gap:8px;">
-            <button class="btn btn-primary" style="flex:1;" @onclick="CopyAddress">
+            <button class="btn btn-primary" style="flex:3;" @onclick="CopyAddress">
                 @(_copied ? "Copied!" : _selectedMethod == "lightning" ? "Copy Invoice" : "Copy Address")
             </button>
-            <button class="btn btn-secondary" @onclick="@(() => { _selectedMethod = null; _copied = false; _swapError = null; _showContract = false; })">
+            <button class="btn btn-secondary" style="flex:1;" @onclick="@(() => { _selectedMethod = null; _copied = false; _swapError = null; _showContract = false; })">
                 Back
             </button>
         </div>

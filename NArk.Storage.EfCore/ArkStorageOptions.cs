@@ -30,7 +30,8 @@ public class ArkStorageOptions
     /// PostgreSQL consumers can provide ILIKE on jsonb. Others fall back to LINQ .Contains().
     /// </summary>
     public Func<IQueryable<ArkWalletContractEntity>, string, IQueryable<ArkWalletContractEntity>>?
-        ContractSearchProvider { get; set; }
+        ContractSearchProvider
+    { get; set; }
 
     /// <summary>
     /// When true, stores every <see cref="DateTimeOffset"/> column as <see cref="long"/>

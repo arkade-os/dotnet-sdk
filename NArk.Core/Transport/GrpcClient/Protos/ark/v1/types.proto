@@ -29,6 +29,7 @@ message Vtxo {
   string settled_by = 12;
   string ark_txid = 13;
   repeated Asset assets = 14;
+  uint32 depth = 15;
 }
 
 message Asset {
@@ -48,6 +49,7 @@ message TxNotification {
   repeated Vtxo spendable_vtxos = 4;
   // This field is set only in case of offchain tx.
   map<string, TxData> checkpoint_txs = 5; // key: outpoint, value: checkpoint txid
+  repeated Outpoint swept_vtxos = 6;
 }
 
 message Tapscripts {
@@ -154,6 +156,7 @@ message Heartbeat {
 message StreamStartedEvent {
   string id = 1;
 }
+
 
 message ErrorDetails {
   int32 code = 1;

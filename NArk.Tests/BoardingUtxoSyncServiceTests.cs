@@ -55,6 +55,7 @@ public class BoardingUtxoSyncServiceTests
                 Arg.Any<string?>(),
                 Arg.Any<int?>(),
                 Arg.Any<int?>(),
+                Arg.Any<ContractScope?>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<ArkContractEntity>>(entities));
     }
@@ -354,7 +355,7 @@ public class BoardingUtxoSyncServiceTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: serverKey,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: BoardingExitDelay,
@@ -363,6 +364,7 @@ public class BoardingUtxoSyncServiceTests
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
             FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "",
             UtxoMinAmount: utxoMinAmount ?? null!,
             UtxoMaxAmount: utxoMaxAmount ?? null!);
     }

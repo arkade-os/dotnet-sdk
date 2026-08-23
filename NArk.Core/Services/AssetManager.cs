@@ -7,7 +7,6 @@ using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Assets;
-using NArk.Core.CoinSelector;
 using NArk.Core.Enums;
 using NArk.Core.Events;
 using NArk.Core.Helpers;

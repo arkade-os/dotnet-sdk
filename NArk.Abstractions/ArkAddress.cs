@@ -4,6 +4,10 @@ using NBitcoin.Secp256k1;
 
 namespace NArk.Abstractions;
 
+/// <summary>
+/// Bech32m-encoded Arkade address: a taproot x-only pubkey tagged with a server key and protocol version.
+/// Serialized as <c>ark1…</c> (mainnet) or <c>tark1…</c> (testnet).
+/// </summary>
 public class ArkAddress : TaprootPubKey
 {
     private static Bech32Encoder TestnetEncoder { get; set; }
@@ -22,6 +26,7 @@ public class ArkAddress : TaprootPubKey
         TestnetEncoder.SquashBytes = true;
     }
 
+    /// <inheritdoc/>
     public ArkAddress(TaprootAddress taprootAddress, ECXOnlyPubKey serverKey, int version = 0, Network? network = null) : base(taprootAddress.PubKey.ToBytes())
     {
         ArgumentNullException.ThrowIfNull(taprootAddress);
@@ -32,11 +37,13 @@ public class ArkAddress : TaprootPubKey
         IsMainnet = network is not null ? network == Network.Main : null;
     }
 
+#pragma warning disable CS1591
     public ArkAddress(ECXOnlyPubKey tweakedKey, ECXOnlyPubKey serverKey, int version = 0) : this(tweakedKey, serverKey, version, null)
     {
 
     }
     public ArkAddress(ECXOnlyPubKey tweakedKey, ECXOnlyPubKey serverKey, int version, bool? isMainnet) : base(tweakedKey.ToBytes())
+#pragma warning restore CS1591
     {
         ArgumentNullException.ThrowIfNull(tweakedKey);
         ArgumentNullException.ThrowIfNull(serverKey);
@@ -46,17 +53,22 @@ public class ArkAddress : TaprootPubKey
         IsMainnet = isMainnet;
     }
 
+    /// <summary>The Arkade server's x-only pubkey embedded in this address.</summary>
     public ECXOnlyPubKey ServerKey { get; }
+    /// <summary>Address format version byte. Currently always 0.</summary>
     public int Version { get; }
     private bool? IsMainnet { get; }
 
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
     public override string ToString()
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
     {
         return IsMainnet is null ?
             throw new InvalidOperationException("Network is required for address generation") :
             ToString(IsMainnet.Value);
     }
 
+    /// <summary>Encodes the address using the mainnet or testnet bech32m HRP.</summary>
     public string ToString(bool isMainnet)
     {
         var encoder = isMainnet ? MainnetEncoder : TestnetEncoder;
@@ -64,6 +76,7 @@ public class ArkAddress : TaprootPubKey
         return encoder.EncodeData(bytes, Bech32EncodingType.BECH32M);
     }
 
+    /// <summary>Extracts the x-only pubkey from a taproot scriptPubKey and wraps it as an <see cref="ArkAddress"/>.</summary>
     public static ArkAddress FromScriptPubKey(Script scriptPubKey, ECXOnlyPubKey serverKey)
     {
         var key = PayToTaprootTemplate.Instance.ExtractScriptPubKeyParameters(scriptPubKey);
@@ -73,6 +86,7 @@ public class ArkAddress : TaprootPubKey
         return new ArkAddress(pubKey, serverKey);
     }
 
+    /// <summary>Decodes a bech32m Arkade address string. Throws <see cref="FormatException"/> on invalid input.</summary>
     public new static ArkAddress Parse(string address)
     {
         address = address.ToLowerInvariant();
@@ -91,6 +105,7 @@ public class ArkAddress : TaprootPubKey
         return new ArkAddress(tweakedKey, serverKey, version, encoder == MainnetEncoder);
     }
 
+    /// <summary>Tries to decode a bech32m Arkade address string. Returns false without throwing on invalid input.</summary>
     public static bool TryParse(string address, out ArkAddress? arkAddress)
     {
         try

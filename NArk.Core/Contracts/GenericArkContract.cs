@@ -8,6 +8,9 @@ public class GenericArkContract(OutputDescriptor server, IEnumerable<ScriptBuild
 {
     public override string Type { get; } = "generic";
 
+    /// <summary>Generic contracts default to off-chain (VTXO) unless overridden at write time.</summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
+
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {
         return scriptBuilders;

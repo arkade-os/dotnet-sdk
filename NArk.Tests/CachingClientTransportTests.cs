@@ -308,7 +308,7 @@ public class CachingClientTransportTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: serverKey,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),
@@ -317,6 +317,7 @@ public class CachingClientTransportTests
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
             FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "",
             MaxTxWeight: maxTxWeight,
             MaxOpReturnOutputs: maxOpReturnOutputs,
             VtxoMinAmount: vtxoMinAmount ?? Money.Zero,

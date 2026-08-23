@@ -40,6 +40,9 @@ public class HashLockedArkPaymentContract(
 
     public override string Type => ContractType;
     public const string ContractType = "HashLockPaymentContract";
+
+    /// <summary>Hash-locked payment funds live off-chain as a VTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
     public byte[] Preimage => preimage;
     public Sequence ExitDelay => _exitDelay;
     public HashLockTypeOption HashLockType => hashLockType;

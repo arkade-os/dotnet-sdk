@@ -1,4 +1,4 @@
-using NArk.Abstractions.Helpers;
+#pragma warning disable CS1591
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using NBitcoin.Scripting;
@@ -29,8 +29,8 @@ public static class KeyExtensions
     {
         return descriptor.Extract().XOnlyPubKey ?? throw new ArgumentException("the output descriptor does not contain an xonly pubkey", nameof(descriptor));
     }
-    
-    
+
+
     public static OutputDescriptor ParseOutputDescriptor(string str, Network network)
     {
         if (!HexEncoder.IsWellFormed(str))
@@ -45,6 +45,14 @@ public static class KeyExtensions
         return ParseCached($"tr({str})", network);
     }
 
+    /// <summary>
+    /// Builds a <c>tr(&lt;32-byte x-only&gt;)</c> output descriptor from an x-only
+    /// public key (lowercase hex). Used to reconstruct a descriptor for a server
+    /// signer the SDK stores x-only — e.g. a deprecated signer during recovery.
+    /// </summary>
+    public static OutputDescriptor ToOutputDescriptor(this ECXOnlyPubKey pubKey, Network network)
+        => ParseOutputDescriptor(Encoders.Hex.EncodeData(pubKey.ToBytes()), network);
+
     // NBitcoin's OutputDescriptor.Parse is observed at ~500ms-1s per call on
     // wildcard taproot descriptors (BIP-380 lexer + key-origin + checksum
     // validation in a hot codepath). The same descriptor strings (server,
@@ -53,11 +61,11 @@ public static class KeyExtensions
     // GetCoin latencies. Parsed OutputDescriptors are immutable, so caching
     // by (string, network) is safe. Bounded by the number of unique
     // descriptors the wallet ever sees (small).
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), OutputDescriptor> _descriptorCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), OutputDescriptor> DescriptorCache = new();
 
     private static OutputDescriptor ParseCached(string str, Network network)
     {
         var key = (str, network.NetworkSet.CryptoCode + ":" + network.ChainName);
-        return _descriptorCache.GetOrAdd(key, _ => OutputDescriptor.Parse(str, network));
+        return DescriptorCache.GetOrAdd(key, _ => OutputDescriptor.Parse(str, network));
     }
 }

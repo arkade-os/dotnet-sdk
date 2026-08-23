@@ -66,6 +66,36 @@ public static class IntentProofHelper
     }
 
     /// <summary>
+    /// Creates a signed BIP-322 proof for <see cref="Transport.IClientTransport.GetVtxoChainAsync"/>:
+    /// the SDK proves it owns the given VTXO so the Arkade indexer returns the fully-signed virtual-tx
+    /// chain (rather than stripping the signer signatures) and issues an auth token for paginating it.
+    /// Mirrors the <c>{"type":"get-data","expire_at":0}</c> envelope arkd decodes as its
+    /// <c>GetDataMessage</c> for the indexer intent flow.
+    /// </summary>
+    /// <param name="coin">The VTXO coin whose ownership is being proved (becomes input[1] of the proof)</param>
+    /// <param name="signer">Wallet signer for the coin</param>
+    /// <param name="network">Bitcoin network</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Tuple of (base64-encoded PSBT proof, JSON message string)</returns>
+    public static async Task<(string Proof, string Message)> CreateGetVtxoChainOwnershipProofAsync(
+        ArkCoin coin,
+        IArkadeWalletSigner signer,
+        Network network,
+        CancellationToken cancellationToken = default)
+    {
+        var message = JsonSerializer.Serialize(new
+        {
+            type = "get-data",
+            expire_at = 0
+        });
+
+        var psbt = CreateBip322Psbt(message, network, coin);
+        psbt = await SignBip322Proof(psbt, coin, signer, network, cancellationToken);
+
+        return (psbt.ToBase64(), message);
+    }
+
+    /// <summary>
     /// Creates the unsigned BIP-322-style PSBT structure (toSpend → toSign) for a single coin.
     /// Reused by delegation and intent proof flows.
     /// </summary>

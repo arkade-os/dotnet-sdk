@@ -2,8 +2,10 @@ using NArk.Abstractions.Scripts;
 
 namespace NArk.Abstractions.Contracts;
 
+/// <summary>Persistence for Arkade contracts; also drives active-script subscription via <see cref="IActiveScriptsProvider"/>.</summary>
 public interface IContractStorage : IActiveScriptsProvider
 {
+    /// <summary>Raised when a contract is saved or its activity state changes.</summary>
     event EventHandler<ArkContractEntity>? ContractsChanged;
 
     /// <summary>
@@ -17,6 +19,10 @@ public interface IContractStorage : IActiveScriptsProvider
     /// <param name="searchText">Filter by script containing this text. If null, no text filter.</param>
     /// <param name="skip">Number of records to skip (for pagination). If null, no skip.</param>
     /// <param name="take">Number of records to take (for pagination). If null, no limit.</param>
+    /// <param name="scope">
+    /// Filter by contract scope (on-chain/off-chain) via bitwise include
+    /// <c>(Scope &amp; scope) == scope</c>. If null, no scope filter.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<IReadOnlyCollection<ArkContractEntity>> GetContracts(
         string[]? walletIds = null,
@@ -26,8 +32,10 @@ public interface IContractStorage : IActiveScriptsProvider
         string? searchText = null,
         int? skip = null,
         int? take = null,
+        ContractScope? scope = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Inserts or updates a contract record.</summary>
     Task SaveContract(ArkContractEntity walletEntity, CancellationToken cancellationToken = default);
 
     /// <summary>

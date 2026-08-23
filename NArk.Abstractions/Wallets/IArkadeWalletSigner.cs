@@ -15,10 +15,10 @@ namespace NArk.Abstractions.Wallets;
 /// </list>
 /// The caller must pass a <em>session-unique</em> <c>sessionId</c> to both calls — typically a
 /// transaction identifier (e.g. a tree-node txid in batch participation), or any string the
-/// caller can correlate. <see cref="MusigContext.AggregatePubKey"/> on its own is <em>not</em>
+/// caller can correlate. <c>AggregatePubKey</c> on its own is <em>not</em>
 /// unique per signing operation: in a batch tree, multiple transactions can share the same
 /// cosigner set and taproot tweak, so their contexts have identical aggregate pubkeys but
-/// different sighashes. The sighash is buried inside <see cref="MusigContext"/> and cannot
+/// different sighashes. The sighash is buried inside <c>MusigContext</c> and cannot
 /// be observed by the signer, so disambiguation has to be caller-supplied.
 /// </summary>
 public interface IArkadeWalletSigner
@@ -54,6 +54,18 @@ public interface IArkadeWalletSigner
         CancellationToken cancellationToken = default);
 
 
+    /// <summary>
+    /// Produces a BIP-340 Schnorr signature over <paramref name="hash"/> using the descriptor's private key,
+    /// returning the x-only pubkey alongside the signature.
+    /// </summary>
+    /// <remarks>
+    /// The returned x-only pubkey <b>must</b> be the key named by <paramref name="descriptor"/>
+    /// (i.e. <c>descriptor.ToXOnlyPubKey()</c>) — not a derived, rotated, or otherwise substituted
+    /// key. Signatures are stored in PSBTs keyed by this pubkey, and callers look them back up by
+    /// the descriptor's key; pending-tx recovery in particular relies on that to check the wallet
+    /// really signed a transaction before it signs the matching checkpoint. A signer returning a
+    /// different key makes its own signatures unfindable and gets valid transactions rejected.
+    /// </remarks>
     Task<(ECXOnlyPubKey, SecpSchnorrSignature)> Sign(
         OutputDescriptor descriptor,
         uint256 hash,

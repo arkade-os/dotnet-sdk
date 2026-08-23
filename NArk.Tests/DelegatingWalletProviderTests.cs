@@ -36,14 +36,15 @@ public class DelegatingWalletProviderTests
     private static ArkServerInfo CreateServerInfo() => new(
         Dust: Money.Satoshis(1000),
         SignerKey: ServerKey,
-        DeprecatedSigners: new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(),
+        DeprecatedSigners: new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
         Network: Network.RegTest,
         UnilateralExit: ExitDelay,
         BoardingExit: new Sequence(1008),
         ForfeitAddress: BitcoinAddress.Create("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", Network.RegTest),
         ForfeitPubKey: ServerKey.ToXOnlyPubKey(),
         CheckpointTapScript: new UnilateralPathArkTapScript(new Sequence(144), new NofNMultisigTapScript([ServerKey.ToXOnlyPubKey()])),
-        FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0")
+        FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+        Digest: ""
     );
 
     [Test]

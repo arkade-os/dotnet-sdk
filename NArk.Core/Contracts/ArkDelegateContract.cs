@@ -1,7 +1,6 @@
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
-using NArk.Core.Extensions;
 using NArk.Core.Scripts;
 using NBitcoin;
 using NBitcoin.Scripting;
@@ -18,6 +17,9 @@ public class ArkDelegateContract : ArkContract
     public override string Type => ContractType;
     public const string ContractType = "Delegate";
 
+    /// <summary>Delegate funds live off-chain as a VTXO.</summary>
+    public override ContractScope DefaultScope => ContractScope.Offchain;
+
     public ArkDelegateContract(
         OutputDescriptor server,
         Sequence exitDelay,
@@ -33,14 +35,14 @@ public class ArkDelegateContract : ArkContract
     }
 
     /// <summary>
-    /// Leaf ordering follows canonical Ark SDK convention: [delegate, forfeit, exit].
+    /// Leaf ordering follows canonical Arkade SDK convention: [forfeit, exit, delegate].
     /// </summary>
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {
         return [
-            DelegatePath(),
             CollaborativePath(),
-            ExitPath()
+            ExitPath(),
+            DelegatePath()
         ];
     }
 

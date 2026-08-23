@@ -1,8 +1,5 @@
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 
 namespace NBitcoin.Scripting
 {
@@ -112,7 +109,6 @@ namespace NBitcoin.Scripting
 		public static PubKeyProvider NewConst(PubKey pk, bool xonly) =>
 			new Const(pk, xonly);
 
-#if HAS_SPAN
 
 		public static PubKeyProvider NewConst(TaprootPubKey pk)
 		{
@@ -131,7 +127,6 @@ namespace NBitcoin.Scripting
 			pk.ToBytes().CopyTo(pkBytes, 1);
 			return new Const(new PubKey(pkBytes), xonly: true);
 		}
-#endif
 
 		public static PubKeyProvider NewHD(BitcoinExtPubKey extPubKey, KeyPath kp, DeriveType t) =>
 			new HD(extPubKey, kp, t);
@@ -272,14 +267,12 @@ namespace NBitcoin.Scripting
 					return true;
 				case Const self:
 					ISecret secretConst;
-#if HAS_SPAN
 					if (self.Xonly)
 					{
 						if (!secretProvider.TryGetSecret(self.Pk.GetTaprootPubKey(), out secretConst))
 							return false;
 					}
 					else
-#endif
 					{
 						if (!secretProvider.TryGetSecret(self.Pk.Hash, out secretConst))
 							return false;

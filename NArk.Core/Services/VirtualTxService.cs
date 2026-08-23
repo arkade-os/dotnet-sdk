@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.VirtualTxs;
 using NArk.Core.Transport;
+using NArk.Core.VirtualTxs;
 using NBitcoin;
 
 namespace NArk.Core.Services;
@@ -13,6 +14,7 @@ namespace NArk.Core.Services;
 public class VirtualTxService(
     IClientTransport transport,
     IVirtualTxStorage storage,
+    IVtxoChainProofProvider proofProvider,
     ILogger<VirtualTxService>? logger = null)
 {
     /// <summary>
@@ -24,21 +26,37 @@ public class VirtualTxService(
         VirtualTxMode mode = VirtualTxMode.Full,
         CancellationToken cancellationToken = default)
     {
-        // Skip if we already have a branch for this VTXO
-        if (await storage.HasBranchAsync(vtxoOutpoint, cancellationToken))
+        // Skip only once we hold a *broadcast-ready* branch. In Lite mode that
+        // is just "a branch exists" (txids only). In Full mode a branch fetched
+        // right after a batch can still carry a sig-less template — a tree
+        // node's MuSig2 signature only propagates once finalization completes —
+        // so re-fetch until every off-chain row is fully signed. Freezing a
+        // template here is what forced unilateral exit to re-query the operator
+        // later; capturing the signed copy makes exit operator-independent.
+        var alreadyHave = mode == VirtualTxMode.Lite
+            ? await storage.HasBranchAsync(vtxoOutpoint, cancellationToken)
+            : await IsBranchBroadcastReadyAsync(vtxoOutpoint, cancellationToken);
+        if (alreadyHave)
         {
-            logger?.LogDebug("Branch already exists for VTXO {Outpoint}, skipping fetch", vtxoOutpoint);
+            logger?.LogDebug("Branch already {State} for VTXO {Outpoint}, skipping fetch",
+                mode == VirtualTxMode.Lite ? "present" : "broadcast-ready", vtxoOutpoint);
             return;
         }
 
         logger?.LogDebug("Fetching virtual tx chain for VTXO {Outpoint} (mode={Mode})", vtxoOutpoint, mode);
 
-        // 1. Get the chain from arkd indexer (commitment → leaf order).
-        //    The full chain — including the on-chain commitment root — is
-        //    stored so consumers can walk back to the anchor without a
-        //    second indexer call. Each row carries its ChainedTxType so
-        //    UnilateralExitService can skip Commitment when broadcasting.
-        var chainEntries = await transport.GetVtxoChainAsync(vtxoOutpoint, cancellationToken);
+        // 1. Get the chain from arkd indexer (leaf → commitment order — the
+        //    VTXO's own tx first, ending at the on-chain Commitment root).
+        //    The full chain — including the commitment root — is stored so
+        //    consumers can walk back to the anchor without a second indexer
+        //    call. Each row carries its ChainedTxType so UnilateralExitService
+        //    can skip Commitment when broadcasting.
+        //    Present an ownership proof when we can build one so the indexer
+        //    serves the chain on withheld/private servers (and returns the
+        //    fully-signed virtual txs); otherwise fall back to anonymous lookup.
+        var proof = await proofProvider.TryCreateProofAsync(vtxoOutpoint, cancellationToken);
+        var chainEntries = await transport.GetVtxoChainAsync(
+            vtxoOutpoint, proof?.Proof, proof?.Message, cancellationToken);
 
         if (chainEntries.Count == 0)
         {
@@ -58,33 +76,38 @@ public class VirtualTxService(
         //    is for tree/ark/checkpoint nodes.
         if (mode == VirtualTxMode.Full)
         {
-            var txidsToFetch = chainEntries
-                .Where(e => e.Type is ChainedTxType.Tree
-                                  or ChainedTxType.Ark
-                                  or ChainedTxType.Checkpoint)
-                .Select(e => e.Txid)
-                .ToList();
+            // Don't refetch a row we already hold broadcast-ready: the send path
+            // persists the signed ark/checkpoint we produced, and arkd can serve
+            // a stale/sig-less copy for the same txid. Upsert never overwrites
+            // with null, so skipping the fetch preserves the stored signed copy.
+            var txidsToFetch = new List<string>();
+            foreach (var e in chainEntries.Where(e => e.Type is ChainedTxType.Tree
+                                                            or ChainedTxType.Ark
+                                                            or ChainedTxType.Checkpoint))
+            {
+                var existing = await storage.GetVirtualTxAsync(e.Txid, cancellationToken);
+                if (existing?.Hex is not null && VirtualTxFinalizer.IsBroadcastReady(existing.Hex))
+                    continue;
+                txidsToFetch.Add(e.Txid);
+            }
 
             if (txidsToFetch.Count > 0)
             {
                 var hexList = await transport.GetVirtualTxsAsync(txidsToFetch, cancellationToken);
-                if (hexList.Count == txidsToFetch.Count)
+                // arkd's GetVirtualTxs (GetTxsWithTxids → SQL `WHERE id IN (...)`) does NOT return
+                // hexes in request order, so pairing them positionally (Zip) crosses txid↔hex. Key
+                // each hex by the txid parsed from the hex itself — order-proof.
+                var network = (await transport.GetServerInfoAsync(cancellationToken)).Network;
+                var hexByTxid = MapHexByTxid(hexList, network, vtxoOutpoint);
+                for (var i = 0; i < virtualTxs.Count; i++)
                 {
-                    var hexByTxid = txidsToFetch
-                        .Zip(hexList, (id, hex) => (id, hex))
-                        .ToDictionary(t => t.id, t => t.hex);
-                    for (var i = 0; i < virtualTxs.Count; i++)
-                    {
-                        if (hexByTxid.TryGetValue(virtualTxs[i].Txid, out var hex))
-                            virtualTxs[i] = virtualTxs[i] with { Hex = hex };
-                    }
+                    if (hexByTxid.TryGetValue(virtualTxs[i].Txid, out var hex))
+                        virtualTxs[i] = virtualTxs[i] with { Hex = hex };
                 }
-                else
-                {
+                if (hexByTxid.Count != txidsToFetch.Count)
                     logger?.LogWarning(
                         "Virtual tx hex count mismatch for VTXO {Outpoint}: expected {Expected}, got {Actual}",
-                        vtxoOutpoint, txidsToFetch.Count, hexList.Count);
-                }
+                        vtxoOutpoint, txidsToFetch.Count, hexByTxid.Count);
             }
         }
 
@@ -105,12 +128,78 @@ public class VirtualTxService(
         logger?.LogInformation(
             "Stored {Count} virtual txs for VTXO {Outpoint} (mode={Mode})",
             virtualTxs.Count, vtxoOutpoint, mode);
+
+        // In Full mode, surface a still-unsigned branch so the caller (auto-fetch)
+        // knows to retry: arkd can serve a tree row before its MuSig2 signature
+        // has propagated, and we must capture the signed copy — not freeze the
+        // template — for exit to work without the operator later.
+        if (mode == VirtualTxMode.Full
+            && !await IsBranchBroadcastReadyAsync(vtxoOutpoint, cancellationToken))
+        {
+            logger?.LogInformation(
+                "Virtual tx branch for VTXO {Outpoint} is not yet broadcast-ready " +
+                "(operator likely hasn't finalized signatures); will refetch on next attempt",
+                vtxoOutpoint);
+        }
+    }
+
+    /// <summary>
+    /// True when every off-chain row of the VTXO's stored branch is fully signed —
+    /// i.e. broadcastable from storage alone, with no operator refetch. Commitment
+    /// rows are on-chain anchors and are skipped. Returns false when the branch is
+    /// missing, has a null-hex off-chain row, or still holds a sig-less template.
+    /// </summary>
+    public async Task<bool> IsBranchBroadcastReadyAsync(
+        OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
+    {
+        var branch = await storage.GetBranchAsync(vtxoOutpoint, cancellationToken);
+        if (branch.Count == 0)
+            return false;
+
+        foreach (var vtx in branch)
+        {
+            if (vtx.Type == ChainedTxType.Commitment)
+                continue;
+            if (vtx.Hex is null || !VirtualTxFinalizer.IsBroadcastReady(vtx.Hex))
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
     /// Ensure all virtual txs in a VTXO's branch have hex populated.
     /// Upgrades Lite → Full by fetching missing hex on demand.
     /// </summary>
+    /// <summary>
+    /// Maps virtual-tx hexes to the txid parsed from each hex (its PSBT global tx). arkd's
+    /// GetVirtualTxs (GetTxsWithTxids → SQL <c>WHERE id IN (...)</c>) returns hexes in DB order,
+    /// not request order, so callers must key by the parsed txid rather than trusting positional
+    /// pairing — otherwise a tree node's txid gets attached to a sibling's hex and the exit
+    /// broadcasts the wrong tx (bad-txns-inputs-missingorspent). ts-sdk sidesteps this by fetching
+    /// one txid at a time; we fetch the branch in one batch, so we self-key by the returned tx.
+    /// Unparseable hexes are skipped with a warning rather than aborting the whole batch.
+    /// </summary>
+    private Dictionary<string, string> MapHexByTxid(
+        IReadOnlyList<string> hexes, Network network, OutPoint vtxoOutpoint)
+    {
+        var map = new Dictionary<string, string>();
+        foreach (var hex in hexes)
+        {
+            try
+            {
+                var txid = PSBT.Parse(hex, network).GetGlobalTransaction().GetHash().ToString();
+                map[txid] = hex;
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex,
+                    "Skipping unparseable virtual tx hex while populating VTXO {Outpoint}", vtxoOutpoint);
+            }
+        }
+        return map;
+    }
+
     public async Task EnsureHexPopulatedAsync(
         OutPoint vtxoOutpoint,
         CancellationToken cancellationToken = default)
@@ -141,19 +230,22 @@ public class VirtualTxService(
         var txids = missingHex.Select(tx => tx.Txid).ToList();
         var hexList = await transport.GetVirtualTxsAsync(txids, cancellationToken);
 
-        if (hexList.Count != txids.Count)
+        // Key by the txid parsed from each hex — arkd doesn't preserve request order (see
+        // FetchAndStoreBranchAsync), so index-pairing would attach the wrong hex to a txid.
+        var network = (await transport.GetServerInfoAsync(cancellationToken)).Network;
+        var hexByTxid = MapHexByTxid(hexList, network, vtxoOutpoint);
+
+        var updates = new List<VirtualTx>();
+        foreach (var mh in missingHex)
         {
-            logger?.LogWarning(
-                "Hex count mismatch when populating VTXO {Outpoint}: expected {Expected}, got {Actual}",
-                vtxoOutpoint, txids.Count, hexList.Count);
+            if (hexByTxid.TryGetValue(mh.Txid, out var hex))
+                updates.Add(new VirtualTx(mh.Txid, hex, mh.ExpiresAt));
         }
 
-        // Update existing records with hex
-        var updates = new List<VirtualTx>();
-        for (var i = 0; i < Math.Min(txids.Count, hexList.Count); i++)
-        {
-            updates.Add(new VirtualTx(txids[i], hexList[i], missingHex[i].ExpiresAt));
-        }
+        if (updates.Count != missingHex.Count)
+            logger?.LogWarning(
+                "Populated hex for {Actual}/{Expected} virtual txs for VTXO {Outpoint} — some txids missing from the indexer response",
+                updates.Count, missingHex.Count, vtxoOutpoint);
 
         await storage.UpsertVirtualTxsAsync(updates, cancellationToken);
 

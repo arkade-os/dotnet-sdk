@@ -182,7 +182,7 @@ public class ContractServiceTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: signerKey,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),
@@ -190,6 +190,7 @@ public class ContractServiceTests
             ForfeitPubKey: ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes()),
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
-            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"));
+            FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"),
+            Digest: "");
     }
 }

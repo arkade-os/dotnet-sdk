@@ -68,11 +68,10 @@ public record ArkNetworkConfig(
     /// Labs Fulcrum instances (Mainnet, Mutinynet) only expose
     /// <b>:50001</b> (plain Electrum binary protocol); the conventional
     /// 50002 TLS port is not exposed — for TLS use the WSS endpoint via
-    /// <see cref="ElectrumWsUri"/>. Regtest uses <b>:50000</b>, the only
-    /// port nigiri's <c>electrs</c> listens on for the binary protocol
-    /// (30000 on the same host is electrs's HTTP REST, a different
-    /// protocol). Optional and informational — no built-in NArk service
-    /// consumes it.
+    /// <see cref="ElectrumWsUri"/>. Regtest also uses <b>:50001</b> — the
+    /// arkade-regtest stack runs Fulcrum (binary protocol on :50001, WS on
+    /// :50003), having replaced nigiri's electrs. Optional and informational —
+    /// no built-in NArk service consumes it.
     /// </summary>
     [property: JsonPropertyName("electrum-tcp")]
     string? ElectrumTcpUri = null)
@@ -97,20 +96,24 @@ public record ArkNetworkConfig(
         ElectrumWsUri: "wss://electrum.mutinynet.arkade.sh",
         ElectrumTcpUri: "tcp://electrum.mutinynet.arkade.sh:50001");
 
-    /// <summary>Local regtest configuration.</summary>
+    /// <summary>
+    /// Local regtest configuration. Ports match the arkade-regtest docker stack
+    /// (the <c>regtest</c> submodule, <c>block-based-config</c>): arkd :7070,
+    /// arkade-explorer :7080, nginx-boltz :9069, arkade-wallet :3003, mempool
+    /// :3000 (Esplora API under <c>/api</c>), Fulcrum Electrum WS :50003 / TCP :50001.
+    /// </summary>
     public static readonly ArkNetworkConfig Regtest = new(
         ArkUri: "http://localhost:7070",
-        ArkadeWalletUri: "http://localhost:3002",
+        ArkadeWalletUri: "http://localhost:3003",
         BoltzUri: "http://localhost:9069/",
         ExplorerUri: "http://localhost:7080",
-        // ts-sdk regtest Esplora default: a local mempool/Chopsticks deployment.
-        EsploraUri: "http://localhost:3000",
-        // Regtest WS bridge convention: electrum-ws on port 50003 (ts-sdk).
+        // mempool frontend serves the Esplora-compatible REST API under /api,
+        // mirroring the Mutinynet/Mainnet mempool endpoints.
+        EsploraUri: "http://localhost:3000/api",
+        // Fulcrum Electrum WebSocket.
         ElectrumWsUri: "ws://localhost:50003",
-        // nigiri's electrs binary-protocol port — verified against
-        // nigiri/cmd/nigiri/resources/docker-compose.yml. 30000 on the
-        // same container is electrs's HTTP REST, a different protocol.
-        ElectrumTcpUri: "tcp://localhost:50000");
+        // Fulcrum Electrum binary (TCP) — :50001, same port as Mainnet/Mutinynet.
+        ElectrumTcpUri: "tcp://localhost:50001");
 
 }
 
@@ -128,6 +131,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddArkCoreServices(this IServiceCollection services)
     {
         services.AddSingleton<ICoinService, CoinService>();
+        services.AddSingleton<IVtxoChainProofProvider, VtxoChainProofProvider>();
         services.AddTransient<IContractTransformer, PaymentContractTransformer>();
         services.AddTransient<IContractTransformer, NoteContractTransformer>();
         services.AddTransient<IContractTransformer, HashLockedContractTransformer>();
@@ -142,6 +146,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<BatchManagementService>();
         services.AddSingleton<IOnchainService, OnchainService>();
         services.AddSingleton<SweeperService>();
+        services.AddSingleton<ContractReconciliationService>();
+        services.AddSingleton<IDestinationSafetyNotifier>(sp => sp.GetRequiredService<ContractReconciliationService>());
+        services.AddSingleton<ISweepPolicy, ServerKeyRotationSweepPolicy>();
         services.AddSingleton<PendingArkTransactionRecoveryService>();
         services.AddSingleton<IFeeEstimator, DefaultFeeEstimator>();
         services.AddSingleton<ICoinSelector, DefaultCoinSelector>();
@@ -155,6 +162,8 @@ public static class ServiceCollectionExtensions
 
         // HD-wallet recovery: gap-limit scan for prior contract usage on import.
         services.AddSingleton<HdWalletRecoveryService>();
+        services.AddSingleton<SingleKeyVtxoRecoveryService>();
+        services.AddSingleton<ISingleKeyDefaultEnsurer>(sp => sp.GetRequiredService<SingleKeyVtxoRecoveryService>());
         services.AddSingleton<IContractDiscoveryProvider, IndexerVtxoDiscoveryProvider>();
         // BoardingUtxoDiscoveryProvider activates only when an IBitcoinBlockchain has
         // been registered (typically by the plugin via NBXplorer/Esplora). When absent the
@@ -183,13 +192,14 @@ public static class ServiceCollectionExtensions
         // Register the raw gRPC transport
         services.AddSingleton(_ => new GrpcClientTransport(config.ArkUri));
 
-        // Register IClientTransport with caching wrapper as the default
-        services.AddSingleton<IClientTransport>(sp =>
-        {
-            var inner = sp.GetRequiredService<GrpcClientTransport>();
-            var logger = sp.GetService<ILogger<CachingClientTransport>>();
-            return new CachingClientTransport(inner, logger);
-        });
+        // Register the caching wrapper as the concrete singleton so both IClientTransport and
+        // IServerInfoCacheInvalidation alias the same instance without an unsafe cast.
+        services.AddSingleton<CachingClientTransport>(sp =>
+            new CachingClientTransport(
+                sp.GetRequiredService<GrpcClientTransport>(),
+                sp.GetService<ILogger<CachingClientTransport>>()));
+        services.AddSingleton<IClientTransport>(sp => sp.GetRequiredService<CachingClientTransport>());
+        services.AddSingleton<IServerInfoCacheInvalidation>(sp => sp.GetRequiredService<CachingClientTransport>());
 
         return services;
     }
@@ -208,13 +218,14 @@ public static class ServiceCollectionExtensions
         // Register the REST transport
         services.AddSingleton(_ => new RestClientTransport(config.ArkUri));
 
-        // Register IClientTransport with caching wrapper as the default
-        services.AddSingleton<IClientTransport>(sp =>
-        {
-            var inner = sp.GetRequiredService<RestClientTransport>();
-            var logger = sp.GetService<ILogger<CachingClientTransport>>();
-            return new CachingClientTransport(inner, logger);
-        });
+        // Register the caching wrapper as the concrete singleton so both IClientTransport and
+        // IServerInfoCacheInvalidation alias the same instance without an unsafe cast.
+        services.AddSingleton<CachingClientTransport>(sp =>
+            new CachingClientTransport(
+                sp.GetRequiredService<RestClientTransport>(),
+                sp.GetService<ILogger<CachingClientTransport>>()));
+        services.AddSingleton<IClientTransport>(sp => sp.GetRequiredService<CachingClientTransport>());
+        services.AddSingleton<IServerInfoCacheInvalidation>(sp => sp.GetRequiredService<CachingClientTransport>());
 
         return services;
     }

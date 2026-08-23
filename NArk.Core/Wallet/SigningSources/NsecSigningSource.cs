@@ -69,8 +69,7 @@ public class NsecSigningSource : IDescriptorSigningSource
     public Task<(ECXOnlyPubKey, SecpSchnorrSignature)> SignAsync(OutputDescriptor descriptor, uint256 hash, CancellationToken cancellationToken = default)
     {
         EnsureMatches(descriptor);
-        if (!_privateKey.TrySignBIP340(hash.ToBytes(), null, out var sig))
-            throw new InvalidOperationException("Failed to sign data");
+        var sig = _privateKey.SignBIP340(hash.ToBytes(), new byte[32]);
         return Task.FromResult((_xOnlyPubKey, sig));
     }
 

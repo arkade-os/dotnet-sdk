@@ -17,6 +17,16 @@ The `DefaultCoinSelector` uses a greedy algorithm that:
 3. Handles sub-dust change as OP_RETURN outputs
 4. Falls back to adding more coins if change is sub-dust and OP_RETURN limit is reached
 
+### Input Limit
+
+The Arkade server rejects transactions whose weight exceeds its configured
+`max_tx_weight` (`TX_TOO_LARGE`), so automatic coin selection is capped at
+`ArkTransactionLimits.MaxVtxosPerArkTransaction` (50) inputs. If the target
+amount cannot be covered within that cap — a wallet fragmented across many
+small VTXOs — `Spend` throws `TooManyInputsException`. Wait for the intent
+scheduler to consolidate the wallet's VTXOs (it batches them in chunks of the
+same size), or send a smaller amount.
+
 ## Manual Coin Selection
 
 For full control, specify inputs explicitly:
@@ -48,3 +58,13 @@ var txId = await spendingService.Spend(
     [new ArkTxOut(ArkTxOutType.Onchain, Money.Satoshis(100_000), onchainAddress)],
     cancellationToken);
 ```
+
+On-chain outputs force the intent through a batch, and the operator bounds them with
+`utxo_min_amount` / `utxo_max_amount`. The SDK checks those bounds before registering the
+intent and throws `InvalidOperationException` rather than letting arkd reject it with an
+opaque `AMOUNT_TOO_HIGH` / `AMOUNT_TOO_LOW`.
+
+A `utxo_max_amount` of `0` means the operator has on-chain outputs disabled altogether —
+`ArkServerInfo.BoardingAllowed` is then `false`, and any intent carrying an
+`ArkTxOutType.Onchain` output is rejected up front. Check it before offering a withdrawal
+path in your UI.

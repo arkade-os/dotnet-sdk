@@ -71,4 +71,4 @@ public record RecoveryReport(
 public record DiscoveredContract(
     int Index,
     string ProviderName,
-    NArk.Abstractions.Contracts.ArkContract Contract);
+    Contracts.ArkContract Contract);

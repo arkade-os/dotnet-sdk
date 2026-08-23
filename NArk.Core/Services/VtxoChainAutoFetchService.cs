@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,6 +33,13 @@ public class VtxoChainAutoFetchService(
 {
     private readonly Channel<ArkVtxo> _queue = Channel.CreateUnbounded<ArkVtxo>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+
+    // Per-VTXO count of "fetched but not yet broadcast-ready" retries. arkd can
+    // serve a tree row before its MuSig2 signature has propagated; we re-fetch
+    // with backoff until the signed copy lands so the persisted branch is
+    // broadcastable without the operator later.
+    private const int MaxReadyRetries = 12;
+    private readonly ConcurrentDictionary<string, int> _readyRetries = new();
 
     private readonly CancellationTokenSource _shutdownCts = new();
     private Task? _worker;
@@ -77,11 +85,13 @@ public class VtxoChainAutoFetchService(
             {
                 try
                 {
-                    // FetchAndStoreBranchAsync is idempotent: it short-
-                    // circuits on the storage's HasBranchAsync check, so
-                    // duplicate events for the same VTXO are cheap.
+                    // FetchAndStoreBranchAsync is idempotent: in Full mode it
+                    // short-circuits once the stored branch is broadcast-ready,
+                    // so duplicate events for a settled VTXO are cheap.
                     await virtualTxService.FetchAndStoreBranchAsync(
                         vtxo.OutPoint, options.Value.DefaultMode, cancellationToken);
+
+                    await RetryIfNotReadyAsync(vtxo, cancellationToken);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -89,6 +99,51 @@ public class VtxoChainAutoFetchService(
                         "Failed to fetch virtual tx chain for VTXO {Outpoint}", vtxo.OutPoint);
                 }
             }
+        }
+        catch (OperationCanceledException) { /* shutdown */ }
+    }
+
+    // In Full mode, if the branch we just stored isn't broadcast-ready yet
+    // (arkd served a tree row before its MuSig2 signature propagated), re-queue
+    // the VTXO after a short backoff so a later fetch captures the signed copy.
+    // Bounded by MaxReadyRetries so a genuinely unsignable branch doesn't loop
+    // forever. Lite mode stores txids only, so readiness doesn't apply.
+    private async Task RetryIfNotReadyAsync(ArkVtxo vtxo, CancellationToken cancellationToken)
+    {
+        if (options.Value.DefaultMode != VirtualTxMode.Full)
+            return;
+
+        var key = vtxo.OutPoint.ToString();
+        if (await virtualTxService.IsBranchBroadcastReadyAsync(vtxo.OutPoint, cancellationToken))
+        {
+            _readyRetries.TryRemove(key, out _);
+            return;
+        }
+
+        var attempt = _readyRetries.AddOrUpdate(key, 1, (_, n) => n + 1);
+        if (attempt > MaxReadyRetries)
+        {
+            logger?.LogWarning(
+                "Virtual tx branch for VTXO {Outpoint} still not broadcast-ready after {Max} attempts; " +
+                "giving up auto-refetch (unilateral exit may need an operator refetch for this VTXO)",
+                vtxo.OutPoint, MaxReadyRetries);
+            _readyRetries.TryRemove(key, out _);
+            return;
+        }
+
+        var delay = TimeSpan.FromSeconds(Math.Min(30, 3 * attempt));
+        logger?.LogDebug(
+            "Virtual tx branch for VTXO {Outpoint} not broadcast-ready (attempt {Attempt}/{Max}); requeue in {Delay}s",
+            vtxo.OutPoint, attempt, MaxReadyRetries, delay.TotalSeconds);
+        _ = RequeueAfterAsync(vtxo, delay);
+    }
+
+    private async Task RequeueAfterAsync(ArkVtxo vtxo, TimeSpan delay)
+    {
+        try
+        {
+            await Task.Delay(delay, _shutdownCts.Token);
+            _queue.Writer.TryWrite(vtxo);
         }
         catch (OperationCanceledException) { /* shutdown */ }
     }

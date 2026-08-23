@@ -1,6 +1,6 @@
 # Arkade Wallet — Sample App
 
-A neo-bank style wallet built with the NNark dotnet SDK. Showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and swaps — running entirely in the browser via Blazor WASM.
+A neo-bank style wallet built with the NArk .NET SDK. It showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and swaps. It runs entirely in the browser via Blazor WASM.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ A neo-bank style wallet built with the NNark dotnet SDK. Showcases all SDK featu
     └──────────┘
 ```
 
-The full NNark SDK runs in-browser via WebAssembly. `RestClientTransport` talks directly to arkd's REST API. Storage is persisted in the browser via SQLite over OPFS (Origin Private File System) using [SqliteWasmBlazor](https://github.com/b-straub/SqliteWasmBlazor).
+The full NArk SDK runs in-browser via WebAssembly. `RestClientTransport` talks directly to arkd's REST API. Storage is persisted in the browser via SQLite over OPFS (Origin Private File System) using [SqliteWasmBlazor](https://github.com/b-straub/SqliteWasmBlazor).
 
 The Gateway is a minimal static file server that serves the Blazor WASM app and sets required COOP/COEP headers for `SharedArrayBuffer` support.
 
@@ -43,7 +43,8 @@ Open `https://localhost:5001` in your browser.
 
 | Feature | SDK Interface | Client Service Method |
 |---------|--------------|----------------------|
-| Create wallet | `WalletFactory`, `IWalletStorage` | `ArkWalletService.CreateWallet()` |
+| Create wallet (HD) | `WalletFactory`, `IWalletStorage` | `ArkWalletService.CreateWallet()` |
+| Restore wallet | `HdWalletRecoveryService.ScanAsync` | `ArkWalletService.RestoreWallet()` |
 | Get balance | `ISpendingService.GetAvailableCoins` | `ArkWalletService.GetBalance()` |
 | List VTXOs | `IVtxoStorage.GetVtxos` | `ArkWalletService.GetVtxos()` |
 | Send payment | `ISpendingService.Spend` | `ArkWalletService.Send()` |
@@ -51,6 +52,21 @@ Open `https://localhost:5001` in your browser.
 | List swaps | `ISwapStorage.GetSwaps` | `ArkWalletService.GetSwaps()` |
 | Issue asset | `IAssetManager.IssueAsync` | `ArkWalletService.IssueAsset()` |
 | Burn asset | `IAssetManager.BurnAsync` | `ArkWalletService.BurnAsset()` |
+
+## Wallets
+
+**Create Wallet** generates a fresh 12-word BIP39 recovery phrase and creates an HD wallet
+(`WalletType.HD`, descriptor `tr([fp/86'/{coin}'/0']xpub/0/*)`). The phrase is shown once on a
+backup screen before the wallet becomes active, and can be re-read later from Settings → Backup
+Secret. Because the wallet is hierarchical-deterministic, every receive derives a new contract,
+and the phrase alone is enough to rebuild state on another device.
+
+**Restore Wallet** accepts either a BIP39 phrase or a legacy `nsec1…` single key. The secret is
+validated client-side before import (`ArkWalletService.ValidateSecret`). For HD wallets, restore
+then runs `HdWalletRecoveryService.ScanAsync`, a gap-limit sweep across every registered
+`IContractDiscoveryProvider` (arkd indexer, on-chain boarding, Boltz swaps), so prior contracts,
+VTXOs and swaps reappear in local storage. `nsec` wallets have no derivation index and skip the
+scan.
 
 ## Configuration
 

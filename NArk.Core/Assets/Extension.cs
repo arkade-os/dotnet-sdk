@@ -192,21 +192,21 @@ public class Extension
                 ms.WriteByte((byte)n);
                 break;
             case <= 65535:
-            {
-                ms.WriteByte((byte)OpcodeType.OP_PUSHDATA2);
-                ms.WriteByte((byte)(n & 0xFF));
-                ms.WriteByte((byte)((n >> 8) & 0xFF));
-                break;
-            }
+                {
+                    ms.WriteByte((byte)OpcodeType.OP_PUSHDATA2);
+                    ms.WriteByte((byte)(n & 0xFF));
+                    ms.WriteByte((byte)((n >> 8) & 0xFF));
+                    break;
+                }
             default:
-            {
-                ms.WriteByte((byte)OpcodeType.OP_PUSHDATA4);
-                ms.WriteByte((byte)(n & 0xFF));
-                ms.WriteByte((byte)((n >> 8) & 0xFF));
-                ms.WriteByte((byte)((n >> 16) & 0xFF));
-                ms.WriteByte((byte)((n >> 24) & 0xFF));
-                break;
-            }
+                {
+                    ms.WriteByte((byte)OpcodeType.OP_PUSHDATA4);
+                    ms.WriteByte((byte)(n & 0xFF));
+                    ms.WriteByte((byte)((n >> 8) & 0xFF));
+                    ms.WriteByte((byte)((n >> 16) & 0xFF));
+                    ms.WriteByte((byte)((n >> 24) & 0xFF));
+                    break;
+                }
         }
 
         ms.Write(data, 0, data.Length);

@@ -1,9 +1,12 @@
 # NArk .NET SDK
 
-A .NET SDK for building applications on [Arkade](https://arkadeos.com) — a Bitcoin virtual execution layer that enables instant, low-cost, programmable off-chain transactions using virtual UTXOs (VTXOs).
+A .NET SDK for building applications on [Arkade](https://arkadeos.com), an open execution engine for Bitcoin. Arkade makes transactions instant, low-cost, and programmable through virtual outputs, and every transaction it builds is a Bitcoin transaction.
 
 [![NuGet](https://img.shields.io/nuget/v/NArk.svg)](https://www.nuget.org/packages/NArk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![API Reference](https://img.shields.io/badge/API-reference-blue.svg)](https://arkade-os.github.io/dotnet-sdk/)
+
+The generated API reference is published at [arkade-os.github.io/dotnet-sdk](https://arkade-os.github.io/dotnet-sdk/).
 
 ## Packages
 
@@ -207,6 +210,31 @@ var txId = await spendingService.Spend(
     outputs: [new ArkTxOut(recipientAddress, Money.Satoshis(5_000))]);
 ```
 
+## Wallet Recovery
+
+Rebuild a wallet's local state — contracts, the HD derivation index, funds (VTXOs)
+and boltz swap data — from on-chain / indexer / boltz sources, after importing a
+wallet into empty storage. Use the unified, wallet-type-agnostic
+`IWalletRecoveryService` (registered by `AddArkSwapServices`):
+
+```csharp
+var recovery = sp.GetRequiredService<IWalletRecoveryService>();
+var report = await recovery.RecoverAsync(walletId);
+// report.HdScan, report.ContractsRecovered, report.RestoredSwaps,
+// report.SwapAudit, report.FinalizedPendingTxIds, report.FundsScriptsSynced
+```
+
+It dispatches by wallet type: **HD** wallets get a gap-limit index scan that
+discovers contracts across the **current and every deprecated server signer** — so
+funds locked under a rotated/legacy server key are still found — and restores boltz
+swaps in-line; **SingleKey** wallets re-derive their one deterministic contract and
+restore swaps directly. Both then finalize any in-flight Arkade transactions and
+resync funds.
+
+Discovery is pluggable via `IContractDiscoveryProvider` (indexer / boarding / boltz).
+To also probe delegate (auto-renewal) scripts during recovery, register a
+`RecoveryDelegateConfig` with the delegate key descriptors.
+
 ## Assets
 
 The SDK supports issuing, transferring, and burning assets on Arkade. Assets are encoded as `AssetGroup` entries inside an OP_RETURN output (an "asset packet") attached to each Arkade transaction. The asset ID is derived from `{txid, groupIndex}` after submission.
@@ -307,7 +335,7 @@ var details = await transport.GetAssetDetailsAsync(assetId);
 
 ## Delegation
 
-Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batch rounds on your behalf, rolling VTXOs over before expiry.
+Delegation solves the VTXO liveness problem: VTXOs expire if not renewed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batches on your behalf, rolling VTXOs over before expiry.
 
 ### Automated Delegation
 
@@ -327,10 +355,16 @@ services.AddArkDelegation("http://localhost:7012");
 // nsec wallets (hashlock/note contracts) are unaffected.
 ```
 
-The delegate contract has three spending paths:
+The delegate contract has three spending paths, committed to the taproot tree in this order
+(`[CollaborativePath, ExitPath, DelegatePath]`) to match the canonical Arkade SDK layout:
 - **CollaborativePath** (User + Server, 2-of-2) — collaborative spending, same as a regular payment contract
-- **DelegatePath** (User + Delegate + Server, 3-of-3) — used by the delegator for ACP forfeit txs
 - **ExitPath** (User only, after CSV delay) — unilateral recovery
+- **DelegatePath** (User + Delegate + Server, 3-of-3) — used by the delegator for ACP forfeit txs
+
+The auto-delegation monitor skips any VTXO whose value cannot cover the operator's intent fee and
+still leave at least the server dust threshold — the delegation would be rejected with
+`AMOUNT_TOO_LOW`. Consolidate bare-dust VTXOs (typically asset VTXOs) with a larger VTXO to make them
+delegable; the skip is not sticky, so the VTXO is re-evaluated on its next storage notification.
 
 ### Manual Delegation
 
@@ -404,7 +438,7 @@ The `IntentProofHelper.CreateBip322Psbt` and `IntentProofHelper.SignBip322Proof`
 
 ## Boarding (On-chain → Arkade)
 
-Boarding lets users move on-chain Bitcoin UTXOs into the Arkade VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the boarding UTXO is automatically picked up by the intent/batch pipeline — no manual intervention needed.
+Boarding lets users move onchain Bitcoin UTXOs into the Arkade VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the intent/batch pipeline automatically picks up the boarding UTXO — no manual intervention needed.
 
 ### 1. Derive a Boarding Address
 
@@ -496,7 +530,7 @@ await sweepService.SweepExpiredUtxosAsync(ct);
 
 ## Unilateral Exit
 
-When the Ark server goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their VTXO leaf, waiting a CSV timelock, then claiming funds on-chain.
+If the Arkade server goes offline or becomes uncooperative, users can **unilaterally exit** by broadcasting the chain of virtual transactions from commitment tx to their VTXO leaf, waiting a CSV timelock, then claiming funds onchain.
 
 ### Setup
 
@@ -562,6 +596,33 @@ await exitService.ProgressExitsAsync(cancellationToken);
 
 The exit watchtower background service does this automatically if registered.
 
+### CSV Delay: Block-Based vs Time-Based
+
+The server's unilateral-exit delay (`ArkServerInfo.UnilateralExit`) is a **BIP-68 relative timelock**, not a block count. arkd advertises a single integer that it overloads: below 512 it means blocks, 512 or above it means seconds (arkd's production default is `86400`, i.e. 24 hours). The SDK decodes that into an `NBitcoin.Sequence`, and the two encodings mature under completely different rules:
+
+| `LockType` | Delay read from | Matures when |
+| --- | --- | --- |
+| `SequenceLockType.Height` | `Sequence.LockHeight` (blocks) | tip height ≥ leaf confirmation height + delay |
+| `SequenceLockType.Time` | `Sequence.LockPeriod` (512-second units) | tip **median time past** ≥ leaf block's MTP + delay |
+
+Never do arithmetic on the raw `Sequence.Value`: a time-based lock sets `SEQUENCE_LOCKTIME_TYPE_FLAG` (bit 22), so a 24-hour delay reads as `4194472`. Branch on `LockType`, or use the SDK's helper:
+
+```csharp
+var maturity = await CsvMaturity.EvaluateAsync(
+    serverInfo.UnilateralExit,
+    leafConfirmationHeight,
+    blockchain,
+    ct);
+
+if (maturity.IsMatured) { /* claim */ }
+else logger.LogDebug("CSV not matured: {Progress}", maturity.Progress);
+```
+
+`UnilateralExitService` uses this internally for both the stateful and stateless paths, so no extra wiring is needed for the built-in flow. Two requirements fall out of it for custom `IBitcoinBlockchain` implementations:
+
+- `GetChainTime` must return the tip's **median time past** (BIP 113) as `TimeHeight.Timestamp`, not the tip block's own `nTime`.
+- `GetMedianTimePastAsync(blockHeight)` must resolve a historical block's MTP. It has a default implementation that throws `NotSupportedException`, so a backend that skips it fails loudly on a time-based delay instead of stalling. All three built-in backends (`NBXplorerBlockchain`, `EsploraBlockchain`, `RpcBlockchain`) implement it.
+
 ### Virtual Tx Storage Modes
 
 - **Lite mode (default)**: Stores only txids + expiry. Fetches hex on demand when exit is actually started (saves storage, slower exit start). Right default for most wallets — the common case never exits unilaterally.
@@ -579,16 +640,25 @@ services.AddInMemoryExitStorage();  // registers InMemoryExitSessionStorage + In
 // Don't call ConfigureArkExitEntities() — no SQL tables needed
 ```
 
-**2. Stateless one-shot API** — `UnilateralExitService.BroadcastExitChainAsync` + `ClaimMaturedExitAsync` skip both `IExitSessionStorage` and `IVirtualTxStorage` entirely. The SDK persists nothing exit-specific; the caller saves the returned `ExitPlan` record however they want and feeds it back to claim once the CSV timelock matures.
+**2. Stateless API** — `UnilateralExitService.BroadcastExitChainAsync` + `ClaimMaturedExitAsync` skip both `IExitSessionStorage` and `IVirtualTxStorage` entirely. The SDK persists nothing exit-specific; the caller saves the returned `ExitPlan` record however they want and feeds it back to claim once the CSV timelock matures.
+
+`BroadcastExitChainAsync` broadcasts **at most one** not-yet-onchain tx per call, not the whole chain — call it repeatedly (like `ProgressExitsAsync`) until the chain is fully confirmed. This is required by Bitcoin Core's TRUC/v3 relay policy (BIP 431): each tx gets its own CPFP child to pay its zero fee, and a v3 tx can have at most 1 unconfirmed descendant, so the next tx in the chain can't be broadcast until the previous one confirms on-chain (the same constraint go-sdk and ts-sdk's unroll sessions are built around).
 
 ```csharp
-// Broadcast the chain now — no SDK persistence
-var plan = await exitService.BroadcastExitChainAsync(
-    walletId, vtxoOutpoint, claimAddress, ct);
+// Call on an interval until the whole chain is confirmed (mirrors ProgressExitsAsync)
+ExitPlan plan;
+while (true)
+{
+    plan = await exitService.BroadcastExitChainAsync(
+        walletId, vtxoOutpoint, claimAddress, ct);
+    var leafStatus = await blockchain.GetTxStatusAsync(uint256.Parse(plan.LeafTxid), ct);
+    if (leafStatus.Confirmed) break;
+    await Task.Delay(pollInterval, ct);
+}
 
 // ... persist `plan` somewhere (a JSON blob, a settings entry, etc.) ...
 
-// Later — once leaf-tx confirms + CSV matures:
+// Later — once the CSV timelock matures:
 var claimTxid = await exitService.ClaimMaturedExitAsync(plan, ct);
 if (claimTxid is null)
 {
@@ -596,7 +666,7 @@ if (claimTxid is null)
 }
 ```
 
-Trade-off vs. the stateful path: no idempotency (a second `BroadcastExitChainAsync` will re-broadcast), no automatic watchtower progression. The caller owns persistence and time-keeping in their own format.
+Trade-off vs. the stateful path: no idempotency (re-broadcasting an already-confirmed link is a no-op, but the caller must track when to stop polling), no automatic watchtower progression. The caller owns persistence and time-keeping in their own format.
 
 Virtual tx data is automatically pruned when VTXOs are spent. Sibling VTXOs sharing internal tree nodes naturally deduplicate — shared nodes are only cleaned up when no VTXO references them.
 
@@ -612,6 +682,36 @@ var contract = await contractService.DeriveContract(
 
 // The contract's script can be converted to an ArkAddress for display
 ```
+
+### Contract scope (onchain / offchain)
+
+Every contract type declares which layer(s) its funds live on via
+`ArkContract.DefaultScope`, a `[Flags] ContractScope` (`Onchain`, `Offchain`, or
+both). Boarding contracts are `Onchain`; payment, VHTLC, delegate, hash-lock,
+note and unknown contracts are `Offchain`. This replaces ad-hoc
+`Type == "Boarding"` checks — sync, sweep and recovery ask the scope instead.
+
+The resolved scope is persisted on each contract (`ArkContractEntity.Scope`) and
+is SQL-queryable. Filter by scope through `IContractStorage.GetContracts`:
+
+```csharp
+// On-chain contracts to poll/sweep (boarding UTXOs, etc.)
+var onchain = await contractStorage.GetContracts(scope: ContractScope.Onchain);
+
+// Off-chain contracts (VTXOs) — also matches dual-scope contracts
+var offchain = await contractStorage.GetContracts(scope: ContractScope.Offchain);
+```
+
+The filter translates to a SQL bitwise predicate, so a dual-scope contract
+(`Onchain | Offchain`) is returned by both queries. A per-instance override can
+be supplied at persistence time via `ArkContract.ToEntity(scopeOverride: …)`;
+when omitted, the type's `DefaultScope` is used.
+
+> EF Core note: query scope with the bitwise form (the SDK does this internally);
+> `Enum.HasFlag` does **not** translate to SQL. The `Scope` column ships via the
+> entity configuration — consumers that manage their own schema with EF
+> migrations should add a migration that creates the column (default `Offchain`)
+> and backfills existing boarding rows to `Onchain`.
 
 ## HD Wallet Recovery
 
@@ -636,9 +736,49 @@ Console.WriteLine($"Discovered {report.DiscoveredContracts.Count} contract(s)");
 
 Custom discovery sources are added by implementing `IContractDiscoveryProvider` and registering it in DI; the orchestrator picks them up automatically. See [docs/articles/recovery.md](docs/articles/recovery.md) for the full API and tuning guidance.
 
+## Arkade Signer-Key Rotation
+
+When an Arkade server operator rotates its signing key, the SDK handles re-enrollment automatically — no consumer code required. Three regimes apply depending on when the rotation is detected relative to the cutoff:
+
+| Regime | Condition | Handled by |
+|--------|-----------|------------|
+| Collaborative sweep | Before cutoff (or no cutoff) | `ServerKeyRotationSweepPolicy` re-enrolls VTXOs under the current signer via the sweeper |
+| Wait | After cutoff, before VTXO expiry | `CanSpendOffchain` **and** `SimpleIntentScheduler` exclude the coin — it still needs a forfeit the operator won't co-sign — until it is forfeit-free (swept/unrolled) |
+| Recovery re-enroll | Expired VTXO | Intent scheduler; batch session skips forfeit so the old key is not needed |
+
+`ContractReconciliationService` keeps every SingleKey wallet's "Default" receive contract aligned with the current signer. It triggers automatically on startup, `WalletSaved`, and `ServerInfoChanged` — no extra registration needed beyond `AddArkCoreServices`.
+
+To react to a rotation event in your own service, inject `IServerInfoCacheInvalidation`:
+
+```csharp
+public class MyService(IServerInfoCacheInvalidation serverInfoCache)
+{
+    public void Start() =>
+        serverInfoCache.ServerInfoChanged += (_, e) =>
+            Console.WriteLine($"Arkade server info changed: {e.Reason}");
+}
+```
+
+To react when a wallet's sweep destination is auto-disabled because the signer it was keyed to was rotated away, inject `IDestinationSafetyNotifier`:
+
+```csharp
+public class MyService(IDestinationSafetyNotifier destinationSafety)
+{
+    public void Start() =>
+        destinationSafety.DestinationDisabled += (_, e) =>
+            Console.WriteLine($"Destination disabled for wallet {e.WalletId}: " +
+                $"address {e.Destination} was keyed to deprecated signer {e.DeprecatedServerKey}. " +
+                "Ask the user to confirm a new sweep destination.");
+}
+```
+
+`IDestinationSafetyNotifier` is DI-aliased to the same `ContractReconciliationService` singleton that performs detection, so no extra registration is needed — just inject the interface. While the destination is flagged the SDK automatically routes swept funds to a self-output instead of the stale address; the destination resumes once the user re-confirms a fresh one.
+
+See [docs/articles/signer-rotation.md](docs/articles/signer-rotation.md) for the full rotation model, detection paths, and version/digest header details.
+
 ## Pending Arkade Transaction Recovery
 
-Arkade off-chain transactions are a two-phase **Submit → Finalize** flow. If the process crashes between phases, the server holds the inputs as in-flight and only allows the original pending tx to be finalized — without recovery, those coins are stuck.
+Arkade offchain transactions are a two-phase **Submit → Finalize** flow. If the process crashes between phases, the server holds the inputs as in-flight. It only allows the original pending tx to finalize. Without recovery, those coins stay stuck.
 
 `PendingArkTransactionRecoveryService` reconciles this on every host startup. It pulls the server's view of pending transactions for each wallet, signs the checkpoint PSBTs locally, and finalizes them. It's registered automatically by `AddArkCoreServices` and wired into `ArkHostedLifecycle`, so the hands-off path requires no extra setup.
 
@@ -651,6 +791,8 @@ var finalizedTxIds = await recovery.FinalizePendingArkTransactionsAsync(walletId
 foreach (var txId in finalizedTxIds)
     Console.WriteLine($"Recovered & finalized pending tx {txId}");
 ```
+
+A pending transaction comes entirely from the server, so it is authorized locally **before anything is signed**: every checkpoint must pay the spent input's full value into the checkpoint contract this wallet would itself have built, and the accompanying final ark tx must spend exactly those checkpoint outputs while still carrying this wallet's own signature over it. Anything else is rejected with `UnauthorizedPendingArkTransactionException` and never signed, so recovery only ever completes a spend the wallet itself built and signed. That exception means the *server* presented something unauthorized; failures rooted in local state (no matching local VTXO for a checkpoint input, or a coin whose contract names no server key) surface as `InvalidOperationException` instead and imply nothing about the server.
 
 Per-tx failures are logged + raised on `RecoveryFailed` and the loop continues — one bad pending tx never blocks the rest, and the next host start retries any leftovers. Subscribe to surface a banner or telemetry:
 
@@ -844,8 +986,8 @@ A **swap route** is a directional asset pair:
 
 ```csharp
 // Route = source asset → destination asset
-var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);  // Lightning → Ark
-var route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);    // Ark → BTC on-chain
+var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);  // Lightning → Arkade
+var route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);    // Arkade → BTC onchain
 
 // Arkade-issued assets
 var myToken = SwapAsset.ArkAsset("asset1abc...");
@@ -898,6 +1040,37 @@ var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
 // quote.SourceAmount, quote.DestinationAmount, quote.TotalFees, quote.ExchangeRate
 ```
 
+### Executing a Reverse Swap (receive Lightning into Arkade)
+
+`InitiateReverseSwap` creates the Boltz reverse swap and returns the BOLT11 invoice to hand to the payer. The SDK watches the swap and materializes the VTXO automatically.
+
+```csharp
+var invoice = await swaps.InitiateReverseSwap(
+    walletId,
+    new CreateInvoiceParams(LightMoney.Satoshis(50_000), "Order #1234", TimeSpan.FromHours(1)),
+    cancellationToken: ct);
+```
+
+#### Who pays the swap fee
+
+An optional `ReverseSwapFeePayer` decides who absorbs the Boltz reverse-swap fee:
+
+| Mode | Invoice amount | Receiver nets | Use when |
+|------|----------------|---------------|----------|
+| `Recipient` (default) | `requested` | `requested − fee` | The payer's wallet verifies the invoice equals the amount it chose to pay (LNURL-pay / LUD-06). The **only** compliant option for lightning-address / checkout flows. |
+| `Sender` | `requested + fee` | `requested` | The payer is shown the invoice directly (e.g. a manual BOLT11 scan) and you want to receive an exact amount. **Not LUD-06-compliant** — the invoice no longer matches the requested amount, so LNURL/checkout wallets reject it. |
+
+```csharp
+// Merchant receives the exact amount; the payer covers the fee.
+var invoice = await swaps.InitiateReverseSwap(
+    walletId,
+    new CreateInvoiceParams(LightMoney.Satoshis(50_000), "Top up", TimeSpan.FromHours(1)),
+    ReverseSwapFeePayer.Sender,
+    ct);
+```
+
+Either way the SDK stores the actual on-chain amount Boltz delivers as `ArkSwap.ExpectedAmount`, so claim, refund, and payment tracking match the VTXO that arrives.
+
 ### Providers
 
 | Provider | Routes | Features |
@@ -909,7 +1082,7 @@ var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
 When a chain swap can't settle as originally quoted — user funds the lockup with the wrong amount, an LN invoice times out, or Boltz expires the swap — the SDK handles recovery automatically inside `BoltzSwapProvider.PollSwapState`. No manual call is needed.
 
 * **`transaction.lockupFailed`** → asks Boltz for a renegotiated quote via `GET/POST /v2/swap/chain/{id}/quote` and updates `ArkSwap.ExpectedAmount` if Boltz accepts.
-* **`swap.expired` / `transaction.failed` / `transaction.refunded`** → cooperative refund: BTC→Arkade refunds the BTC lockup with MuSig2 (`/v2/swap/chain/{id}/refund`); Arkade→BTC refunds the Ark VHTLC via `/v2/swap/chain/{id}/refund/ark`. Marks the swap `Refunded`.
+* **`swap.expired` / `transaction.failed` / `transaction.refunded`** → cooperative refund: BTC→Arkade refunds the BTC lockup with MuSig2 (`/v2/swap/chain/{id}/refund`); Arkade→BTC refunds the Arkade VHTLC via `/v2/swap/chain/{id}/refund/ark`. Marks the swap `Refunded`.
 * **`swap.expired` with no funds locked** → marked `Failed` (nothing to recover).
 
 Subscribe to `ISwapStorage.SwapsChanged` to observe transitions. To surface a "recovery available" indicator without committing to a refund, use the read-only inspectors:
@@ -951,6 +1124,99 @@ services.AddSingleton<ISwapProvider, MySwapProvider>();
 ```
 
 The `SwapsManagementService` will automatically discover it and route matching requests to it.
+
+## ArkadeScript & Emulator (`NArk.Arkade`)
+
+The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/arkade-os/emulator) — a Bitcoin-Script superset (40+ extension opcodes for transaction introspection, asset queries, EC operations, streaming SHA-256, …) that the [emulator](https://github.com/arkade-os/emulator) co-signs only when the script attached to an input passes validation.
+
+> **Opcode table.** Byte values track the deployed Arkade VM in `arkade-os/emulator` (`pkg/arkade/opcode.go`) — the authority on what each byte executes as. They mostly match the ts-sdk `ARKADE_OP` table, but the two diverge on `0xd7`–`0xe2` (ts-sdk lists 64-bit arithmetic / scriptnum conversion; the emulator runs byte-string + EC ops such as `OP_NUM2BIN` / `OP_ECPAIRING`). The emulator wins, since it is what actually executes the script.
+
+Install:
+
+```bash
+dotnet add package NArk.Arkade
+```
+
+Build a script and resolve the emulator-tweaked signing key:
+
+```csharp
+using NArk.Arkade.Crypto;
+using NArk.Arkade.Scripts;
+using NBitcoin;
+using NBitcoin.Secp256k1;
+
+// Compose an ArkadeScript via the opcode enum + ASM helpers
+var bytes = ArkadeScript.AsmToBytes(
+    "OP_0 OP_INSPECTOUTPUTSCRIPTPUBKEY 1 OP_EQUALVERIFY deadbeef OP_EQUAL");
+
+// GET /v1/info returns a compressed (33-byte hex) signerPubkey. Tweak it for the
+// script above to get the x-only key the emulator co-signs that input with:
+var info = await emulator.GetInfoAsync();
+ECPubKey emulatorPubKey = ECPubKey.Create(Convert.FromHexString(info.SignerPubkey));
+TaprootPubKey signingKey = ArkadeTweak.Tweak(emulatorPubKey, bytes);
+```
+
+Pin an ArkadeScript leaf to an `ArkContract`-based VTXO via the multisig wrapper:
+
+```csharp
+using NArk.Arkade.Scripts;
+using NArk.Core.Scripts;
+
+protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
+{
+    // Augmented N+1-of-N+1: alice + bob + tweaked emulator key
+    yield return new ArkadeNofNMultisigTapScript(
+        arkadeScript: bytes,
+        baseOwners: [aliceXOnly, bobXOnly],
+        emulatorKeys: [emulatorPubKey]);
+
+    // Plus your existing CSV / collab-path / etc. leaves alongside it
+    yield return new UnilateralPathArkTapScript(...);
+}
+```
+
+Build the emulator REST client through DI and submit intents / transactions for co-signing:
+
+```csharp
+using NArk.Arkade.Hosting;
+
+// One-liner: registers the REST client AND the IBatchSessionExtension that
+// transparently co-signs any batch with arkade-bound inputs.
+services.AddArkadeEmulator(opts =>
+    opts.ServerUrl = "http://localhost:7073");
+
+// Or wire the REST client without batch integration, and inject manually:
+services.AddEmulatorClient(opts =>
+    opts.ServerUrl = "http://localhost:7073");
+
+// Inject IEmulatorProvider and call:
+var info   = await emulator.GetInfoAsync();              // GET  /v1/info  (signerPubkey + deprecatedSignerPubkeys)
+var signed = await emulator.SubmitTxAsync(...);          // POST /v1/tx
+var sig    = await emulator.SubmitIntentAsync(...);      // POST /v1/intent
+var fin    = await emulator.SubmitFinalizationAsync(...);// POST /v1/finalization
+var onchn  = await emulator.SubmitOnchainTxAsync(...);   // POST /v1/onchain-tx  (fully on-chain spends)
+```
+
+For a `/v1/onchain-tx` spend whose ArkadeScript introspects a previous output, attach that output's transaction to the PSBT input so the emulator can read it — via `PsbtHelpers.SetArkFieldPrevoutTx(input, prevTx)` (the `prevouttx` ark field, key type `0xde`).
+
+Or co-sign a PSBT inline once it carries the user's partial sigs:
+
+```csharp
+using NArk.Arkade.Emulator;
+
+if (ArkadePsbtExtensions.RequiresEmulatorCoSigning(spendingCoins))
+{
+    // Append the EmulatorPacket OP_RETURN to the unsigned tx so the
+    // server can find the script body for each arkade-bound input.
+    var packetOutput = ArkadePsbtExtensions.BuildEmulatorOutput(spendingCoins);
+    if (packetOutput is not null) tx.Outputs.Add(packetOutput);
+
+    // ...sign locally, then merge the emulator's partial sigs:
+    psbt = await psbt.CoSignWithEmulatorAsync(emulator);
+}
+```
+
+The wire encoding for the emulator's OP_RETURN packet is exposed as `EmulatorPacket.Serialize` / `EmulatorPacket.Parse` for callers that need to read or write the TLV directly. Cross-SDK byte-equality is enforced by the unit tests against the canonical fixtures vendored from `arkade-os/emulator pkg/arkade/testdata/`.
 
 ## Extensibility Points
 

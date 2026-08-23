@@ -3,6 +3,7 @@ using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Safety;
+using NArk.Abstractions.VirtualTxs;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Assets;
@@ -10,6 +11,7 @@ using NArk.Core.CoinSelector;
 using NArk.Core.Enums;
 using NArk.Core.Events;
 using NArk.Core.Helpers;
+using NArk.Core.Fees;
 using NArk.Core.Transport;
 using NArk.Core.Extensions;
 using NBitcoin;
@@ -28,7 +30,10 @@ public class SpendingService(
     ISafetyService safetyService,
     IIntentStorage intentStorage,
     IEnumerable<IEventHandler<PostCoinsSpendActionEvent>> postSpendEventHandlers,
-    ILogger<SpendingService>? logger = null) : ISpendingService
+    ILogger<SpendingService>? logger = null,
+    IVirtualTxStorage? virtualTxStorage = null,
+    IEnumerable<ISpendExtensionPacketProvider>? extensionPacketProviders = null,
+    IEnumerable<ISpendSubmitHandler>? submitHandlers = null) : ISpendingService
 {
     public SpendingService(IVtxoStorage vtxoStorage,
         IContractStorage contractStorage,
@@ -38,9 +43,10 @@ public class SpendingService(
         IClientTransport transport,
         CoinSelector_ICoinSelector coinSelector,
         ISafetyService safetyService,
-        IIntentStorage intentStorage)
+        IIntentStorage intentStorage,
+        IVirtualTxStorage? virtualTxStorage = null)
         : this(vtxoStorage, contractStorage, coinService, walletProvider, paymentService, transport, coinSelector,
-            safetyService, intentStorage, [], null)
+            safetyService, intentStorage, [], null, virtualTxStorage)
     {
     }
 
@@ -53,14 +59,15 @@ public class SpendingService(
         CoinSelector_ICoinSelector coinSelector,
         ISafetyService safetyService,
         IIntentStorage intentStorage,
-        ILogger<SpendingService> logger)
+        ILogger<SpendingService> logger,
+        IVirtualTxStorage? virtualTxStorage = null)
         : this(vtxoStorage, contractStorage, coinService, walletProvider, paymentService, transport, coinSelector,
-            safetyService, intentStorage, [], logger)
+            safetyService, intentStorage, [], logger, virtualTxStorage)
     {
     }
 
     public async Task<uint256> Spend(string walletId, ArkCoin[] inputs, ArkTxOut[] outputs,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, IReadOnlyList<IExtensionPacket>? extensionPackets = null)
     {
         using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Spending {InputCount} inputs with {OutputCount} outputs for wallet {WalletId}", inputs.Length,
@@ -99,7 +106,7 @@ public class SpendingService(
                 var inputContracts = inputs.Select(i => i.Contract).ToArray();
                 var swDerive = System.Diagnostics.Stopwatch.StartNew();
                 changeAddress = (await paymentService.DeriveContract(walletId, NextContractPurpose.SendToSelf,
-                    inputContracts, cancellationToken: cancellationToken, activityState:ContractActivityState.Inactive)).GetArkAddress();
+                    inputContracts, cancellationToken: cancellationToken, activityState: ContractActivityState.Inactive)).GetArkAddress();
                 logger?.LogTrace("[spend-probe] DeriveContract (change): {Ms}ms", swDerive.ElapsedMilliseconds);
             }
 
@@ -117,15 +124,17 @@ public class SpendingService(
                 outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
             }
 
-            // Build asset packet if any inputs or outputs carry assets
-            var assetPacketOutput = BuildAssetPacket(inputs, outputs);
+            // Build the Extension OP_RETURN: asset packet (if any) merged with any
+            // provider packets (e.g. the Arkade emulator packet for covenant inputs).
+            var extensionOutput = BuildExtensionOutput(inputs, outputs, extensionPackets);
 
             var transactionBuilder =
-                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage);
+                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage,
+                    virtualTxStorage, submitHandlers);
 
             var swSubmit = System.Diagnostics.Stopwatch.StartNew();
             var tx = await transactionBuilder.ConstructAndSubmitArkTransaction(inputs, outputs, cancellationToken,
-                assetPacketOutput);
+                extensionOutput);
             logger?.LogTrace("[spend-probe] ConstructAndSubmitArkTransaction: {Ms}ms", swSubmit.ElapsedMilliseconds);
             var txId = tx.GetGlobalTransaction().GetHash();
             logger?.LogInformation("Spend transaction {TxId} completed successfully for wallet {WalletId}", txId,
@@ -134,6 +143,10 @@ public class SpendingService(
                 ActionState.Successful, null), cancellationToken: cancellationToken);
 
             return txId;
+        }
+        catch (AlreadyLockedVtxoException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -203,11 +216,25 @@ public class SpendingService(
             }
         }
 
+        // A coin under a deprecated signer whose cutoff has passed can no longer be spent offchain
+        // (the operator stops co-signing), so keep it out of the spendable set — it waits for
+        // recovery after expiry. See ArkCoin.IsDeprecatedSignerPastCutoff.
+        var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+        if (serverInfo.DeprecatedSigners.Count > 0)
+        {
+            var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var removed = coins.RemoveWhere(c => c.IsDeprecatedSignerPastCutoff(serverInfo.DeprecatedSigners, nowUnix));
+            if (removed > 0)
+                logger?.LogDebug("Excluding {Count} coin(s) under a past-cutoff deprecated signer for wallet {WalletId}",
+                    removed, walletId);
+        }
+
         logger?.LogDebug("Found {CoinCount} available coins for wallet {WalletId}", coins.Count, walletId);
         return coins;
     }
 
-    public async Task<uint256> Spend(string walletId, ArkTxOut[] outputs, CancellationToken cancellationToken = default)
+    public async Task<uint256> Spend(string walletId, ArkTxOut[] outputs, CancellationToken cancellationToken = default,
+        IReadOnlyList<IExtensionPacket>? extensionPackets = null)
     {
         using var _walletScope = logger?.BeginScope(("WalletId", walletId));
         logger?.LogDebug("Spending with automatic coin selection for wallet {WalletId} with {OutputCount} outputs",
@@ -232,11 +259,23 @@ public class SpendingService(
         Money btcTarget = assetRequirements.Count > 0
             ? Money.Satoshis(outputsSumInSatoshis) + serverInfo.Dust  // extra dust for potential asset change output
             : Money.Satoshis(outputsSumInSatoshis);
-        var selectedCoins = assetRequirements.Count > 0
+        // Input weight budget: maxTxWeight − baseTx − outputs. Outputs comprise the user outputs,
+        // one potential BTC change output, the always-present P2A anchor, and — when assets are
+        // involved — the asset packet OP_RETURN that ConstructAndSubmitArkTransaction appends.
+        // Omitting the latter two over-budgets the inputs and risks arkd rejecting TX_TOO_LARGE.
+        var outputsWu = (outputs.Count() + 1) * ArkTxWeightEstimator.P2TrOutputWu
+                        + ArkTxWeightEstimator.P2AOutputWu
+                        + EstimateAssetPacketWu(assetRequirements, outputs);
+        var inputWeightBudget = serverInfo.MaxTxWeight - ArkTxWeightEstimator.BaseTxWu - outputsWu;
+        var selected = assetRequirements.Count > 0
             ? coinSelector.SelectCoins([.. coins], btcTarget, assetRequirements, serverInfo.Dust,
-                hasExplicitSubdustOutput, maxOpReturn)
+                hasExplicitSubdustOutput, maxOpReturn, inputWeightBudget)
             : coinSelector.SelectCoins([.. coins], outputsSumInSatoshis, serverInfo.Dust,
-                hasExplicitSubdustOutput, maxOpReturn);
+                hasExplicitSubdustOutput, maxOpReturn, inputWeightBudget);
+        // Materialize once, as a list: the asset and extension packets index the selected
+        // coins by position (index i == vin i on the resulting tx), and the selector's
+        // return type carries no ordering guarantee.
+        IReadOnlyList<ArkCoin> selectedCoins = [.. selected];
         logger?.LogDebug("Selected {SelectedCount} coins for spending", selectedCoins.Count);
 
         try
@@ -277,13 +316,14 @@ public class SpendingService(
                 outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
             }
             // Build asset packet if any inputs or outputs carry assets
-            var assetPacketOutput = BuildAssetPacket(selectedCoins, outputs);
+            var extensionOutput = BuildExtensionOutput(selectedCoins, outputs, extensionPackets);
 
             var transactionBuilder =
-                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage);
+                new TransactionHelpers.ArkTransactionBuilder(transport, safetyService, walletProvider, intentStorage,
+                    virtualTxStorage, submitHandlers);
 
             var tx = await transactionBuilder.ConstructAndSubmitArkTransaction(selectedCoins, outputs,
-                cancellationToken, assetPacketOutput);
+                cancellationToken, extensionOutput);
             var txId = tx.GetGlobalTransaction().GetHash();
             logger?.LogInformation(
                 "Spend transaction {TxId} completed successfully for wallet {WalletId} with automatic coin selection",
@@ -292,6 +332,10 @@ public class SpendingService(
                 ActionState.Successful, null), cancellationToken: cancellationToken);
 
             return txId;
+        }
+        catch (AlreadyLockedVtxoException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -351,10 +395,36 @@ public class SpendingService(
     /// Builds an asset packet OP_RETURN TxOut if any inputs or outputs carry assets.
     /// Change assigned to the last output (BTC change position).
     /// </summary>
-    private static TxOut? BuildAssetPacket(IReadOnlyCollection<ArkCoin> inputs, ArkTxOut[] outputs)
+    /// <summary>
+    /// Assemble the single Extension OP_RETURN a spend carries: the asset packet
+    /// (if any) merged with every registered <see cref="ISpendExtensionPacketProvider"/>'s
+    /// packets (e.g. the Arkade emulator packet). Returns null when nothing needs
+    /// carrying. All packets share one OP_RETURN so the spend stays within the
+    /// server's OP_RETURN-output limit.
+    /// </summary>
+    // Takes IReadOnlyList, not IReadOnlyCollection: the asset packet and the extension
+    // providers index this by position (index i == vin i on the resulting tx), and only
+    // a list type carries that ordering guarantee.
+    private TxOut? BuildExtensionOutput(IReadOnlyList<ArkCoin> coinsByVin, ArkTxOut[] outputs,
+        IReadOnlyList<IExtensionPacket>? extensionPackets = null)
+    {
+        var packets = new List<IExtensionPacket>();
+        if (BuildAssetPacket(coinsByVin, outputs) is { } assetPacket)
+            packets.Add(assetPacket);
+
+        foreach (var provider in extensionPacketProviders ?? [])
+            packets.AddRange(provider.BuildPackets(coinsByVin));
+
+        // Per-call packets (e.g. an Arkade offer packet on a funding deposit).
+        if (extensionPackets is not null)
+            packets.AddRange(extensionPackets);
+
+        return packets.Count > 0 ? new Extension(packets).ToTxOut() : null;
+    }
+
+    private static IExtensionPacket? BuildAssetPacket(IReadOnlyList<ArkCoin> inputList, ArkTxOut[] outputs)
     {
         var assetInputTuples = new List<(string assetId, ushort vin, ulong amount)>();
-        var inputList = inputs.ToList();
         for (var i = 0; i < inputList.Count; i++)
         {
             if (inputList[i].Assets is not { Count: > 0 } assets) continue;
@@ -371,10 +441,47 @@ public class SpendingService(
         }
 
         var changeOutputIndex = (ushort)(outputs.Length - 1);
-        return AssetPacketBuilder.Build(
+        return AssetPacketBuilder.BuildPacket(
             assetInputTuples,
             assetOutputTuples.Count > 0 ? assetOutputTuples : null,
             changeOutputIndex);
+    }
+
+    /// <summary>
+    /// Estimates the weight units of the asset packet OP_RETURN output that
+    /// <see cref="BuildAssetPacket"/> appends when assets are involved, so the input-weight
+    /// budget reserves room for it before coin selection runs.
+    /// </summary>
+    /// <remarks>
+    /// The exact packet size depends on which inputs are ultimately selected (it grows per
+    /// asset-bearing input), which is unknown at budgeting time. The estimate models one input
+    /// per required asset plus the explicit output asset entries, capturing the dominant
+    /// per-group asset-id cost. Returns 0 when no assets are involved.
+    /// </remarks>
+    internal static int EstimateAssetPacketWu(
+        IReadOnlyList<AssetRequirement> assetRequirements, ArkTxOut[] outputs)
+    {
+        if (assetRequirements.Count == 0)
+            return 0;
+
+        var inputTuples = assetRequirements
+            .Select(r => (r.AssetId, (ushort)0, r.Amount))
+            .ToList();
+
+        var outputTuples = new List<(string assetId, ushort vout, ulong amount)>();
+        for (var i = 0; i < outputs.Length; i++)
+        {
+            if (outputs[i].Assets is not { Count: > 0 } assets) continue;
+            foreach (var asset in assets)
+                outputTuples.Add((asset.AssetId, (ushort)i, asset.Amount));
+        }
+
+        var packet = AssetPacketBuilder.Build(
+            inputTuples,
+            outputTuples.Count > 0 ? outputTuples : null,
+            changeVout: (ushort)Math.Max(0, outputs.Length - 1));
+
+        return packet is null ? 0 : ArkTxWeightEstimator.GetOutputWeightUnits(packet);
     }
 
     /// <summary>

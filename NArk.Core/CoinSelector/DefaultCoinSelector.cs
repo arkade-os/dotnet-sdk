@@ -2,6 +2,7 @@
 
 
 using NArk.Abstractions;
+using NArk.Core.Fees;
 using NBitcoin;
 
 namespace NArk.Core.CoinSelector;
@@ -16,14 +17,18 @@ public class DefaultCoinSelector : ICoinSelector
     /// <param name="dustThreshold">Dust threshold from operator terms</param>
     /// <param name="currentSubDustOutputs">Whether the user explicitly uses subdust change</param>
     /// <param name="maxOpReturnOutputs">Maximum OP_RETURN outputs allowed per transaction</param>
+    /// <param name="maxInputWeightWu">Maximum total input weight budget in weight units, or null for no limit</param>
     /// <returns>Selected coins or null if impossible</returns>
     public IReadOnlyCollection<ArkCoin> SelectCoins(
         List<ArkCoin> availableCoins,
         Money targetAmount,
         Money dustThreshold,
         int currentSubDustOutputs,
-        int maxOpReturnOutputs = 1)
+        int maxOpReturnOutputs = 1,
+        long? maxInputWeightWu = null)
     {
+        availableCoins = availableCoins.Where(c => !c.Unrolled).ToList();
+
         if (availableCoins.Count == 0)
             throw new NotEnoughFundsException("Not enough funds to create transaction", null, targetAmount);
 
@@ -35,6 +40,7 @@ public class DefaultCoinSelector : ICoinSelector
         // Start with largest coins first (greedy approach)
         var selected = new List<ArkCoin>();
         var currentTotal = Money.Zero;
+        var usedWu = 0L;
 
         foreach (var coin in availableCoins)
         {
@@ -47,8 +53,20 @@ public class DefaultCoinSelector : ICoinSelector
                     break;
             }
 
+            var coinWu = ArkTxWeightEstimator.GetInputWeightUnits(coin);
+            if (maxInputWeightWu is { } cap && usedWu + coinWu > cap)
+            {
+                // Weight budget exhausted. Stop adding inputs.
+                // If target is already covered, the change-acceptability check above will
+                // handle it on the next iteration; otherwise the target is unreachable.
+                if (currentTotal >= targetAmount)
+                    break;
+                throw new TooManyInputsException(cap);
+            }
+
             selected.Add(coin);
             currentTotal += coin.TxOut.Value;
+            usedWu += coinWu;
         }
 
         var finalChange = currentTotal - targetAmount;
@@ -61,6 +79,9 @@ public class DefaultCoinSelector : ICoinSelector
             var remainingCoins = availableCoins.Except(selected).ToList();
             foreach (var extraCoin in remainingCoins)
             {
+                var extraWu = ArkTxWeightEstimator.GetInputWeightUnits(extraCoin);
+                if (maxInputWeightWu is { } cap && usedWu + extraWu > cap)
+                    continue; // coin doesn't fit within budget, try next
                 var newChange = finalChange + extraCoin.TxOut.Value;
                 if (newChange >= dustThreshold)
                 {
@@ -76,7 +97,23 @@ public class DefaultCoinSelector : ICoinSelector
                 return betterSelection;
             }
 
-            // Strategy 4: If we can't avoid subdust, use all coins to maximize change
+            // Strategy 4: If we can't avoid subdust, use as many coins as the weight budget allows,
+            // ordered by value descending to maximise the chance of covering the target.
+            if (maxInputWeightWu is { } budget)
+            {
+                var capped = new List<ArkCoin>();
+                var cappedWu = 0L;
+                foreach (var c in availableCoins.OrderByDescending(c => c.TxOut.Value))
+                {
+                    var wu = ArkTxWeightEstimator.GetInputWeightUnits(c);
+                    if (cappedWu + wu > budget) break;
+                    capped.Add(c);
+                    cappedWu += wu;
+                }
+                if (capped.Sum(c => c.TxOut.Value) < targetAmount)
+                    throw new TooManyInputsException(budget);
+                return capped;
+            }
             return availableCoins;
         }
 
@@ -93,13 +130,19 @@ public class DefaultCoinSelector : ICoinSelector
         IReadOnlyList<AssetRequirement> assetRequirements,
         Money dustThreshold,
         int currentSubDustOutputs,
-        int maxOpReturnOutputs = 1)
+        int maxOpReturnOutputs = 1,
+        long? maxInputWeightWu = null)
     {
+        // See the BTC-only overload: unrolled (on-chain) coins can't be spent
+        // off-chain, so exclude them here too before the asset-aware pass.
+        availableCoins = availableCoins.Where(c => !c.Unrolled).ToList();
+
         if (assetRequirements.Count == 0)
-            return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs);
+            return SelectCoins(availableCoins, targetBtcAmount, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs, maxInputWeightWu);
 
         var selected = new HashSet<ArkCoin>(ReferenceEqualityComparer.Instance);
         var btcFromAssetCoins = Money.Zero;
+        var usedWu = 0L;
 
         foreach (var requirement in assetRequirements)
         {
@@ -115,8 +158,13 @@ public class DefaultCoinSelector : ICoinSelector
                 if (assetTotal >= requirement.Amount)
                     break;
 
+                var coinWu = ArkTxWeightEstimator.GetInputWeightUnits(coin);
+                if (maxInputWeightWu is { } cap && usedWu + coinWu > cap)
+                    throw new TooManyInputsException(cap);
+
                 selected.Add(coin);
                 btcFromAssetCoins += coin.TxOut.Value;
+                usedWu += coinWu;
                 assetTotal += coin.Assets!.First(a => a.AssetId == requirement.AssetId).Amount;
             }
 
@@ -138,7 +186,8 @@ public class DefaultCoinSelector : ICoinSelector
             throw new NotEnoughFundsException("Not enough BTC funds to create transaction", null, remainingBtc);
         }
 
-        var btcSelected = SelectCoins(remainingCoins, remainingBtc, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs);
+        var remainingBudget = maxInputWeightWu is { } total ? total - usedWu : (long?)null;
+        var btcSelected = SelectCoins(remainingCoins, remainingBtc, dustThreshold, currentSubDustOutputs, maxOpReturnOutputs, remainingBudget);
         foreach (var coin in btcSelected)
             selected.Add(coin);
 

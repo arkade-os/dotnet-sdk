@@ -1,5 +1,3 @@
-using System;
-
 namespace NBitcoin.Scripting
 {
 	internal class ScriptToken : IEquatable<ScriptToken>

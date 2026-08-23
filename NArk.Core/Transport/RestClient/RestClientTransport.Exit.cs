@@ -10,38 +10,74 @@ namespace NArk.Transport.RestClient;
 public partial class RestClientTransport
 {
     public async Task<IReadOnlyList<VtxoChainEntry>> GetVtxoChainAsync(
-        OutPoint vtxoOutpoint, CancellationToken cancellationToken = default)
+        OutPoint vtxoOutpoint, string? intentProof = null, string? intentMessage = null,
+        CancellationToken cancellationToken = default)
     {
         var result = new List<VtxoChainEntry>();
+        var basePath = $"/v1/indexer/vtxo/{vtxoOutpoint.Hash}/{vtxoOutpoint.N}/chain";
+
+        if (intentProof is not null && intentMessage is not null)
+        {
+            var url = $"{basePath}?intent.proof={Uri.EscapeDataString(intentProof)}"
+                    + $"&intent.message={Uri.EscapeDataString(intentMessage)}";
+            var authToken = string.Empty;
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var response = await _http.GetFromJsonAsync<VtxoChainResponse>(url, JsonOpts, cancellationToken);
+                if (response is null) break;
+
+                AppendEntries(result, response.Chain);
+
+                if (!string.IsNullOrEmpty(response.AuthToken))
+                    authToken = response.AuthToken;
+
+                if (string.IsNullOrEmpty(response.NextPageToken))
+                    break;
+
+                url = $"{basePath}?token={Uri.EscapeDataString(authToken)}"
+                    + $"&page_token={Uri.EscapeDataString(response.NextPageToken)}";
+            }
+
+            return result;
+        }
+
+        // Legacy anonymous flow (public tx exposure): outpoint + page-number pagination.
         var pageIndex = 0;
         int? pageTotal = null;
 
         while (pageTotal is null || pageIndex < pageTotal)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var url = $"/v1/indexer/vtxo/{vtxoOutpoint.Hash}/{vtxoOutpoint.N}/chain?page.index={pageIndex}&page.size=1000";
+            var url = $"{basePath}?page.index={pageIndex}&page.size=1000";
             var response = await _http.GetFromJsonAsync<VtxoChainResponse>(url, JsonOpts, cancellationToken);
             if (response is null) break;
 
-            foreach (var entry in response.Chain ?? [])
-            {
-                var expiresAt = long.TryParse(entry.ExpiresAt, out var epoch)
-                    ? DateTimeOffset.FromUnixTimeSeconds(epoch)
-                    : DateTimeOffset.MaxValue;
-
-                result.Add(new VtxoChainEntry(
-                    entry.Txid,
-                    expiresAt,
-                    Enum.TryParse<ChainedTxType>(entry.Type, true, out var t) ? t : ChainedTxType.Unspecified,
-                    entry.Spends ?? []
-                ));
-            }
+            AppendEntries(result, response.Chain);
 
             pageTotal = response.Page?.Total ?? 0;
             pageIndex = response.Page?.Next ?? pageTotal.Value;
         }
 
         return result;
+    }
+
+    private static void AppendEntries(List<VtxoChainEntry> result, List<VtxoChainEntryDto>? chain)
+    {
+        foreach (var entry in chain ?? [])
+        {
+            var expiresAt = long.TryParse(entry.ExpiresAt, out var epoch)
+                ? DateTimeOffset.FromUnixTimeSeconds(epoch)
+                : DateTimeOffset.MaxValue;
+
+            result.Add(new VtxoChainEntry(
+                entry.Txid,
+                expiresAt,
+                Enum.TryParse<ChainedTxType>(entry.Type, true, out var t) ? t : ChainedTxType.Unspecified,
+                entry.Spends ?? []
+            ));
+        }
     }
 
     public async Task<IReadOnlyList<string>> GetVirtualTxsAsync(
@@ -104,7 +140,9 @@ public partial class RestClientTransport
     // JSON DTOs for deserialization
     private record VtxoChainResponse(
         [property: JsonPropertyName("chain")] List<VtxoChainEntryDto>? Chain,
-        [property: JsonPropertyName("page")] PageDto? Page);
+        [property: JsonPropertyName("page")] PageDto? Page,
+        [property: JsonPropertyName("auth_token")] string? AuthToken = null,
+        [property: JsonPropertyName("next_page_token")] string? NextPageToken = null);
 
     private record VtxoChainEntryDto(
         [property: JsonPropertyName("txid")] string Txid,
