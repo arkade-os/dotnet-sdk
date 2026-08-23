@@ -281,6 +281,13 @@ public partial class BoltzSwapProvider : ISwapProvider
             }
             catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
+                // A 404 on the batch endpoint means either one stale ID in the chunk or
+                // a Boltz instance without /v2/swap/status. Both degrade this tick to
+                // per-ID polling, so say it out loud: silently multiplying one request
+                // into a chunk's worth is only visible as a request-rate anomaly.
+                _logger?.LogWarning(ex,
+                    "Boltz batch status returned 404 for a chunk of {Count} swap(s) — falling back to individual polls",
+                    chunk.Length);
                 // Identify the stale ID without penalizing valid swaps in the chunk.
                 await PollSwapState(chunk, cancellationToken);
             }
