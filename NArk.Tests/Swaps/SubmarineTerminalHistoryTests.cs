@@ -36,6 +36,32 @@ public class SubmarineTerminalHistoryTests
         await AssertHistoryWasRequested(vtxoStorage);
     }
 
+    [TestCase(InvoiceFailedToPay)]
+    [TestCase(SwapExpired)]
+    public async Task FinalStatusWithWrongAmountFunding_SaysFundsAreRecoverable(string boltzStatus)
+    {
+        var swap = MakeSwap();
+        // Funded, but not at ExpectedAmount — so there is no canonical lockup to refund,
+        // while the coins themselves are still sitting on the contract.
+        var wrongAmount = MakeVtxo(swap.ExpectedAmount - 1_000, spent: false);
+        var (provider, swapStorage, vtxoStorage) = CreateProvider([wrongAmount]);
+
+        await provider.RequestSubmarineCoopRefund(
+            swap,
+            new SwapStatusResponse { Status = boltzStatus });
+
+        await swapStorage.Received(1).SaveSwap(
+            swap.WalletId,
+            Arg.Is<ArkSwap>(saved =>
+                saved.Status == ArkSwapStatus.Failed &&
+                saved.FailReason != null &&
+                saved.FailReason.Contains("different amount") &&
+                saved.FailReason.Contains("sweeper") &&
+                !saved.FailReason.Contains("no canonical lockup in contract history")),
+            Arg.Any<CancellationToken>());
+        await AssertHistoryWasRequested(vtxoStorage);
+    }
+
     [Test]
     public async Task SpentCanonicalHistory_IsNotClassifiedAsUnfunded()
     {

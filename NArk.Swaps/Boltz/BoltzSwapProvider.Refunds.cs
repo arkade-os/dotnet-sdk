@@ -70,10 +70,21 @@ public partial class BoltzSwapProvider
 
             if (BoltzOperationClassifier.IsFinalSubmarineRefundStatus(swapStatus.Status))
             {
+                // "No canonical lockup" covers two very different situations. If the
+                // contract still holds unspent VTXOs, the user did fund it — just not at
+                // ExpectedAmount — and SweeperService recovers those once the CSV expires.
+                // Saying "no lockup in contract history" there reads as "nothing was sent"
+                // and would send an operator hunting for funds that are not lost.
+                var strandedCount = contractHistory.Count(v => !v.IsSpent());
+                var failReason = strandedCount > 0
+                    ? $"Final Boltz status '{swapStatus.Status}' with no {swap.ExpectedAmount}-sat lockup; " +
+                      $"{strandedCount} unspent VTXO(s) funded at a different amount — the sweeper recovers them after the CSV expires"
+                    : $"Final Boltz status '{swapStatus.Status}' with no canonical lockup in contract history";
+
                 var failedSwap = swap with
                 {
                     Status = ArkSwapStatus.Failed,
-                    FailReason = $"Final Boltz status '{swapStatus.Status}' with no canonical lockup in contract history",
+                    FailReason = failReason,
                     UpdatedAt = DateTimeOffset.UtcNow
                 };
                 await _swapsStorage.SaveSwap(failedSwap.WalletId, failedSwap, cancellationToken);
