@@ -59,19 +59,27 @@ public record SwapDetails
 /// <summary>
 /// Reference to the lockup transaction of a restorable swap.
 /// </summary>
+/// <remarks>
+/// Both members are optional on purpose. <c>/v2/swap/restore</c> answers for every
+/// public key in one array, and a `required` member that Boltz omits fails the whole
+/// response — one swap variant shipping a partial <c>transaction</c> block would take
+/// down recovery for every descriptor in the batch. The enclosing
+/// <see cref="SwapDetails.Transaction"/> is already nullable, so an absent block is
+/// tolerated; a partially populated one must be too. Consumers null-check before use.
+/// </remarks>
 public record RestoreTransaction
 {
     /// <summary>
-    /// ID of the lockup transaction.
+    /// ID of the lockup transaction, when Boltz reports one.
     /// </summary>
     [JsonPropertyName("id")]
-    public required string Id { get; init; }
+    public string? Id { get; init; }
 
     /// <summary>
-    /// Index of the lockup output in the transaction.
+    /// Index of the lockup output in the transaction, when Boltz reports one.
     /// </summary>
     [JsonPropertyName("vout")]
-    public required uint Vout { get; init; }
+    public uint? Vout { get; init; }
 }
 
 /// <summary>
