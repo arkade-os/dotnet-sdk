@@ -311,7 +311,26 @@ public partial class BoltzSwapProvider : ISwapProvider
         }
     }
 
+    /// <summary>
+    /// Handles one Boltz status update for <paramref name="swapId"/>.
+    /// </summary>
+    /// <remarks>
+    /// The re-poll after a successful chain renegotiation deliberately runs outside
+    /// <see cref="ProcessSwapStatusUnderLock"/>: that method holds the non-reentrant
+    /// <c>swap::{id}</c> keyed lock, and <see cref="PollSwapState"/> re-enters
+    /// <see cref="ProcessSwapStatus"/> for the same id. Polling inside the lock
+    /// deadlocks the swap until the caller's token fires.
+    /// </remarks>
     private async Task ProcessSwapStatus(
+        string swapId,
+        SwapStatusResponse swapStatus,
+        CancellationToken cancellationToken)
+    {
+        if (await ProcessSwapStatusUnderLock(swapId, swapStatus, cancellationToken))
+            await PollSwapState([swapId], cancellationToken);
+    }
+
+    private async Task<bool> ProcessSwapStatusUnderLock(
         string swapId,
         SwapStatusResponse swapStatus,
         CancellationToken cancellationToken)
@@ -323,7 +342,7 @@ public partial class BoltzSwapProvider : ISwapProvider
         var swap = (await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken))
             .FirstOrDefault();
         if (swap is null || swap.Status.IsTerminalState())
-            return;
+            return false;
 
         // Scope transitive action logs to the owning wallet.
         using var walletScope = _logger?.BeginScope(("WalletId", swap.WalletId));
@@ -349,24 +368,23 @@ public partial class BoltzSwapProvider : ISwapProvider
         {
             case BoltzSwapAction.CanCoopRefundSubmarine:
                 await RequestSubmarineCoopRefund(swap, swapStatus, cancellationToken);
-                return;
+                return false;
             case BoltzSwapAction.CanCoopRefundArkToBtc:
                 await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
-                return;
+                return false;
             case BoltzSwapAction.CanCoopRefundBtcToArk:
                 await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
-                return;
+                return false;
             case BoltzSwapAction.CanRenegotiateChain:
                 if (await TryRenegotiateChainSwap(swap, cancellationToken))
                 {
-                    await PollSwapState([swap.SwapId], cancellationToken);
-                    return;
+                    return true;
                 }
                 if (swap.SwapType == ArkSwapType.ChainArkToBtc)
                     await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
                 else
                     await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
-                return;
+                return false;
             case BoltzSwapAction.CanClaimChain:
                 await TryClaimBtcForChainSwap(swap, cancellationToken);
                 break;
@@ -379,12 +397,12 @@ public partial class BoltzSwapProvider : ISwapProvider
         swap = (await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken))
             .FirstOrDefault() ?? swap;
         if (swap.Status.IsSuccess())
-            return;
+            return false;
 
         // Operational statuses are handled above and map to null.
         var newStatus = BoltzSwapStatus.ToArkSwapStatus(swapStatus.Status);
         if (newStatus is null || swap.Status == newStatus)
-            return;
+            return false;
 
         var updatedSwap = swap with { Status = newStatus.Value, UpdatedAt = DateTimeOffset.UtcNow };
         await _swapsStorage.SaveSwap(swap.WalletId, updatedSwap, cancellationToken: cancellationToken);
@@ -395,6 +413,8 @@ public partial class BoltzSwapProvider : ISwapProvider
         {
             await UpdateWebsocketSubscriptionsAsync([updatedSwap.SwapId], subscribe: false);
         }
+
+        return false;
     }
 
     /// <summary>
