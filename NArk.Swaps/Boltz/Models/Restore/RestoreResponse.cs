@@ -71,7 +71,7 @@ public record RestoreTransaction
     /// Index of the lockup output in the transaction.
     /// </summary>
     [JsonPropertyName("vout")]
-    public required long Vout { get; init; }
+    public required uint Vout { get; init; }
 }
 
 /// <summary>
