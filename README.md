@@ -210,6 +210,29 @@ var txId = await spendingService.Spend(
     outputs: [new ArkTxOut(recipientAddress, Money.Satoshis(5_000))]);
 ```
 
+## Intent Fees
+
+Every intent pays the Arkade operator a fee, quoted by the operator as CEL programs in its
+server info and re-evaluated by arkd at registration. `IFeeEstimator` predicts that number so
+an intent is neither rejected for underpaying (`INTENT_INSUFFICIENT_FEE`) nor silently
+overpaying — the operator keeps any surplus.
+
+```csharp
+// Registered by AddArk(...) as a singleton; inject it anywhere.
+Money fee = await feeEstimator.EstimateFeeAsync(coins, outputs);
+
+// Or price a whole intent, as the schedulers do.
+var spec = new ArkIntentSpec(coins, outputs, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(1));
+Money fee = await feeEstimator.EstimateFeeAsync(spec);
+```
+
+`DefaultFeeEstimator` mirrors arkd's `ComputeIntentFees`: VTXO inputs are priced by the
+offchain-input program and boarding UTXOs by the onchain-input program, `inputType` is
+`recoverable` only once the operator has swept the VTXO, `expiry`/`birth` are unix seconds,
+`now()` is available to time-based programs, and fractional terms are summed before a single
+round up. See [Intent Fees](docs/articles/fees.md) for the full variable table and how to
+substitute your own estimator.
+
 ## Wallet Recovery
 
 Rebuild a wallet's local state — contracts, the HD derivation index, funds (VTXOs)

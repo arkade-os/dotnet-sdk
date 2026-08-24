@@ -6,6 +6,8 @@
   href: wallets.md
 - name: Spending
   href: spending.md
+- name: Intent Fees
+  href: fees.md
 - name: Assets
   href: assets.md
 - name: Swaps
