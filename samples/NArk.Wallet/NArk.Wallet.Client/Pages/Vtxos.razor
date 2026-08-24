@@ -64,7 +64,7 @@
                     <div style="display:flex;justify-content:space-between;align-items:center;">
                         <div>
                             <p style="font-size:14px;font-weight:600;font-family:var(--font-mono);">
-                                @vtxo.Amount.ToString("N0") <span class="text-secondary" style="font-weight:400;font-size:12px;">sats</span>
+                                @vtxo.Amount.Satoshi.ToString("N0") <span class="text-secondary" style="font-weight:400;font-size:12px;">sats</span>
                             </p>
                             <p class="mono text-secondary" style="font-size:10px;">
                                 @vtxo.TransactionId[..16]...:@vtxo.TransactionOutputIndex
@@ -95,7 +95,7 @@
                             </div>
                             <div class="detail-row">
                                 <span class="detail-label">Amount</span>
-                                <span class="detail-value mono">@vtxo.Amount.ToString("N0") sats</span>
+                                <span class="detail-value mono">@vtxo.Amount.Satoshi.ToString("N0") sats</span>
                             </div>
                             @if (vtxo.ExpiresAt is not null)
                             {

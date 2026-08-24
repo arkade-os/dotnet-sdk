@@ -85,7 +85,7 @@ public class BoardingTests
         Assert.That(syncedVtxo, Is.Not.Null,
             "BoardingUtxoSyncService should find the funded UTXO via Esplora as confirmed (ExpiresAt set)");
         Assert.That(syncedVtxo!.Unrolled, Is.True);
-        Assert.That(syncedVtxo.Amount, Is.EqualTo((ulong)boardingAmountSats));
+        Assert.That(syncedVtxo.Amount, Is.EqualTo(Money.Satoshis(boardingAmountSats)));
         Console.WriteLine($"[Boarding] Synced VTXO: {syncedVtxo.TransactionId[..8]}..:{syncedVtxo.TransactionOutputIndex}");
 
         // --- 6. Setup services and generate intent ---

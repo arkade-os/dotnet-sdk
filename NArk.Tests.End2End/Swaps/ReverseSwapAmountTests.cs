@@ -66,9 +66,9 @@ public class ReverseSwapAmountTests
 
         var swaps = await swapStorage.GetSwaps(walletIds: [prereq.walletIdentifier]);
         var swap = swaps.Single();
-        Assert.That(swap.ExpectedAmount, Is.LessThan(requestedSats),
+        Assert.That(swap.ExpectedAmount, Is.LessThan(Money.Satoshis(requestedSats)),
             "Recipient mode: expected onchain amount must be less than requested (Boltz fee deducted)");
-        Assert.That(swap.ExpectedAmount, Is.GreaterThan(0),
+        Assert.That(swap.ExpectedAmount, Is.GreaterThan(Money.Zero),
             "Recipient mode: expected onchain amount must be positive");
     }
 
@@ -104,7 +104,7 @@ public class ReverseSwapAmountTests
 
         var swaps = await swapStorage.GetSwaps(walletIds: [prereq.walletIdentifier]);
         var swap = swaps.Single();
-        Assert.That(swap.ExpectedAmount, Is.EqualTo(requestedSats),
+        Assert.That(swap.ExpectedAmount, Is.EqualTo(Money.Satoshis(requestedSats)),
             "Sender mode: expected onchain amount must equal the requested amount exactly");
     }
 

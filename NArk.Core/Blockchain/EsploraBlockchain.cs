@@ -82,7 +82,7 @@ public class EsploraBlockchain : IBitcoinBlockchain
         return utxos.Select(u => new BoardingUtxo(
             Txid: u.Txid,
             Vout: (uint)u.Vout,
-            Amount: (ulong)u.Value,
+            Amount: Money.Satoshis(u.Value),
             Confirmed: u.Status?.Confirmed ?? false,
             BlockHeight: u.Status?.BlockHeight ?? 0,
             BlockTime: u.Status?.BlockTime ?? 0

@@ -15,20 +15,20 @@ public static class BtcTransactionBuilder
     /// <param name="outpoint">The HTLC output to spend.</param>
     /// <param name="prevOutput">The previous output (amount + scriptPubKey).</param>
     /// <param name="destination">The destination address for claimed funds.</param>
-    /// <param name="feeSats">The fee in satoshis.</param>
+    /// <param name="fee">The fee to deduct from the claimed output.</param>
     /// <returns>Unsigned transaction ready for MuSig2 signing.</returns>
     public static Transaction BuildKeyPathClaimTx(
         OutPoint outpoint,
         TxOut prevOutput,
         BitcoinAddress destination,
-        long feeSats)
+        Money fee)
     {
         var tx = destination.Network.CreateTransaction();
         tx.Version = 2;
 
         tx.Inputs.Add(new TxIn(outpoint));
 
-        var outputAmount = prevOutput.Value - Money.Satoshis(feeSats);
+        var outputAmount = prevOutput.Value - fee;
         tx.Outputs.Add(new TxOut(outputAmount, destination));
 
         return tx;

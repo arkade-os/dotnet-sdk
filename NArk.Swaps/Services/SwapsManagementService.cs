@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using System.Security.Cryptography;
 using System.Text;
 using BTCPayServer.Lightning;
@@ -16,6 +17,7 @@ using NArk.Core.Services;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz;
 using NArk.Swaps.Boltz.Models.Restore;
+using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
 using NArk.Core.Transport;
 using NArk.Swaps.Utils;
@@ -362,7 +364,7 @@ public class SwapsManagementService : IAsyncDisposable
 
         var expectedOnchainSats = BoltzSwapService.ResolveExpectedOnchainAmount(
             feePayer,
-            (long)invoiceParams.Amount.ToUnit(LightMoneyUnit.Satoshi),
+            invoiceParams.Amount.ToSatoshisRoundingUp().Satoshi,
             revSwap.Swap.OnchainAmount);
 
         await _contractService.ImportContract(walletId, revSwap.Contract,
@@ -652,7 +654,7 @@ public class SwapsManagementService : IAsyncDisposable
             ? []
             : (await _vtxoStorage.GetVtxos(scripts: [swap.ContractScript], cancellationToken: ct))
               .Where(v => !v.IsSpent()).ToList();
-        var amount = vtxos.Sum(v => (long)v.Amount);
+        var amount = vtxos.Sum(v => v.Amount);
 
         return new SwapRecoveryInfo
         {
@@ -660,7 +662,7 @@ public class SwapsManagementService : IAsyncDisposable
             Swap = swap,
             Status = vtxos.Count > 0 ? SwapRecoveryStatus.Recoverable : SwapRecoveryStatus.NoFunds,
             VtxoCount = vtxos.Count,
-            AmountSats = amount,
+            Amount = amount,
         };
     }
 

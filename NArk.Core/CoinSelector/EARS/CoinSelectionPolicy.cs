@@ -1,3 +1,5 @@
+using NBitcoin;
+
 namespace NArk.Core.CoinSelector.EARCoinSelector;
 
 public sealed record CoinSelectionPolicy(
@@ -10,4 +12,8 @@ public sealed record CoinSelectionPolicy(
     int MaxBnBInputs = 12,
     int MaxLocalSearchIterations = 50,
     uint ExpiryWindowBlocks = 144, // ~24h: batches expiring within this window are grouped together
-    long CostPerInputSats = 68);   // flat per-input cost added to waste (default: 1 sat/vbyte × ~68 vbyte input)
+    Money? CostPerInput = null)   // flat per-input cost added to waste (default: 1 sat/vbyte × ~68 vbyte input)
+{
+    /// <summary>Per-input waste cost, defaulting to 68 sat when not configured.</summary>
+    public Money CostPerInputOrDefault => CostPerInput ?? Money.Satoshis(68);
+}

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Web;
+using NBitcoin;
 
 namespace NArk.Abstractions.Payments;
 
@@ -27,17 +28,10 @@ public record Bip21PaymentInfo
     public string? Lightning { get; init; }
 
     /// <summary>
-    /// Requested amount in BTC (as specified in BIP21).
-    /// Use <see cref="AmountSats"/> for the satoshi equivalent.
+    /// Requested amount. BIP21 carries this in BTC; it is held here as a
+    /// <see cref="Money"/> so no rounding step stands between the URI and a payment.
     /// </summary>
-    public decimal? Amount { get; init; }
-
-    /// <summary>
-    /// Requested amount in satoshis (derived from <see cref="Amount"/>).
-    /// </summary>
-    public ulong? AmountSats => Amount.HasValue
-        ? (ulong)Math.Round(Amount.Value * 100_000_000m, 0, MidpointRounding.AwayFromZero)
-        : null;
+    public Money? Amount { get; init; }
 
     /// <summary>
     /// Asset ID from the <c>asset</c> query parameter. Forces Ark-only delivery.
@@ -76,7 +70,7 @@ public record Bip21PaymentInfo
 /// <summary>
 /// Builds and parses BIP21 URIs with Ark protocol extensions.
 /// <para>
-/// <b>Building:</b> <c>ArkBip21.Create().WithArkAddress("tark1...").WithAmount(0.001m).Build()</c>
+/// <b>Building:</b> <c>ArkBip21.Create().WithArkAddress("tark1...").WithAmount(Money.Coins(0.001m)).Build()</c>
 /// </para>
 /// <para>
 /// <b>Parsing:</b> <c>ArkBip21.Parse("bitcoin:addr?ark=tark1...")</c> — also handles raw
@@ -88,7 +82,7 @@ public class ArkBip21
     private string? _onchainAddress;
     private string? _arkAddress;
     private string? _lightning;
-    private decimal? _amount;
+    private Money? _amount;
     private string? _assetId;
     private readonly Dictionary<string, string> _customParameters = new(StringComparer.OrdinalIgnoreCase);
 
@@ -127,9 +121,9 @@ public class ArkBip21
     }
 
     /// <summary>
-    /// Sets the payment amount in BTC.
+    /// Sets the payment amount. Serialised to the BIP21 <c>amount</c> parameter in BTC.
     /// </summary>
-    public ArkBip21 WithAmount(decimal? amount)
+    public ArkBip21 WithAmount(Money? amount)
     {
         _amount = amount;
         return this;
@@ -190,8 +184,8 @@ public class ArkBip21
 
         var parameters = new List<string>();
 
-        if (_amount.HasValue)
-            parameters.Add($"amount={_amount.Value.ToString(CultureInfo.InvariantCulture)}");
+        if (_amount is { } amount)
+            parameters.Add($"amount={amount.ToUnit(MoneyUnit.BTC).ToString(CultureInfo.InvariantCulture)}");
 
         // Ark address — bech32m is URL-safe, no encoding needed
         if (!string.IsNullOrWhiteSpace(_arkAddress))
@@ -271,11 +265,14 @@ public class ArkBip21
             var onchainAddress = parsed.AbsolutePath.TrimStart('/');
             var query = HttpUtility.ParseQueryString(parsed.Query);
 
-            decimal? amount = null;
+            Money? amount = null;
             if (query["amount"] is { } amountStr &&
                 decimal.TryParse(amountStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var btcAmount))
             {
-                amount = btcAmount;
+                // BIP21 carries BTC with arbitrary precision; a satoshi is the smallest unit we
+                // can actually pay. Round a sub-satoshi remainder up so an over-precise URI is
+                // never settled for less than it asked, and keep the rest of the URI usable.
+                amount = Money.Satoshis((long)Math.Ceiling(btcAmount * Money.COIN));
             }
 
             var arkAddress = query["ark"];

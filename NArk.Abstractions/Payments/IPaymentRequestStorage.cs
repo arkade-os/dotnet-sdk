@@ -1,3 +1,5 @@
+using NBitcoin;
+
 namespace NArk.Abstractions.Payments;
 
 /// <summary>
@@ -44,12 +46,13 @@ public interface IPaymentRequestStorage
     /// <summary>
     /// Update the status, received amount, overpayment, and received assets of a payment request.
     /// </summary>
+    /// <param name="overpayment">Amount received beyond the request's amount; null is treated as zero.</param>
     Task<bool> UpdatePaymentRequestStatus(
         string walletId,
         string requestId,
         ArkPaymentRequestStatus status,
-        ulong receivedAmount,
-        ulong overpayment = 0,
+        Money receivedAmount,
+        Money? overpayment = null,
         IReadOnlyList<VTXOs.VtxoAsset>? receivedAssets = null,
         CancellationToken cancellationToken = default);
 }

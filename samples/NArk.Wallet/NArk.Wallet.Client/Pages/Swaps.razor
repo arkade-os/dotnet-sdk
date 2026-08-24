@@ -41,7 +41,7 @@
                     <ul class="text-secondary" style="font-size:11px;font-family:var(--font-mono);">
                         @foreach (var entry in recoverable)
                         {
-                            <li>@entry.SwapId[..Math.Min(12, entry.SwapId.Length)]…  <strong>@entry.AmountSats.ToString("N0") sats</strong> at @entry.VtxoCount vtxo(s)</li>
+                            <li>@entry.SwapId[..Math.Min(12, entry.SwapId.Length)]…  <strong>@entry.Amount.Satoshi.ToString("N0") sats</strong> at @entry.VtxoCount vtxo(s)</li>
                         }
                     </ul>
                     @if (stillPending > 0)
@@ -84,7 +84,7 @@
                                 <span class="pill @SwapStatusPill(swap.Status)" style="font-size:8px;">@swap.Status</span>
                             </div>
                             <p style="font-size:14px;font-weight:600;font-family:var(--font-mono);margin-top:4px;">
-                                @swap.ExpectedAmount.ToString("N0") <span class="text-secondary" style="font-weight:400;font-size:12px;">sats</span>
+                                @swap.ExpectedAmount.Satoshi.ToString("N0") <span class="text-secondary" style="font-weight:400;font-size:12px;">sats</span>
                             </p>
                         </div>
                         <span class="text-secondary" style="font-size:10px;flex-shrink:0;margin-left:8px;">
@@ -109,7 +109,7 @@
                             </div>
                             <div class="detail-row">
                                 <span class="detail-label">Amount</span>
-                                <span class="detail-value mono">@swap.ExpectedAmount.ToString("N0") sats</span>
+                                <span class="detail-value mono">@swap.ExpectedAmount.Satoshi.ToString("N0") sats</span>
                             </div>
                             @if (!string.IsNullOrWhiteSpace(swap.Address))
                             {

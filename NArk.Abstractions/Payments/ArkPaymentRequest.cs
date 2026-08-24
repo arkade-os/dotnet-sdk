@@ -1,4 +1,5 @@
 using NArk.Abstractions.VTXOs;
+using NBitcoin;
 
 namespace NArk.Abstractions.Payments;
 
@@ -9,10 +10,10 @@ namespace NArk.Abstractions.Payments;
 public record ArkPaymentRequest(
     string RequestId,
     string WalletId,
-    ulong? Amount,
+    Money? Amount,
     string? Description,
     ArkPaymentRequestStatus Status,
-    ulong ReceivedAmount,
+    Money ReceivedAmount,
     DateTimeOffset CreatedAt,
     DateTimeOffset? ExpiresAt)
 {
@@ -43,9 +44,9 @@ public record ArkPaymentRequest(
     public string? SwapId { get; init; }
 
     /// <summary>
-    /// Sats received beyond the requested amount. Zero when Amount is null or not yet overpaid.
+    /// Received beyond the requested amount. Zero when Amount is null or not yet overpaid.
     /// </summary>
-    public ulong Overpayment { get; init; }
+    public Money Overpayment { get; init; }
 
     /// <summary>
     /// Expected asset for this payment request. Null for BTC-only requests.

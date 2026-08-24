@@ -1,5 +1,6 @@
 using NArk.Abstractions.Contracts;
 using NArk.Swaps.Abstractions;
+using NBitcoin;
 
 namespace NArk.Swaps.Models;
 
@@ -8,7 +9,7 @@ public record ArkSwap(
     string WalletId,
     ArkSwapType SwapType,
     string Invoice,
-    long ExpectedAmount,
+    Money ExpectedAmount,
     string ContractScript,
     string Address,
     ArkSwapStatus Status,

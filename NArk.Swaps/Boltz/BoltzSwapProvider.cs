@@ -61,10 +61,10 @@ public partial class BoltzSwapProvider : ISwapProvider
     // 1-in 1-out P2TR key-path spend: 94 base vBytes + 67 witness / 4 ≈ 111 vBytes.
     private const int ClaimRefundVBytes = 111;
 
-    private async Task<long> EstimateClaimRefundFeeAsync(CancellationToken ct)
+    private async Task<Money> EstimateClaimRefundFeeAsync(CancellationToken ct)
     {
         var feeRate = await _chainTimeProvider.EstimateFeeRateAsync(confirmTarget: 2, ct);
-        return (long)feeRate.GetFee(ClaimRefundVBytes).Satoshi;
+        return feeRate.GetFee(ClaimRefundVBytes);
     }
 
     private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();

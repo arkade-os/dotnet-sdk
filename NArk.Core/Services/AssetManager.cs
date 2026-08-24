@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Assets;
@@ -62,7 +63,7 @@ public class AssetManager(
                 var inputContracts = selectedCoins.Select(c => c.Contract).ToArray();
                 var changeContract = await contractService.DeriveContract(walletId, NextContractPurpose.SendToSelf,
                     inputContracts, cancellationToken: cancellationToken);
-                outputsList.Add(new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change),
+                outputsList.Add(new ArkTxOut(ArkTxOutType.Vtxo, change,
                     changeContract.GetArkAddress()));
             }
 
@@ -147,7 +148,7 @@ public class AssetManager(
                 var inputContracts = selectedCoins.Select(c => c.Contract).ToArray();
                 var changeContract = await contractService.DeriveContract(walletId, NextContractPurpose.SendToSelf,
                     inputContracts, cancellationToken: cancellationToken);
-                outputsList.Add(new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change),
+                outputsList.Add(new ArkTxOut(ArkTxOutType.Vtxo, change,
                     changeContract.GetArkAddress()));
             }
 

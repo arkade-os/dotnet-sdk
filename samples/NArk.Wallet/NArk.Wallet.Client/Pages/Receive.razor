@@ -147,8 +147,8 @@
         @if (_selectedAssetId is null && _boltzLimits is not null)
         {
             <p class="text-secondary mt-16" style="font-size:10px;text-align:center;opacity:0.6;">
-                Boltz: @_boltzLimits.ReverseMinAmount.ToString("N0")–@_boltzLimits.ReverseMaxAmount.ToString("N0") sats (LN)@if (_boltzLimits.ChainBtcToArkMinAmount is not null)
-                {<text> · @_boltzLimits.ChainBtcToArkMinAmount.Value.ToString("N0")–@_boltzLimits.ChainBtcToArkMaxAmount!.Value.ToString("N0") sats (Chain)</text>}
+                Boltz: @_boltzLimits.ReverseMinAmount.Satoshi.ToString("N0")–@_boltzLimits.ReverseMaxAmount.Satoshi.ToString("N0") sats (LN)@if (_boltzLimits.ChainBtcToArkMinAmount is not null)
+                {<text> · @_boltzLimits.ChainBtcToArkMinAmount.Satoshi.ToString("N0")–@_boltzLimits.ChainBtcToArkMaxAmount!.Satoshi.ToString("N0") sats (Chain)</text>}
             </p>
         }
     }

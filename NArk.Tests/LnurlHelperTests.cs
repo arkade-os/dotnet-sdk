@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using NArk.Core.Payments;
+using NBitcoin;
 
 namespace NArk.Tests;
 
@@ -74,7 +75,7 @@ public class LnurlHelperTests
         });
         var helper = new LnurlHelper(new HttpClient(stub));
 
-        string invoice = await helper.FetchInvoiceAsync("https://lnurl.example/cb", amountSats: 100);
+        string invoice = await helper.FetchInvoiceAsync("https://lnurl.example/cb", amount: Money.Satoshis(100));
 
         Assert.That(invoice, Is.EqualTo("lnbc100stub"));
     }
@@ -94,7 +95,7 @@ public class LnurlHelperTests
         });
         var helper = new LnurlHelper(new HttpClient(stub));
 
-        await helper.FetchInvoiceAsync("https://lnurl.example/cb?session=abc", amountSats: 1);
+        await helper.FetchInvoiceAsync("https://lnurl.example/cb?session=abc", amount: Money.Satoshis(1));
     }
 
     [Test]

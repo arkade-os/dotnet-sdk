@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
@@ -116,12 +117,12 @@ public class SpendingService(
                 outputs =
                 [
                     ..outputs,
-                    new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!)
+                    new ArkTxOut(ArkTxOutType.Vtxo, change, changeAddress!)
                 ];
             }
             else if (change > 0 && (hasExplicitSubdustOutput + 1) <= maxOpReturn)
             {
-                outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
+                outputs = [new ArkTxOut(ArkTxOutType.Vtxo, change, changeAddress!), .. outputs];
             }
 
             // Build the Extension OP_RETURN: asset packet (if any) merged with any
@@ -257,8 +258,8 @@ public class SpendingService(
         // so add dust to the BTC target to ensure the coin selector picks enough funds.
         var assetRequirements = ExtractAssetRequirements(outputs);
         Money btcTarget = assetRequirements.Count > 0
-            ? Money.Satoshis(outputsSumInSatoshis) + serverInfo.Dust  // extra dust for potential asset change output
-            : Money.Satoshis(outputsSumInSatoshis);
+            ? outputsSumInSatoshis + serverInfo.Dust  // extra dust for potential asset change output
+            : outputsSumInSatoshis;
         // Input weight budget: maxTxWeight − baseTx − outputs. Outputs comprise the user outputs,
         // one potential BTC change output, the always-present P2A anchor, and — when assets are
         // involved — the asset packet OP_RETURN that ConstructAndSubmitArkTransaction appends.
@@ -308,12 +309,12 @@ public class SpendingService(
                 outputs =
                 [
                     ..outputs,
-                    new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!)
+                    new ArkTxOut(ArkTxOutType.Vtxo, change, changeAddress!)
                 ];
             }
             else if (change > 0 && (hasExplicitSubdustOutput + 1) <= maxOpReturn)
             {
-                outputs = [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!), .. outputs];
+                outputs = [new ArkTxOut(ArkTxOutType.Vtxo, change, changeAddress!), .. outputs];
             }
             // Build asset packet if any inputs or outputs carry assets
             var extensionOutput = BuildExtensionOutput(selectedCoins, outputs, extensionPackets);

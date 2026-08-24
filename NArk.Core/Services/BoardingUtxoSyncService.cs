@@ -118,7 +118,7 @@ public class BoardingUtxoSyncService
             onchainOutpoints.Add($"{utxo.Txid}:{utxo.Vout}");
 
             // Skip UTXOs outside server-configured boarding bounds
-            var utxoAmount = Money.Satoshis(utxo.Amount);
+            var utxoAmount = utxo.Amount;
             if (serverInfo.UtxoMinAmount is { } utxoMin && utxoMin > Money.Zero && utxoAmount < utxoMin)
             {
                 _logger?.LogDebug("Skipping boarding UTXO {Txid}:{Vout} ({Amount} sats): below minimum {Min}",

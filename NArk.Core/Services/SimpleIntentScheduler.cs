@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions;
@@ -73,9 +74,16 @@ public class SimpleIntentScheduler(IFeeEstimator feeEstimator, IClientTransport 
 
                 var inputsSumAfterAfterFees = inputsSumAfterBeforeFees - fees;
 
-                if (inputsSumAfterAfterFees < Money.Zero)
+                // The send-to-self output has to clear the operator's dust threshold, not merely
+                // stay positive: arkd rejects a sub-dust VTXO output with AMOUNT_TOO_LOW and takes
+                // the whole intent — and every other coin chunked with it — down with it.
+                if (inputsSumAfterAfterFees < serverInfo.Dust)
                 {
-                    logger?.LogDebug("Skipping wallet {WalletId} chunk: inputs sum after fees is negative", walletId);
+                    logger?.LogDebug(
+                        "Skipping a {CoinCount}-input chunk for wallet {WalletId}: chunk sum {ChunkSum} sat minus " +
+                        "intent fee {Fee} sat leaves {Remaining} sat, below the operator dust threshold of {Dust} sat",
+                        chunk.Length, walletId, inputsSumAfterBeforeFees.Satoshi, fees.Satoshi,
+                        inputsSumAfterAfterFees.Satoshi, serverInfo.Dust.Satoshi);
                     continue;
                 }
 

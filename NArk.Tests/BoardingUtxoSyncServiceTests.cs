@@ -110,7 +110,7 @@ public class BoardingUtxoSyncServiceTests
             Assert.That(captured!.Script, Is.EqualTo(entity.Script));
             Assert.That(captured.TransactionId, Is.EqualTo("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"));
             Assert.That(captured.TransactionOutputIndex, Is.EqualTo(0));
-            Assert.That(captured.Amount, Is.EqualTo(100000));
+            Assert.That(captured.Amount, Is.EqualTo(Money.Satoshis(100000)));
             Assert.That(captured.Unrolled, Is.True);
             Assert.That(captured.Swept, Is.False);
             Assert.That(captured.SpentByTransactionId, Is.Null);
@@ -154,7 +154,7 @@ public class BoardingUtxoSyncServiceTests
         Assert.Multiple(() =>
         {
             Assert.That(captured!.Script, Is.EqualTo(entity.Script));
-            Assert.That(captured.Amount, Is.EqualTo(50000));
+            Assert.That(captured.Amount, Is.EqualTo(Money.Satoshis(50000)));
             Assert.That(captured.Unrolled, Is.True);
             Assert.That(captured.ExpiresAt, Is.Null);
             Assert.That(captured.ExpiresAtHeight, Is.Null);
