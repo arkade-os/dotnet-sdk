@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -35,13 +36,28 @@ public sealed class HttpRfqTransport : IRfqTransport
         _baseAddress = root.AbsolutePath.EndsWith('/') ? root : new Uri(root + "/");
     }
 
+    /// <summary>Serialises a payload into a body whose length is known before it is sent.</summary>
+    /// <typeparam name="T">The payload type.</typeparam>
+    /// <param name="payload">What to send.</param>
+    /// <returns>Content carrying a <c>Content-Length</c>.</returns>
+    /// <remarks>
+    /// Buffered deliberately, rather than handed to <c>PostAsJsonAsync</c>. That serialises straight
+    /// onto the wire, so the length is unknown when the headers go out and the request is sent
+    /// <c>Transfer-Encoding: chunked</c> — legal HTTP, and needless here: an RFQ payload is small and
+    /// already wholly in memory. It also makes this client the odd one out, since every other client
+    /// of this protocol buffers, and a server that only ever sees framed bodies is entitled to be
+    /// weaker about streamed ones.
+    /// </remarks>
+    private static StringContent Serialize<T>(T payload) =>
+        new(JsonSerializer.Serialize(payload, RfqProtocol.Json), Encoding.UTF8, "application/json");
+
     /// <inheritdoc />
     public async Task<RfqQuote<TQuoteProfile>> RequestQuoteAsync<TRequestProfile, TQuoteProfile>(
         RfqRequest<TRequestProfile> request,
         CancellationToken cancellationToken = default)
     {
-        var response = await _http.PostAsJsonAsync(
-            new Uri(_baseAddress, "v1/swap"), request, RfqProtocol.Json, cancellationToken);
+        var response = await _http.PostAsync(
+            new Uri(_baseAddress, "v1/swap"), Serialize(request), cancellationToken);
 
         var payload = await ReadPayloadAsync(response, cancellationToken)
             ?? throw new InvalidOperationException(
