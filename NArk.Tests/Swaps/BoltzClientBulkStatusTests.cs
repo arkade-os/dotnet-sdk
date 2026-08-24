@@ -74,22 +74,41 @@ public class BoltzClientBulkStatusTests
 
         await provider.ReconcileActiveSwaps(CancellationToken.None);
 
-        Assert.That(client.BatchSizes,
-            Is.EqualTo(new[] { BoltzClient.MaxSwapStatusBatchSize, 1 }));
+        Assert.Multiple(() =>
+        {
+            // The trailing one-element chunk deliberately does not go to the batch
+            // endpoint: Boltz reads `ids` as an array only when the query repeats it,
+            // so `?ids=x` is rejected with 400 "ids must be an array".
+            Assert.That(client.BatchSizes,
+                Is.EqualTo(new[] { BoltzClient.MaxSwapStatusBatchSize }));
+            Assert.That(client.SinglePolls,
+                Is.EqualTo(new[] { $"swap-{BoltzClient.MaxSwapStatusBatchSize}" }));
+        });
     }
 
     private sealed class RecordingBoltzClient(IOptions<BoltzClientOptions> options)
         : BoltzClient(new HttpClient(new BoltzTestFixture.StubHandler()), options)
     {
         public List<int> BatchSizes { get; } = [];
+        public List<string> SinglePolls { get; } = [];
 
         public override Task<IReadOnlyDictionary<string, SwapStatusResponse>> GetSwapStatusesAsync(
             IReadOnlyCollection<string> swapIds,
             CancellationToken cancellation = default)
         {
             BatchSizes.Add(swapIds.Count);
+            // Answer for every requested ID: an incomplete batch response is its own
+            // failure mode, re-polled individually, and would drown out the chunking
+            // this test is about.
             return Task.FromResult<IReadOnlyDictionary<string, SwapStatusResponse>>(
-                new Dictionary<string, SwapStatusResponse>());
+                swapIds.ToDictionary(id => id, _ => new SwapStatusResponse { Status = "invoice.pending" }));
+        }
+
+        public override Task<SwapStatusResponse?> GetSwapStatusAsync(
+            string swapId, CancellationToken cancellation)
+        {
+            SinglePolls.Add(swapId);
+            return Task.FromResult<SwapStatusResponse?>(null);
         }
     }
 }

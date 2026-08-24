@@ -251,6 +251,16 @@ public partial class BoltzSwapProvider : ISwapProvider
 
         foreach (var chunk in activeIds.Chunk(BoltzClient.MaxSwapStatusBatchSize))
         {
+            // Boltz only parses `ids` as an array when the query string repeats the
+            // parameter, so a one-element batch goes out as `?ids=x` and comes back
+            // 400 "ids must be an array" — never 404. One active swap is the ordinary
+            // case, not an edge case, so ask for it the way Boltz can answer.
+            if (chunk.Length == 1)
+            {
+                await PollSwapState(chunk, cancellationToken);
+                continue;
+            }
+
             try
             {
                 var statuses = await _boltzClient.GetSwapStatusesAsync(chunk, cancellationToken);
@@ -279,15 +289,16 @@ public partial class BoltzSwapProvider : ISwapProvider
                     await PollSwapState(missing, cancellationToken);
                 }
             }
-            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            catch (HttpRequestException ex)
             {
-                // A 404 on the batch endpoint means either one stale ID in the chunk or
-                // a Boltz instance without /v2/swap/status. Both degrade this tick to
-                // per-ID polling, so say it out loud: silently multiplying one request
-                // into a chunk's worth is only visible as a request-rate anomaly.
+                // Any batch-level failure — a stale ID in the chunk (404), a Boltz
+                // instance without /v2/swap/status, a rejected query shape (400) —
+                // must degrade this tick to per-ID polling rather than abort it.
+                // Letting it escape kills the whole reconciliation pass, and with it
+                // the only recovery path for swaps the websocket never hears about.
                 _logger?.LogWarning(ex,
-                    "Boltz batch status returned 404 for a chunk of {Count} swap(s) — falling back to individual polls",
-                    chunk.Length);
+                    "Boltz batch status failed ({Status}) for a chunk of {Count} swap(s) — falling back to individual polls",
+                    ex.StatusCode, chunk.Length);
                 // Identify the stale ID without penalizing valid swaps in the chunk.
                 await PollSwapState(chunk, cancellationToken);
             }
