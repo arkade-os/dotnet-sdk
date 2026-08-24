@@ -161,7 +161,7 @@ public sealed class ArkadeLightningService(
         var claimRecipient = await ResolveClaimRecipientAsync(cancellationToken);
         using var rfq = await CreateTransportAsync(cancellationToken);
         return await intents.ReceiveFromLightningAsync(
-            walletId, amountSats, rfq, claimRecipient, null, cancellationToken);
+            walletId, amountSats, rfq, claimRecipient, cancellationToken: cancellationToken);
     }
 
     /// <summary>Take delivery of a funded receive swap now, rather than waiting for a sweep.</summary>
