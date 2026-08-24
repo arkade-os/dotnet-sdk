@@ -661,13 +661,6 @@ public partial class BoltzSwapProvider
                 return false;
             }
 
-            var swapStatus = await _boltzClient.GetSwapStatusAsync(swap.SwapId, ct);
-            if (string.IsNullOrEmpty(swapStatus?.Transaction?.Hex))
-            {
-                _logger?.LogDebug("Swap {SwapId}: BTC lockup tx not yet observable, deferring unilateral refund", swap.SwapId);
-                return false;
-            }
-
             var serverInfo = await _clientTransport.GetServerInfoAsync(ct);
             var ephemeralKey = new Key(Convert.FromHexString(ephemeralKeyHex));
             var ecPrivKey = ECPrivKey.Create(ephemeralKey.ToBytes());
@@ -682,31 +675,45 @@ public partial class BoltzSwapProvider
             (refundDest, swap) = await swap.GetOrDeriveBtcRefundDestinationAsync(
                 _contractService, _swapsStorage, serverInfo.Network, ct);
 
-            var lockupTx = Transaction.Parse(swapStatus.Transaction.Hex, serverInfo.Network);
             var lockupScript = BitcoinAddress.Create(lockupDetails.LockupAddress, serverInfo.Network).ScriptPubKey;
-            var vout = -1;
-            for (var i = 0; i < lockupTx.Outputs.Count; i++)
+
+            // Read off the chain rather than asked of the counterparty. This is the path taken when
+            // the counterparty will not cooperate — or, as with Boltz, is simply gone — so fetching
+            // the lockup transaction from its API made the unilateral refund depend on the very
+            // party it exists to do without. Everything else is already in the swap's own record:
+            // the refund key, the script tree, the server key and the payout address.
+            var utxos = await _chainTimeProvider.GetUtxosAsync(lockupDetails.LockupAddress, ct);
+            var lockup = utxos.FirstOrDefault(u => u.Confirmed);
+            if (lockup is null)
             {
-                if (lockupTx.Outputs[i].ScriptPubKey == lockupScript) { vout = i; break; }
-            }
-            if (vout < 0)
-            {
-                _logger?.LogWarning("Swap {SwapId}: lockup tx has no output paying to {Address}", swap.SwapId, lockupDetails.LockupAddress);
+                _logger?.LogDebug(
+                    "Swap {SwapId}: no confirmed UTXO at lockup address {Address}, deferring unilateral refund",
+                    swap.SwapId, lockupDetails.LockupAddress);
                 return false;
             }
 
-            var outpoint = new OutPoint(lockupTx.GetHash(), vout);
-            var prevOut = lockupTx.Outputs[vout];
+            var outpoint = new OutPoint(uint256.Parse(lockup.Txid), lockup.Vout);
+
+            // Rebuilt rather than read out of the funding transaction: the script is the address's
+            // own, and the value is what the chain still shows there — which is what a refund may
+            // actually spend.
+            var prevOut = new TxOut(Money.Satoshis((long)lockup.Amount), lockupScript);
             var refundTx = BtcTransactionBuilder.BuildKeyPathClaimTx(outpoint, prevOut, refundDest, await EstimateClaimRefundFeeAsync(ct));
             BtcTransactionBuilder.SignScriptPathRefund(refundTx, 0, prevOut, spendInfo, refundLeaf, cltvTimeout, ephemeralKey);
 
             _logger?.LogInformation(
                 "Swap {SwapId}: broadcasting unilateral script-path BTC refund (CLTV={Timeout})",
                 swap.SwapId, cltvTimeout);
-            var broadcastResult = await _boltzClient.BroadcastBtcTransactionAsync(
-                new BroadcastRequest { Hex = refundTx.ToHex() }, ct);
+            // Published the same way, and for the same reason: relaying through the counterparty's
+            // API would let it decline to broadcast the spend that takes its own lockup back.
+            if (!await _chainTimeProvider.BroadcastAsync(refundTx, ct))
+            {
+                _logger?.LogWarning(
+                    "Swap {SwapId}: unilateral BTC refund was not accepted by the network", swap.SwapId);
+                return false;
+            }
             _logger?.LogInformation("Swap {SwapId}: unilateral BTC refund broadcast — txid={TxId}",
-                swap.SwapId, broadcastResult.Id);
+                swap.SwapId, refundTx.GetHash());
 
             var refunded = swap with { Status = ArkSwapStatus.Refunded, UpdatedAt = DateTimeOffset.UtcNow };
             await _swapsStorage.SaveSwap(swap.WalletId, refunded, ct);
