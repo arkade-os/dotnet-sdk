@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using NArk.ArkadeIntents.Rfq.Converters;
+
 namespace NArk.ArkadeIntents.Rfq;
 
 /// <summary>
@@ -26,10 +29,12 @@ public sealed class RfqQuote<TProfile>
     /// <summary>The pair quoted.</summary>
     public string? Pair { get; init; }
 
-    /// <summary>What the client pays, in base units of the from-leg.</summary>
+    /// <summary>What the client pays, in atomic units of the from-leg.</summary>
+    [JsonConverter(typeof(RfqAmountConverter))]
     public long FromAmount { get; init; }
 
-    /// <summary>What the client receives, in base units of the to-leg. The solver's fee is the spread.</summary>
+    /// <summary>What the client receives, in atomic units of the to-leg. The solver's fee is the spread.</summary>
+    [JsonConverter(typeof(RfqAmountConverter))]
     public long ToAmount { get; init; }
 
     /// <summary>The solver's x-only settlement key (hex).</summary>
