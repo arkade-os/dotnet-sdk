@@ -17,8 +17,11 @@ public enum LightningReceiveRefusalReason
     /// <summary>The invoice's amount is not the one the quote says the payer owes.</summary>
     AmountMismatch,
 
-    /// <summary>The quote delivers less to us than we asked to receive.</summary>
+    /// <summary>The quote delivers less to us than we asked to receive (exact-out only).</summary>
     ShortPayout,
+
+    /// <summary>The quote bills the payer something other than the amount asked for (exact-in only).</summary>
+    PayerChargeMismatch,
 
     /// <summary>The invoice or the quote has already expired.</summary>
     Expired,
@@ -59,7 +62,8 @@ public static class LightningReceiveGates
     /// </summary>
     /// <param name="quote">The solver's quote.</param>
     /// <param name="expectedPaymentHash">The hash the client requested against, hex.</param>
-    /// <param name="requestedPayoutSats">What the client asked to receive on Arkade.</param>
+    /// <param name="requestedSats">The size the client asked for, on the leg <paramref name="amountSide"/> names.</param>
+    /// <param name="amountSide">Which leg the client pinned when it asked.</param>
     /// <param name="network">The network to decode on.</param>
     /// <returns>The decoded invoice.</returns>
     /// <exception cref="LightningReceiveNotUsableException">The invoice is missing, wrong or unusable.</exception>
@@ -76,11 +80,19 @@ public static class LightningReceiveGates
     /// invoice against the payout would refuse every quote that charges anything — and comparing the
     /// payout against nothing would accept a quote that quietly delivers less than was asked for.
     /// </para>
+    /// <para>
+    /// Which of the two the request pinned decides which one is checked against it, and checking the
+    /// wrong one refuses every honest quote. An exact-out request fixes the payout and lets the
+    /// charge float up by the fee; an exact-in request fixes the charge and lets the payout float
+    /// down by it. Holding a quote to the leg the client did not pin would be holding it to a number
+    /// nobody agreed on.
+    /// </para>
     /// </remarks>
     public static BOLT11PaymentRequest VerifyInvoice(
         RfqQuote<LightningReceiveQuoteProfile> quote,
         string expectedPaymentHash,
-        long requestedPayoutSats,
+        long requestedSats,
+        RfqAmountSide amountSide,
         Network network)
     {
         if (quote.Profile?.Invoice is not { Length: > 0 } raw)
@@ -120,11 +132,25 @@ public static class LightningReceiveGates
                 $"the invoice asks the payer for {invoiceSats} sats but the quote says {quote.FromAmount}");
         }
 
-        if (quote.ToAmount < requestedPayoutSats)
+        // Exact-out: the payout is the number that was asked for, and the fee floats the charge up.
+        // Permissive by a satoshi on purpose — the spec puts the sub-unit rounding correction in the
+        // give, so a conforming quote can deliver a hair more but never less.
+        if (amountSide == RfqAmountSide.To && quote.ToAmount < requestedSats)
         {
             throw new LightningReceiveNotUsableException(
                 LightningReceiveRefusalReason.ShortPayout,
-                $"the quote delivers {quote.ToAmount} sats, less than the {requestedPayoutSats} asked for");
+                $"the quote delivers {quote.ToAmount} sats, less than the {requestedSats} asked for");
+        }
+
+        // Exact-in: the charge is the number that was asked for, and the fee floats the payout down.
+        // Exact in both directions, unlike the payout check above: a charge below the request
+        // under-credits the swap just as surely as one above it overcharges the payer, and on this
+        // leg the figure is the one a third party has already agreed to pay.
+        if (amountSide == RfqAmountSide.From && quote.FromAmount != requestedSats)
+        {
+            throw new LightningReceiveNotUsableException(
+                LightningReceiveRefusalReason.PayerChargeMismatch,
+                $"the quote bills the payer {quote.FromAmount} sats, not the {requestedSats} asked for");
         }
 
         return decoded;
