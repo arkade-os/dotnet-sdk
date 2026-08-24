@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using NArk.ArkadeIntents.Rfq.Converters;
+
 namespace NArk.ArkadeIntents.Rfq;
 
 /// <summary>
@@ -23,9 +26,10 @@ public sealed class RfqRequest<TProfile>
     public required RfqAmountSide AmountSide { get; init; }
 
     /// <summary>
-    /// The amount in base units of the named leg. Omitted by profiles where something else is
+    /// The amount in atomic units of the named leg. Omitted by profiles where something else is
     /// authoritative — sending a value that disagrees with it is <c>unsupported_payload</c>.
     /// </summary>
+    [JsonConverter(typeof(RfqAmountConverter))]
     public long? Amount { get; init; }
 
     /// <summary>The corridor-specific fields.</summary>
