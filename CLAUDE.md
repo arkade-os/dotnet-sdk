@@ -59,5 +59,5 @@ Before opening a PR or pushing to master:
 - NEVER skip or disable failing tests to make CI pass. Fix the root cause.
 
 ## Build
-- Target framework: `net8.0` for libraries, `net10.0` for test projects
+- Target framework: `net10.0` across libraries and test projects
 - CI: `.github/workflows/build.yml` (build + unit tests + E2E)
