@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NArk.Abstractions.Payments;
 using NArk.Storage.EfCore.Entities;
+using NBitcoin;
 
 namespace NArk.Storage.EfCore.Storage;
 
@@ -26,8 +27,8 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
         if (existing != null)
         {
             existing.Status = request.Status;
-            existing.ReceivedAmount = (long)request.ReceivedAmount;
-            existing.Overpayment = (long)request.Overpayment;
+            existing.ReceivedAmount = request.ReceivedAmount.Satoshi;
+            existing.Overpayment = request.Overpayment.Satoshi;
             existing.ArkAddress = request.ArkAddress;
             existing.BoardingAddress = request.BoardingAddress;
             existing.LightningInvoice = request.LightningInvoice;
@@ -43,11 +44,11 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
             {
                 RequestId = request.RequestId,
                 WalletId = request.WalletId,
-                Amount = request.Amount.HasValue ? (long)request.Amount.Value : null,
+                Amount = request.Amount?.Satoshi,
                 Description = request.Description,
                 Status = request.Status,
-                ReceivedAmount = (long)request.ReceivedAmount,
-                Overpayment = (long)request.Overpayment,
+                ReceivedAmount = request.ReceivedAmount.Satoshi,
+                Overpayment = request.Overpayment.Satoshi,
                 ArkAddress = request.ArkAddress,
                 BoardingAddress = request.BoardingAddress,
                 LightningInvoice = request.LightningInvoice,
@@ -123,8 +124,8 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
         string walletId,
         string requestId,
         ArkPaymentRequestStatus status,
-        ulong receivedAmount,
-        ulong overpayment = 0,
+        Money receivedAmount,
+        Money? overpayment = null,
         IReadOnlyList<NArk.Abstractions.VTXOs.VtxoAsset>? receivedAssets = null,
         CancellationToken cancellationToken = default)
     {
@@ -136,8 +137,8 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
         if (entity == null) return false;
 
         entity.Status = status;
-        entity.ReceivedAmount = (long)receivedAmount;
-        entity.Overpayment = (long)overpayment;
+        entity.ReceivedAmount = receivedAmount.Satoshi;
+        entity.Overpayment = (overpayment ?? Money.Zero).Satoshi;
         if (receivedAssets is not null)
             entity.ReceivedAssets = receivedAssets;
 
@@ -149,10 +150,10 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
     private static ArkPaymentRequest MapToRequest(ArkPaymentRequestEntity e) => new(
         RequestId: e.RequestId,
         WalletId: e.WalletId,
-        Amount: e.Amount.HasValue ? (ulong)e.Amount.Value : null,
+        Amount: e.Amount.HasValue ? Money.Satoshis(e.Amount.Value) : null,
         Description: e.Description,
         Status: e.Status,
-        ReceivedAmount: (ulong)e.ReceivedAmount,
+        ReceivedAmount: Money.Satoshis(e.ReceivedAmount),
         CreatedAt: e.CreatedAt,
         ExpiresAt: e.ExpiresAt)
     {
@@ -161,7 +162,7 @@ public class EfCorePaymentRequestStorage : IPaymentRequestStorage
         LightningInvoice = e.LightningInvoice,
         ContractScripts = e.ContractScripts,
         SwapId = e.SwapId,
-        Overpayment = (ulong)e.Overpayment,
+        Overpayment = Money.Satoshis(e.Overpayment),
         ExpectedAsset = e.ExpectedAsset,
         ReceivedAssets = e.ReceivedAssets,
         Metadata = e.Metadata

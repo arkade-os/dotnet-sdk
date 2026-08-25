@@ -109,7 +109,7 @@
                                 @_lnurlParams.Description
                             </p>
                             <p style="font-size:12px;margin-top:4px;">
-                                Range: <strong>@_lnurlParams.MinSendable.ToString("N0")</strong>–<strong>@_lnurlParams.MaxSendable.ToString("N0")</strong> sats
+                                Range: <strong>@_lnurlParams.MinSendable.Satoshi.ToString("N0")</strong>–<strong>@_lnurlParams.MaxSendable.Satoshi.ToString("N0")</strong> sats
                             </p>
                         </div>
 
@@ -304,7 +304,7 @@
 
         _parsedAddress = info.Recipient;
         _parsedAsset = info.AssetId;
-        _parsedAmountSats = info.AmountSats is { } sats ? (long)sats : 0L;
+        _parsedAmountSats = info.Amount?.Satoshi ?? 0L;
 
         if (_parsedAddress is null)
             _parseError = "Could not extract a recipient from the payment string";

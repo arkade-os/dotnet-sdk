@@ -1,6 +1,7 @@
 // Should be refactored, this is a copy from old Nark
 
 
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions;
 using NArk.Core.Fees;
 using NBitcoin;

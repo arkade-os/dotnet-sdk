@@ -1,3 +1,4 @@
+using NBitcoin;
 using NArk.Abstractions.VirtualTxs;
 
 namespace NArk.Core.Models.Options;
@@ -26,5 +27,5 @@ public class VirtualTxOptions
     /// VTXOs below this threshold are skipped to avoid storing exit data
     /// that would cost more in fees than the VTXO is worth.
     /// </summary>
-    public ulong MinExitWorthAmount { get; set; } = 1000;
+    public Money MinExitWorthAmount { get; set; } = Money.Satoshis(1000);
 }

@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions;
 using NArk.Core.Fees;
 using NBitcoin;

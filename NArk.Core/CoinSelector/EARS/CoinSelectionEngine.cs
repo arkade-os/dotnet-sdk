@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using NArk.Abstractions;
 using NBitcoin;
 
@@ -171,7 +172,7 @@ public sealed class CoinSelectionEngine
     }
 
     internal static Money ComputeWaste(Money change, int inputCount, CoinSelectionPolicy policy) =>
-        change + Money.Satoshis(inputCount * policy.CostPerInputSats);
+        change + inputCount * policy.CostPerInputOrDefault;
 
     private static ExpiryBucket MakeBucket(List<CoinCandidate> coins) =>
         new(ExpiryGroup: coins.Min(c => c.ExpiryGroup),

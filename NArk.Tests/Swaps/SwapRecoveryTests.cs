@@ -155,7 +155,7 @@ public class SwapRecoveryTests
 
         Assert.That(info.Status, Is.EqualTo(SwapRecoveryStatus.NoFunds));
         Assert.That(info.VtxoCount, Is.EqualTo(0));
-        Assert.That(info.AmountSats, Is.EqualTo(0));
+        Assert.That(info.Amount, Is.EqualTo(NBitcoin.Money.Zero));
     }
 
     [Test]
@@ -177,7 +177,7 @@ public class SwapRecoveryTests
 
         Assert.That(info.Status, Is.EqualTo(SwapRecoveryStatus.Recoverable));
         Assert.That(info.VtxoCount, Is.EqualTo(1));
-        Assert.That(info.AmountSats, Is.EqualTo(12345));
+        Assert.That(info.Amount, Is.EqualTo(NBitcoin.Money.Satoshis(12345)));
     }
 
     [Test]

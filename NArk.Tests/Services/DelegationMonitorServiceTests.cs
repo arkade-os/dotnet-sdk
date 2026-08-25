@@ -78,7 +78,7 @@ public class DelegationMonitorServiceTests
             .Returns(Task.FromResult(CreateServerInfo()));
 
         _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(0L));
+            .Returns(Task.FromResult(Money.Satoshis(0)));
 
         // Real signer/address-provider so the monitor produces a genuinely signed
         // BIP322 intent proof + forfeit tx, not a mocked stand-in.
@@ -271,7 +271,7 @@ public class DelegationMonitorServiceTests
         // 10_000 sat VTXO, 9_500 sat intent fee: 500 sat left, under the 1_000 sat dust
         // threshold. arkd would reject this with AMOUNT_TOO_LOW, so nothing must be sent.
         _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(9_500L));
+            .Returns(Task.FromResult(Money.Satoshis(9_500)));
 
         using var service = CreateService();
         await service.StartAsync(CancellationToken.None);
@@ -285,7 +285,7 @@ public class DelegationMonitorServiceTests
         // The skip must not blacklist the outpoint: once the fee estimate drops, the same
         // VTXO becomes delegable on the next notification.
         _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(100L));
+            .Returns(Task.FromResult(Money.Satoshis(100)));
 
         _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, vtxo);
         await _delegateCalled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -303,7 +303,7 @@ public class DelegationMonitorServiceTests
 
         // Fee above the VTXO value would build a negative-value TxOut.
         _feeEstimator.EstimateFeeAsync(Arg.Any<ArkCoin[]>(), Arg.Any<ArkTxOut[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(20_000L));
+            .Returns(Task.FromResult(Money.Satoshis(20_000)));
 
         using var service = CreateService();
         await service.StartAsync(CancellationToken.None);

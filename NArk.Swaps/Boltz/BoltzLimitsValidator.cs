@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NArk.Swaps.Boltz.Client;
+using NBitcoin;
 
 namespace NArk.Swaps.Boltz;
 
@@ -25,12 +26,12 @@ public class BoltzLimitsValidator
     /// <summary>
     /// Validates if an amount is within Boltz limits for the specified swap type.
     /// </summary>
-    /// <param name="amountSats">The amount in satoshis.</param>
+    /// <param name="amount">The amount to validate.</param>
     /// <param name="isReverse">True for reverse swap (Lightning → Ark), false for submarine (Ark → Lightning).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Tuple indicating if valid and optional error message.</returns>
     public async Task<(bool IsValid, string? Error)> ValidateAmountAsync(
-        long amountSats,
+        Money amount,
         bool isReverse,
         CancellationToken cancellationToken = default)
     {
@@ -41,14 +42,14 @@ public class BoltzLimitsValidator
             return (false, "Unable to fetch Boltz limits");
         }
 
-        if (amountSats < minAmount)
+        if (amount < minAmount)
         {
-            return (false, $"Amount {amountSats} sats is below minimum {minAmount} sats for {swapType} Lightning");
+            return (false, $"Amount {amount.Satoshi} sats is below minimum {minAmount.Satoshi} sats for {swapType} Lightning");
         }
 
-        if (amountSats > maxAmount)
+        if (amount > maxAmount)
         {
-            return (false, $"Amount {amountSats} sats exceeds maximum {maxAmount} sats for {swapType} Lightning");
+            return (false, $"Amount {amount.Satoshi} sats exceeds maximum {maxAmount.Satoshi} sats for {swapType} Lightning");
         }
 
         return (true, null);
@@ -57,14 +58,14 @@ public class BoltzLimitsValidator
     /// <summary>
     /// Validates if the actual swap fee is within acceptable range compared to expected fee.
     /// </summary>
-    /// <param name="amountSats">The invoice/payment amount in satoshis.</param>
+    /// <param name="amount">The invoice/payment amount.</param>
     /// <param name="actualSwapAmount">The actual onchain/expected amount from Boltz.</param>
     /// <param name="isReverse">True for reverse swap (Lightning → Ark), false for submarine (Ark → Lightning).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Tuple indicating if fees are valid and optional error message.</returns>
     public async Task<(bool IsValid, string? Error)> ValidateFeesAsync(
-        long amountSats,
-        long actualSwapAmount,
+        Money amount,
+        Money actualSwapAmount,
         bool isReverse,
         CancellationToken cancellationToken = default)
     {
@@ -79,33 +80,36 @@ public class BoltzLimitsValidator
         // Reverse: user receives actualSwapAmount onchain, pays amountSats via Lightning
         // Submarine: user pays actualSwapAmount onchain, receives amountSats via Lightning
         var actualFee = isReverse
-            ? amountSats - actualSwapAmount  // Reverse: Lightning amount - onchain amount
-            : actualSwapAmount - amountSats; // Submarine: onchain amount - Lightning amount
+            ? amount - actualSwapAmount  // Reverse: Lightning amount - onchain amount
+            : actualSwapAmount - amount; // Submarine: onchain amount - Lightning amount
 
-        // Calculate expected fee: (amount × percentage) + miner fee
-        var expectedFee = (long)(amountSats * feePercentage.Value) + (minerFee ?? 0);
+        // Calculate expected fee: (amount × percentage) + miner fee. Boltz charges whole
+        // satoshis and rounds a fractional percentage cut up, so truncating here would
+        // understate what a legitimate swap is allowed to charge and reject it.
+        var expectedFee = Money.Satoshis((long)Math.Ceiling(amount.Satoshi * feePercentage.Value))
+                          + (minerFee ?? Money.Zero);
 
         // Only fail if actual fee is HIGHER than expected (allow lower fees)
         if (actualFee > expectedFee + FeeToleranceSats)
         {
             _logger?.LogWarning(
                 "{SwapType} swap fee too high: expected ~{ExpectedFee} sats ({FeePercentage:P2} + {MinerFee} sats miner fee), got {ActualFee} sats",
-                swapType, expectedFee, feePercentage.Value, minerFee ?? 0, actualFee);
+                swapType, expectedFee.Satoshi, feePercentage.Value, (minerFee ?? Money.Zero).Satoshi, actualFee.Satoshi);
 
             return (false,
-                $"Boltz fee verification failed. Expected ~{expectedFee} sats ({feePercentage.Value * 100:F2}% + {minerFee ?? 0} sats miner fee), but swap would charge {actualFee} sats");
+                $"Boltz fee verification failed. Expected ~{expectedFee.Satoshi} sats ({feePercentage.Value * 100:F2}% + {(minerFee ?? Money.Zero).Satoshi} sats miner fee), but swap would charge {actualFee.Satoshi} sats");
         }
 
         if (actualFee < expectedFee - FeeToleranceSats)
         {
             _logger?.LogInformation(
                 "{SwapType} swap fee lower than expected: {ActualFee} sats vs expected {ExpectedFee} sats - accepting",
-                swapType, actualFee, expectedFee);
+                swapType, actualFee.Satoshi, expectedFee.Satoshi);
         }
 
         _logger?.LogDebug(
             "{SwapType} swap fee verified: {ActualFee} sats ({FeePercentage:P2} + {MinerFee} sats miner fee)",
-            swapType, actualFee, feePercentage.Value, minerFee ?? 0);
+            swapType, actualFee.Satoshi, feePercentage.Value, (minerFee ?? Money.Zero).Satoshi);
 
         return (true, null);
     }
@@ -121,10 +125,10 @@ public class BoltzLimitsValidator
             if (pairs?.BTC?.ARK == null) return null;
 
             return new BoltzLimits(
-                pairs.BTC.ARK.Limits.Minimal,
-                pairs.BTC.ARK.Limits.Maximal,
+                Money.Satoshis(pairs.BTC.ARK.Limits.Minimal),
+                Money.Satoshis(pairs.BTC.ARK.Limits.Maximal),
                 pairs.BTC.ARK.Fees.Percentage / 100m, // Convert from percentage to decimal
-                pairs.BTC.ARK.Fees.MinerFees?.Claim ?? 0);
+                Money.Satoshis(pairs.BTC.ARK.Fees.MinerFees?.Claim ?? 0));
         }
         else
         {
@@ -132,10 +136,10 @@ public class BoltzLimitsValidator
             if (pairs?.ARK?.BTC == null) return null;
 
             return new BoltzLimits(
-                pairs.ARK.BTC.Limits.Minimal,
-                pairs.ARK.BTC.Limits.Maximal,
+                Money.Satoshis(pairs.ARK.BTC.Limits.Minimal),
+                Money.Satoshis(pairs.ARK.BTC.Limits.Maximal),
                 pairs.ARK.BTC.Fees.Percentage / 100m, // Convert from percentage to decimal
-                pairs.ARK.BTC.Fees.MinerFeesValue ?? 0);
+                Money.Satoshis(pairs.ARK.BTC.Fees.MinerFeesValue ?? 0));
         }
     }
 
@@ -154,10 +158,10 @@ public class BoltzLimitsValidator
         if (pairDetails == null) return null;
 
         return new BoltzLimits(
-            pairDetails.Limits.Minimal,
-            pairDetails.Limits.Maximal,
+            Money.Satoshis(pairDetails.Limits.Minimal),
+            Money.Satoshis(pairDetails.Limits.Maximal),
             pairDetails.Fees.Percentage / 100m,
-            pairDetails.Fees.MinerFees.User.Lockup + pairDetails.Fees.MinerFees.Server);
+            Money.Satoshis(pairDetails.Fees.MinerFees.User.Lockup + pairDetails.Fees.MinerFees.Server));
     }
 
     /// <summary>
@@ -184,16 +188,16 @@ public class BoltzLimitsValidator
         var limits = new BoltzAllLimits
         {
             // Submarine: Ark → Lightning (sending)
-            SubmarineMinAmount = submarinePairs.ARK.BTC.Limits?.Minimal ?? 0,
-            SubmarineMaxAmount = submarinePairs.ARK.BTC.Limits?.Maximal ?? long.MaxValue,
+            SubmarineMinAmount = Money.Satoshis(submarinePairs.ARK.BTC.Limits?.Minimal ?? 0),
+            SubmarineMaxAmount = Money.Satoshis(submarinePairs.ARK.BTC.Limits?.Maximal ?? Money.Coins(21_000_000m).Satoshi),
             SubmarineFeePercentage = (submarinePairs.ARK.BTC.Fees?.Percentage ?? 0) / 100m,
-            SubmarineMinerFee = submarinePairs.ARK.BTC.Fees?.MinerFeesValue ?? 0,
+            SubmarineMinerFee = Money.Satoshis(submarinePairs.ARK.BTC.Fees?.MinerFeesValue ?? 0),
 
             // Reverse: Lightning → Ark (receiving)
-            ReverseMinAmount = reversePairs.BTC.ARK.Limits?.Minimal ?? 0,
-            ReverseMaxAmount = reversePairs.BTC.ARK.Limits?.Maximal ?? long.MaxValue,
+            ReverseMinAmount = Money.Satoshis(reversePairs.BTC.ARK.Limits?.Minimal ?? 0),
+            ReverseMaxAmount = Money.Satoshis(reversePairs.BTC.ARK.Limits?.Maximal ?? Money.Coins(21_000_000m).Satoshi),
             ReverseFeePercentage = (reversePairs.BTC.ARK.Fees?.Percentage ?? 0) / 100m,
-            ReverseMinerFee = reversePairs.BTC.ARK.Fees?.MinerFees?.Claim ?? 0,
+            ReverseMinerFee = Money.Satoshis(reversePairs.BTC.ARK.Fees?.MinerFees?.Claim ?? 0),
 
             FetchedAt = DateTimeOffset.UtcNow
         };
@@ -202,25 +206,25 @@ public class BoltzLimitsValidator
         var btcToArk = chainPairs?.BTC?.ARK;
         if (btcToArk != null)
         {
-            limits.ChainBtcToArkMinAmount = btcToArk.Limits.Minimal;
-            limits.ChainBtcToArkMaxAmount = btcToArk.Limits.Maximal;
+            limits.ChainBtcToArkMinAmount = Money.Satoshis(btcToArk.Limits.Minimal);
+            limits.ChainBtcToArkMaxAmount = Money.Satoshis(btcToArk.Limits.Maximal);
             limits.ChainBtcToArkFeePercentage = btcToArk.Fees.Percentage / 100m;
-            limits.ChainBtcToArkMinerFee = btcToArk.Fees.MinerFees.User.Lockup + btcToArk.Fees.MinerFees.Server;
+            limits.ChainBtcToArkMinerFee = Money.Satoshis(btcToArk.Fees.MinerFees.User.Lockup + btcToArk.Fees.MinerFees.Server);
         }
 
         var arkToBtc = chainPairs?.ARK?.BTC;
         if (arkToBtc != null)
         {
-            limits.ChainArkToBtcMinAmount = arkToBtc.Limits.Minimal;
-            limits.ChainArkToBtcMaxAmount = arkToBtc.Limits.Maximal;
+            limits.ChainArkToBtcMinAmount = Money.Satoshis(arkToBtc.Limits.Minimal);
+            limits.ChainArkToBtcMaxAmount = Money.Satoshis(arkToBtc.Limits.Maximal);
             limits.ChainArkToBtcFeePercentage = arkToBtc.Fees.Percentage / 100m;
-            limits.ChainArkToBtcMinerFee = arkToBtc.Fees.MinerFees.User.Lockup + arkToBtc.Fees.MinerFees.Server;
+            limits.ChainArkToBtcMinerFee = Money.Satoshis(arkToBtc.Fees.MinerFees.User.Lockup + arkToBtc.Fees.MinerFees.Server);
         }
 
         return limits;
     }
 
-    private async Task<(long? Min, long? Max, string SwapType)> GetLimitsInternalAsync(
+    private async Task<(Money? Min, Money? Max, string SwapType)> GetLimitsInternalAsync(
         bool isReverse,
         CancellationToken cancellationToken)
     {
@@ -232,7 +236,7 @@ public class BoltzLimitsValidator
             if (pairs?.BTC?.ARK == null)
                 return (null, null, swapType);
 
-            return (pairs.BTC.ARK.Limits.Minimal, pairs.BTC.ARK.Limits.Maximal, swapType);
+            return (Money.Satoshis(pairs.BTC.ARK.Limits.Minimal), Money.Satoshis(pairs.BTC.ARK.Limits.Maximal), swapType);
         }
         else
         {
@@ -240,11 +244,11 @@ public class BoltzLimitsValidator
             if (pairs?.ARK?.BTC == null)
                 return (null, null, swapType);
 
-            return (pairs.ARK.BTC.Limits.Minimal, pairs.ARK.BTC.Limits.Maximal, swapType);
+            return (Money.Satoshis(pairs.ARK.BTC.Limits.Minimal), Money.Satoshis(pairs.ARK.BTC.Limits.Maximal), swapType);
         }
     }
 
-    private async Task<(decimal? FeePercentage, long? MinerFee, string SwapType)> GetFeesAsync(
+    private async Task<(decimal? FeePercentage, Money? MinerFee, string SwapType)> GetFeesAsync(
         bool isReverse,
         CancellationToken cancellationToken)
     {
@@ -257,7 +261,8 @@ public class BoltzLimitsValidator
                 return (null, null, swapType);
 
             // Boltz API returns percentage as 0.01 for 0.01%, so divide by 100 to get decimal multiplier
-            return (pairs.BTC.ARK.Fees.Percentage / 100m, pairs.BTC.ARK.Fees.MinerFees?.Claim, swapType);
+            return (pairs.BTC.ARK.Fees.Percentage / 100m,
+                pairs.BTC.ARK.Fees.MinerFees is { Claim: var claim } ? Money.Satoshis(claim) : null, swapType);
         }
         else
         {
@@ -265,7 +270,8 @@ public class BoltzLimitsValidator
             if (pairs?.ARK?.BTC == null)
                 return (null, null, swapType);
 
-            return (pairs.ARK.BTC.Fees.Percentage / 100m, pairs.ARK.BTC.Fees.MinerFeesValue, swapType);
+            return (pairs.ARK.BTC.Fees.Percentage / 100m,
+                pairs.ARK.BTC.Fees.MinerFeesValue is { } minerFees ? Money.Satoshis(minerFees) : null, swapType);
         }
     }
 }
@@ -274,8 +280,8 @@ public class BoltzLimitsValidator
 /// Boltz swap limits and fees for a specific direction.
 /// </summary>
 public record BoltzLimits(
-    long MinAmount,
-    long MaxAmount,
+    Money MinAmount,
+    Money MaxAmount,
     /// <summary>
     /// Fee as a decimal fraction (e.g. <c>0.005</c> for 0.5%) — NOT percent.
     /// Boltz's wire <c>Percentage</c> field is in percent and this record
@@ -283,7 +289,7 @@ public record BoltzLimits(
     /// directly: <c>fee = amount * FeePercentage</c>.
     /// </summary>
     decimal FeePercentage,
-    long MinerFee);
+    Money MinerFee);
 
 /// <summary>
 /// Combined Boltz limits for submarine, reverse, and chain swaps.
@@ -291,31 +297,31 @@ public record BoltzLimits(
 public class BoltzAllLimits
 {
     /// <summary>Submarine swap limits (Ark → Lightning, sending)</summary>
-    public long SubmarineMinAmount { get; init; }
-    public long SubmarineMaxAmount { get; init; }
+    public Money SubmarineMinAmount { get; init; } = Money.Zero;
+    public Money SubmarineMaxAmount { get; init; } = Money.Zero;
     public decimal SubmarineFeePercentage { get; init; }
-    public long SubmarineMinerFee { get; init; }
+    public Money SubmarineMinerFee { get; init; } = Money.Zero;
 
     /// <summary>Reverse swap limits (Lightning → Ark, receiving)</summary>
-    public long ReverseMinAmount { get; init; }
-    public long ReverseMaxAmount { get; init; }
+    public Money ReverseMinAmount { get; init; } = Money.Zero;
+    public Money ReverseMaxAmount { get; init; } = Money.Zero;
     public decimal ReverseFeePercentage { get; init; }
-    public long ReverseMinerFee { get; init; }
+    public Money ReverseMinerFee { get; init; } = Money.Zero;
 
     /// <summary>Chain swap limits (BTC → ARK, on-chain to Ark)</summary>
-    public long? ChainBtcToArkMinAmount { get; set; }
-    public long? ChainBtcToArkMaxAmount { get; set; }
+    public Money? ChainBtcToArkMinAmount { get; set; }
+    public Money? ChainBtcToArkMaxAmount { get; set; }
     public decimal? ChainBtcToArkFeePercentage { get; set; }
-    public long? ChainBtcToArkMinerFee { get; set; }
+    public Money? ChainBtcToArkMinerFee { get; set; }
 
     /// <summary>Chain swap limits (ARK → BTC, Ark to on-chain)</summary>
-    public long? ChainArkToBtcMinAmount { get; set; }
-    public long? ChainArkToBtcMaxAmount { get; set; }
+    public Money? ChainArkToBtcMinAmount { get; set; }
+    public Money? ChainArkToBtcMaxAmount { get; set; }
     public decimal? ChainArkToBtcFeePercentage { get; set; }
-    public long? ChainArkToBtcMinerFee { get; set; }
+    public Money? ChainArkToBtcMinerFee { get; set; }
 
     /// <summary>Whether chain swaps are available.</summary>
-    public bool ChainSwapsAvailable => ChainBtcToArkMinAmount.HasValue || ChainArkToBtcMinAmount.HasValue;
+    public bool ChainSwapsAvailable => ChainBtcToArkMinAmount is not null || ChainArkToBtcMinAmount is not null;
 
     public DateTimeOffset FetchedAt { get; init; }
 }

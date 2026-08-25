@@ -5,6 +5,7 @@ using NArk.Abstractions.Payments;
 using NArk.Abstractions.VTXOs;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Models;
+using NBitcoin;
 
 namespace NArk.Swaps.Services;
 
@@ -88,18 +89,16 @@ public class PaymentTrackingService(
     /// Any-amount requests (Amount=null) are Paid immediately on first funds.
     /// Fixed-amount requests require exact or over — no underpayment tolerance.
     /// </summary>
-    private static (ArkPaymentRequestStatus Status, ulong Overpayment) ResolveRequestStatus(
-        ArkPaymentRequest request, ulong newReceived)
+    private static (ArkPaymentRequestStatus Status, Money Overpayment) ResolveRequestStatus(
+        ArkPaymentRequest request, Money newReceived)
     {
-        if (request.Amount is null)
-            return (ArkPaymentRequestStatus.Paid, 0);
-
-        var target = request.Amount.Value;
+        if (request.Amount is not { } target)
+            return (ArkPaymentRequestStatus.Paid, Money.Zero);
 
         if (newReceived >= target)
             return (ArkPaymentRequestStatus.Paid, newReceived - target);
 
-        return (ArkPaymentRequestStatus.PartiallyPaid, 0);
+        return (ArkPaymentRequestStatus.PartiallyPaid, Money.Zero);
     }
 
     /// <summary>
@@ -226,7 +225,7 @@ public class PaymentTrackingService(
         {
             if (request.SwapId != swap.SwapId) continue;
 
-            var receivedAmount = request.ReceivedAmount + (ulong)swap.ExpectedAmount;
+            var receivedAmount = request.ReceivedAmount + swap.ExpectedAmount;
             var (newStatus, overpayment) = ResolveRequestStatus(request, receivedAmount);
 
             await paymentRequestStorage.UpdatePaymentRequestStatus(

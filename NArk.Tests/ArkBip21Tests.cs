@@ -1,4 +1,5 @@
 using NArk.Abstractions.Payments;
+using NBitcoin;
 
 namespace NArk.Tests;
 
@@ -15,8 +16,8 @@ public class ArkBip21Tests
         Assert.That(info, Is.Not.Null);
         Assert.That(info!.OnchainAddress, Is.EqualTo("bc1qtest"));
         Assert.That(info.ArkAddress, Is.EqualTo("tark1qtest"));
-        Assert.That(info.Amount, Is.EqualTo(0.001m));
-        Assert.That(info.AmountSats, Is.EqualTo(100_000UL));
+        Assert.That(info.Amount, Is.EqualTo(Money.Coins(0.001m)));
+        Assert.That(info.Amount!.Satoshi, Is.EqualTo(100_000L));
     }
 
     [Test]
@@ -29,7 +30,7 @@ public class ArkBip21Tests
         Assert.That(info.ArkAddress, Is.EqualTo("tark1qfoo"));
         Assert.That(info.Lightning, Is.EqualTo("lnbc500u1ptest"));
         Assert.That(info.AssetId, Is.EqualTo("abc123"));
-        Assert.That(info.AmountSats, Is.EqualTo(50_000_000UL));
+        Assert.That(info.Amount!.Satoshi, Is.EqualTo(50_000_000L));
     }
 
     [Test]
@@ -56,7 +57,7 @@ public class ArkBip21Tests
         // 0.000000015 BTC = 1.5 sats → should round to 2
         var info = ArkBip21.Parse("bitcoin:bc1qtest?amount=0.000000015&ark=tark1q");
         Assert.That(info, Is.Not.Null);
-        Assert.That(info!.AmountSats, Is.EqualTo(2UL));
+        Assert.That(info!.Amount!.Satoshi, Is.EqualTo(2L));
     }
 
     [Test]
@@ -64,7 +65,7 @@ public class ArkBip21Tests
     {
         var info = ArkBip21.Parse("bitcoin:bc1qtest?amount=0.00000001&ark=tark1q");
         Assert.That(info, Is.Not.Null);
-        Assert.That(info!.AmountSats, Is.EqualTo(1UL));
+        Assert.That(info!.Amount!.Satoshi, Is.EqualTo(1L));
     }
 
     // ── Parse: Raw destinations ────────────────────────────────────────
@@ -195,7 +196,7 @@ public class ArkBip21Tests
         var uri = ArkBip21.Create()
             .WithOnchainAddress("bc1qtest")
             .WithArkAddress("tark1qtest")
-            .WithAmount(0.001m)
+            .WithAmount(Money.Coins(0.001m))
             .WithLightning("lnbc100n1p")
             .Build();
 
@@ -252,7 +253,7 @@ public class ArkBip21Tests
     {
         var uri = ArkBip21.Create()
             .WithLightning("lnbc100n1p")
-            .WithAmount(0.0005m)
+            .WithAmount(Money.Coins(0.0005m))
             .WithCustomParameter("label", "Lunch")
             .Build();
 
@@ -294,7 +295,7 @@ public class ArkBip21Tests
         var uri = ArkBip21.Create()
             .WithOnchainAddress("bc1qtest")
             .WithArkAddress("tark1qtest")
-            .WithAmount(0.005m)
+            .WithAmount(Money.Coins(0.005m))
             .WithLightning("lnbc500n1ptest")
             .Build();
 
@@ -303,7 +304,7 @@ public class ArkBip21Tests
         Assert.That(info, Is.Not.Null);
         Assert.That(info!.OnchainAddress, Is.EqualTo("bc1qtest"));
         Assert.That(info.ArkAddress, Is.EqualTo("tark1qtest"));
-        Assert.That(info.Amount, Is.EqualTo(0.005m));
-        Assert.That(info.AmountSats, Is.EqualTo(500_000UL));
+        Assert.That(info.Amount, Is.EqualTo(Money.Coins(0.005m)));
+        Assert.That(info.Amount!.Satoshi, Is.EqualTo(500_000L));
     }
 }

@@ -1,4 +1,5 @@
 using NArk.Abstractions.Intents;
+using NBitcoin;
 
 namespace NArk.Abstractions.Fees;
 
@@ -10,9 +11,9 @@ public interface IFeeEstimator
     /// <summary>
     /// Estimates the fee for spending the given coins to the given outputs.
     /// </summary>
-    public Task<long> EstimateFeeAsync(ArkCoin[] coins, ArkTxOut[] outputs, CancellationToken cancellationToken = default);
+    public Task<Money> EstimateFeeAsync(ArkCoin[] coins, ArkTxOut[] outputs, CancellationToken cancellationToken = default);
     /// <summary>
     /// Estimates the fee for an intent specification (used during intent generation).
     /// </summary>
-    public Task<long> EstimateFeeAsync(ArkIntentSpec spec, CancellationToken cancellationToken = default);
+    public Task<Money> EstimateFeeAsync(ArkIntentSpec spec, CancellationToken cancellationToken = default);
 }

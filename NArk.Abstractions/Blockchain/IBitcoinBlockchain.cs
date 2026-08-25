@@ -108,7 +108,7 @@ public record TxStatus(bool Confirmed, uint? BlockHeight, bool InMempool);
 public record BoardingUtxo(
     string Txid,
     uint Vout,
-    ulong Amount,
+    Money Amount,
     bool Confirmed,
     long BlockHeight,
     long BlockTime);

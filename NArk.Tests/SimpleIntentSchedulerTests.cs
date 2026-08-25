@@ -119,6 +119,25 @@ public class SimpleIntentSchedulerTests
     }
 
     [Test]
+    public async Task Skips_ChunkLeftSubDustAfterFees_Individually()
+    {
+        // The 2-coin tail chunk holds 1 200 sats — above the 546-sat dust threshold before fees,
+        // but a 1 000-sat fee leaves a 200-sat send-to-self output that arkd rejects with
+        // AMOUNT_TOO_LOW, taking every coin chunked with it down too. It must be skipped.
+        _feeEstimator.EstimateFeeAsync(Arg.Any<ArkIntentSpec>(), Arg.Any<CancellationToken>())
+            .Returns(Money.Satoshis(1000));
+
+        var coins = Enumerable.Range(0, MaxCoinsPerChunk).Select(_ => CreateCoin(1000)).ToList();
+        coins.Add(CreateCoin(600));
+        coins.Add(CreateCoin(600));
+
+        var intents = await _scheduler.GetIntentsToSubmit(coins);
+
+        Assert.That(intents, Has.Count.EqualTo(1));
+        Assert.That(intents.First().Coins, Has.Length.EqualTo(MaxCoinsPerChunk));
+    }
+
+    [Test]
     public async Task GroupsByWallet_BeforeChunking()
     {
         // wallet-a: 60 coins fit in one weight-based chunk; wallet-b: 10 coins in one chunk.

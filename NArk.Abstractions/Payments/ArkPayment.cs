@@ -1,4 +1,5 @@
 using NArk.Abstractions.VTXOs;
+using NBitcoin;
 
 namespace NArk.Abstractions.Payments;
 
@@ -10,7 +11,7 @@ public record ArkPayment(
     string PaymentId,
     string WalletId,
     string Recipient,
-    ulong Amount,
+    Money Amount,
     ArkPaymentMethod Method,
     ArkPaymentStatus Status,
     string? FailReason,
@@ -48,7 +49,7 @@ public record ArkPayment(
 /// </summary>
 public enum ArkPaymentMethod
 {
-    /// <summary>Direct Ark protocol send (intent → batch round).</summary>
+    /// <summary>Direct Arkade send (intent → batch).</summary>
     ArkSend,
     /// <summary>Collaborative exit to an on-chain address.</summary>
     CollaborativeExit,

@@ -106,7 +106,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             results.Add(new BoardingUtxo(
                 Txid: utxo.Outpoint.Hash.ToString(),
                 Vout: (uint)utxo.Outpoint.N,
-                Amount: ((Money)utxo.Value).Satoshi > 0 ? (ulong)((Money)utxo.Value).Satoshi : 0,
+                Amount: (Money)utxo.Value,
                 Confirmed: confirmed,
                 BlockHeight: blockHeight,
                 BlockTime: confirmed ? utxo.Timestamp.ToUnixTimeSeconds() : 0));

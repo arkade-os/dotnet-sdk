@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
+using NBitcoin;
 
 namespace NArk.Core.Payments;
 
@@ -16,10 +17,14 @@ public class LnurlHelper(HttpClient http)
     /// Pay-params returned by an LNURL-pay endpoint. Amounts are normalised to satoshis
     /// (the wire format is millisats).
     /// </summary>
+    /// <param name="Callback">URL to fetch the BOLT11 invoice from.</param>
+    /// <param name="MinSendable">Smallest payable amount, rounded up to a whole satoshi.</param>
+    /// <param name="MaxSendable">Largest payable amount, rounded down to a whole satoshi.</param>
+    /// <param name="Description">The endpoint's metadata string.</param>
     public record LnurlPayParams(
         string Callback,
-        long MinSendable,
-        long MaxSendable,
+        Money MinSendable,
+        Money MaxSendable,
         string? Description);
 
     /// <summary>True if <paramref name="input"/> looks like an LNURL or Lightning Address.</summary>
@@ -71,17 +76,22 @@ public class LnurlHelper(HttpClient http)
 
         return new LnurlPayParams(
             response.Callback,
-            response.MinSendable / 1000, // millisats → sats
-            response.MaxSendable / 1000,
+            // Millisats → sats, rounded so the window only ever narrows: a minimum rounded down
+            // (or a maximum rounded up) advertises an amount the endpoint would reject.
+            Money.Satoshis((long)Math.Ceiling(response.MinSendable / 1000m)),
+            Money.Satoshis(response.MaxSendable / 1000),
             response.Metadata);
     }
 
     /// <summary>
     /// Fetches a BOLT11 invoice from an LNURL-pay <c>callback</c> URL for the given amount.
     /// </summary>
-    public async Task<string> FetchInvoiceAsync(string callback, long amountSats, CancellationToken cancellationToken = default)
+    /// <param name="callback">The <c>callback</c> URL from <see cref="ResolveAsync"/>.</param>
+    /// <param name="amount">Amount to request; must sit within the endpoint's sendable window.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task<string> FetchInvoiceAsync(string callback, Money amount, CancellationToken cancellationToken = default)
     {
-        var amountMsat = amountSats * 1000;
+        var amountMsat = checked(amount.Satoshi * 1000);
         var separator = callback.Contains('?') ? "&" : "?";
         var url = $"{callback}{separator}amount={amountMsat}";
 

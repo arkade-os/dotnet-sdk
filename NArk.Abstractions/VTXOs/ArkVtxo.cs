@@ -10,7 +10,7 @@ public record ArkVtxo(
     string Script,
     string TransactionId,
     uint TransactionOutputIndex,
-    ulong Amount,
+    Money Amount,
     string? SpentByTransactionId,
     string? SettledByTransactionId,
     bool Swept,

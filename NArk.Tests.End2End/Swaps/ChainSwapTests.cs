@@ -441,7 +441,7 @@ public class ChainSwapTests
         // wallets to surface "abandoned" swaps to the user.
         var inspection = await swapMgr.InspectSwapRecoveryAsync(
             testingPrerequisite.walletIdentifier, swapId, token);
-        Console.WriteLine($"[BTC→ARK no-fund] Inspection: status={inspection.Status}, vtxoCount={inspection.VtxoCount}, amountSats={inspection.AmountSats}, error={inspection.Error}");
+        Console.WriteLine($"[BTC→ARK no-fund] Inspection: status={inspection.Status}, vtxoCount={inspection.VtxoCount}, amount={inspection.Amount}, error={inspection.Error}");
 
         Assert.That(inspection.Status, Is.EqualTo(SwapRecoveryStatus.StillPending),
             $"Unfunded BTC→ARK chain swap should classify as StillPending — the swap is still in flight from " +
@@ -585,14 +585,14 @@ public class ChainSwapTests
 
         var btcToArk = await validator.GetChainLimitsAsync(isBtcToArk: true, token);
         Assert.That(btcToArk, Is.Not.Null, "BTC→ARK limits not returned by Boltz");
-        Assert.That(btcToArk!.MinAmount, Is.GreaterThan(0), "BTC→ARK min must be > 0");
+        Assert.That(btcToArk!.MinAmount, Is.GreaterThan(Money.Zero), "BTC→ARK min must be > 0");
         Assert.That(btcToArk.MaxAmount, Is.GreaterThan(btcToArk.MinAmount), "BTC→ARK max must exceed min");
         Assert.That(btcToArk.FeePercentage, Is.InRange(0m, 0.5m), "BTC→ARK fee percentage should be 0–50%");
         Console.WriteLine($"BTC→ARK: min={btcToArk.MinAmount} max={btcToArk.MaxAmount} fee={btcToArk.FeePercentage:P2} minerFee={btcToArk.MinerFee}");
 
         var arkToBtc = await validator.GetChainLimitsAsync(isBtcToArk: false, token);
         Assert.That(arkToBtc, Is.Not.Null, "ARK→BTC limits not returned by Boltz");
-        Assert.That(arkToBtc!.MinAmount, Is.GreaterThan(0), "ARK→BTC min must be > 0");
+        Assert.That(arkToBtc!.MinAmount, Is.GreaterThan(Money.Zero), "ARK→BTC min must be > 0");
         Assert.That(arkToBtc.MaxAmount, Is.GreaterThan(arkToBtc.MinAmount), "ARK→BTC max must exceed min");
         Assert.That(arkToBtc.FeePercentage, Is.InRange(0m, 0.5m), "ARK→BTC fee percentage should be 0–50%");
         Console.WriteLine($"ARK→BTC: min={arkToBtc.MinAmount} max={arkToBtc.MaxAmount} fee={arkToBtc.FeePercentage:P2} minerFee={arkToBtc.MinerFee}");
@@ -615,12 +615,12 @@ public class ChainSwapTests
             var limits = await validator.GetChainLimitsAsync(isBtcToArk, token);
             Assert.That(limits, Is.Not.Null, $"{label}: limits unavailable");
 
-            var fee = (long)(amountSats * limits!.FeePercentage) + limits.MinerFee;
-            var dest = amountSats - fee;
+            var fee = Money.Satoshis((long)(amountSats * limits!.FeePercentage)) + limits.MinerFee;
+            var dest = Money.Satoshis(amountSats) - fee;
 
-            Assert.That(fee, Is.GreaterThan(0), $"{label}: computed fee must be positive");
-            Assert.That(dest, Is.GreaterThan(0), $"{label}: destination amount at 50 000 sats must be positive after fees");
-            Assert.That(dest + fee, Is.EqualTo(amountSats), $"{label}: dest + fee must equal source");
+            Assert.That(fee, Is.GreaterThan(Money.Zero), $"{label}: computed fee must be positive");
+            Assert.That(dest, Is.GreaterThan(Money.Zero), $"{label}: destination amount at 50 000 sats must be positive after fees");
+            Assert.That(dest + fee, Is.EqualTo(Money.Satoshis(amountSats)), $"{label}: dest + fee must equal source");
             Console.WriteLine($"{label}: {amountSats} sats → dest={dest} fee={fee}");
         }
     }
@@ -727,7 +727,7 @@ public class ChainSwapTests
         // enough for the swap to settle before we inspect it.
         var inspection = await swapMgr.InspectSwapRecoveryAsync(
             testingPrerequisite.walletIdentifier, swapId, token);
-        Console.WriteLine($"[ARK→BTC inspect] Status={inspection.Status} vtxos={inspection.VtxoCount} amount={inspection.AmountSats}");
+        Console.WriteLine($"[ARK→BTC inspect] Status={inspection.Status} vtxos={inspection.VtxoCount} amount={inspection.Amount}");
 
         Assert.That(inspection.Status, Is.EqualTo(SwapRecoveryStatus.StillPending),
             $"A freshly-created ARK→BTC swap should be StillPending; got {inspection.Status}");
@@ -1390,7 +1390,7 @@ public class ChainSwapTests
 
         var finalSwap = (await swapStorage.GetSwaps(swapIds: [swapId])).Single(s => s.SwapId == swapId);
         Assert.That(finalSwap.Status, Is.EqualTo(ArkSwapStatus.Settled));
-        Assert.That(finalSwap.ExpectedAmount, Is.EqualTo(amountSats),
+        Assert.That(finalSwap.ExpectedAmount, Is.EqualTo(Money.Satoshis(amountSats)),
             "ExpectedAmount stores the user-requested swap amount, not the Boltz lockup amount (which includes fees)");
     }
 

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NArk.Abstractions.Payments;
 using NArk.Storage.EfCore.Entities;
+using NBitcoin;
 
 namespace NArk.Storage.EfCore.Storage;
 
@@ -41,7 +42,7 @@ public class EfCorePaymentStorage : IPaymentStorage
                 PaymentId = payment.PaymentId,
                 WalletId = payment.WalletId,
                 Recipient = payment.Recipient,
-                Amount = (long)payment.Amount,
+                Amount = payment.Amount.Satoshi,
                 Method = payment.Method,
                 Status = payment.Status,
                 FailReason = payment.FailReason,
@@ -138,7 +139,7 @@ public class EfCorePaymentStorage : IPaymentStorage
         PaymentId: e.PaymentId,
         WalletId: e.WalletId,
         Recipient: e.Recipient,
-        Amount: (ulong)e.Amount,
+        Amount: Money.Satoshis(e.Amount),
         Method: e.Method,
         Status: e.Status,
         FailReason: e.FailReason,

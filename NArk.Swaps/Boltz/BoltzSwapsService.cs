@@ -8,6 +8,7 @@ using NArk.Swaps.Boltz.Models;
 using NArk.Swaps.Boltz.Models.Swaps.Chain;
 using NArk.Swaps.Boltz.Models.Swaps.Reverse;
 using NArk.Swaps.Boltz.Models.Swaps.Submarine;
+using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
 using NArk.Core.Transport;
 using NBitcoin;
@@ -89,7 +90,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
         preimage ??= RandomUtils.GetBytes(32);
         var preimageHash = Hashes.SHA256(preimage);
 
-        var requestedAmountSats = (long)createInvoiceRequest.Amount.ToUnit(LightMoneyUnit.Satoshi);
+        var requestedAmountSats = createInvoiceRequest.Amount.ToSatoshisRoundingUp().Satoshi;
 
         // The fee payer decides which amount we pin: Recipient pins InvoiceAmount (invoice == requested,
         // receiver nets requested − fee); Sender pins OnchainAmount (receiver gets
@@ -131,7 +132,7 @@ internal class BoltzSwapService(BoltzClient boltzClient, IClientTransport client
             throw new InvalidOperationException("Boltz did not provide the correct preimage hash");
         }
 
-        var invoiceAmountSats = (long)bolt11.MinimumAmount.ToUnit(LightMoneyUnit.Satoshi);
+        var invoiceAmountSats = bolt11.MinimumAmount.ToSatoshisRoundingUp().Satoshi;
         ValidateReverseAmounts(feePayer, requestedAmountSats, invoiceAmountSats, response.OnchainAmount);
 
         var receiverOnchainSats = ResolveExpectedOnchainAmount(feePayer, requestedAmountSats, response.OnchainAmount);

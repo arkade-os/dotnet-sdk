@@ -1,3 +1,4 @@
+using NArk.Abstractions.Extensions;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Fees;
@@ -42,7 +43,7 @@ public class OnchainService(IClientTransport clientTransport, IContractService c
                 [.. selectedCoins],
                 [
                     output,
-                    new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(change), changeAddress!)
+                    new ArkTxOut(ArkTxOutType.Vtxo, change, changeAddress!)
                 ],
                 cancellationToken);
 
@@ -50,7 +51,7 @@ public class OnchainService(IClientTransport clientTransport, IContractService c
             {
                 ArkTxOut[] outputs = [
                     output,
-                    new(ArkTxOutType.Vtxo, Money.Satoshis(change - estimatedFeeIfChange), changeAddress!)
+                    new(ArkTxOutType.Vtxo, change - estimatedFeeIfChange, changeAddress!)
                 ];
                 return await InitiateCollaborativeExit(selectedCoins.ToArray(), outputs, cancellationToken);
             }
@@ -61,7 +62,7 @@ public class OnchainService(IClientTransport clientTransport, IContractService c
                     [output],
                     cancellationToken);
 
-                if (totalInput >= output.Value + Math.Max(serverInfo.Dust, estimatedFeeIfNoChange))
+                if (totalInput >= output.Value + Money.Max(serverInfo.Dust, estimatedFeeIfNoChange))
                 {
                     ArkTxOut[] outputs = [output];
                     return await InitiateCollaborativeExit(selectedCoins.ToArray(), outputs, cancellationToken);

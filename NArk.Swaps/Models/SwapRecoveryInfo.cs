@@ -1,3 +1,4 @@
+using NBitcoin;
 namespace NArk.Swaps.Models;
 
 /// <summary>
@@ -35,9 +36,9 @@ public class SwapRecoveryInfo
     /// <see cref="SwapRecoveryStatus.Recoverable"/>.</summary>
     public int VtxoCount { get; init; }
 
-    /// <summary>Total sats locked at the swap's contract script
+    /// <summary>Total locked at the swap's contract script
     /// (sum of unspent VTXO amounts).</summary>
-    public long AmountSats { get; init; }
+    public Money Amount { get; init; } = Money.Zero;
 
     /// <summary>Inspection-side error message, if any (e.g. arkd
     /// snapshot poll failed). Recovery itself is unaffected — the

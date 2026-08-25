@@ -43,7 +43,7 @@ public class EfCoreVtxoStorage : IVtxoStorage
         entity.TransactionId = vtxo.TransactionId;
         entity.TransactionOutputIndex = (int)vtxo.TransactionOutputIndex;
         entity.Script = vtxo.Script;
-        entity.Amount = (long)vtxo.Amount;
+        entity.Amount = vtxo.Amount.Satoshi;
         entity.SpentByTransactionId = vtxo.SpentByTransactionId;
         entity.SettledByTransactionId = vtxo.SettledByTransactionId;
         entity.Recoverable = vtxo.Swept;
@@ -184,7 +184,7 @@ public class EfCoreVtxoStorage : IVtxoStorage
             Script: entity.Script,
             TransactionId: entity.TransactionId,
             TransactionOutputIndex: (uint)entity.TransactionOutputIndex,
-            Amount: (ulong)entity.Amount,
+            Amount: Money.Satoshis(entity.Amount),
             SpentByTransactionId: entity.SpentByTransactionId,
             SettledByTransactionId: entity.SettledByTransactionId,
             Swept: entity.Recoverable,

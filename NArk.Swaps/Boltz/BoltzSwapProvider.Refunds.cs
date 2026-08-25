@@ -85,7 +85,7 @@ public partial class BoltzSwapProvider
         // exactly what SweeperService + SwapSweepPolicy handle once the
         // refund CSV elapses. So here we narrow to the canonical VTXO and
         // leave any extras for the sweeper.
-        var vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
+        var vtxo = vtxos.FirstOrDefault(v => v.Amount == swap.ExpectedAmount && !v.IsSpent());
         if (vtxo is null)
         {
             _logger?.LogWarning(
@@ -320,7 +320,7 @@ public partial class BoltzSwapProvider
             // Same multi-VTXO handling as the submarine refund path: Boltz
             // only signs the canonical lockup VTXO; extras are recovered by
             // SweeperService via the timelock path.
-            vtxo = vtxos.FirstOrDefault(v => (long)v.Amount == swap.ExpectedAmount && !v.IsSpent());
+            vtxo = vtxos.FirstOrDefault(v => v.Amount == swap.ExpectedAmount && !v.IsSpent());
             if (vtxo is null)
             {
                 _logger?.LogWarning(
@@ -817,7 +817,22 @@ public partial class BoltzSwapProvider
             var feeEstimator = new DefaultFeeEstimator(_clientTransport, _chainTimeProvider);
             var fee = await feeEstimator.EstimateFeeAsync(
                 [arkCoin], [new ArkTxOut(ArkTxOutType.Vtxo, arkCoin.Amount, refundDestination)], ct);
-            var netOutput = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(arkCoin.Amount.Satoshi - fee), refundDestination);
+            var netAmount = arkCoin.Amount - fee;
+
+            // A VHTLC worth less than the intent fee plus dust cannot be refunded through a batch:
+            // the net output would be negative (NBitcoin rejects the TxOut) or sub-dust (arkd
+            // rejects the intent with AMOUNT_TOO_LOW). Leave the swap pending rather than burning
+            // a doomed intent — a later fee drop can still make it refundable.
+            if (netAmount < serverInfo.Dust)
+            {
+                _logger?.LogWarning(
+                    "Swap {SwapId}: cannot refund {Amount} sat through a batch — the {Fee} sat intent fee " +
+                    "leaves {Remaining} sat, below the operator dust threshold of {Dust} sat",
+                    swap.SwapId, arkCoin.Amount.Satoshi, fee.Satoshi, netAmount.Satoshi, serverInfo.Dust.Satoshi);
+                return false;
+            }
+
+            var netOutput = new ArkTxOut(ArkTxOutType.Vtxo, netAmount, refundDestination);
 
             var spec = new ArkIntentSpec([arkCoin], [netOutput], DateTimeOffset.UtcNow, null);
             var intentTxId = await _intentGenerationService.GenerateManualIntent(swap.WalletId, spec, ct);
