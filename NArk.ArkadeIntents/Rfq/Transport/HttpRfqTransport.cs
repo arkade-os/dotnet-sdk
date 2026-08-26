@@ -63,7 +63,7 @@ public sealed class HttpRfqTransport : IRfqTransport
             ?? throw new InvalidOperationException(
                 $"solver returned {(int)response.StatusCode} with no RFQ payload");
 
-        return RfqProtocol.ExpectQuote<TQuoteProfile>(payload, request.RfqId);
+        return RfqProtocol.ExpectQuote<TQuoteProfile>(payload, request.RfqId, request.Pair);
     }
 
     /// <inheritdoc />

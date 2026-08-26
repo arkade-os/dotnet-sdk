@@ -28,6 +28,12 @@ the solver observes the funding on-chain and fills; a failure refunds by covenan
 That comparison is the whole security model. A wrong or hostile solver can only ever produce an
 address you decline, never one that traps your funds.
 
+Before any of that, a reply has to be the answer to the question asked: the transports check the
+quote's `rfq_id` and its `pair` before returning it. The id is what stops a stale or misrouted reply
+being funded — on a shared relay every one of the solver's events arrives on the same subscription —
+and the pair is compared byte for byte, because a solver that normalises case or quotes a market
+other than the one asked for is otherwise undetectable from the client.
+
 ## Sending: pay a BOLT11 from an Arkade balance
 
 ```csharp

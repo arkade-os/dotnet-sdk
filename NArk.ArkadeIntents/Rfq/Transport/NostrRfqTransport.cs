@@ -94,7 +94,7 @@ public sealed class NostrRfqTransport : IRfqTransport, IDisposable
         var reply = await ExchangeAsync(
             JsonSerializer.Serialize(request, RfqProtocol.Json), cancellationToken);
 
-        return RfqProtocol.ExpectQuote<TQuoteProfile>(reply, request.RfqId);
+        return RfqProtocol.ExpectQuote<TQuoteProfile>(reply, request.RfqId, request.Pair);
     }
 
     /// <inheritdoc />
