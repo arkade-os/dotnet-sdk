@@ -150,6 +150,109 @@ public class SolverDiscoveryServiceTests
     }
 
     [Test]
+    public void ComputeWantAmount_ChargesTheFlatFeeOnTopOfTheSpread()
+    {
+        // 1 000 000 base at price 1, 30+50 bps = 992 000, then the card's 500 flat on top.
+        // Applying the spread to the remainder instead would give 991 504 — a different number from
+        // the one the solver's own quote arrives at, for the same card.
+        Assert.That(
+            SolverDiscoveryService.ComputeWantAmount(1_000_000, 1m, feeBps: 30, feeFlat: 500),
+            Is.EqualTo(991_500));
+    }
+
+    [Test]
+    public void ComputeWantAmount_GivingQuote_DividesByThePrice()
+    {
+        // Deposit 1000 quote units at 0.5 quote-per-base: 2000 base gross, less 80 bps.
+        Assert.That(
+            SolverDiscoveryService.ComputeWantAmount(
+                1000, 0.5m, feeBps: 30, give: MarketSide.Quote),
+            Is.EqualTo(1984));
+    }
+
+    [Test]
+    public void ComputeWantAmount_GivingQuote_ConvertsTheFlatFeeAndRoundsAgainstTheMaker()
+    {
+        // The flat fee is quote-denominated, so receiving base converts it through the price. 101
+        // quote at 0.5 is 202 base exactly; 100 at 3m is 33.33… and must round UP to 34, because a
+        // charge rounded down is a satoshi conceded to the maker that the solver never agreed to.
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                SolverDiscoveryService.ComputeWantAmount(
+                    1000, 0.5m, feeBps: 0, safetyBps: 0, give: MarketSide.Quote, feeFlat: 101),
+                Is.EqualTo(2000 - 202));
+            Assert.That(
+                SolverDiscoveryService.ComputeWantAmount(
+                    1000, 3m, feeBps: 0, safetyBps: 0, give: MarketSide.Quote, feeFlat: 100),
+                Is.EqualTo(333 - 34));
+        });
+    }
+
+    [Test]
+    public void ComputeWantAmount_ReturnsZeroWhenTheFlatFeeSwallowsTheTrade()
+    {
+        Assert.That(
+            SolverDiscoveryService.ComputeWantAmount(1000, 1m, feeBps: 0, safetyBps: 0, feeFlat: 5000),
+            Is.EqualTo(0));
+    }
+
+    [Test]
+    public void TheInverse_HoldsAcrossPricesThatDivideBadly_AndFlatFees()
+    {
+        // The case decimal arithmetic loses: a price with no finite reciprocal, where rounding at
+        // the 28th digit puts the two computations an atomic unit apart and the planned deposit
+        // under-funds the amount it was planned for.
+        decimal[] prices = [1m, 0.5m, 3m, 1.0002m, 0.0000003m, 377000.00000000m];
+        long[] wants = [1, 7, 1000, 49_999, 100_000_000, 100_000_000_000_000];
+        int[] fees = [0, 30, 250];
+        long[] flats = [0, 1, 500];
+
+        foreach (var give in new[] { MarketSide.Base, MarketSide.Quote })
+        foreach (var price in prices)
+        foreach (var want in wants)
+        foreach (var fee in fees)
+        foreach (var flat in flats)
+        {
+            long deposit;
+            try
+            {
+                deposit = SolverDiscoveryService.ComputeRequiredDeposit(want, price, fee, give: give, feeFlat: flat);
+            }
+            catch (OverflowException)
+            {
+                // Some of these combinations have no answer an amount can hold — that is reported,
+                // not rounded, and there is nothing left to round-trip.
+                continue;
+            }
+
+            var got = SolverDiscoveryService.ComputeWantAmount(deposit, price, fee, give: give, feeFlat: flat);
+
+            Assert.That(got, Is.GreaterThanOrEqualTo(want),
+                $"give={give} price={price} fee={fee} flat={flat} want={want} → deposit={deposit} got={got}");
+        }
+    }
+
+    [Test]
+    public void ADepositNoAmountCanHold_IsRefusedRatherThanClamped()
+    {
+        // 10^14 units of an asset priced at 3e-7 needs ~3.3e20 sats. Clamping would quote a deposit
+        // short by orders of magnitude; zero would read as free.
+        Assert.Throws<OverflowException>(
+            () => SolverDiscoveryService.ComputeRequiredDeposit(100_000_000_000_000, 0.0000003m, feeBps: 0));
+    }
+
+    [Test]
+    public void WantingNothing_CostsNothing_EvenWithAFlatFee()
+    {
+        // Checked before the flat fee goes back on: otherwise asking for zero quotes a deposit worth
+        // the flat fee, and this stops being the inverse of a forward that clamps zero to zero.
+        Assert.That(
+            SolverDiscoveryService.ComputeRequiredDeposit(0, 1m, feeBps: 30, feeFlat: 500),
+            Is.EqualTo(0));
+    }
+
+    [Test]
     public void ComputeRequiredDeposit_GuardsInvalidInput()
     {
         Assert.That(SolverDiscoveryService.ComputeRequiredDeposit(0, 1m, 0), Is.EqualTo(0));

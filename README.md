@@ -1179,6 +1179,30 @@ var markets = await discovery.DiscoverMarketsAsync(
     "mutinynet", localCards: [JsonSerializer.Deserialize<SolverCard>(cardJson, opts)!]);
 ```
 
+Pricing a spot offer runs off the same market. The maker names what they want, concedes the
+solver's spread plus a cushion of their own, and funds:
+
+```csharp
+var price = await discovery.FetchPriceAsync(market);   // quote atomic per base atomic
+
+// Deposit sats, receive the asset.
+var want = SolverDiscoveryService.ComputeWantAmount(
+    depositAtomic: 1_000_000, price, market.FeeBps, feeFlat: market.FeeFlatAmount);
+
+// Or name the amount you want, and get quoted the deposit. Exact inverse of the above.
+var deposit = SolverDiscoveryService.ComputeRequiredDeposit(
+    wantAmount: want, price, market.FeeBps, feeFlat: market.FeeFlatAmount);
+
+// Depositing the asset instead, to receive sats:
+var sats = SolverDiscoveryService.ComputeWantAmount(
+    depositAtomic: 250, price, market.FeeBps,
+    give: MarketSide.Quote, feeFlat: market.FeeFlatAmount);
+```
+
+Pass `feeFlat` wherever the card declares one — the spread applies to the whole deposit and the flat
+fee is charged on top, which is the model the solver's own quote uses. Rounding never favours the
+maker, and a combination whose answer no amount can hold throws rather than clamping.
+
 Before quoting, hold the solver to what it published. The bound is on the side the solver **pays
 out** — the side you receive — so one card can serve a size in one direction and refuse it in the
 other:
