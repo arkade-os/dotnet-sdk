@@ -4,6 +4,7 @@ using NArk.Core;
 using NArk.Core.Extensions;
 using NArk.Core.Services;
 using NArk.Safety.AsyncKeyedLock;
+using NArk.Tests.Common;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
@@ -11,7 +12,7 @@ using NArk.Transport.GrpcClient;
 
 namespace NArk.Tests.End2End;
 
-public class ArkCashTests
+public class ArkadeCashTests
 {
     [Test]
     public async Task RoundripsCorrectly()
@@ -29,7 +30,7 @@ public class ArkCashTests
         await vtxoSync.StartAsync(CancellationToken.None);
         
         var serverInfo = await clientTransport.GetServerInfoAsync();
-        var cash = await CreateFundedArkCash(serverInfo, 100000);
+        var cash = await CreateFundedArkadeCash(serverInfo, 100000);
 
         var receiverWalletId = await walletProvider.CreateTestWallet();
         await contractService.ImportContract(receiverWalletId, cash.ToContract(serverInfo.Network));
@@ -43,17 +44,17 @@ public class ArkCashTests
         var receiverAmount = receiverUnspent.Select(v => v.Amount).Aggregate(0UL, (acc, x) => acc + x);
         
         Assert.That(receiverUnspent.Count, Is.EqualTo(1),
-            "Receiver should have at least one unspent ArkCash VTXO");
+            "Receiver should have at least one unspent ArkadeCash VTXO");
         Assert.That(receiverAmount, Is.EqualTo(100000UL),
             "Receiver unspent amount should be greater than zero");
     }
 
-    private static async Task<ArkCash> CreateFundedArkCash(ArkServerInfo serverInfo, long amount)
+    private static async Task<ArkadeCash> CreateFundedArkadeCash(ArkServerInfo serverInfo, long amount)
     {
-        var cash = ArkCash.Generate(
+        var cash = ArkadeCash.Generate(
             serverInfo.SignerKey.ToXOnlyPubKey(),
             serverInfo.UnilateralExit,
-            "tarkcash");
+            "tarkadecash");
 
         var cashAddress = cash.GetAddress(serverInfo.Network);
         await DockerHelper.SendArkdNoteTo(cashAddress.ToString(false), amount);

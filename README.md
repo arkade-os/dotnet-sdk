@@ -210,6 +210,57 @@ var txId = await spendingService.Spend(
     outputs: [new ArkTxOut(recipientAddress, Money.Satoshis(5_000))]);
 ```
 
+## ArkadeCash
+
+`ArkadeCash` is a bearer instrument: a fresh private key plus the contract parameters
+needed to rebuild the Arkade payment contract it funds, packed into one bech32m string
+(`arkadecash1...` on mainnet, `tarkadecash1...` on testnet/regtest). Whoever holds the
+string controls the funds, so value can be handed over without the recipient sharing an
+Arkade address first. The encoding matches the ArkadeCash format of the TypeScript SDK,
+so a note created by either SDK can be claimed by the other.
+
+The payload is 69 bytes: version (1) + private key (32) + Arkade server public key (32)
++ BIP68 CSV sequence (4, big-endian).
+
+```csharp
+using NArk.Abstractions;
+using NArk.Core.Extensions;
+
+var serverInfo = await transport.GetServerInfoAsync();
+
+// Create a note with a fresh random key
+var cash = ArkadeCash.Generate(
+    serverInfo.SignerKey.ToXOnlyPubKey(),
+    serverInfo.UnilateralExit,
+    "tarkadecash");
+
+// Fund it: send to the address of the contract the note controls
+var address = cash.GetAddress(serverInfo.Network);
+await spendingService.Spend(
+    walletId,
+    [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(10_000), address)]);
+
+// Hand this string to the recipient — it carries the private key, treat it as a secret
+string note = cash.ToString();
+```
+
+Claiming: parse the note, import the contract it describes into the claiming wallet, and
+spend the VTXOs found at its address.
+
+```csharp
+if (!ArkadeCash.TryParse(note, out var claimed) || claimed is null)
+    throw new FormatException("Not a valid ArkadeCash note");
+
+using (claimed)
+{
+    await contractService.ImportContract(walletId, claimed.ToContract(serverInfo.Network));
+    // sync VTXOs for claimed.GetAddress(serverInfo.Network).ScriptPubKey, then spend them
+}
+```
+
+`ArkadeCash` owns its private key and implements `IDisposable` — dispose it once the note
+has been claimed or persisted.
+
 ## Wallet Recovery
 
 Rebuild a wallet's local state — contracts, the HD derivation index, funds (VTXOs)

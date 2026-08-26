@@ -4,7 +4,7 @@ using NBitcoin.Secp256k1;
 using NArk.Core.Extensions;
 namespace NArk.Tests;
 
-public class ArkCashTests
+public class ArkadeCashTests
 {
     private static readonly ECPrivKey TestPrivKey = 
             ECPrivKey.Create(
@@ -20,17 +20,17 @@ public class ArkCashTests
     private static readonly ECXOnlyPubKey ServerPubkey = ServerPrivkey.CreateXOnlyPubKey();
     
     [Test]
-    [TestCase("arkcash")]
-    [TestCase("tarkcash")]
+    [TestCase("arkadecash")]
+    [TestCase("tarkadecash")]
     [TestCase(null)]
     public void RoundtripsEncodeMainnet(string? hrp)
     {
         var locktime = new Sequence(144);
-        var cash = hrp is not null ? new ArkCash(TestPrivKey, ServerPubkey, locktime, hrp) : new ArkCash(TestPrivKey, ServerPubkey, locktime);
+        var cash = hrp is not null ? new ArkadeCash(TestPrivKey, ServerPubkey, locktime, hrp) : new ArkadeCash(TestPrivKey, ServerPubkey, locktime);
         var encoded = cash.ToString();
         
-        Assert.That(encoded.StartsWith(hrp ?? "arkcash"), Is.True);
-        Assert.That(ArkCash.TryParse(encoded, out var parsed));
+        Assert.That(encoded.StartsWith(hrp ?? "arkadecash"), Is.True);
+        Assert.That(ArkadeCash.TryParse(encoded, out var parsed));
         Assert.That(parsed, Is.Not.Null);
         Assert.That(parsed.LockTime, Is.EqualTo(locktime));
         Assert.That(parsed.Pubkey.ToBytes(), Is.EqualTo(TestPrivKey.CreateXOnlyPubKey().ToBytes()));
@@ -40,7 +40,7 @@ public class ArkCashTests
     [Test]
     public void IdentityTests()
     {
-        var cash = new ArkCash(TestPrivKey, ServerPubkey, new Sequence(144));
+        var cash = new ArkadeCash(TestPrivKey, ServerPubkey, new Sequence(144));
         Assert.That(cash.Pubkey.ToBytes(), Is.EqualTo(TestPubKey.ToBytes()));
         Assert.That(cash.PrivKey.Equals(TestPrivKey), Is.True);
     }
@@ -48,7 +48,7 @@ public class ArkCashTests
     [Test]
     public void CreatesValidVtxoScript()
     {
-        var cash = new ArkCash(TestPrivKey, ServerPubkey, new Sequence(144));
+        var cash = new ArkadeCash(TestPrivKey, ServerPubkey, new Sequence(144));
 
         var contract = cash.ToContract(Network.Main);
         Script pkScript = contract.GetScriptPubKey();
@@ -62,7 +62,7 @@ public class ArkCashTests
     [Test]
     public void CreatesValidArkAddress()
     {
-        var cash = new ArkCash(TestPrivKey, ServerPubkey, new Sequence(144));
+        var cash = new ArkadeCash(TestPrivKey, ServerPubkey, new Sequence(144));
         var address = cash.GetAddress(Network.Main);
         
         // encode as mainnet
@@ -74,10 +74,10 @@ public class ArkCashTests
     }
 
     [Test]
-    public void GeneratesRandomArkCash()
+    public void GeneratesRandomArkadeCash()
     {
-        var cash1 = ArkCash.Generate(ServerPubkey, new Sequence(144));
-        var cash2 = ArkCash.Generate(ServerPubkey, new Sequence(144));
+        var cash1 = ArkadeCash.Generate(ServerPubkey, new Sequence(144));
+        var cash2 = ArkadeCash.Generate(ServerPubkey, new Sequence(144));
         
         Assert.That(cash1, Is.Not.Null);
         Assert.That(cash1.Pubkey, Is.Not.Null);
@@ -99,13 +99,13 @@ public class ArkCashTests
     public void ShouldRejectInvalidData()
     {
         // invalid privkey 
-        Assert.Throws<FormatException>(() => ArkCash.Parse("invalidarkcash"));
-        Assert.That(ArkCash.TryParse("invalidarkcash", out var probablyNull), Is.False);
+        Assert.Throws<FormatException>(() => ArkadeCash.Parse("invalidarkadecash"));
+        Assert.That(ArkadeCash.TryParse("invalidarkadecash", out var probablyNull), Is.False);
         Assert.That(probablyNull, Is.Null);
         
         // wrong data length
-        Assert.Throws<FormatException>(() => ArkCash.Parse("arkcash1qqqqqqqqq0saqvp"));
-        Assert.That(ArkCash.TryParse("arkcash1qqqqqqqqq0saqvp", out var probablyNullToo), Is.False);
+        Assert.Throws<FormatException>(() => ArkadeCash.Parse("arkadecash1qqqqqqqq8zfq92"));
+        Assert.That(ArkadeCash.TryParse("arkadecash1qqqqqqqq8zfq92", out var probablyNullToo), Is.False);
         Assert.That(probablyNullToo, Is.Null);
     }
 

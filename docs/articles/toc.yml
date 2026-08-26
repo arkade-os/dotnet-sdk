@@ -8,6 +8,8 @@
   href: spending.md
 - name: Assets
   href: assets.md
+- name: ArkadeCash
+  href: arkade-cash.md
 - name: Swaps
   href: swaps.md
 - name: ArkadeScript & Emulator
