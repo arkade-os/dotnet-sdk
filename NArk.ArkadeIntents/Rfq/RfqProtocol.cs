@@ -47,16 +47,31 @@ public static class RfqProtocol
 
     /// <summary>
     /// Validate a reply and narrow it to the quote we asked for. A refusal throws; so does a quote
-    /// for a different negotiation — matching the correlation id is what stops a stale or
-    /// misrouted reply being funded.
+    /// for a different negotiation, or for a different market.
     /// </summary>
     /// <typeparam name="TQuoteProfile">The corridor's quote-profile shape.</typeparam>
     /// <param name="payload">The reply payload.</param>
     /// <param name="rfqId">The correlation id of the request.</param>
+    /// <param name="requestedPair">
+    /// The pair that was asked for, or <c>null</c> to accept whatever the quote names.
+    /// </param>
     /// <returns>The quote.</returns>
     /// <exception cref="RfqRefusedException">The reply was a refusal.</exception>
     /// <exception cref="InvalidOperationException">The reply was not a quote for this negotiation.</exception>
-    public static RfqQuote<TQuoteProfile> ExpectQuote<TQuoteProfile>(JsonNode payload, string rfqId)
+    /// <remarks>
+    /// <para>
+    /// Matching the correlation id is what stops a stale or misrouted reply being funded: on a
+    /// shared relay every one of the solver's events arrives on the same subscription.
+    /// </para>
+    /// <para>
+    /// The pair is compared byte for byte, the way the solver compares it, because a solver that
+    /// normalises case or quotes a market other than the one asked for is otherwise undetectable
+    /// from here. A quote's pair is a constant the solver restates rather than the request's echoed
+    /// back, so this binds every solver to the exact spellings the profiles build.
+    /// </para>
+    /// </remarks>
+    public static RfqQuote<TQuoteProfile> ExpectQuote<TQuoteProfile>(
+        JsonNode payload, string rfqId, string? requestedPair = null)
     {
         if (TypeOf(payload) == "rfq_refusal")
         {
@@ -74,6 +89,11 @@ public static class RfqProtocol
         {
             throw new InvalidOperationException(
                 $"quote answers negotiation '{quote.RfqId}', not '{rfqId}'");
+        }
+        if (requestedPair is not null && quote.Pair != requestedPair)
+        {
+            throw new InvalidOperationException(
+                $"quote is for market '{quote.Pair ?? "(none)"}', not the requested '{requestedPair}'");
         }
         return quote;
     }
