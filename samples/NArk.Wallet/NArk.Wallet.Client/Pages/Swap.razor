@@ -286,13 +286,14 @@
     //   • edit the want      → quote how many sats you must pay  (ComputeRequiredDeposit, inverse)
     // _price is the atomic quote-per-base price from the feed (FetchPriceAsync ≙ deriveAtomicPrice),
     // so no extra decimal scaling is needed. Both concede feeBps + the default safety cushion, which
-    // keeps the resulting offer inside the solver's slippage band. Both stay editable.
+    // keeps the resulting offer inside the solver's slippage band. Both stay editable. The card's
+    // flat fee rides along: ignoring it quotes a want the solver's own pricing will not fill.
     private void RecomputeSuggested()
     {
         _suggestedWant = (_selected is null || _price is null || _depositSats <= 0)
             ? 0
             : NArk.ArkadeIntents.Services.SolverDiscoveryService.ComputeWantAmount(
-                _depositSats, _price.Value, _selected.FeeBps);
+                _depositSats, _price.Value, _selected.FeeBps, feeFlat: _selected.FeeFlatAmount);
     }
 
     private void RecomputeRequiredDeposit()
@@ -300,7 +301,7 @@
         _suggestedDeposit = (_selected is null || _price is null || _wantAmount <= 0)
             ? 0
             : NArk.ArkadeIntents.Services.SolverDiscoveryService.ComputeRequiredDeposit(
-                _wantAmount, _price.Value, _selected.FeeBps);
+                _wantAmount, _price.Value, _selected.FeeBps, feeFlat: _selected.FeeFlatAmount);
     }
 
     private void OnDepositEdited() => RecomputeSuggested();   // "you pay" changed → requote "you receive"

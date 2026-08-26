@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -245,38 +246,141 @@ public sealed class SolverDiscoveryService
     public static decimal NormalizePrice(decimal raw, int priceDecimals) => raw / Pow10(priceDecimals);
 
     /// <summary>
-    /// The maker pricing formula: <c>wantAmount = floor(D · P · (1 − (fee_bps + safety_bps)/10000))</c>,
-    /// where <paramref name="depositBaseUnits"/> is <c>D</c> and <paramref name="price"/> is <c>P</c>.
+    /// The amount a maker should ask for, having conceded the solver's terms.
     /// </summary>
+    /// <param name="depositAtomic">What the maker funds, in atomic units of the side they give.</param>
+    /// <param name="price">The market price, in quote atomic units per base atomic unit.</param>
+    /// <param name="feeBps">The market's spread.</param>
+    /// <param name="safetyBps">The maker's own cushion on top; defaults to <see cref="DefaultSafetyBps"/>.</param>
+    /// <param name="give">Which side the maker deposits. Giving base wants quote back, and vice versa.</param>
+    /// <param name="feeFlat">The market's flat fee, in <em>quote</em> atomic units. Zero for none.</param>
+    /// <returns>The want amount, in atomic units of the side the maker receives; zero if the fees swallow it.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>want = floor(D · P · (1 − (fee_bps + safety_bps)/10⁴)) − flat</c>. The spread applies to
+    /// the whole deposit and the flat fee is charged on top of it, rather than the spread applying
+    /// to what is left after the flat fee — that is the model the RFQ conformance rules use, so one
+    /// card prices the same through an offer and through a quote.
+    /// </para>
+    /// <para>
+    /// Rounding never favours the maker: the spread floors, and the flat fee's conversion (below)
+    /// ceils. A maker who asks for a satoshi more than the terms allow is a maker whose offer no
+    /// solver fills.
+    /// </para>
+    /// </remarks>
     public static long ComputeWantAmount(
-        long depositBaseUnits,
+        long depositAtomic,
         decimal price,
         int feeBps,
-        int safetyBps = DefaultSafetyBps)
+        int safetyBps = DefaultSafetyBps,
+        MarketSide give = MarketSide.Base,
+        long feeFlat = 0)
     {
-        var spread = 1m - (feeBps + safetyBps) / 10000m;
-        return (long)Math.Floor(depositBaseUnits * price * spread);
+        if (depositAtomic <= 0 || price <= 0m) return 0;
+        var net = 10000 - feeBps - safetyBps;
+        if (net <= 0) return 0;
+
+        var (num, den) = ExactRational(price);
+        // Giving base multiplies by the price; giving quote divides by it.
+        var gross = give == MarketSide.Base
+            ? new BigInteger(depositAtomic) * num * net / (den * 10000)
+            : new BigInteger(depositAtomic) * den * net / (num * 10000);
+
+        var flat = FlatInReceivedUnits(feeFlat, give, num, den);
+        return gross > flat ? ToAmount(gross - flat, "want amount") : 0;
     }
 
     /// <summary>
-    /// Inverse of <see cref="ComputeWantAmount"/> — the deposit (base atomic units) a maker must
-    /// fund to receive at least <paramref name="wantAmount"/> of the quote asset, at
-    /// <paramref name="price"/> (atomic quote-per-base) after conceding <c>feeBps + safetyBps</c>.
-    /// This is the <c>wantAmount</c> arm of the discovery-client's <c>quoteOffer</c> (the maker
-    /// names the amount they want and gets quoted the required deposit). Rounds up so the resulting
-    /// deposit never quotes short. Returns <c>0</c> when the spread is non-positive.
+    /// The deposit needed to receive at least <paramref name="wantAmount"/> — the exact inverse of
+    /// <see cref="ComputeWantAmount"/>.
     /// </summary>
+    /// <param name="wantAmount">The amount to receive, in atomic units of the received side.</param>
+    /// <param name="price">The market price, in quote atomic units per base atomic unit.</param>
+    /// <param name="feeBps">The market's spread.</param>
+    /// <param name="safetyBps">The maker's own cushion on top.</param>
+    /// <param name="give">Which side the maker deposits.</param>
+    /// <param name="feeFlat">The market's flat fee, in quote atomic units.</param>
+    /// <returns>The deposit, in atomic units of the side given; zero when the terms cannot be met.</returns>
+    /// <remarks>
+    /// Rounds up, so the deposit never quotes short. Wanting nothing costs nothing, and that is
+    /// checked before the flat fee goes back on — otherwise asking for zero would quote the flat
+    /// fee's worth of deposit, and this would stop being an inverse.
+    /// </remarks>
     public static long ComputeRequiredDeposit(
         long wantAmount,
         decimal price,
         int feeBps,
-        int safetyBps = DefaultSafetyBps)
+        int safetyBps = DefaultSafetyBps,
+        MarketSide give = MarketSide.Base,
+        long feeFlat = 0)
     {
         if (wantAmount <= 0 || price <= 0m) return 0;
         var net = 10000 - feeBps - safetyBps;
         if (net <= 0) return 0;
-        var spread = net / 10000m;
-        return (long)Math.Ceiling(wantAmount / (price * spread));
+
+        var (num, den) = ExactRational(price);
+        // The flat fee is subtracted after the spread going forward, so it goes back on before the
+        // division here — through the same conversion, so the two cannot drift by an atomic unit.
+        var gross = wantAmount + FlatInReceivedUnits(feeFlat, give, num, den);
+
+        var deposit = give == MarketSide.Base
+            ? CeilDiv(gross * den * 10000, num * net)
+            : CeilDiv(gross * num * 10000, den * net);
+        return ToAmount(deposit, "required deposit");
+    }
+
+    /// <summary>
+    /// A market's quote-denominated flat fee, in the units the maker receives.
+    /// </summary>
+    /// <remarks>
+    /// Giving base means receiving quote, which is already the fee's denomination, so that direction
+    /// is the identity. Giving quote means receiving base, and that conversion rounds UP — unlike
+    /// every other division here. This one is a charge rather than a receipt, and flooring it would
+    /// concede the sub-unit to the maker.
+    /// </remarks>
+    private static BigInteger FlatInReceivedUnits(long feeFlat, MarketSide give, BigInteger num, BigInteger den) =>
+        feeFlat <= 0
+            ? BigInteger.Zero
+            : give == MarketSide.Base
+                ? feeFlat
+                : CeilDiv(new BigInteger(feeFlat) * den, num);
+
+    /// <summary>
+    /// Narrow an exact result to an amount, or say that it has none.
+    /// </summary>
+    /// <remarks>
+    /// A price extreme enough puts the answer past what an amount can hold — wanting a large number
+    /// of a cheap asset, say. Returning zero would read as "free" and clamping would quote a deposit
+    /// that under-funds by orders of magnitude, so the only safe answer is to refuse and name the
+    /// number that did not fit.
+    /// </remarks>
+    private static long ToAmount(BigInteger value, string what) =>
+        value >= long.MinValue && value <= long.MaxValue
+            ? (long)value
+            : throw new OverflowException(
+                $"the {what} for these terms is {value}, which no amount can hold");
+
+    private static BigInteger CeilDiv(BigInteger numerator, BigInteger denominator) =>
+        (numerator + denominator - 1) / denominator;
+
+    /// <summary>
+    /// A decimal as the exact fraction it already is: every <see cref="decimal"/> is a scaled
+    /// integer, so this loses nothing.
+    /// </summary>
+    /// <remarks>
+    /// Pricing runs on integers from here on. Carrying the division through in decimal instead
+    /// would round at the 28th digit, and the forward and inverse computations would then disagree
+    /// by an atomic unit on values that divide badly — which is exactly the drift that makes a
+    /// planned deposit under-fund the amount it was planned for.
+    /// </remarks>
+    private static (BigInteger Num, BigInteger Den) ExactRational(decimal value)
+    {
+        var bits = decimal.GetBits(value);
+        var scale = (bits[3] >> 16) & 0xFF;
+        var mantissa = new BigInteger((uint)bits[0])
+                       | (new BigInteger((uint)bits[1]) << 32)
+                       | (new BigInteger((uint)bits[2]) << 64);
+        return (mantissa, BigInteger.Pow(10, scale));
     }
 
     /// <summary>Resolve an RFC 6901 JSON Pointer (e.g. <c>"/price"</c>, <c>"/data/0/px"</c>) against a JSON tree.</summary>
