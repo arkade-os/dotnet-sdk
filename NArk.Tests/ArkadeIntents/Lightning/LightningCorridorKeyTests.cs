@@ -1,3 +1,4 @@
+using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Lightning;
 using NBitcoin.Secp256k1;
 
@@ -63,4 +64,37 @@ public class LightningCorridorKeyTests
     [TestCase(64)]
     public void AnyOtherLength_IsRefused(int length) =>
         Assert.Throws<ArgumentException>(() => LightningCorridor.NormalizeToXOnly(new byte[length]));
+
+    [Test]
+    public void NoOverride_YieldsTheNetworksPin()
+    {
+        // Nothing asks a host which key it signs with: the co-signer is a property of the network,
+        // and this is where that is settled.
+        Assert.That(EmulatorPubKeys.Resolve("regtest", null), Is.EqualTo(EmulatorPubKeys.Regtest));
+    }
+
+    [Test]
+    public void AnOverride_ReplacesThePin()
+    {
+        // Every covenant built from it is completable by whoever holds it and nobody else, which is
+        // the point: a rotated key is a config change rather than a wait for a release.
+        Assert.That(EmulatorPubKeys.Resolve("regtest", EmulatorPubKeys.Mutinynet),
+            Is.EqualTo(EmulatorPubKeys.Mutinynet));
+    }
+
+    [Test]
+    public void AnOverrideOnAnUnpinnedNetwork_IsWhatMakesItUsable()
+    {
+        Assert.That(EmulatorPubKeys.Resolve("signet", EmulatorPubKeys.Regtest),
+            Is.EqualTo(EmulatorPubKeys.Regtest));
+    }
+
+    [TestCase("nothex")]
+    [TestCase("04999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9")]
+    [TestCase("999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9")]
+    public void AMalformedOverride_IsRefused(string bad)
+    {
+        // Passed through, a typo here surfaces as an unspendable contract long after the fact.
+        Assert.Throws<ArgumentException>(() => EmulatorPubKeys.Resolve("regtest", bad));
+    }
 }

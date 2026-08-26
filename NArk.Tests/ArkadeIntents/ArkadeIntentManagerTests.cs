@@ -32,7 +32,6 @@ public class AssetIntentsManagerTests
         _spending = Substitute.For<ISpendingService>();
         _manager = new AssetIntentsManager(
             Substitute.For<IClientTransport>(),
-            Substitute.For<IEmulatorProvider>(),
             Substitute.For<IContractService>(),
             Substitute.For<IWalletProvider>(),
             _spending,

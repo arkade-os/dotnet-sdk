@@ -8,6 +8,7 @@ using NArk.Core.Assets;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Arkade.Emulator;
+using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NArk.ArkadeIntents.Lightning;
@@ -36,29 +37,31 @@ public sealed record CreateSwapRequest(
 public sealed class AssetIntentsManager
 {
     private readonly IClientTransport _transport;
-    private readonly IEmulatorProvider _emulator;
     private readonly IContractService _contractService;
     private readonly IWalletProvider _walletProvider;
     private readonly ISpendingService _spendingService;
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IVtxoStorage _vtxoStorage;
 
+    /// <summary>A co-signer supplied in place of the network's pin, or <c>null</c>.</summary>
+    private readonly string? _emulatorPubkeyOverride;
+
     public AssetIntentsManager(
         IClientTransport transport,
-        IEmulatorProvider emulator,
         IContractService contractService,
         IWalletProvider walletProvider,
         ISpendingService spendingService,
         IArkadeIntentStorage intentStorage,
-        IVtxoStorage vtxoStorage)
+        IVtxoStorage vtxoStorage,
+        IOptions<ArkadeIntentsOptions>? options = null)
     {
         _transport = transport;
-        _emulator = emulator;
         _contractService = contractService;
         _walletProvider = walletProvider;
         _spendingService = spendingService;
         _intentStorage = intentStorage;
         _vtxoStorage = vtxoStorage;
+        _emulatorPubkeyOverride = (options?.Value ?? new ArkadeIntentsOptions()).EmulatorPubkeyOverride;
     }
 
     /// <summary>
@@ -69,23 +72,12 @@ public sealed class AssetIntentsManager
     public async Task<ArkadeSwapIntent> CreateSwap(CreateSwapRequest request, CancellationToken cancellationToken = default)
     {
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
-        var emulatorInfo = await _emulator.GetInfoAsync(cancellationToken);
         // Parsed, not sliced. This corridor quotes no counterparty address to check the derivation
         // against, so a key mangled here reaches the covenant unchallenged and the deposit lands
         // under a co-signer that does not exist.
-        // The network's pinned co-signer, not whatever the emulator says about itself — the offer
-        // embeds this key, and an offer embedding the wrong one is filled by nobody.
-        if (!EmulatorPubKeys.AgreesWithPin(serverInfo.NetworkName, emulatorInfo.SignerPubkey))
-        {
-            throw new InvalidOperationException(
-                $"The emulator at this deployment reports {emulatorInfo.SignerPubkey}, but "
-                + $"'{serverInfo.NetworkName}' is pinned to a different co-signer. An offer embedding "
-                + "the reported key is one no solver on this network can fill, so this refuses rather "
-                + "than funding a deposit nobody will take.");
-        }
-
         var emulatorPubkey = LightningCorridor.NormalizeToXOnly(
-            Convert.FromHexString(EmulatorPubKeys.DefaultFor(serverInfo.NetworkName))).ToBytes();
+            Convert.FromHexString(
+                EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))).ToBytes();
 
         var addressProvider = await _walletProvider.GetAddressProviderAsync(request.WalletId, cancellationToken)
             ?? throw new InvalidOperationException($"No address provider for wallet '{request.WalletId}'.");

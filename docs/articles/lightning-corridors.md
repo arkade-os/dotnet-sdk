@@ -44,11 +44,16 @@ Console.WriteLine($"locked {funded.FundedSats} sats at {funded.LockupAddress} in
 ```
 
 Everything the script commits to is your own data — the payment hash from your own invoice, the
-server key from your own connection, the emulator key from your own fetch, the refund destination
-from your own wallet. From the quote it takes only the binding fields (`solver_pubkey`,
+server key from your own connection, the co-signer key from this SDK's per-network pin, the refund
+destination from your own wallet. From the quote it takes only the binding fields (`solver_pubkey`,
 `refund_locktime`, `valid_until`, the amounts) plus `receiver_pk_script`, which is an input rather
 than a promise: it names the solver's own payout, and a wrong value costs the solver a spending path
 and you nothing.
+
+The co-signer key is pinned per network rather than fetched, so neither corridor calls the emulator
+to derive an address. A rotation is therefore invisible until this SDK ships the new constant —
+`ArkadeIntentsOptions.EmulatorPubkeyOverride` is the escape hatch for that window, and for a
+self-hosted emulator or an unpinned network. See the README's *The covenant co-signer*.
 
 If the swap never fills, refund it once the locktime passes:
 

@@ -1142,6 +1142,40 @@ Claiming publishes the preimage, which is also how the solver gets paid — an u
 where it reclaims its lockup and the payer's money was never earned. The preimage is persisted
 before the invoice goes out, since nothing can re-derive it afterwards.
 
+### The covenant co-signer
+
+Every swap contract on both corridors commits to a co-signer key, and every party to the swap has to
+commit to the same one. That key is a property of the **network**, so this SDK pins it per network
+rather than asking a service which key it signs with — an endpoint that answered would be choosing
+what your funds are locked to. `AddArkadeIntentsServices()` needs no emulator registration for this,
+and neither corridor makes a call to derive an address.
+
+The consequence worth knowing: a network that rotates its key is invisible here until this SDK ships
+the new constant. Covenants keep building against the retired key and it surfaces only when a claim
+is refused. That is what the override is for:
+
+```csharp
+// Normally omitted — the pin is right.
+services.AddArkadeIntentsServices(new ArkadeIntentsOptions
+{
+    // 33-byte compressed hex. A malformed value throws rather than being passed through.
+    EmulatorPubkeyOverride = "03f823b9b2febc81f4af967e77aed2f541cbd3397c6d8f5a72e32eb7b471af889a",
+});
+```
+
+Setting it means co-signing with a different service: every covenant built from it is completable by
+whoever holds that key and by nobody else. Reach for it when a network rotates before a release
+lands, when you run your own emulator, or on a network with no pin at all (`signet`, `testnet`).
+
+To diagnose a refused claim, compare the pin against what the deployment reports:
+
+```csharp
+var pinned = EmulatorPubKeys.DefaultFor(serverInfo.NetworkName);
+var agrees = EmulatorPubKeys.AgreesWithPin(serverInfo.NetworkName, (await emulator.GetInfoAsync()).SignerPubkey);
+```
+
+That comparison is a diagnostic only — nothing in the corridors reads the reported key.
+
 ### In the sample wallet
 
 `samples/NArk.Wallet` runs both corridors in the browser — Send pays a BOLT11 or an LNURL address,

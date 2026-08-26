@@ -359,7 +359,7 @@ public class ArkadeSwapTests
 
         var intentStorage = new InMemoryIntentStorage();
         var manager = new AssetIntentsManager(
-            w.clientTransport, emulator, w.contractService, w.walletProvider, spendingService, intentStorage,
+            w.clientTransport, w.contractService, w.walletProvider, spendingService, intentStorage,
             w.vtxoStorage);
 
         return new Ctx(w.walletIdentifier, w.clientTransport, w.vtxoStorage, intentStorage, manager);

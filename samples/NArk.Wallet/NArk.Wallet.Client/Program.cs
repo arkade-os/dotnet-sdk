@@ -90,7 +90,6 @@ builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.IAesGcmCipher>(sp =>
     new WebCryptoAesGcmCipher(sp.GetRequiredService<IJSRuntime>()));
 builder.Services.AddSingleton(sp => new NArk.ArkadeIntents.Lightning.LightningIntentsClient(
     sp.GetRequiredService<NArk.Core.Transport.IClientTransport>(),
-    sp.GetRequiredService<NArk.Arkade.Emulator.IEmulatorProvider>(),
     sp.GetRequiredService<NArk.Core.Services.IContractService>(),
     sp.GetRequiredService<NArk.Core.Services.ISpendingService>(),
     sp.GetRequiredService<NArk.ArkadeIntents.IArkadeIntentStorage>(),

@@ -30,7 +30,6 @@ public class CorridorCardTests
       "version": 0,
       "name": "testsolver",
       "discovery_pubkey": "df5e3a677c20ff3af3c1701e5ed75aa7cc1e3ff8069ea4a8df5012494d7af6eb",
-      "emulator_pubkey": "999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9",
       "transports": { "nostr": { "relays": ["wss://relay.example.com"] } },
       "markets": [
         {
@@ -69,17 +68,13 @@ public class CorridorCardTests
     }
 
     [Test]
-    public void ACorridorCard_CarriesTheEmulatorKeyAndItsLimits()
+    public void ACorridorCard_CarriesItsLimits()
     {
         var card = JsonSerializer.Deserialize<SolverCard>(CorridorCard, JsonOptions);
         var market = card!.Markets[0];
 
         Assert.Multiple(() =>
         {
-            // Published on the card rather than repeated per quote: it is a fact about the
-            // deployment, and here it is tied to a discoverable identity.
-            Assert.That(card.EmulatorPubkey, Is.EqualTo(
-                "999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9"));
             Assert.That(market.FeeBps, Is.EqualTo(30));
             // A corridor states its bounds on the quote side; the base side is left at zero.
             Assert.That(market.MinQuoteAmount, Is.EqualTo(1000));

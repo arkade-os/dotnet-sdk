@@ -17,16 +17,6 @@ public sealed class SolverCard
     public string? DiscoveryPubkey { get; init; }
 
     /// <summary>
-    /// The emulator key this solver's covenants are co-signed by (x-only, 64-hex).
-    /// </summary>
-    /// <remarks>
-    /// A fact about the deployment rather than about any one swap, so it is published once here
-    /// instead of repeated on every quote — and here it carries provenance, tied to a signed and
-    /// reviewable identity, which a field on the wire would not.
-    /// </remarks>
-    public string? EmulatorPubkey { get; init; }
-
-    /// <summary>
     /// Where to reach this solver, keyed by protocol.
     /// </summary>
     /// <remarks>
