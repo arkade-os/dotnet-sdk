@@ -20,8 +20,8 @@ public class SolverDiscoveryServiceTests
           "pair": "BTC/USDT",
           "solver": "arklabs-solver",
           "discovery_pubkey": "abc123",
-          "base_asset": { "id": "btc", "name": "Bitcoin", "ticker": "BTC", "precision": 8 },
-          "quote_asset": { "id": "usdt-asset-id", "name": "Tether USD", "ticker": "USDT", "precision": 6 },
+          "base_asset": { "id": "btc", "name": "Bitcoin", "ticker": "BTC", "decimals": 8 },
+          "quote_asset": { "id": "usdt-asset-id", "name": "Tether USD", "ticker": "USDT", "decimals": 6 },
           "price_feed": "https://feed.example.com/price?pair=BTCUSDT",
           "price_feed_schema": { "type": "json", "price_path": "/price" },
           "price_decimals": 8,
@@ -58,10 +58,9 @@ public class SolverDiscoveryServiceTests
         Assert.That(m.DiscoveryPubkey, Is.EqualTo("abc123"));
         Assert.That(m.BaseAsset.Id, Is.EqualTo("btc"));
         Assert.That(m.QuoteAsset.Id, Is.EqualTo("usdt-asset-id"));
-        Assert.That(m.QuoteAsset.Precision, Is.EqualTo(6));
+        Assert.That(m.QuoteAsset.Decimals, Is.EqualTo(6));
         Assert.That(m.PriceFeedSchema.PricePath, Is.EqualTo("/price"));
         Assert.That(m.PriceDecimals, Is.EqualTo(8));
-        Assert.That(m.Invert, Is.False);
         Assert.That(m.FeeBps, Is.EqualTo(30));
         Assert.That(m.MinBaseAmount, Is.EqualTo(1000));
         Assert.That(m.MaxBaseAmount, Is.EqualTo(5_000_000));
@@ -103,14 +102,7 @@ public class SolverDiscoveryServiceTests
     [Test]
     public void NormalizePrice_ScalesByDecimals()
     {
-        Assert.That(SolverDiscoveryService.NormalizePrice(100_020_000m, 8, invert: false), Is.EqualTo(1.0002m));
-    }
-
-    [Test]
-    public void NormalizePrice_Inverts()
-    {
-        // 250000000 / 1e8 = 2.5 → inverted = 0.4
-        Assert.That(SolverDiscoveryService.NormalizePrice(250_000_000m, 8, invert: true), Is.EqualTo(0.4m));
+        Assert.That(SolverDiscoveryService.NormalizePrice(100_020_000m, 8), Is.EqualTo(1.0002m));
     }
 
     [Test]
@@ -177,11 +169,52 @@ public class SolverDiscoveryServiceTests
             Market("btc", "usdt", feeBps: 30, min: 1000, max: 1_000_000),
             Market("btc", "eur", feeBps: 5, min: 1000, max: 1_000_000),      // wrong quote id
             Market("btc", "usdt", feeBps: 1, min: 1000, max: 5000),          // amount out of range
+            // Same ids, different rail: a corridor is not the spot market it shares an id pair with.
+            Market("btc", "usdt", feeBps: 1, min: 1000, max: 1_000_000, quoteCorridor: "lightning"),
         };
 
         var ranked = SolverDiscoveryService.FilterAndRank(markets, "btc", "usdt", baseAmount: 50_000);
 
         Assert.That(ranked.Select(m => m.FeeBps), Is.EqualTo(new[] { 10, 30, 50 }));
+    }
+
+    [Test]
+    public void FilterAndRank_RanksByTotalFeeAtTheSize_NotBySpread()
+    {
+        // The flat fee is what reverses them: at 50k the 10 bps market charges 50 + 400 = 450,
+        // while the 30 bps one charges 150. Ranking on the spread alone puts the dearer first.
+        var markets = new[]
+        {
+            Market("btc", "usdt", feeBps: 10, min: 1000, max: 1_000_000, feeFlat: "400"),
+            Market("btc", "usdt", feeBps: 30, min: 1000, max: 1_000_000),
+        };
+
+        var ranked = SolverDiscoveryService.FilterAndRank(markets, "btc", "usdt", baseAmount: 50_000);
+
+        Assert.That(ranked.Select(m => m.FeeBps), Is.EqualTo(new[] { 30, 10 }));
+    }
+
+    [Test]
+    public void FilterAndRank_FindsACorridorWhenOneIsAskedFor()
+    {
+        var markets = new[]
+        {
+            Market("btc", "usdt", feeBps: 30, min: 1000, max: 1_000_000),
+            Market("btc", "usdt", feeBps: 90, min: 1000, max: 1_000_000, quoteCorridor: "lightning"),
+        };
+
+        var ranked = SolverDiscoveryService.FilterAndRank(
+            markets, "btc", "usdt", baseAmount: 50_000, quoteCorridor: "lightning");
+
+        Assert.That(ranked.Select(m => m.FeeBps), Is.EqualTo(new[] { 90 }));
+    }
+
+    [Test]
+    public void FilterAndRank_SkipsASideTheSolverDoesNotPayOut()
+    {
+        var markets = new[] { Market("btc", "usdt", feeBps: 30, min: 0, max: 0) };
+
+        Assert.That(SolverDiscoveryService.FilterAndRank(markets, "btc", "usdt", baseAmount: 50_000), Is.Empty);
     }
 
     // ─── HTTP: caching + price fetch ──────────────────────────────────
@@ -239,16 +272,19 @@ public class SolverDiscoveryServiceTests
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
-    private static IndexedMarket Market(string baseId, string quoteId, int feeBps, long min, long max) => new()
+    private static IndexedMarket Market(
+        string baseId, string quoteId, int feeBps, long min, long max,
+        string? quoteCorridor = null, string? feeFlat = null) => new()
     {
         Solver = "test-solver",
         Pair = $"{baseId}/{quoteId}",
-        BaseAsset = new AssetDescriptor { Id = baseId, Precision = 8 },
-        QuoteAsset = new AssetDescriptor { Id = quoteId, Precision = 6 },
+        QuoteCorridor = quoteCorridor,
+        FeeFlat = feeFlat,
+        BaseAsset = new AssetDescriptor { Id = baseId, Decimals = 8 },
+        QuoteAsset = new AssetDescriptor { Id = quoteId, Decimals = 6 },
         PriceFeed = "https://feed.example.com/price",
         PriceFeedSchema = new PriceFeedSchema { PricePath = "/price" },
         PriceDecimals = 8,
-        Invert = false,
         FeeBps = feeBps,
         MinBaseAmount = min,
         MaxBaseAmount = max,

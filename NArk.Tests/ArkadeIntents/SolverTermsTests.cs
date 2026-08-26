@@ -27,8 +27,8 @@ public class SolverTermsTests
       "markets": [
         {
           "pair": "BTC/lightning:BTC",
-          "base_asset": { "id": "btc", "precision": 8 },
-          "quote_asset": { "id": "btc", "precision": 8 },
+          "base_asset": { "id": "btc", "decimals": 8 },
+          "quote_asset": { "id": "btc", "decimals": 8 },
           "quote_corridor": "lightning",
           "fee_bps": 30,
           "min_base_amount": "0",
@@ -77,6 +77,59 @@ public class SolverTermsTests
     public void ASizeInsideTheRange_IsAccepted(long amount)
     {
         Assert.DoesNotThrow(() => SolverTerms.AssertWithinLimits(Card(), SendPair, amount));
+    }
+
+    /// <summary>
+    /// The card the reference Lightning solver actually publishes: both directions served, and the
+    /// two sides bounded differently.
+    /// </summary>
+    private const string AsymmetricCardJson = """
+    {
+      "version": 0,
+      "name": "ln-solver",
+      "markets": [
+        {
+          "pair": "BTC/lightning:BTC",
+          "base_asset": { "id": "btc", "decimals": 8 },
+          "quote_asset": { "id": "btc", "decimals": 8 },
+          "quote_corridor": "lightning",
+          "fee_bps": 30,
+          "min_base_amount": "1000",
+          "max_base_amount": "50000",
+          "min_quote_amount": "1000",
+          "max_quote_amount": "25000"
+        }
+      ]
+    }
+    """;
+
+    [Test]
+    public void TheBoundIsOnTheSideTheSolverPaysOut()
+    {
+        // 30 000 sats: over the 25 000 the solver pays out over Lightning, inside the 50 000 it pays
+        // out on Arkade. One card, one size, two answers — and reading the same side for both would
+        // refuse a receive this solver serves.
+        var card = Card(AsymmetricCardJson);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                Assert.Throws<SolverTermsException>(
+                    () => SolverTerms.AssertWithinLimits(card, SendPair, 30_000))!.Reason,
+                Is.EqualTo(SolverTermsRefusal.AboveMaximum));
+            Assert.DoesNotThrow(() => SolverTerms.AssertWithinLimits(card, ReceivePair, 30_000));
+        });
+    }
+
+    [Test]
+    public void ADisabledSide_RefusesThatDirectionAtAnySize()
+    {
+        // CardJson zeroes the base side, so this solver never pays out on Arkade: receiving from
+        // Lightning is not a small trade away from working, it is not on offer.
+        var ex = Assert.Throws<SolverTermsException>(
+            () => SolverTerms.AssertWithinLimits(Card(), ReceivePair, 1000));
+
+        Assert.That(ex!.Reason, Is.EqualTo(SolverTermsRefusal.DirectionNotServed));
     }
 
     [Test]

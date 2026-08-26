@@ -34,8 +34,8 @@ public class CorridorCardTests
       "markets": [
         {
           "pair": "BTC/lightning:BTC",
-          "base_asset": { "id": "btc", "name": "Bitcoin", "ticker": "BTC", "precision": 8 },
-          "quote_asset": { "id": "btc", "name": "Bitcoin", "ticker": "BTC", "precision": 8 },
+          "base_asset": { "id": "btc", "name": "Bitcoin", "ticker": "BTC", "decimals": 8 },
+          "quote_asset": { "id": "btc", "name": "Bitcoin", "ticker": "BTC", "decimals": 8 },
           "quote_corridor": "lightning",
           "fee_bps": 30,
           "min_base_amount": "0",

@@ -1142,6 +1142,54 @@ Claiming publishes the preimage, which is also how the solver gets paid — an u
 where it reclaims its lockup and the payer's money was never earned. The preimage is persisted
 before the invoice goes out, since nothing can re-derive it afterwards.
 
+### Finding a solver
+
+`SolverDiscoveryService` reads the per-network index the registry publishes and hands back the
+markets. Which solver to trade with is the caller's decision — this only supplies the facts.
+
+```csharp
+var markets = await discovery.DiscoverMarketsAsync("mutinynet");
+
+// Identity is the corridor-qualified leg pair, so a Lightning corridor and an onchain one are
+// different markets even though both are btc-against-btc.
+var ranked = SolverDiscoveryService.FilterAndRank(
+    markets, baseAssetId: "btc", quoteAssetId: "btc",
+    baseAmount: 30_000, quoteCorridor: "lightning");
+
+foreach (var m in ranked)
+{
+    // Both halves of the rendezvous travel with the market.
+    Console.WriteLine($"{m.Solver} {m.PairKey()} fee={m.TotalFeeOn(30_000)} " +
+                      $"key={m.DiscoveryPubkey} relays={string.Join(",", m.Transports?.Nostr?.Relays ?? [])}");
+}
+```
+
+Ranking is by the total fee **at the size being traded**, never by `fee_bps` alone: a market with a
+lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
+
+Indexes are cached in the service for 10 minutes, keyed by registry URL, so register it as a
+singleton — `AddArkadeIntentsServices()` does. An index older than a week is still used, with a
+warning: a stale registry is worse than a fresh one and better than none.
+
+Local cards are merged alongside the published ones, which is the way to reach a solver no registry
+lists:
+
+```csharp
+var markets = await discovery.DiscoverMarketsAsync(
+    "mutinynet", localCards: [JsonSerializer.Deserialize<SolverCard>(cardJson, opts)!]);
+```
+
+Before quoting, hold the solver to what it published. The bound is on the side the solver **pays
+out** — the side you receive — so one card can serve a size in one direction and refuse it in the
+other:
+
+```csharp
+SolverTerms.AssertWithinLimits(card, "lightning:BTC->arkade:BTC", 30_000);
+// throws SolverTermsException; .Reason is BelowMinimum, AboveMaximum,
+// DirectionNotServed (the solver does not pay out that side at all), or UnservedCorridor
+SolverTerms.AssertFeeWithinAdvertised(card, quote);
+```
+
 ### The covenant co-signer
 
 Every swap contract on both corridors commits to a co-signer key, and every party to the swap has to
@@ -1193,11 +1241,10 @@ builder.Services.AddSingleton(new ArkadeLightningOptions
 ```
 
 **No solver is named.** Which ones exist is answered by the public registry at runtime, and the
-sample picks one advertising a Lightning corridor on its network. The one thing the registry cannot
-answer is where to reach it: a market entry carries the solver's key but not its relays, so
-`ArkadeLightningOptions.RelayUrl` supplies a default until the index carries transports. When the
-registry lists no Lightning market, the Receive page says so instead of offering an option that
-cannot work.
+sample picks one advertising a Lightning corridor on its network — key and relay both come from the
+market entry. `ArkadeLightningOptions.RelayUrl` is only a fallback for an entry naming no relay.
+When the registry lists no Lightning market, the Receive page says so instead of offering an option
+that cannot work.
 
 covclaimd is optional. Both corridors work without it; what it adds is a daemon that races the
 wallet's own claim, so a funded receive is still collected while the browser tab is closed — worth
