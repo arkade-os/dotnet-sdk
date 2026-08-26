@@ -1,6 +1,8 @@
 using NArk.Abstractions;
 using NBitcoin;
 using NBitcoin.Secp256k1;
+using NArk.Abstractions.Extensions;
+using NArk.Core.Contracts;
 using NArk.Core.Extensions;
 namespace NArk.Tests;
 
@@ -93,6 +95,29 @@ public class ArkadeCashTests
         
         Assert.That(cash1.ServerPubkey, Is.EqualTo(cash2.ServerPubkey));
         Assert.That(cash2.Hrp, Is.EqualTo(cash1.Hrp));
+    }
+
+    [Test]
+    public void CompressedAndXOnlyServerDescriptorsShareAnAddress()
+    {
+        // A note only carries the server's 32-byte x-only key, while the server may report its
+        // key as a 33-byte compressed one. The descriptors are not equal — which is why
+        // ImportContract needs ToContract(ArkServerInfo) — but they must derive the same address,
+        // otherwise a claimed note would look for funds at the wrong script.
+        var cash = new ArkadeCash(TestPrivKey, ServerPubkey, new Sequence(144));
+
+        var compressedServerDesc = KeyExtensions.ParseOutputDescriptor(
+            Convert.ToHexStringLower(ServerPrivkey.CreatePubKey().ToBytes()),
+            Network.Main);
+        var userDesc = KeyExtensions.ParseOutputDescriptor(
+            Convert.ToHexStringLower(cash.Pubkey.ToBytes()),
+            Network.Main);
+
+        var fromCompressed = new ArkPaymentContract(compressedServerDesc, cash.LockTime, userDesc);
+
+        Assert.That(fromCompressed.GetArkAddress().ScriptPubKey,
+            Is.EqualTo(cash.GetAddress(Network.Main).ScriptPubKey));
+        Assert.That(compressedServerDesc, Is.Not.EqualTo(cash.ToContract(Network.Main).Server));
     }
 
     [Test]

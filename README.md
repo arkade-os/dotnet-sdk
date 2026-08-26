@@ -253,10 +253,15 @@ if (!ArkadeCash.TryParse(note, out var claimed) || claimed is null)
 
 using (claimed)
 {
-    await contractService.ImportContract(walletId, claimed.ToContract(serverInfo.Network));
+    await contractService.ImportContract(walletId, claimed.ToContract(serverInfo));
     // sync VTXOs for claimed.GetAddress(serverInfo.Network).ScriptPubKey, then spend them
 }
 ```
+
+Import via the `ToContract(ArkServerInfo)` overload: a note carries only the server's
+32-byte x-only key, so rebuilding a descriptor from it (`ToContract(Network)`) yields a
+descriptor that derives the same address but does not compare equal to the one the server
+reports, and `ImportContract` rejects the mismatch.
 
 `ArkadeCash` owns its private key and implements `IDisposable` — dispose it once the note
 has been claimed or persisted.

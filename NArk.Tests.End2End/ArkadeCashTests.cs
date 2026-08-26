@@ -33,7 +33,7 @@ public class ArkadeCashTests
         var cash = await CreateFundedArkadeCash(serverInfo, 100000);
 
         var receiverWalletId = await walletProvider.CreateTestWallet();
-        await contractService.ImportContract(receiverWalletId, cash.ToContract(serverInfo.Network));
+        await contractService.ImportContract(receiverWalletId, cash.ToContract(serverInfo));
 
         var cashScript = cash.GetAddress(serverInfo.Network).ScriptPubKey.ToHex();
         await ForcePollScript(vtxoSync, cashScript, TimeSpan.FromSeconds(15));

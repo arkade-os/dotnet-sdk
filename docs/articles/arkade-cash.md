@@ -61,7 +61,7 @@ if (!ArkadeCash.TryParse(note, out var claimed) || claimed is null)
 
 using (claimed)
 {
-    var contract = claimed.ToContract(serverInfo.Network);
+    var contract = claimed.ToContract(serverInfo);
     await contractService.ImportContract(walletId, contract);
 
     var script = claimed.GetAddress(serverInfo.Network).ScriptPubKey.ToHex();
@@ -72,6 +72,14 @@ using (claimed)
 
 `Parse` throws `FormatException` on a bad prefix, checksum, payload length, or version;
 `TryParse` returns `false` instead.
+
+Use the `ToContract(ArkServerInfo)` overload when importing. A note carries the server's
+32-byte x-only key, so rebuilding a descriptor from it yields `tr(<x-only>)`, while the
+server may report a 33-byte compressed key. Both derive the same address, but the
+descriptors are not equal and `ImportContract` rejects a server key it does not recognise.
+The overload reuses the server's own descriptor and throws if the note was issued against
+a different signer key. `ToContract(Network)` stays useful for deriving the address
+without server info at hand.
 
 ## Handling notes safely
 
@@ -90,7 +98,8 @@ using (claimed)
 | `new ArkadeCash(privKey, serverPubkey, lockTime, hrp?)` | Note around an existing key |
 | `ToString()` | Encode as `arkadecash1...` / `tarkadecash1...` |
 | `ArkadeCash.Parse(encoded)` / `TryParse(encoded, out cash)` | Decode |
-| `ToContract(network)` | Rebuild the `ArkPaymentContract` the funds are locked to |
+| `ToContract(serverInfo)` | Rebuild the `ArkPaymentContract` the funds are locked to, keeping the server's own key descriptor |
+| `ToContract(network)` | Same, but with the server descriptor rebuilt from the note's x-only key |
 | `GetAddress(network)` | Derive the Arkade address of that contract |
 
 `ToContract` and `GetAddress` are extension methods in `NArk.Core.Extensions`.
