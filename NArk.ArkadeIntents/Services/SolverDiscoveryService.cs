@@ -24,6 +24,7 @@ public sealed class SolverDiscoveryService
     public static readonly Uri MainnetRegistry = new("https://arkade-os.github.io/solver-registry/bitcoin.json");
     public static readonly Uri SignetRegistry = new("https://arkade-os.github.io/solver-registry/signet.json");
     public static readonly Uri MutinynetRegistry = new("https://arkade-os.github.io/solver-registry/mutinynet.json");
+    public static readonly Uri RegtestRegistry = new("https://arkade-os.github.io/solver-registry/regtest.json");
 
     /// <summary>The only discovery protocol version this client understands.</summary>
     public const int SupportedVersion = 0;
@@ -69,6 +70,7 @@ public sealed class SolverDiscoveryService
         "bitcoin" => MainnetRegistry,
         "signet" => SignetRegistry,
         "mutinynet" => MutinynetRegistry,
+        "regtest" => RegtestRegistry,
         _ => throw new ArgumentException($"Unknown network '{network}'.", nameof(network)),
     };
 
@@ -154,7 +156,7 @@ public sealed class SolverDiscoveryService
             }
             foreach (var market in card.Markets)
             {
-                markets.Add(ToIndexed(market, card.Name, card.DiscoveryPubkey));
+                markets.Add(ToIndexed(market, card));
             }
         }
 
@@ -162,39 +164,85 @@ public sealed class SolverDiscoveryService
     }
 
     /// <summary>
-    /// Filter discovered markets to the given id pair and a base amount that fits the size bounds,
-    /// ranked cheapest first (ascending <c>fee_bps</c>). Identity is the asset-id pair, not the ticker.
+    /// Filter discovered markets to one corridor-qualified pair and a base amount inside the bounds,
+    /// cheapest first at that size.
     /// </summary>
+    /// <param name="markets">The discovered markets.</param>
+    /// <param name="baseAssetId">The base side's asset id — <c>btc</c> or the asset-id hex.</param>
+    /// <param name="quoteAssetId">The quote side's asset id.</param>
+    /// <param name="baseAmount">The size being traded, in base atomic units.</param>
+    /// <param name="baseCorridor">The base side's rail; defaults to arkade.</param>
+    /// <param name="quoteCorridor">The quote side's rail; defaults to arkade.</param>
+    /// <returns>The matching markets, cheapest first.</returns>
+    /// <remarks>
+    /// <para>
+    /// Identity is the corridor-qualified leg pair, never the ticker and no longer the bare id pair:
+    /// a solver's <c>BTC/lightning:BTC</c> and <c>BTC/onchain:BTC</c> are both btc-against-btc, and
+    /// matching on ids alone would offer a maker either one for a request naming a rail.
+    /// </para>
+    /// <para>
+    /// Ranking is by the total fee at <paramref name="baseAmount"/>, not by <c>fee_bps</c>: a market
+    /// with a lower spread and a flat fee is dearer at small sizes and cheaper at large ones, so the
+    /// spread alone puts them in the wrong order at one end or the other.
+    /// </para>
+    /// </remarks>
     public static IReadOnlyList<IndexedMarket> FilterAndRank(
         IEnumerable<IndexedMarket> markets,
         string baseAssetId,
         string quoteAssetId,
-        long baseAmount) =>
-        markets
-            .Where(m => m.BaseAsset.Id == baseAssetId && m.QuoteAsset.Id == quoteAssetId)
-            .Where(m => baseAmount >= m.MinBaseAmount && baseAmount <= m.MaxBaseAmount)
-            .OrderBy(m => m.FeeBps)
+        long baseAmount,
+        string? baseCorridor = null,
+        string? quoteCorridor = null)
+    {
+        var wanted = $"{baseCorridor ?? SolverMarket.ArkadeCorridor}:{baseAssetId}"
+                     + $"/{quoteCorridor ?? SolverMarket.ArkadeCorridor}:{quoteAssetId}";
+
+        return markets
+            .Where(m => m.PairKey() == wanted)
+            .Where(m => m.MaxBaseAmount > 0 && baseAmount >= m.MinBaseAmount && baseAmount <= m.MaxBaseAmount)
+            .OrderBy(m => m.TotalFeeOn(baseAmount))
             .ToList();
+    }
 
     /// <summary>
-    /// Fetch the market's price feed and return the normalized price <c>P</c> (quote units per base
-    /// unit): the scalar at <see cref="PriceFeedSchema.PricePath"/>, divided by 10^<c>price_decimals</c>,
-    /// inverted if <c>invert</c> is set.
+    /// The market's price <c>P</c>, in quote atomic units per base atomic unit.
     /// </summary>
+    /// <param name="market">The market to price.</param>
+    /// <param name="cancellationToken">Cancels the feed fetch.</param>
+    /// <returns>The normalized price.</returns>
+    /// <exception cref="InvalidOperationException">The card declares no usable feed for a cross-asset market.</exception>
+    /// <remarks>
+    /// A same-asset market carries no feed fields at all and its price is identically 1 — that is
+    /// the shape every corridor market between BTC and BTC has, so fetching unconditionally is how
+    /// a client crashes on the first corridor entry it meets. A cross-asset market missing its feed
+    /// is a malformed card instead, and says so.
+    /// </remarks>
     public async Task<decimal> FetchPriceAsync(SolverMarket market, CancellationToken cancellationToken = default)
     {
-        var body = await _http.GetStringAsync(market.PriceFeed, cancellationToken);
+        if (market.PriceFeed is not { Length: > 0 } feed || market.PriceFeedSchema is null)
+        {
+            return market.IsSameAsset
+                ? 1m
+                : throw new InvalidOperationException(
+                    $"market '{market.Pair}' trades {market.BaseAsset.Id} against {market.QuoteAsset.Id} "
+                    + "but declares no price feed, so it cannot be priced");
+        }
+
+        var body = await _http.GetStringAsync(feed, cancellationToken);
         var root = JsonNode.Parse(body) ?? throw new InvalidOperationException("Empty price-feed response.");
         var scalar = ResolveJsonPointer(root, market.PriceFeedSchema.PricePath);
-        return NormalizePrice(ReadScalar(scalar), market.PriceDecimals, market.Invert);
+        return NormalizePrice(ReadScalar(scalar), market.PriceDecimals);
     }
 
-    /// <summary>Normalize a raw feed scalar into a price: divide by 10^<paramref name="priceDecimals"/>, then invert if requested.</summary>
-    public static decimal NormalizePrice(decimal raw, int priceDecimals, bool invert)
-    {
-        var scaled = raw / Pow10(priceDecimals);
-        return invert ? 1m / scaled : scaled;
-    }
+    /// <summary>Normalize a raw feed scalar: divide by 10^<paramref name="priceDecimals"/>.</summary>
+    /// <param name="raw">The scalar the feed served.</param>
+    /// <param name="priceDecimals">The market's declared exponent.</param>
+    /// <returns>The price in quote atomic units per base atomic unit.</returns>
+    /// <remarks>
+    /// There is no inversion step. A feed is always advertised in base/quote terms, so a market
+    /// needing the other direction advertises the other feed.
+    /// </remarks>
+    public static decimal NormalizePrice(decimal raw, int priceDecimals) => raw / Pow10(priceDecimals);
 
     /// <summary>
     /// The maker pricing formula: <c>wantAmount = floor(D · P · (1 − (fee_bps + safety_bps)/10000))</c>,
@@ -273,19 +321,32 @@ public sealed class SolverDiscoveryService
             : throw new ArgumentOutOfRangeException(
                 nameof(n), n, $"a market's decimals must be between 0 and {Pow10Table.Length - 1}");
 
-    private static IndexedMarket ToIndexed(SolverMarket m, string solver, string? discoveryPubkey) => new()
+    /// <summary>
+    /// Tag a card's market with its solver, the way the reducer does for the published index.
+    /// </summary>
+    /// <remarks>
+    /// Every field is carried across. A pinned card is the one route to a solver no registry lists,
+    /// so a field dropped here is a market the caller can no longer tell apart — a corridor that
+    /// reads as spot, or bounds and a rendezvous that vanish between the file and the caller.
+    /// </remarks>
+    private static IndexedMarket ToIndexed(SolverMarket m, SolverCard card) => new()
     {
-        Solver = solver,
-        DiscoveryPubkey = discoveryPubkey,
+        Solver = card.Name,
+        DiscoveryPubkey = card.DiscoveryPubkey,
+        Transports = card.Transports,
         Pair = m.Pair,
         BaseAsset = m.BaseAsset,
         QuoteAsset = m.QuoteAsset,
+        BaseCorridor = m.BaseCorridor,
+        QuoteCorridor = m.QuoteCorridor,
         PriceFeed = m.PriceFeed,
         PriceFeedSchema = m.PriceFeedSchema,
         PriceDecimals = m.PriceDecimals,
-        Invert = m.Invert,
         FeeBps = m.FeeBps,
+        FeeFlat = m.FeeFlat,
         MinBaseAmount = m.MinBaseAmount,
         MaxBaseAmount = m.MaxBaseAmount,
+        MinQuoteAmount = m.MinQuoteAmount,
+        MaxQuoteAmount = m.MaxQuoteAmount,
     };
 }

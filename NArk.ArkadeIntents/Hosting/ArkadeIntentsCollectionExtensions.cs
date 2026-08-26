@@ -1,4 +1,6 @@
+using System.Net.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Services;
 using NArk.ArkadeIntents;
@@ -27,7 +29,13 @@ public static class ArkadeIntentsCollectionExtensions
     {
         services.Configure<ArkadeIntentsOptions>(configured =>
             configured.EmulatorPubkeyOverride = options?.EmulatorPubkeyOverride);
-        services.AddHttpClient<SolverDiscoveryService>();
+        // Singleton, not AddHttpClient<T>: that registers the client TRANSIENT, and the service
+        // caches each registry index in an instance field. A fresh instance per injection means the
+        // TTL never hits and every discovery call re-fetches every registry.
+        services.AddHttpClient(nameof(SolverDiscoveryService));
+        services.AddSingleton(sp => new SolverDiscoveryService(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(SolverDiscoveryService)),
+            sp.GetService<ILogger<SolverDiscoveryService>>()));
         services.AddSingleton<AssetIntentsManager>();
         services.AddSingleton<LightningIntentsClient>();
         services.AddSingleton<ArkadeIntentsService>();

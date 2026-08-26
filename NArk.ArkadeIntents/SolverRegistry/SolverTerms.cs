@@ -14,6 +14,12 @@ public enum SolverTermsRefusal
     /// <summary>Above the largest size the solver advertises.</summary>
     AboveMaximum,
 
+    /// <summary>
+    /// The solver serves this market, but not in this direction: it does not pay out the side the
+    /// trade would receive.
+    /// </summary>
+    DirectionNotServed,
+
     /// <summary>The quote's spread exceeds the fee the card advertises.</summary>
     FeeAboveAdvertised,
 }
@@ -50,18 +56,31 @@ public static class SolverTerms
     /// A card states a market key (<c>BTC/lightning:BTC</c>) rather than a direction, because a
     /// solver that serves a pair serves it both ways. Matching therefore ignores direction.
     /// </remarks>
-    public static SolverMarket? MarketFor(SolverCard card, string pair)
+    public static SolverMarket? MarketFor(SolverCard card, string pair) => Resolve(card, pair)?.Market;
+
+    /// <summary>
+    /// The market a card serves for a directional pair, and which side the solver pays out.
+    /// </summary>
+    /// <remarks>
+    /// A card states a market key (<c>BTC/lightning:BTC</c>) rather than a direction, because a
+    /// solver serving a pair may serve it both ways. The direction lives in the RFQ pair's
+    /// <c>to</c> leg, and it decides which of the four bounds applies: the bound is always on the
+    /// side the solver pays out, which is the side the maker receives.
+    /// </remarks>
+    private static (SolverMarket Market, MarketSide Payout)? Resolve(SolverCard card, string pair)
     {
         var (from, to) = SplitPair(pair);
         if (from is null || to is null) return null;
 
-        return card.Markets.FirstOrDefault(m =>
+        foreach (var market in card.Markets)
         {
-            var rails = m.Pair.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            return rails.Length == 2 &&
-                   ((Matches(rails[0], from) && Matches(rails[1], to)) ||
-                    (Matches(rails[0], to) && Matches(rails[1], from)));
-        });
+            var rails = market.Pair.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (rails.Length != 2) continue;
+
+            if (Matches(rails[0], from) && Matches(rails[1], to)) return (market, MarketSide.Quote);
+            if (Matches(rails[0], to) && Matches(rails[1], from)) return (market, MarketSide.Base);
+        }
+        return null;
     }
 
     /// <summary>
@@ -73,21 +92,33 @@ public static class SolverTerms
     /// <exception cref="SolverTermsException">The corridor is unserved, or the size is out of range.</exception>
     public static void AssertWithinLimits(SolverCard card, string pair, long amountSats)
     {
-        var market = MarketFor(card, pair)
+        var (market, payout) = Resolve(card, pair)
             ?? throw new SolverTermsException(
                 SolverTermsRefusal.UnservedCorridor, $"this solver publishes no market for {pair}");
 
-        // A corridor states its bounds on the quote side and leaves the base side at zero, so a zero
-        // is "unstated" rather than "no trade is large enough".
-        var min = market.MinQuoteAmount > 0 ? market.MinQuoteAmount : market.MinBaseAmount;
-        var max = market.MaxQuoteAmount > 0 ? market.MaxQuoteAmount : market.MaxBaseAmount;
+        // The bound is on the side the solver PAYS OUT — the maker's receiving leg — so which pair
+        // of the card's four applies is decided by direction, not by which happens to be non-zero.
+        // Sending arkade sats over Lightning is bounded by the quote side; receiving them back is
+        // bounded by the base side, and a card whose two sides differ makes the two answers differ.
+        var (min, max) = payout == MarketSide.Quote
+            ? (market.MinQuoteAmount, market.MaxQuoteAmount)
+            : (market.MinBaseAmount, market.MaxBaseAmount);
+
+        // A zero maximum disables the side: the solver does not pay it out, so this direction is
+        // not on offer however small the trade.
+        if (max <= 0)
+        {
+            throw new SolverTermsException(
+                SolverTermsRefusal.DirectionNotServed,
+                $"this solver does not pay out the receiving side of {pair}");
+        }
 
         if (min > 0 && amountSats < min)
         {
             throw new SolverTermsException(
                 SolverTermsRefusal.BelowMinimum, $"{amountSats} sats is below this solver's {min} minimum");
         }
-        if (max > 0 && amountSats > max)
+        if (amountSats > max)
         {
             throw new SolverTermsException(
                 SolverTermsRefusal.AboveMaximum, $"{amountSats} sats is above this solver's {max} maximum");
@@ -121,7 +152,7 @@ public static class SolverTerms
         var charged = quote.FromAmount - quote.ToAmount;
         if (charged <= 0) return;
 
-        var advertised = quote.FromAmount * market.FeeBps / 10_000 + market.FeeFlatAmount;
+        var advertised = market.TotalFeeOn(quote.FromAmount);
         if (charged > advertised + 1)
         {
             var flat = market.FeeFlatAmount > 0 ? $" + {market.FeeFlatAmount} flat" : "";

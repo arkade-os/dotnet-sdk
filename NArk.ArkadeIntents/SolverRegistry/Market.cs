@@ -18,8 +18,15 @@ public sealed class AssetDescriptor
     /// <summary>Display ticker (e.g. "USDT").</summary>
     public string? Ticker { get; init; }
 
-    /// <summary>Number of decimal places in this asset's smallest unit.</summary>
-    public int Precision { get; init; }
+    /// <summary>
+    /// Decimal places of this asset's atomic unit: atomic units per display unit is
+    /// 10^<c>decimals</c>.
+    /// </summary>
+    /// <remarks>
+    /// Display only — pricing stays in atomic units and never reads this. Named after the asset
+    /// registry metadata field it mirrors, which is also the JSON key the card carries.
+    /// </remarks>
+    public int Decimals { get; init; }
 }
 
 /// <summary>How to extract the scalar price out of a <see cref="SolverMarket.PriceFeed"/> response.</summary>
@@ -55,6 +62,15 @@ public class SolverMarket
     public PriceFeedSchema? PriceFeedSchema { get; init; }
 
     /// <summary>
+    /// The rail the base side settles on. Absent means arkade, which every spot market is.
+    /// </summary>
+    /// <remarks>
+    /// When exactly one side is on the arkade corridor it is this one, so equivalent corridor
+    /// markets group under a single key.
+    /// </remarks>
+    public string? BaseCorridor { get; init; }
+
+    /// <summary>
     /// The rail the quote side settles on — <c>"lightning"</c>, <c>"onchain"</c>. Absent means
     /// arkade, i.e. an ordinary spot market rather than a corridor.
     /// </summary>
@@ -63,21 +79,23 @@ public class SolverMarket
     /// <summary>Normalization factor: the raw feed scalar is divided by 10^<see cref="PriceDecimals"/>.</summary>
     public int PriceDecimals { get; init; }
 
-    /// <summary>When true, the normalized price is inverted (base/quote direction flip).</summary>
-    public bool Invert { get; init; }
-
     /// <summary>Solver spread, in basis points.</summary>
     public int FeeBps { get; init; }
 
     /// <summary>
-    /// A flat component of the solver's fee, in base-asset units, charged on top of
-    /// <see cref="FeeBps"/>.
+    /// A flat component of the solver's fee, in <em>quote</em>-asset atomic units, charged on top
+    /// of <see cref="FeeBps"/>.
     /// </summary>
     /// <remarks>
+    /// Quote-denominated in both directions, matching <see cref="MinQuoteAmount"/> and
+    /// <see cref="MaxQuoteAmount"/>, so a client converts it through the price when the maker
+    /// receives base. On a same-asset corridor the two denominations coincide.
+    /// <para>
     /// Absent on cards that charge proportionally only, which is why it is a nullable string rather
     /// than a number defaulting to zero: an unset field and a declared zero are the same charge, and
     /// treating a missing one as an error would refuse every card written before this existed.
     /// Serialized as a decimal string for the same reason as the amount bounds below.
+    /// </para>
     /// </remarks>
     public string? FeeFlat { get; init; }
 
@@ -105,8 +123,53 @@ public class SolverMarket
     [JsonConverter(typeof(NumericStringConverter))]
     public long MaxQuoteAmount { get; init; }
 
-    /// <summary>True when this market is a corridor rather than an arkade-to-arkade spot pair.</summary>
-    public bool IsCorridor => !string.IsNullOrEmpty(QuoteCorridor);
+    /// <summary>The arkade corridor, which an absent per-side corridor means.</summary>
+    public const string ArkadeCorridor = "arkade";
+
+    /// <summary>A side's corridor, defaulting an absent one to <see cref="ArkadeCorridor"/>.</summary>
+    /// <param name="side">Which side to read.</param>
+    /// <returns>The corridor name.</returns>
+    public string CorridorOf(MarketSide side) =>
+        (side == MarketSide.Base ? BaseCorridor : QuoteCorridor) is { Length: > 0 } rail
+            ? rail
+            : ArkadeCorridor;
+
+    /// <summary>True when either side settles off the arkade corridor.</summary>
+    /// <remarks>
+    /// Such a market is negotiated per trade over RFQ rather than filled from the arkd stream, so
+    /// the card's rendezvous fields are what make it reachable at all.
+    /// </remarks>
+    public bool IsCorridor =>
+        CorridorOf(MarketSide.Base) != ArkadeCorridor || CorridorOf(MarketSide.Quote) != ArkadeCorridor;
+
+    /// <summary>Both sides carry the same asset — the price is identically 1 and no feed applies.</summary>
+    public bool IsSameAsset => BaseAsset.Id == QuoteAsset.Id;
+
+    /// <summary>One side's canonical leg identity, <c>&lt;corridor&gt;:&lt;asset-id&gt;</c>.</summary>
+    /// <param name="side">Which side to read.</param>
+    /// <returns>The leg key.</returns>
+    public string LegKey(MarketSide side) =>
+        $"{CorridorOf(side)}:{(side == MarketSide.Base ? BaseAsset.Id : QuoteAsset.Id)}";
+
+    /// <summary>
+    /// The market's canonical identity: the corridor-qualified leg pair.
+    /// </summary>
+    /// <returns><c>&lt;base-corridor&gt;:&lt;base-id&gt;/&lt;quote-corridor&gt;:&lt;quote-id&gt;</c>.</returns>
+    /// <remarks>
+    /// Never the <see cref="Pair"/> label, and no longer the bare id pair: two BTC/BTC markets on
+    /// different rails are different markets, and grouping them together offers a maker a Lightning
+    /// corridor where they asked for an onchain one.
+    /// </remarks>
+    public string PairKey() => $"{LegKey(MarketSide.Base)}/{LegKey(MarketSide.Quote)}";
+
+    /// <summary>The total fee this market charges on <paramref name="amount"/>, in its units.</summary>
+    /// <param name="amount">The size being traded.</param>
+    /// <returns>Basis points on the amount, plus the flat component.</returns>
+    /// <remarks>
+    /// <see cref="FeeBps"/> alone is not a ranking key once <see cref="FeeFlat"/> exists: a market
+    /// with a lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
+    /// </remarks>
+    public long TotalFeeOn(long amount) => amount * FeeBps / 10_000 + FeeFlatAmount;
 }
 
 /// <summary>A <see cref="SolverMarket"/> as published in the per-network index, tagged with its solver.</summary>
@@ -117,6 +180,25 @@ public sealed class IndexedMarket : SolverMarket
 
     /// <summary>The solver's discovery x-only pubkey (hex), if the card carried one.</summary>
     public string? DiscoveryPubkey { get; init; }
+
+    /// <summary>
+    /// The solver card's transport map, propagated by the reducer when the card carries one.
+    /// </summary>
+    /// <remarks>
+    /// Without it a <see cref="DiscoveryPubkey"/> names a solver nothing can dial: the protocol
+    /// addresses parties by key and carries no URLs, so this is where "where" lives.
+    /// </remarks>
+    public SolverTransports? Transports { get; init; }
+}
+
+/// <summary>Which side of a market pair is meant.</summary>
+public enum MarketSide
+{
+    /// <summary>The base side — the arkade leg, whenever exactly one side is arkade.</summary>
+    Base,
+
+    /// <summary>The quote side.</summary>
+    Quote,
 }
 
 /// <summary>
