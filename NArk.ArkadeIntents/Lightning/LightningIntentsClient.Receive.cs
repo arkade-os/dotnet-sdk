@@ -423,7 +423,6 @@ public sealed partial class LightningIntentsClient
         ArkServerInfo serverInfo,
         CancellationToken cancellationToken)
     {
-        var emulatorInfo = await _emulator.GetInfoAsync(cancellationToken);
         var delays = LightningCorridor.UnilateralDelays(serverInfo);
 
         var solverRefundPkScript = quote.Profile?.SolverRefundPkScript
@@ -441,7 +440,7 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             LightningCorridor.NormalizeToXOnly(
-                Convert.FromHexString(LightningCorridor.EmulatorKeyFor(serverInfo, emulatorInfo.SignerPubkey, _logger))),
+                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
             nonInteractiveClaimPkScript: payoutPkScript,
             nonInteractiveRefundPkScript: Convert.FromHexString(solverRefundPkScript));
     }

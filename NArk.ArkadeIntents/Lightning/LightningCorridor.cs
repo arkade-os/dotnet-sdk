@@ -98,34 +98,6 @@ public static class LightningCorridor
         return (claim, claim, claim + SwapScriptValues.SoloRefundHeadroomSeconds);
     }
 
-    /// <summary>
-    /// The covenant's co-signer key: the network's pin, with the emulator's self-report as a check.
-    /// </summary>
-    /// <param name="serverInfo">Carries the network name the pin is keyed on.</param>
-    /// <param name="reportedPubKey">What the emulator's <c>/v1/info</c> answered.</param>
-    /// <param name="logger">Where a divergence is reported.</param>
-    /// <returns>The pinned key, compressed hex.</returns>
-    /// <remarks>
-    /// Which key the covenant commits to decides who can co-sign it, so it must not be decided by
-    /// whichever host answers. The pin is the network's own answer; the fetch is kept only to notice
-    /// when the two disagree, which is the last moment anyone can — after this the address is
-    /// derived, funded, and wrong in a way nothing downstream detects.
-    /// </remarks>
-    public static string EmulatorKeyFor(
-        ArkServerInfo serverInfo, string reportedPubKey, ILogger? logger = null)
-    {
-        if (!EmulatorPubKeys.AgreesWithPin(serverInfo.NetworkName, reportedPubKey))
-        {
-            logger?.LogWarning(
-                "The emulator at this deployment reports {Reported}, but {Network} is pinned to a "
-                + "different co-signer. Using the pin — a covenant built on the reported key would "
-                + "be one the rest of the network cannot co-sign.",
-                reportedPubKey, serverInfo.NetworkName);
-        }
-
-        return EmulatorPubKeys.DefaultFor(serverInfo.NetworkName);
-    }
-
     /// <summary>Accept an emulator key in either encoding and return its x-only form.</summary>
     /// <param name="pubkey">A 32-byte x-only key, or a 33-byte compressed one.</param>
     /// <returns>The x-only key the covenant commits to.</returns>

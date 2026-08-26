@@ -284,7 +284,7 @@ public class ArkadeLightningTests
         // One client for both directions now, so the two constructions that used to differ by a
         // parameter cannot differ at all.
         var lightning = new LightningIntentsClient(
-            w.clientTransport, emulator, w.contractService, spendingService,
+            w.clientTransport, w.contractService, spendingService,
             intentStorage, w.contracts, w.vtxoStorage, w.walletProvider);
 
         // The asset corridor is not exercised here, so its client is left out rather than
