@@ -120,7 +120,6 @@ public class LightningSendRefundTests
 
         return new LightningIntentsClient(
             Substitute.For<IClientTransport>(),
-            Substitute.For<IEmulatorProvider>(),
             Substitute.For<IContractService>(),
             Substitute.For<ISpendingService>(),
             storage,

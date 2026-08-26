@@ -1,5 +1,6 @@
 using BTCPayServer.Lightning;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
@@ -45,7 +46,6 @@ namespace NArk.ArkadeIntents.Lightning;
 public sealed partial class LightningIntentsClient
 {
     private readonly IClientTransport _transport;
-    private readonly IEmulatorProvider _emulator;
     private readonly IContractService _contractService;
     private readonly ISpendingService _spendingService;
     private readonly IArkadeIntentStorage _intentStorage;
@@ -59,12 +59,14 @@ public sealed partial class LightningIntentsClient
     /// <summary>Answers when a send corridor's refund locktime has actually matured.</summary>
     private readonly IBitcoinBlockchain? _blockchain;
 
+    /// <summary>A co-signer supplied in place of the network's pin, or <c>null</c>.</summary>
+    private readonly string? _emulatorPubkeyOverride;
+
     private readonly TimeProvider _time;
     private readonly ILogger<LightningIntentsClient>? _logger;
 
     /// <summary>Creates the client.</summary>
     /// <param name="transport">The Arkade server connection.</param>
-    /// <param name="emulator">Where the co-signer's self-report is read, for cross-checking the pin.</param>
     /// <param name="contractService">Derives and imports contracts.</param>
     /// <param name="spendingService">Builds and submits the spends.</param>
     /// <param name="intentStorage">Where swaps are recorded.</param>
@@ -79,11 +81,14 @@ public sealed partial class LightningIntentsClient
     /// Optional. Supplied, a refund matures on the chain's own median time past; absent, it waits
     /// out the worst-case lag instead.
     /// </param>
+    /// <param name="options">
+    /// Corridor settings. Only the covenant co-signer override is read here; unset means the
+    /// network's pinned key.
+    /// </param>
     /// <param name="time">Clock for the deadline comparisons; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
     public LightningIntentsClient(
         IClientTransport transport,
-        IEmulatorProvider emulator,
         IContractService contractService,
         ISpendingService spendingService,
         IArkadeIntentStorage intentStorage,
@@ -92,11 +97,11 @@ public sealed partial class LightningIntentsClient
         IWalletProvider walletProvider,
         IAesGcmCipher? cipher = null,
         IBitcoinBlockchain? blockchain = null,
+        IOptions<ArkadeIntentsOptions>? options = null,
         TimeProvider? time = null,
         ILogger<LightningIntentsClient>? logger = null)
     {
         _transport = transport;
-        _emulator = emulator;
         _contractService = contractService;
         _spendingService = spendingService;
         _intentStorage = intentStorage;
@@ -105,6 +110,7 @@ public sealed partial class LightningIntentsClient
         _walletProvider = walletProvider;
         _cipher = cipher ?? new AesGcmCipher();
         _blockchain = blockchain;
+        _emulatorPubkeyOverride = (options?.Value ?? new ArkadeIntentsOptions()).EmulatorPubkeyOverride;
         _time = time ?? TimeProvider.System;
         _logger = logger;
     }

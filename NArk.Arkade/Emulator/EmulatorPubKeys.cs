@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace NArk.Arkade.Emulator;
 
 /// <summary>
@@ -57,15 +59,62 @@ public static class EmulatorPubKeys
                 + "this deployment runs an emulator of its own.");
 
     /// <summary>
+    /// The key to build covenants against: the network's pin, or <paramref name="pubkeyOverride"/>
+    /// when the caller supplies one.
+    /// </summary>
+    /// <param name="networkName">The server's own <c>network</c> value.</param>
+    /// <param name="pubkeyOverride">A 33-byte compressed key, hex, or <c>null</c> for the pin.</param>
+    /// <returns>The compressed 33-byte key, hex.</returns>
+    /// <exception cref="InvalidOperationException">No key is pinned and none was supplied.</exception>
+    /// <exception cref="ArgumentException"><paramref name="pubkeyOverride"/> is not a compressed key.</exception>
+    /// <remarks>
+    /// <para>
+    /// Supplying an override means co-signing with a different service: every covenant built from
+    /// the returned key can be completed by whoever holds it and by nobody else. It is the escape
+    /// hatch for three situations, and the first is the one that matters operationally.
+    /// </para>
+    /// <para>
+    /// 1. A network rotated its key and this SDK has not shipped the new constant. Nothing asks the
+    /// service which key it signs with, so a rotation is invisible here until the constant is
+    /// updated — covenants keep building against the retired key and it surfaces only when a claim
+    /// is refused. Passing the new key restores service without waiting for a release, which makes
+    /// a rotation a config change rather than an outage.
+    /// 2. A private or self-hosted emulator, including on a network with no pin at all.
+    /// 3. Tests and local stacks.
+    /// </para>
+    /// <para>
+    /// A malformed override throws rather than being passed through: a typo would otherwise surface
+    /// as an unspendable contract long after the fact.
+    /// </para>
+    /// </remarks>
+    public static string Resolve(string? networkName, string? pubkeyOverride)
+    {
+        if (pubkeyOverride is null) return DefaultFor(networkName);
+
+        if (!CompressedPubKey.IsMatch(pubkeyOverride))
+        {
+            throw new ArgumentException(
+                "An emulator co-signer override must be 33-byte compressed secp256k1 hex "
+                + $"(66 characters, 02 or 03 prefix), got '{pubkeyOverride}'.", nameof(pubkeyOverride));
+        }
+
+        return pubkeyOverride;
+    }
+
+    private static readonly Regex CompressedPubKey =
+        new("^0[23][0-9a-fA-F]{64}$", RegexOptions.Compiled);
+
+    /// <summary>
     /// Whether the key an emulator reports for itself is the one this network is pinned to.
     /// </summary>
     /// <param name="networkName">The server's own <c>network</c> value.</param>
     /// <param name="reported">What the emulator's <c>/v1/info</c> answered.</param>
     /// <returns><c>true</c> when they agree, or when nothing is pinned to compare against.</returns>
     /// <remarks>
-    /// The reported key is never used, only compared. A deployment may legitimately run its own
-    /// emulator, so a mismatch is worth saying loudly rather than refusing outright — but it is the
-    /// last moment anyone can notice before the address is funded.
+    /// A diagnostic, not a step in deriving anything: nothing in this SDK reads the reported key to
+    /// decide a covenant's co-signer. Reach for it when a claim is refused and the question is
+    /// whether this deployment has rotated away from <see cref="DefaultFor"/> — which is the moment
+    /// <see cref="Resolve"/>'s override exists for.
     /// </remarks>
     public static bool AgreesWithPin(string? networkName, string reported) =>
         !ByNetwork.TryGetValue(networkName ?? "", out var pinned)

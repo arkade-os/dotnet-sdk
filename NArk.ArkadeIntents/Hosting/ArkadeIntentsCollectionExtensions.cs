@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Services;
+using NArk.ArkadeIntents;
 
 using NArk.ArkadeIntents.Assets;
 namespace NArk.ArkadeIntents.Hosting;
@@ -16,8 +17,16 @@ public static class ArkadeIntentsCollectionExtensions
     /// <see cref="NArk.Abstractions.Scripts.IActiveScriptsProvider"/> so its pending-swap scripts are
     /// watched by the shared VtxoSynchronizationService.
     /// </summary>
-    public static IServiceCollection AddArkadeIntentsServices(this IServiceCollection services)
+    /// <param name="services">The container.</param>
+    /// <param name="options">
+    /// Shared corridor settings, or <c>null</c> for the defaults. Registered here so both corridors
+    /// read the same ones.
+    /// </param>
+    public static IServiceCollection AddArkadeIntentsServices(
+        this IServiceCollection services, ArkadeIntentsOptions? options = null)
     {
+        services.Configure<ArkadeIntentsOptions>(configured =>
+            configured.EmulatorPubkeyOverride = options?.EmulatorPubkeyOverride);
         services.AddHttpClient<SolverDiscoveryService>();
         services.AddSingleton<AssetIntentsManager>();
         services.AddSingleton<LightningIntentsClient>();
