@@ -16,10 +16,9 @@ namespace NArk.Wallet.Client.Services;
 /// <para>
 /// One solver, named outright by its Nostr key, because that is the shortest thing a sample can
 /// show. Discovery is the other way and it does work: a solver's card carries both halves —
-/// <c>DiscoveryPubkey</c> for who to address, <c>Transports.Nostr.Relays</c> for where. The catch
-/// is that the market <em>index</em> carries only the first, so finding a corridor in the index
-/// still means fetching that solver's full card before anything can be dialled. Configuration
-/// skips a round trip; it is not standing in for something impossible.
+/// <c>DiscoveryPubkey</c> for who to address, <c>Transports.Nostr.Relays</c> for where — and the
+/// reducer propagates both into the per-network index, so a discovered corridor is dialable without
+/// fetching anything else.
 /// </para>
 /// <para>
 /// <see cref="CovclaimdUrl"/> is what makes receiving safe to walk away from; see
@@ -29,13 +28,11 @@ namespace NArk.Wallet.Client.Services;
 public sealed class ArkadeLightningOptions
 {
     /// <summary>
-    /// The relay to meet the solver on.
+    /// The relay to fall back on when the discovered market names none.
     /// </summary>
     /// <remarks>
-    /// Configured rather than discovered because the registry's market index does not carry one: an
-    /// entry names the solver's key but not where to reach it, and only the solver's full card lists
-    /// relays. Until the index carries transports, a default is what makes a discovered corridor
-    /// dialable at all.
+    /// A fallback, not the route: the market entry's own <c>transports</c> is preferred wherever it
+    /// carries one, so this only covers a card written before transports were required.
     /// </remarks>
     public Uri RelayUrl { get; set; } = new("wss://nostr.arkade.sh");
 
@@ -78,36 +75,44 @@ public sealed class ArkadeLightningService(
     SolverDiscoveryService discovery,
     string networkName)
 {
-    private string? _solverPubkey;
+    private (string Pubkey, Uri Relay)? _rendezvous;
 
     /// <summary>
     /// Finds a solver serving a Lightning corridor on this network, from the public registry.
     /// </summary>
     /// <remarks>
     /// The index is the whole source of truth about who exists; nothing about a counterparty is
-    /// baked into this build. It carries the solver's key but not its relays, so the key comes from
-    /// here and the relay from <see cref="ArkadeLightningOptions.RelayUrl"/> — an asymmetry of the
-    /// current index format rather than a choice.
+    /// baked into this build. An entry carries both halves of the rendezvous — the key to address
+    /// and the relays to meet on — so the only thing configuration still supplies is a fallback for
+    /// an entry that names no relay.
     /// </remarks>
-    private async Task<string?> SolverPubkeyAsync(CancellationToken cancellationToken)
+    private async Task<(string Pubkey, Uri Relay)?> RendezvousAsync(CancellationToken cancellationToken)
     {
-        if (_solverPubkey is not null) return _solverPubkey;
+        if (_rendezvous is not null) return _rendezvous;
         if (!string.IsNullOrWhiteSpace(options.SolverNostrPubkeyOverride))
         {
-            return _solverPubkey = options.SolverNostrPubkeyOverride;
+            return _rendezvous = (options.SolverNostrPubkeyOverride, options.RelayUrl);
         }
 
         var markets = await discovery.DiscoverMarketsAsync(networkName, cancellationToken: cancellationToken);
-        return _solverPubkey = markets
-            .FirstOrDefault(m => string.Equals(m.QuoteCorridor, "lightning", StringComparison.OrdinalIgnoreCase)
-                                 && !string.IsNullOrWhiteSpace(m.DiscoveryPubkey))
-            ?.DiscoveryPubkey;
+        var market = markets.FirstOrDefault(m =>
+            string.Equals(m.QuoteCorridor, "lightning", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(m.DiscoveryPubkey));
+
+        if (market?.DiscoveryPubkey is not { Length: > 0 } pubkey) return null;
+
+        var relay = market.Transports?.Nostr?.Relays is [var advertised, ..]
+                    && Uri.TryCreate(advertised, UriKind.Absolute, out var parsed)
+            ? parsed
+            : options.RelayUrl;
+
+        return _rendezvous = (pubkey, relay);
     }
 
     /// <summary>Whether a solver has been configured, i.e. whether these corridors are usable at all.</summary>
     /// <summary>Whether a solver serving a Lightning corridor was found on this network.</summary>
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
-        await SolverPubkeyAsync(cancellationToken) is not null;
+        await RendezvousAsync(cancellationToken) is not null;
 
     /// <summary>
     /// Whether a claim will still happen if this wallet is closed during the window.
@@ -218,12 +223,12 @@ public sealed class ArkadeLightningService(
     /// </remarks>
     private async Task<NostrRfqTransport> CreateTransportAsync(CancellationToken cancellationToken)
     {
-        var solver = await SolverPubkeyAsync(cancellationToken)
+        var rendezvous = await RendezvousAsync(cancellationToken)
             ?? throw new InvalidOperationException(
                 $"no solver on the {networkName} registry serves a Lightning corridor, so there is "
                 + "nobody to quote against");
 
-        return new NostrRfqTransport(options.RelayUrl, solver);
+        return new NostrRfqTransport(rendezvous.Relay, rendezvous.Pubkey);
     }
 
     /// <summary>
