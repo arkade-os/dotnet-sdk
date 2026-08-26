@@ -26,6 +26,7 @@ namespace NArk.Tests.End2End.Arkade;
 /// <see cref="ArkadeEmulatorSpendSubmitter"/> co-sign.
 /// </summary>
 [TestFixture]
+[Category("ArkadeScript")]
 public class ArkadeHtlcTests
 {
     private static readonly Uri EmulatorEndpoint = new("http://localhost:7073");
