@@ -150,6 +150,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDestinationSafetyNotifier>(sp => sp.GetRequiredService<ContractReconciliationService>());
         services.AddSingleton<ISweepPolicy, ServerKeyRotationSweepPolicy>();
         services.AddSingleton<PendingArkTransactionRecoveryService>();
+        services.AddSingleton<ArkadeCashService>();
         services.AddSingleton<IFeeEstimator, DefaultFeeEstimator>();
         services.AddSingleton<ICoinSelector, DefaultCoinSelector>();
         services.AddHostedService<ArkHostedLifecycle>();

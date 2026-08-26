@@ -19,7 +19,7 @@ jobs:
         with:
           profile: emulator,boltz
       - name: Run Arkade E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "FullyQualifiedName~Arkade"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=ArkadeScript"
         timeout-minutes: 15
       - name: Collect docker logs on failure
         if: failure()

@@ -210,6 +210,79 @@ var txId = await spendingService.Spend(
     outputs: [new ArkTxOut(recipientAddress, Money.Satoshis(5_000))]);
 ```
 
+## ArkadeCash
+
+`ArkadeCash` is a bearer instrument: a fresh private key plus the contract parameters
+needed to rebuild the Arkade payment contract it funds, packed into one bech32m string
+(`arkadecash1...` on mainnet, `tarkadecash1...` on testnet/regtest). Whoever holds the
+string controls the funds, so value can be handed over without the recipient sharing an
+Arkade address first. The encoding matches the ArkadeCash format of the TypeScript SDK,
+so a note created by either SDK can be claimed by the other.
+
+The payload is 69 bytes: version (1) + private key (32) + Arkade server public key (32)
++ BIP68 CSV sequence (4, big-endian).
+
+```csharp
+using NArk.Abstractions;
+using NArk.Core.Extensions;
+
+var serverInfo = await transport.GetServerInfoAsync();
+
+// Create a note with a fresh random key
+var cash = ArkadeCash.Generate(
+    serverInfo.SignerKey.ToXOnlyPubKey(),
+    serverInfo.UnilateralExit,
+    "tarkadecash");
+
+// Fund it: send to the address of the contract the note controls
+var address = cash.GetAddress(serverInfo.Network);
+await spendingService.Spend(
+    walletId,
+    [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(10_000), address)]);
+
+// Hand this string to the recipient — it carries the private key, treat it as a secret
+string note = cash.ToString();
+```
+
+Claiming: hand the note and a destination address to `ArkadeCashService`.
+
+```csharp
+var cashService = sp.GetRequiredService<ArkadeCashService>();
+
+if (!ArkadeCash.TryParse(note, out var claimed) || claimed is null)
+    throw new FormatException("Not a valid ArkadeCash note");
+
+using (claimed)
+{
+    var destination = (await contractService.DeriveContract(walletId, NextContractPurpose.Receive))
+        .GetArkAddress();
+
+    var result = await cashService.ClaimAsync(claimed, destination);
+    Console.WriteLine($"Swept {result.Swept} sat");
+
+    foreach (var left in result.Unclaimed)
+        Console.WriteLine($"Left behind {left.Amount} sat at {left.Outpoint}: {left.Reason}");
+}
+```
+
+The claim is thin on purpose: **nothing is persisted**. No contract is imported and the note's key
+never reaches wallet storage — it signs one offchain transaction per VTXO, in memory, straight to
+the destination. That is what makes a note claimable at all: importing its contract would only
+register a script to watch, since the wallet holds no key matching the note's descriptor and could
+never sign for it.
+
+One transaction per VTXO means a single stale or rejected input dents only its own sweep instead of
+sinking the claim. Anything that could not be swept comes back in `result.Unclaimed` with a reason
+(`AlreadySpent`, `ServerSwept`, `Subdust`, `AssetBearing`, `SweepFailed`) rather than as an
+exception, so claiming an already-claimed note is a report, not a failure.
+
+Because nothing is imported, the claim also does not care whether the Arkade server has rotated its
+signer since the note was funded: the note is spent under the key it was issued against, which the
+operator keeps co-signing until that key's deprecation cutoff passes.
+
+`ArkadeCash` owns its private key and implements `IDisposable` — dispose it once the note
+has been claimed or persisted.
+
 ## Wallet Recovery
 
 Rebuild a wallet's local state — contracts, the HD derivation index, funds (VTXOs)
