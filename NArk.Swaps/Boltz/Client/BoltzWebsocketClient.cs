@@ -1,32 +1,103 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using NArk.Swaps.Boltz.Models.WebSocket;
 
 namespace NArk.Swaps.Boltz.Client;
 
-/// <summary>
-/// Manages WebSocket communication with the Boltz API, including connection, subscriptions, and auto-reconnection.
-/// </summary>
-public class BoltzWebsocketClient : IAsyncDisposable
+internal interface IBoltzWebsocketClient : IAsyncDisposable
 {
-    private ClientWebSocket? _webSocket;
+    event Func<WebSocketResponse?, Task>? OnAnyEventReceived;
+    Task ConnectAsync(CancellationToken cancellationToken = default);
+    Task SubscribeAsync(string[] swapIds, CancellationToken cancellationToken = default);
+    Task UnsubscribeAsync(string[] swapIds, CancellationToken cancellationToken = default);
+    Task WaitUntilDisconnected(CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Manages WebSocket communication with the Boltz API for one connection.
+/// An instance is single-use: once the connection drops, the owner disposes it
+/// and creates a new client rather than reconnecting in place.
+/// </summary>
+public class BoltzWebsocketClient : IBoltzWebsocketClient
+{
+    private const string SwapUpdateChannel = "swap.update";
+
     private readonly Uri _webSocketUri;
-    private CancellationTokenSource? _receiveLoopCts;
+    private readonly Func<Uri, CancellationToken, Task<WebSocket>> _connect;
+    private readonly TimeSpan _requestResponseTimeout;
+    private readonly TimeSpan? _heartbeatInterval;
+    /// <summary>
+    /// Serializes every request/response exchange on the socket — heartbeat pings and
+    /// subscribe/unsubscribe alike — so a reply can be matched to the one operation in
+    /// flight.
+    /// </summary>
+    /// <remarks>
+    /// Sharing it costs heartbeat punctuality: a subscribe that stalls holds the
+    /// semaphore for up to <c>RequestResponseTimeout</c>, delaying the next ping by that
+    /// much, so worst-case detection of a half-open socket is
+    /// <c>HeartbeatInterval + RequestResponseTimeout</c>. That is bounded and acceptable
+    /// at the current defaults. It does not double-fire teardown: the stalled operation
+    /// calls <see cref="Invalidate"/>, which cancels the lifetime token the queued ping is
+    /// waiting on, so the ping fails its <c>WaitAsync</c> with the token already cancelled
+    /// and is swallowed by the heartbeat loop rather than invalidating a second time.
+    /// Give the heartbeat its own semaphore only if the detection window has to shrink.
+    /// </remarks>
     private readonly SemaphoreSlim _operationSemaphore = new(1, 1);
+    private readonly TaskCompletionSource _disconnected =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private CancellationTokenSource? _lifetime;
+    private WebSocket? _socket;
+    private Task? _receiveTask;
+    private Task? _heartbeatTask;
+    private int _invalidated;
+    private int _disposed;
 
     /// <summary>
     /// Occurs for any WebSocket event, providing a common event object.
     /// </summary>
     public event Func<WebSocketResponse?, Task>? OnAnyEventReceived;
 
+    /// <summary>Default time to wait for a subscribe or unsubscribe acknowledgement.</summary>
+    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>Default interval between keepalive pings.</summary>
+    public static readonly TimeSpan DefaultHeartbeatInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="BoltzWebsocketClient"/> class
+    /// with the default timeouts.
+    /// </summary>
+    /// <param name="webSocketUri">The explicit URI for the WebSocket connection.</param>
+    public BoltzWebsocketClient(Uri webSocketUri)
+        : this(webSocketUri, DefaultRequestTimeout, DefaultHeartbeatInterval)
+    {
+    }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="BoltzWebsocketClient"/> class.
     /// </summary>
     /// <param name="webSocketUri">The explicit URI for the WebSocket connection.</param>
-    public BoltzWebsocketClient(Uri webSocketUri)
+    /// <param name="requestResponseTimeout">
+    /// How long to wait for an acknowledgement before treating the connection as dead.
+    /// </param>
+    /// <param name="heartbeatInterval">
+    /// Interval between keepalive pings, or <c>null</c> to disable the heartbeat.
+    /// </param>
+    /// <param name="connect">
+    /// Overrides how the underlying socket is opened — for a proxy-configured or
+    /// otherwise pre-customised <see cref="ClientWebSocket"/>. Defaults to a plain connect.
+    /// </param>
+    public BoltzWebsocketClient(
+        Uri webSocketUri,
+        TimeSpan requestResponseTimeout,
+        TimeSpan? heartbeatInterval,
+        Func<Uri, CancellationToken, Task<WebSocket>>? connect = null)
     {
         _webSocketUri = webSocketUri ?? throw new ArgumentNullException(nameof(webSocketUri));
+        _connect = connect ?? ConnectSocket;
+        _requestResponseTimeout = requestResponseTimeout;
+        _heartbeatInterval = heartbeatInterval;
     }
 
     /// <summary>
@@ -35,209 +106,280 @@ public class BoltzWebsocketClient : IAsyncDisposable
     /// <param name="webSocketUri">The WebSocket URI to connect to.</param>
     /// <param name="cancellationToken">Cancellation token for the connection attempt.</param>
     /// <returns>A connected BoltzWebsocketClient instance.</returns>
-    public static async Task<BoltzWebsocketClient> CreateAndConnectAsync(Uri webSocketUri,
+    public static async Task<BoltzWebsocketClient> CreateAndConnectAsync(
+        Uri webSocketUri,
         CancellationToken cancellationToken = default)
     {
         var client = new BoltzWebsocketClient(webSocketUri);
         await client.ConnectAsync(cancellationToken);
-
         return client;
     }
 
+    private static async Task<WebSocket> ConnectSocket(Uri uri, CancellationToken cancellationToken)
+    {
+        var socket = new ClientWebSocket();
+        try
+        {
+            await socket.ConnectAsync(uri, cancellationToken);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
     /// <summary>
-    /// Connects to the Boltz WebSocket API.
+    /// Connects to the Boltz WebSocket API. Cancelling <paramref name="cancellationToken"/>
+    /// after the connection is established tears the connection down.
     /// </summary>
-    /// <param name="cancellationToken">A cancellation token to cancel the connection attempt.</param>
-    /// <exception cref="InvalidOperationException">Thrown if already connected/connecting (unless it's a reconnect attempt).</exception>
+    /// <param name="cancellationToken">A cancellation token bound to the connection's lifetime.</param>
+    /// <exception cref="InvalidOperationException">Thrown if this client has already connected.</exception>
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
-        await _operationSemaphore.WaitAsync(cancellationToken); // Wait for the semaphore
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        await _operationSemaphore.WaitAsync(cancellationToken);
         try
         {
-            if (_webSocket is { State: WebSocketState.Open or WebSocketState.Connecting })
-            {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            if (_socket is not null)
                 throw new InvalidOperationException(
-                    "WebSocket is already connected or connecting. Call DisconnectAsync first.");
-            }
+                    "WebSocket is already connected; create a new client to reconnect.");
 
-            _webSocket?.Dispose();
-            _webSocket = new ClientWebSocket();
-            if (_receiveLoopCts is not null)
+            var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            WebSocket socket;
+            try
             {
-                await _receiveLoopCts.CancelAsync();
+                socket = await _connect(_webSocketUri, lifetime.Token);
             }
-            _receiveLoopCts?.Dispose();
-            _receiveLoopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            catch
+            {
+                lifetime.Dispose();
+                throw;
+            }
 
-            // Try-catch is removed here; if ConnectAsync fails, the exception will propagate to the caller.
-            await _webSocket.ConnectAsync(_webSocketUri, _receiveLoopCts.Token);
-
-            // Optionally, resubscribe if there are active subscriptions from a previous session (if desired behavior)
-            // For now, we assume a clean connect. If ResubscribeAsync is needed on manual reconnect, user can call it.
-            // if (_activeSubscriptions.Any()) await ResubscribeAsync(_receiveLoopCts.Token);
-
-            _ = Task.Run(() => ReceiveLoopAsync(_receiveLoopCts.Token), _receiveLoopCts.Token);
+            _lifetime = lifetime;
+            _socket = socket;
+            _receiveTask = ReceiveLoopAsync();
+            if (_heartbeatInterval is not null)
+                _heartbeatTask = HeartbeatLoopAsync();
         }
         finally
         {
-            _operationSemaphore.Release(); // Release the semaphore
+            _operationSemaphore.Release();
         }
-    }
-
-    private async Task<WebSocketResponse> SendRequest<T>(string op, string channel, T args,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _operationSemaphore.WaitAsync(cancellationToken); // Wait for the semaphore
-
-            if (_webSocket is not { State: WebSocketState.Open })
-            {
-                throw new InvalidOperationException("WebSocket is not connected.");
-            }
-
-            var request = new WebSocketRequest
-            {
-                Operation = op,
-                Channel = channel,
-                Args = (JsonSerializer.SerializeToNode(args) as JsonArray)!
-            };
-
-            var message = JsonSerializer.SerializeToUtf8Bytes(request);
-            var responseTask = WaitForResponse(op, channel, cancellationToken);
-
-            await _webSocket.SendAsync(message, WebSocketMessageType.Text, true, cancellationToken);
-            return await responseTask;
-        }
-        finally
-        {
-            _operationSemaphore.Release(); // Release the semaphore
-        }
-    }
-
-    private async Task<WebSocketResponse> WaitForResponse(string op, string channel,
-        CancellationToken cancellationToken)
-    {
-        var tcs = new TaskCompletionSource<WebSocketResponse>();
-
-        Task OnEvent(WebSocketResponse boltzWebSocketEvent)
-        {
-            if (boltzWebSocketEvent.Event == op && boltzWebSocketEvent.Channel == channel)
-            {
-                tcs.SetResult(boltzWebSocketEvent);
-            }
-
-            return Task.CompletedTask;
-        }
-
-        if (_webSocket is not { State: WebSocketState.Open })
-        {
-            throw new InvalidOperationException("WebSocket is not connected.");
-        }
-
-        OnAnyEventReceived += OnEvent!;
-        CancellationTokenRegistration registration = default;
-        try
-        {
-            registration = _receiveLoopCts!.Token.Register(() => tcs.SetCanceled(_receiveLoopCts.Token));
-            return await tcs.Task.WaitAsync(cancellationToken);
-        }
-        finally
-        {
-            await registration.DisposeAsync();
-            OnAnyEventReceived -= OnEvent!; // Ensure we unsubscribe after waiting for the response
-        }
-    }
-
-
-    /// <summary>
-    /// Unsubscribes from WebSocket updates for specific swap IDs.
-    /// </summary>
-    public async Task UnsubscribeAsync(string[] swapIds, CancellationToken cancellationToken = default)
-    {
-        _ = await SendRequest("unsubscribe", "swap.update", swapIds, cancellationToken);
     }
 
     /// <summary>
     /// Subscribes to WebSocket updates for specific swap IDs.
     /// </summary>
-    public async Task SubscribeAsync(string[] swapIds, CancellationToken cancellationToken = default)
-    {
-        _ = await SendRequest("subscribe", "swap.update", swapIds, cancellationToken);
-    }
+    public Task SubscribeAsync(string[] swapIds, CancellationToken cancellationToken = default) =>
+        SendChannelOperationAsync("subscribe", swapIds, cancellationToken);
 
-    private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
-    {
-        var buffer = new ArraySegment<byte>(new byte[8192]);
+    /// <summary>
+    /// Unsubscribes from WebSocket updates for specific swap IDs.
+    /// </summary>
+    public Task UnsubscribeAsync(string[] swapIds, CancellationToken cancellationToken = default) =>
+        SendChannelOperationAsync("unsubscribe", swapIds, cancellationToken);
 
-        while (_webSocket is { State: WebSocketState.Open } && !cancellationToken.IsCancellationRequested)
+    private Task SendChannelOperationAsync(
+        string operation,
+        string[] swapIds,
+        CancellationToken cancellationToken) =>
+        SendRequestAsync(
+            JsonSerializer.SerializeToUtf8Bytes(new WebSocketRequest
+            {
+                Operation = operation,
+                Channel = SwapUpdateChannel,
+                Args = JsonSerializer.SerializeToNode(swapIds)!.AsArray(),
+            }),
+            response => response.Event == operation && response.Channel == SwapUpdateChannel,
+            operation,
+            cancellationToken);
+
+    private Task PingAsync(CancellationToken cancellationToken) =>
+        SendRequestAsync(
+            """{"op":"ping"}"""u8.ToArray(),
+            response => response is { Event: "pong" },
+            "ping",
+            cancellationToken);
+
+    private async Task SendRequestAsync(
+        byte[] message,
+        Func<WebSocketResponse, bool> matchesResponse,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        await _operationSemaphore.WaitAsync(cancellationToken);
+        try
         {
+            var socket = _socket;
+            var lifetime = _lifetime;
+            if (socket is null || lifetime is null ||
+                Volatile.Read(ref _invalidated) != 0 ||
+                socket.State != WebSocketState.Open)
+            {
+                throw new WebSocketException(WebSocketError.InvalidState, "WebSocket is not connected.");
+            }
+
+            var response = new TaskCompletionSource<WebSocketResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            Task OnEvent(WebSocketResponse? candidate)
+            {
+                if (candidate is not null && matchesResponse(candidate))
+                    response.TrySetResult(candidate);
+                return Task.CompletedTask;
+            }
+
+            OnAnyEventReceived += OnEvent;
+            await using var registration = lifetime.Token.Register(
+                () => response.TrySetCanceled(lifetime.Token));
+
             try
             {
-                using var ms = new MemoryStream();
+                await socket.SendAsync(
+                    message,
+                    WebSocketMessageType.Text,
+                    endOfMessage: true,
+                    cancellationToken);
+                await response.Task.WaitAsync(_requestResponseTimeout, cancellationToken);
+            }
+            catch (TimeoutException ex)
+            {
+                Invalidate();
+                throw new WebSocketException(
+                    WebSocketError.ConnectionClosedPrematurely,
+                    $"Boltz WebSocket {operation} acknowledgement timed out.",
+                    ex);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                Invalidate();
+                throw new WebSocketException(
+                    WebSocketError.ConnectionClosedPrematurely,
+                    $"Boltz WebSocket disconnected during {operation}.");
+            }
+            catch (WebSocketException)
+            {
+                Invalidate();
+                throw;
+            }
+            finally
+            {
+                OnAnyEventReceived -= OnEvent;
+            }
+        }
+        finally
+        {
+            _operationSemaphore.Release();
+        }
+    }
+
+    private async Task HeartbeatLoopAsync()
+    {
+        var lifetime = _lifetime!;
+        try
+        {
+            while (!lifetime.IsCancellationRequested)
+            {
+                await Task.Delay(_heartbeatInterval!.Value, lifetime.Token);
+                await PingAsync(lifetime.Token);
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            Invalidate();
+        }
+    }
+
+    private async Task ReceiveLoopAsync()
+    {
+        var socket = _socket!;
+        var lifetime = _lifetime!;
+        var buffer = new byte[8192];
+        try
+        {
+            while (socket.State == WebSocketState.Open && !lifetime.IsCancellationRequested)
+            {
+                using var message = new MemoryStream();
                 WebSocketReceiveResult result;
                 do
                 {
-                    if (cancellationToken.IsCancellationRequested) break;
-                    result = await _webSocket.ReceiveAsync(buffer, cancellationToken);
-
+                    result = await socket.ReceiveAsync(buffer, lifetime.Token);
                     if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        break;
-                    }
+                        return;
+                    message.Write(buffer, 0, result.Count);
+                } while (!result.EndOfMessage);
 
-                    if (buffer.Array != null) ms.Write(buffer.Array, buffer.Offset, result.Count);
-                } while (!result.EndOfMessage && !cancellationToken.IsCancellationRequested);
-
-                if (cancellationToken.IsCancellationRequested) break;
-
-
-                ms.Seek(0, SeekOrigin.Begin);
+                message.Position = 0;
                 try
                 {
-                    var response =
-                        await JsonSerializer.DeserializeAsync<WebSocketResponse>(ms,
-                            cancellationToken: cancellationToken);
-
-                    _ = OnAnyEventReceived?.Invoke(response);
+                    var response = await JsonSerializer.DeserializeAsync<WebSocketResponse>(
+                        message,
+                        cancellationToken: lifetime.Token);
+                    Dispatch(response);
                 }
-                catch
+                catch (JsonException)
                 {
-
-                    _ = OnAnyEventReceived?.Invoke(null);
+                    Dispatch(null);
                 }
-
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
             }
         }
-
-        await (_receiveLoopCts != null ? _receiveLoopCts.CancelAsync() : Task.CompletedTask);
-
-
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            Dispatch(null);
+        }
+        finally
+        {
+            Invalidate();
+        }
     }
 
+    private void Dispatch(WebSocketResponse? response)
+    {
+        if (OnAnyEventReceived is not { } handlers)
+            return;
 
-    /// <summary>
-    /// Disposes the BoltzListener, disconnecting the WebSocket if connected.
-    /// </summary>
-    public async ValueTask DisposeAsync()
+        foreach (Func<WebSocketResponse?, Task> handler in handlers.GetInvocationList())
+            _ = Observe(handler, response);
+    }
+
+    private static async Task Observe(Func<WebSocketResponse?, Task> handler, WebSocketResponse? response)
     {
         try
         {
-            await _operationSemaphore.WaitAsync();
-            if (_receiveLoopCts is not null)
-                await _receiveLoopCts.CancelAsync();
-            _webSocket?.Dispose(); // Dispose the WebSocket
-        } // Wait for the semaphore (no CancellationToken for DisposeAsync signature)
-
-        finally
-        {
-            _operationSemaphore.Release(); // Release the semaphore
-
-            _operationSemaphore.Dispose();
+            await handler(response);
         }
+        catch
+        {
+            // Event consumers own their diagnostics.
+        }
+    }
+
+    /// <summary>
+    /// Tears the connection down once; subsequent calls are no-ops.
+    /// </summary>
+    private void Invalidate()
+    {
+        if (Interlocked.Exchange(ref _invalidated, 1) != 0)
+            return;
+        Teardown();
+    }
+
+    private void Teardown()
+    {
+        try { _lifetime?.Cancel(); } catch (ObjectDisposedException) { }
+        try { _socket?.Abort(); } catch { }
+        try { _socket?.Dispose(); } catch { }
+        _disconnected.TrySetResult();
     }
 
     /// <summary>
@@ -247,49 +389,44 @@ public class BoltzWebsocketClient : IAsyncDisposable
     /// <returns>A task that completes when the WebSocket is disconnected.</returns>
     public async Task WaitUntilDisconnected(CancellationToken cancellationToken)
     {
-        if (_webSocket is not { State: WebSocketState.Open })
-        {
-            return; // Already disconnected or never connected
-        }
+        if (_socket is null)
+            return;
+        await _disconnected.Task.WaitAsync(cancellationToken);
+    }
 
-        var tcs = new TaskCompletionSource<bool>();
+    /// <summary>
+    /// Disposes the client and disconnects the WebSocket.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
 
-        // Set up cancellation
-        await using var registration = cancellationToken.Register(() => tcs.TrySetCanceled());
+        // Break any in-flight request before contending for the semaphore it holds.
+        Invalidate();
 
-        // Set up an event handler to monitor connection state
-        Task connectionStateHandler(WebSocketResponse _)
-        {
-            if (_webSocket is not { State: WebSocketState.Open })
-            {
-                tcs.TrySetResult(true);
-            }
-            return Task.CompletedTask;
-        }
-
+        await _operationSemaphore.WaitAsync();
         try
         {
-            OnAnyEventReceived += connectionStateHandler!;
-
-            // If the connection drops without any events, the receive loop will terminate
-            // We'll check the state periodically to handle this case
-            while (!cancellationToken.IsCancellationRequested &&
-                   _webSocket is { State: WebSocketState.Open })
-            {
-                await Task.Delay(500, cancellationToken);
-
-                // If connection dropped, complete the task
-                if (_webSocket == null || _webSocket.State != WebSocketState.Open)
-                {
-                    tcs.TrySetResult(true);
-                }
-            }
-
-            await tcs.Task;
+            // A ConnectAsync that raced past the disposed check owns the socket now.
+            Teardown();
         }
         finally
         {
-            OnAnyEventReceived -= connectionStateHandler!;
+            _operationSemaphore.Release();
         }
+
+        await IgnoreCancellation(_receiveTask);
+        await IgnoreCancellation(_heartbeatTask);
+        _lifetime?.Dispose();
+        _operationSemaphore.Dispose();
+    }
+
+    private static async Task IgnoreCancellation(Task? task)
+    {
+        if (task is null)
+            return;
+        try { await task; }
+        catch (OperationCanceledException) { }
     }
 }

@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using System.Threading.Channels;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
@@ -13,11 +13,10 @@ using NArk.Core.Transport;
 using NArk.Swaps.Abstractions;
 using NArk.Swaps.Boltz.Client;
 using NArk.Swaps.Boltz.Models.Restore;
+using NArk.Swaps.Boltz.Models.Swaps.Common;
 using NArk.Swaps.Boltz.Models.WebSocket;
 using NArk.Swaps.Extensions;
 using NArk.Swaps.Models;
-using NBitcoin;
-using NBitcoin.Secp256k1;
 
 namespace NArk.Swaps.Boltz;
 
@@ -46,10 +45,6 @@ public partial class BoltzSwapProvider : ISwapProvider
     private readonly IIntentGenerationService? _intentGenerationService;
     private readonly ILogger<BoltzSwapProvider>? _logger;
 
-    /// <summary>Maps refund intent txId → swapId so <see cref="OnRefundIntentChanged"/> can
-    /// trigger a poll when the batch session for a refund-without-receiver intent completes.</summary>
-    private readonly ConcurrentDictionary<string, string> _intentToSwapId = new();
-
     private readonly CancellationTokenSource _shutdownCts = new();
     /// <summary>
     /// Linked CTS produced inside StartAsync that joins the caller's token and our
@@ -67,64 +62,46 @@ public partial class BoltzSwapProvider : ISwapProvider
         return (long)feeRate.GetFee(ClaimRefundVBytes).Satoshi;
     }
 
-    private readonly Channel<string> _triggerChannel = Channel.CreateUnbounded<string>();
-
     /// <summary>
-    /// Set of swap ids currently being watched on the persistent Boltz
-    /// websocket. Concurrent because <see cref="RunWebsocketLoop"/> reads
-    /// it (under <see cref="_websocketLock"/>) on the websocket task while
-    /// <see cref="DoUpdateStorage"/> and <see cref="PollSwapState"/> /
-    /// <see cref="MarkSwapAsUnknownToProvider"/> mutate it on the channel
-    /// reader thread. Modelled as a dictionary because there is no
-    /// <c>ConcurrentHashSet&lt;T&gt;</c> in .NET; the byte payload is a
-    /// placeholder and presence-of-key is the membership predicate.
+    /// Set of swap ids currently watched on the persistent Boltz websocket.
+    /// Concurrent because the websocket loop reads it while reconciliation and
+    /// storage events mutate it. Modelled as a dictionary because there is no
+    /// <c>ConcurrentHashSet&lt;T&gt;</c>; the byte value is unused.
     /// </summary>
     private readonly ConcurrentDictionary<string, byte> _swapsIdToWatch = new();
-    private readonly ConcurrentDictionary<string, string> _scriptToSwapId = [];
+    internal void WatchSwap(string swapId) => _swapsIdToWatch.TryAdd(swapId, 0);
 
     /// <summary>
     /// Per-swap counter of consecutive <see cref="BoltzSwapNotFoundException"/>
-    /// responses from <c>GetSwapStatusAsync</c>. Reset to zero on any successful
-    /// status response. When a swap reaches
-    /// <see cref="UnknownToProviderThreshold"/> consecutive 404s, the safety net
-    /// in <see cref="MarkSwapAsUnknownToProvider"/> trips and the swap is
-    /// transitioned to a terminal state. Concurrent because <c>NotifySwapChanged</c>
-    /// (storage event thread) and <c>PollSwapState</c> (channel reader thread)
-    /// can both touch the map.
+    /// responses. Reset by any successful status response.
     /// </summary>
     private readonly ConcurrentDictionary<string, int> _consecutiveUnknown = [];
 
     /// <summary>
-    /// Number of consecutive Boltz 404s that must elapse before
-    /// <c>PollSwapState</c> gives up on a swap and transitions it to a terminal
-    /// state. At the 1-minute routine-poll cadence this is roughly a
-    /// 10-minute grace window — long enough to ride out a transient Boltz
-    /// route blip, short enough that a real "swap unknown to this provider"
-    /// surfaces inside a working day.
+    /// Number of consecutive Boltz 404s before a swap becomes terminal. At the
+    /// one-minute polling cadence this gives transient routing failures ten
+    /// minutes to recover.
     /// </summary>
     private const int UnknownToProviderThreshold = 10;
 
-    private Task? _cacheTask;
     private Task? _routinePollTask;
 
     /// <summary>
     /// Long-lived task that owns the persistent Boltz websocket connection.
-    /// One task for the lifetime of the provider — replaces the previous
-    /// "cancel and recreate on every set change" pattern. Per the Boltz spec
-    /// (https://api.docs.boltz.exchange/api-v2.html#websocket) the right
-    /// model is one connection plus subscribe/unsubscribe for set changes.
+    /// One task serves the provider lifetime; set changes use subscribe and
+    /// unsubscribe operations on that connection.
     /// </summary>
     private Task? _websocketTask;
     /// <summary>The currently-connected client, or null when reconnecting / shutting down.</summary>
-    private BoltzWebsocketClient? _websocket;
+    private IBoltzWebsocketClient? _websocket;
+    internal Func<Uri, IBoltzWebsocketClient> WebsocketClientFactory { get; set; } =
+        uri => new BoltzWebsocketClient(uri);
+    internal TimeSpan WebsocketReconnectDelay { get; set; } = TimeSpan.FromSeconds(5);
     /// <summary>
     /// Serialises subscribe/unsubscribe calls so two storage events firing
     /// at once can't interleave their websocket sends mid-payload.
     /// </summary>
     private readonly SemaphoreSlim _websocketLock = new(1, 1);
-    private Network? _network;
-    private ECXOnlyPubKey? _serverKey;
-
     public BoltzSwapProvider(
         BoltzClient boltzClient,
         BoltzLimitsValidator limitsValidator,
@@ -205,178 +182,125 @@ public partial class BoltzSwapProvider : ISwapProvider
     // ─── Monitoring ────────────────────────────────────────────────
 
     /// <summary>
-    /// Called by the router when a VTXO changes on a script associated with a Boltz swap.
+    /// Called by the router when a VTXO changes. Deliberately a no-op: VTXO
+    /// state for a swap's contract script is refreshed from the indexer inside
+    /// <see cref="ProcessSwapStatus"/>, which every websocket update and every
+    /// reconciliation tick already goes through.
     /// </summary>
-    public void NotifyVtxoChanged(ArkVtxo vtxo)
-    {
-        if (_network is null || _serverKey is null) return;
-
-        try
-        {
-            if (_scriptToSwapId.TryGetValue(vtxo.Script, out var id))
-            {
-                _logger?.LogInformation(
-                    "NotifyVtxoChanged: VTXO {Outpoint} on swap {SwapId}'s contract script (amount={Amount}, spent={Spent}) — triggering status poll",
-                    vtxo.OutPoint, id, vtxo.Amount, !String.IsNullOrEmpty(vtxo.SpentByTransactionId));
-                _triggerChannel.Writer.TryWrite($"id:{id}");
-            }
-            else
-            {
-                _logger?.LogDebug(
-                    "NotifyVtxoChanged: VTXO {Outpoint} on script {Script} — no swap mapping, ignoring",
-                    vtxo.OutPoint, vtxo.Script);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "NotifyVtxoChanged: error dispatching VTXO {Outpoint}", vtxo.OutPoint);
-        }
-    }
+    public void NotifyVtxoChanged(ArkVtxo vtxo) { }
 
     /// <summary>
     /// Called by the router when a swap record changes in storage.
     /// </summary>
     public void NotifySwapChanged(ArkSwap swap)
     {
-        // Keep the script→swap map up-to-date synchronously on every storage write.
-        // Previously the map was only populated inside PollSwapState, so a VTXO
-        // arriving on the swap contract between "swap saved" and "first poll
-        // completes" would fire VtxosChanged, NotifyVtxoChanged would not find the
-        // script in _scriptToSwapId, and the swap would stall until the next
-        // routine poll (or a manual sync) populated the map.
-        if (!string.IsNullOrEmpty(swap.ContractScript))
+        if (swap.Status.IsTerminalState())
         {
-            if (swap.Status.IsTerminalState())
-            {
-                if (_scriptToSwapId.TryRemove(swap.ContractScript, out _))
-                    _logger?.LogInformation(
-                        "NotifySwapChanged: swap {SwapId} reached terminal {Status} — removed contract-script mapping",
-                        swap.SwapId, swap.Status);
-            }
-            else
-            {
-                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
-                _logger?.LogInformation(
-                    "NotifySwapChanged: swap {SwapId} storage event (type={Type}, status={Status}) — map now has {Count} entries",
-                    swap.SwapId, swap.SwapType, swap.Status, _scriptToSwapId.Count);
-            }
+            if (_swapsIdToWatch.TryRemove(swap.SwapId, out _))
+                _ = UpdateWebsocketSubscriptionsAsync([swap.SwapId], subscribe: false);
         }
-        else
+        else if (_swapsIdToWatch.TryAdd(swap.SwapId, 0))
         {
-            _logger?.LogDebug(
-                "NotifySwapChanged: swap {SwapId} storage event (type={Type}, status={Status}) — no contract script yet",
-                swap.SwapId, swap.SwapType, swap.Status);
+            _ = UpdateWebsocketSubscriptionsAsync([swap.SwapId], subscribe: true);
         }
-
-        _triggerChannel.Writer.TryWrite($"id:{swap.SwapId}");
     }
 
     private async Task RoutinePoll(TimeSpan interval, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            _triggerChannel.Writer.TryWrite("");
+            try
+            {
+                await ReconcileActiveSwaps(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Boltz routine reconciliation failed");
+            }
+
             await Task.Delay(interval, cancellationToken);
         }
     }
 
-    /// <summary>
-    /// Fire-and-forget delayed retry: re-enqueue a swap id on the trigger
-    /// channel after a short delay. Used by <see cref="RequestSubmarineCoopRefund"/>
-    /// when an early-return is caused by a transient race (canonical VTXO not
-    /// yet visible at the swap script). Without this the next opportunity to
-    /// re-attempt is the 1-minute routine poll, which can stack to multiple
-    /// cycles on slow CI runners and blow through the test budget. Uses the
-    /// provider's shutdown token so the retry survives the current
-    /// <c>PollSwapState</c> call's cancellation but stops on provider shutdown.
-    /// </summary>
-    private void ScheduleNearTermRetry(string swapId, TimeSpan delay)
+    internal async Task ReconcileActiveSwaps(CancellationToken cancellationToken)
     {
-        _ = Task.Run(async () =>
+        var activeSwaps = await _swapsStorage.GetSwaps(active: true, cancellationToken: cancellationToken);
+        var activeIds = activeSwaps.Select(s => s.SwapId).ToHashSet();
+        var watchedIds = _swapsIdToWatch.Keys.ToHashSet();
+        var added = activeIds.Except(watchedIds).ToArray();
+        var removed = watchedIds.Except(activeIds).ToArray();
+
+        foreach (var id in added) _swapsIdToWatch.TryAdd(id, 0);
+        foreach (var id in removed)
         {
+            _swapsIdToWatch.TryRemove(id, out _);
+            // A swap that left the active set by any other route would otherwise
+            // leave its 404 counter behind for the provider's lifetime.
+            _consecutiveUnknown.TryRemove(id, out _);
+        }
+
+        // WebSocket acknowledgements must never hold up REST reconciliation.
+        if (added.Length > 0)
+            _ = UpdateWebsocketSubscriptionsAsync(added, subscribe: true);
+        if (removed.Length > 0)
+            _ = UpdateWebsocketSubscriptionsAsync(removed, subscribe: false);
+
+        foreach (var chunk in activeIds.Chunk(BoltzClient.MaxSwapStatusBatchSize))
+        {
+            // Boltz only parses `ids` as an array when the query string repeats the
+            // parameter, so a one-element batch goes out as `?ids=x` and comes back
+            // 400 "ids must be an array" — never 404. One active swap is the ordinary
+            // case, not an edge case, so ask for it the way Boltz can answer.
+            if (chunk.Length == 1)
+            {
+                await PollSwapState(chunk, cancellationToken);
+                continue;
+            }
+
             try
             {
-                await Task.Delay(delay, _shutdownCts.Token);
-                _triggerChannel.Writer.TryWrite($"id:{swapId}");
-            }
-            catch (OperationCanceledException) { /* shutdown */ }
-            catch (Exception ex)
-            {
-                _logger?.LogDebug(ex, "Near-term retry scheduling for swap {SwapId} aborted", swapId);
-            }
-        });
-    }
-
-    private async Task DoUpdateStorage(CancellationToken cancellationToken)
-    {
-        await foreach (var eventDetails in _triggerChannel.Reader.ReadAllAsync(cancellationToken))
-        {
-            try
-            {
-                if (eventDetails.StartsWith("id:"))
+                var statuses = await _boltzClient.GetSwapStatusesAsync(chunk, cancellationToken);
+                foreach (var (swapId, status) in statuses)
                 {
-                    var swapId = eventDetails[3..];
-
-                    // If we already watch this swap, just poll — the
-                    // persistent websocket already has it subscribed.
-                    if (_swapsIdToWatch.ContainsKey(swapId))
+                    try
                     {
-                        _logger?.LogDebug("Swap {SwapId} update triggered (already monitored), polling state", swapId);
-                        await PollSwapState([swapId], cancellationToken);
+                        await ProcessSwapStatus(swapId, status, cancellationToken);
                     }
-                    else
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        _logger?.LogInformation("New swap {SwapId} detected, subscribing on persistent websocket", swapId);
-                        await PollSwapState([swapId], cancellationToken);
-
-                        // Add to in-memory watch set + send a Subscribe op
-                        // through the persistent websocket. No connection
-                        // restart — that's the whole point of this fix.
-                        _swapsIdToWatch.TryAdd(swapId, 0);
-                        await SubscribeOnWebsocketAsync([swapId], cancellationToken);
+                        _logger?.LogError(ex, "Swap {SwapId}: reconciliation failed", swapId);
                     }
                 }
-                else
+
+                // A 200 OK that quietly drops IDs is not a 404, so it never reaches the
+                // handler below: the omitted swaps would get no status, no unknown-count
+                // increment, and would sit in _swapsIdToWatch for the provider's lifetime.
+                // Re-ask for them one by one so a genuinely unknown ID trips the 404 path.
+                var missing = chunk.Where(id => !statuses.ContainsKey(id)).ToArray();
+                if (missing.Length > 0)
                 {
-                    var activeSwaps =
-                        await _swapsStorage.GetSwaps(active: true, cancellationToken: cancellationToken);
-                    var newSwapIdSet =
-                        activeSwaps.Select(s => s.SwapId).ToHashSet();
-
-                    var currentIds = _swapsIdToWatch.Keys.ToHashSet();
-                    if (currentIds.SetEquals(newSwapIdSet))
-                    {
-                        // Set unchanged, but still poll as a failsafe in case
-                        // the websocket was disconnected between events.
-                        if (newSwapIdSet.Count > 0)
-                        {
-                            _logger?.LogDebug("Routine poll: {Count} active swap(s), polling states as failsafe", newSwapIdSet.Count);
-                            await PollSwapState(newSwapIdSet, cancellationToken);
-                        }
-                        continue;
-                    }
-
-                    var added = newSwapIdSet.Except(currentIds).ToArray();
-                    var removed = currentIds.Except(newSwapIdSet).ToArray();
-                    _logger?.LogInformation(
-                        "Active swap set changed: {OldCount} -> {NewCount} swap(s); subscribing {Added}, unsubscribing {Removed}",
-                        currentIds.Count, newSwapIdSet.Count, added.Length, removed.Length);
-
-                    if (added.Length > 0)
-                        await PollSwapState(added, cancellationToken);
-
-                    foreach (var id in added) _swapsIdToWatch.TryAdd(id, 0);
-                    foreach (var id in removed) _swapsIdToWatch.TryRemove(id, out _);
-
-                    if (added.Length > 0)
-                        await SubscribeOnWebsocketAsync(added, cancellationToken);
-                    if (removed.Length > 0)
-                        await UnsubscribeOnWebsocketAsync(removed, cancellationToken);
+                    _logger?.LogWarning(
+                        "Boltz batch status omitted {Count} of {Total} requested swap(s) ({Ids}) — polling them individually",
+                        missing.Length, chunk.Length, string.Join(", ", missing));
+                    await PollSwapState(missing, cancellationToken);
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (HttpRequestException ex)
             {
-                _logger?.LogError(ex, "Error processing swap update trigger: {Details}", eventDetails);
+                // Any batch-level failure — a stale ID in the chunk (404), a Boltz
+                // instance without /v2/swap/status, a rejected query shape (400) —
+                // must degrade this tick to per-ID polling rather than abort it.
+                // Letting it escape kills the whole reconciliation pass, and with it
+                // the only recovery path for swaps the websocket never hears about.
+                _logger?.LogWarning(ex,
+                    "Boltz batch status failed ({Status}) for a chunk of {Count} swap(s) — falling back to individual polls",
+                    ex.StatusCode, chunk.Length);
+                // Identify the stale ID without penalizing valid swaps in the chunk.
+                await PollSwapState(chunk, cancellationToken);
             }
         }
     }
@@ -388,155 +312,13 @@ public partial class BoltzSwapProvider : ISwapProvider
             try
             {
                 _logger?.LogDebug("PollSwapState: querying Boltz for {SwapId}", idToPoll);
-                var swapStatus = await _boltzClient.GetSwapStatusAsync(idToPoll, _shutdownCts.Token);
-                // A successful response (any non-throwing path past GetSwapStatusAsync)
-                // means Boltz still recognises this swap — clear the unknown counter.
-                _consecutiveUnknown.TryRemove(idToPoll, out _);
+                var swapStatus = await _boltzClient.GetSwapStatusAsync(idToPoll, cancellationToken);
                 if (swapStatus?.Status is null)
                 {
                     _logger?.LogDebug("Swap {SwapId}: Boltz returned null status", idToPoll);
                     continue;
                 }
-                _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}'", idToPoll, swapStatus.Status);
-
-                await using var @lock = await _safetyService.LockKeyAsync($"swap::{idToPoll}", cancellationToken);
-                var swaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
-                var swap = swaps.FirstOrDefault();
-                if (swap == null)
-                {
-                    _logger?.LogWarning("Swap {SwapId}: not found in storage", idToPoll);
-                    continue;
-                }
-
-                // Tag every log line emitted during this iteration with the
-                // owning wallet so per-wallet diagnostic-log capture can route
-                // them — including transitive calls into TryClaimBtcForChainSwap,
-                // TrySignBoltzBtcClaim, RequestRefundCooperatively. The using
-                // block targets the foreach iteration body; its finally disposes
-                // the scope before continue/break exits this iteration.
-                using var walletScope = _logger?.BeginScope(("WalletId", swap.WalletId));
-
-                _scriptToSwapId[swap.ContractScript] = swap.SwapId;
-
-                // Terminal states: nothing to do
-                if (swap.Status.IsTerminalState()) continue;
-
-                // Refresh VTXO state for the swap's contract script directly against arkd.
-                // We cannot rely solely on the indexer subscription stream here: arkd does
-                // not retroactively replay events, so if a VTXO lands between the moment
-                // we subscribe and the moment we start reading the stream (or if a stream
-                // reconnect drops a message), it never reaches NotifyVtxoChanged and the
-                // swap stalls until a manual sync. Polling the single contract script per
-                // status-check is cheap and closes that gap.
-                if (!string.IsNullOrEmpty(swap.ContractScript))
-                {
-                    var freshCount = 0;
-                    try
-                    {
-                        await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
-                                           new HashSet<string> { swap.ContractScript }, cancellationToken))
-                        {
-                            freshCount++;
-                            await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
-                        }
-                        _logger?.LogInformation(
-                            "Swap {SwapId}: refreshed contract script — arkd returned {Count} VTXO(s)",
-                            idToPoll, freshCount);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        _logger?.LogWarning(ex, "Swap {SwapId}: failed to refresh VTXOs for contract script during status poll", idToPoll);
-                    }
-                }
-
-                switch (BoltzOperationClassifier.Classify(swap, swapStatus.Status))
-                {
-                    case BoltzSwapAction.CanCoopRefundSubmarine:
-                        await RequestSubmarineCoopRefund(swap, swapStatus, cancellationToken);
-                        continue;
-
-                    case BoltzSwapAction.CanCoopRefundArkToBtc:
-                        await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
-                        continue;
-
-                    case BoltzSwapAction.CanCoopRefundBtcToArk:
-                        await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
-                        continue;
-
-                    case BoltzSwapAction.CanRenegotiateChain:
-                    {
-                        if (await TryRenegotiateChainSwap(swap, cancellationToken))
-                        {
-                            // Renegotiation accepted — re-poll immediately so the claim
-                            // fires in this cycle rather than waiting for the next tick.
-                            await PollSwapState([swap.SwapId], cancellationToken);
-                            continue;
-                        }
-
-                        if (swap.SwapType == ArkSwapType.ChainArkToBtc)
-                        {
-                            await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
-                            continue;
-                        }
-                        await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
-                        continue;
-                    }
-
-                    case BoltzSwapAction.CanClaimChain:
-                        await TryClaimBtcForChainSwap(swap, cancellationToken);
-                        break;
-
-                    case BoltzSwapAction.ReadyToSignClaim:
-                        await TrySignBoltzBtcClaim(swap, cancellationToken);
-                        break;
-                }
-
-
-                // Re-read swap — claim handlers may have updated status to terminal
-                var updatedSwaps = await _swapsStorage.GetSwaps(swapIds: [idToPoll], cancellationToken: cancellationToken);
-                swap = updatedSwaps.FirstOrDefault() ?? swap;
-                if (swap.Status.IsSuccess())
-                {
-                    continue;
-                }
-
-                // Only update status for genuinely terminal Boltz statuses.
-                // Operational statuses (swap.expired, invoice.failedToPay, etc.)
-                // return null — the classifier above already handled the action.
-                var newStatus = BoltzSwapStatus.ToArkSwapStatus(swapStatus.Status);
-                if (newStatus is null)
-                {
-                    _logger?.LogDebug("Swap {SwapId}: Boltz '{BoltzStatus}' is an operational status, no status update",
-                        idToPoll, swapStatus.Status);
-                    continue;
-                }
-
-                if (swap.Status == newStatus)
-                {
-                    _logger?.LogDebug("Swap {SwapId}: Boltz '{BoltzStatus}' -> {Status}, unchanged",
-                        idToPoll, swapStatus.Status, newStatus);
-                    continue;
-                }
-
-                _logger?.LogInformation("Swap {SwapId}: {OldStatus} -> {NewStatus} (Boltz: '{BoltzStatus}')",
-                    idToPoll, swap.Status, newStatus, swapStatus.Status);
-
-                var swapWithNewStatus = swap with { Status = newStatus.Value, UpdatedAt = DateTimeOffset.UtcNow };
-                await _swapsStorage.SaveSwap(swap.WalletId, swapWithNewStatus, cancellationToken: cancellationToken);
-                RaiseSwapStatusChanged(swapWithNewStatus);
-
-                if (swapWithNewStatus.Status.IsTerminalState())
-                {
-                    _logger?.LogInformation("Swap {SwapId}: terminal state {Status}, removing from watch list",
-                        idToPoll, swapWithNewStatus.Status);
-                    _scriptToSwapId.Remove(swapWithNewStatus.ContractScript, out _);
-                    _swapsIdToWatch.TryRemove(swapWithNewStatus.SwapId, out _);
-
-                    // Drop the subscription on the persistent websocket so we
-                    // don't keep receiving updates for a swap we no longer
-                    // care about. Best-effort — failure is non-fatal.
-                    await UnsubscribeOnWebsocketAsync([swapWithNewStatus.SwapId], cancellationToken);
-                }
+                await ProcessSwapStatus(idToPoll, swapStatus, cancellationToken);
             }
             catch (BoltzSwapNotFoundException)
             {
@@ -558,6 +340,112 @@ public partial class BoltzSwapProvider : ISwapProvider
                 _logger?.LogError(ex, "Swap {SwapId}: error polling state from Boltz", idToPoll);
             }
         }
+    }
+
+    /// <summary>
+    /// Handles one Boltz status update for <paramref name="swapId"/>.
+    /// </summary>
+    /// <remarks>
+    /// The re-poll after a successful chain renegotiation deliberately runs outside
+    /// <see cref="ProcessSwapStatusUnderLock"/>: that method holds the non-reentrant
+    /// <c>swap::{id}</c> keyed lock, and <see cref="PollSwapState"/> re-enters
+    /// <see cref="ProcessSwapStatus"/> for the same id. Polling inside the lock
+    /// deadlocks the swap until the caller's token fires.
+    /// </remarks>
+    private async Task ProcessSwapStatus(
+        string swapId,
+        SwapStatusResponse swapStatus,
+        CancellationToken cancellationToken)
+    {
+        if (await ProcessSwapStatusUnderLock(swapId, swapStatus, cancellationToken))
+            await PollSwapState([swapId], cancellationToken);
+    }
+
+    private async Task<bool> ProcessSwapStatusUnderLock(
+        string swapId,
+        SwapStatusResponse swapStatus,
+        CancellationToken cancellationToken)
+    {
+        _consecutiveUnknown.TryRemove(swapId, out _);
+        _logger?.LogInformation("Swap {SwapId}: Boltz status '{BoltzStatus}'", swapId, swapStatus.Status);
+
+        await using var @lock = await _safetyService.LockKeyAsync($"swap::{swapId}", cancellationToken);
+        var swap = (await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken))
+            .FirstOrDefault();
+        if (swap is null || swap.Status.IsTerminalState())
+            return false;
+
+        // Scope transitive action logs to the owning wallet.
+        using var walletScope = _logger?.BeginScope(("WalletId", swap.WalletId));
+
+        // Refresh directly because indexer subscriptions do not replay missed events.
+        if (!string.IsNullOrEmpty(swap.ContractScript))
+        {
+            try
+            {
+                await foreach (var freshVtxo in _clientTransport.GetVtxoByScriptsAsSnapshot(
+                                   new HashSet<string> { swap.ContractScript }, cancellationToken))
+                {
+                    await _vtxoStorage.UpsertVtxo(freshVtxo, cancellationToken);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex, "Swap {SwapId}: failed to refresh its contract VTXOs", swapId);
+            }
+        }
+
+        switch (BoltzOperationClassifier.Classify(swap, swapStatus.Status))
+        {
+            case BoltzSwapAction.CanCoopRefundSubmarine:
+                await RequestSubmarineCoopRefund(swap, swapStatus, cancellationToken);
+                return false;
+            case BoltzSwapAction.CanCoopRefundArkToBtc:
+                await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
+                return false;
+            case BoltzSwapAction.CanCoopRefundBtcToArk:
+                await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
+                return false;
+            case BoltzSwapAction.CanRenegotiateChain:
+                if (await TryRenegotiateChainSwap(swap, cancellationToken))
+                {
+                    return true;
+                }
+                if (swap.SwapType == ArkSwapType.ChainArkToBtc)
+                    await TryCoopRefundArkToBtc(swap, swapStatus, cancellationToken);
+                else
+                    await TryRefundBtcToArk(swap, swapStatus, cancellationToken);
+                return false;
+            case BoltzSwapAction.CanClaimChain:
+                await TryClaimBtcForChainSwap(swap, cancellationToken);
+                break;
+            case BoltzSwapAction.ReadyToSignClaim:
+                await TrySignBoltzBtcClaim(swap, cancellationToken);
+                break;
+        }
+
+        // Claim and refund handlers may have made the swap terminal.
+        swap = (await _swapsStorage.GetSwaps(swapIds: [swapId], cancellationToken: cancellationToken))
+            .FirstOrDefault() ?? swap;
+        if (swap.Status.IsSuccess())
+            return false;
+
+        // Operational statuses are handled above and map to null.
+        var newStatus = BoltzSwapStatus.ToArkSwapStatus(swapStatus.Status);
+        if (newStatus is null || swap.Status == newStatus)
+            return false;
+
+        var updatedSwap = swap with { Status = newStatus.Value, UpdatedAt = DateTimeOffset.UtcNow };
+        await _swapsStorage.SaveSwap(swap.WalletId, updatedSwap, cancellationToken: cancellationToken);
+        RaiseSwapStatusChanged(updatedSwap);
+
+        if (updatedSwap.Status.IsTerminalState() &&
+            _swapsIdToWatch.TryRemove(updatedSwap.SwapId, out _))
+        {
+            await UpdateWebsocketSubscriptionsAsync([updatedSwap.SwapId], subscribe: false);
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -615,8 +503,7 @@ public partial class BoltzSwapProvider : ISwapProvider
             "Swap {SwapId}: marked Failed after {Threshold} consecutive Boltz 404s — swap is unknown to the configured Boltz instance",
             swapId, UnknownToProviderThreshold);
 
-        // Stop polling and clear the counter. NotifySwapChanged handles
-        // _scriptToSwapId eviction via the SaveSwap event we just emitted.
+        // Stop monitoring and clear the counter.
         _swapsIdToWatch.TryRemove(swapId, out _);
         _consecutiveUnknown.TryRemove(swapId, out _);
     }
@@ -638,16 +525,16 @@ public partial class BoltzSwapProvider : ISwapProvider
     /// https://api.docs.boltz.exchange/api-v2.html#websocket — one
     /// connection, repeated subscribe/unsubscribe ops keyed by swap id.
     /// </remarks>
-    private async Task RunWebsocketLoop(CancellationToken cancellationToken)
+    internal async Task RunWebsocketLoop(CancellationToken cancellationToken)
     {
         var wsUri = _boltzClient.DeriveWebSocketUri();
         while (!cancellationToken.IsCancellationRequested)
         {
-            BoltzWebsocketClient? client = null;
+            IBoltzWebsocketClient? client = null;
             try
             {
                 _logger?.LogInformation("Connecting to Boltz websocket at {Uri}", wsUri);
-                client = new BoltzWebsocketClient(wsUri);
+                client = WebsocketClientFactory(wsUri);
                 client.OnAnyEventReceived += OnSwapEventReceived;
                 await client.ConnectAsync(cancellationToken);
 
@@ -708,33 +595,55 @@ public partial class BoltzSwapProvider : ISwapProvider
             }
 
             if (!cancellationToken.IsCancellationRequested)
-                await Task.Delay(5000, cancellationToken);
+                await Task.Delay(WebsocketReconnectDelay, cancellationToken);
         }
     }
 
     /// <summary>
-    /// Subscribe additional swap ids on the current persistent websocket.
-    /// No-ops when the websocket is disconnected — the reconnect loop will
-    /// pick the ids up from <see cref="_swapsIdToWatch"/> on its next attempt.
+    /// Subscribe or unsubscribe swap ids on the current persistent websocket.
+    /// No-ops when the websocket is disconnected and swallows send failures —
+    /// the reconnect loop re-subscribes from <see cref="_swapsIdToWatch"/> on
+    /// its next attempt, and leaving a terminal swap subscribed costs only a
+    /// stray status update that is ignored locally.
     /// </summary>
-    private async Task SubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken cancellationToken)
+    private async Task UpdateWebsocketSubscriptionsAsync(IReadOnlyList<string> swapIds, bool subscribe)
     {
         if (swapIds.Count == 0) return;
-        await _websocketLock.WaitAsync(cancellationToken);
+        var operation = subscribe ? "Subscribe" : "Unsubscribe";
+        var token = _shutdownCts.Token;
+        try
+        {
+            await _websocketLock.WaitAsync(token);
+        }
+        catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+        {
+            return;
+        }
+
         try
         {
             if (_websocket is null)
             {
-                _logger?.LogDebug("Skipping websocket Subscribe: connection not yet up; reconnect loop will pick up [{SwapIds}]",
-                    string.Join(", ", swapIds));
+                _logger?.LogDebug(
+                    "Skipping websocket {Operation}: connection not yet up; reconnect loop will pick up [{SwapIds}]",
+                    operation, string.Join(", ", swapIds));
                 return;
             }
-            await _websocket.SubscribeAsync(swapIds.ToArray(), cancellationToken);
+
+            var ids = swapIds.ToArray();
+            if (subscribe)
+                await _websocket.SubscribeAsync(ids, token);
+            else
+                await _websocket.UnsubscribeAsync(ids, token);
+        }
+        catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+        {
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger?.LogWarning(ex, "websocket Subscribe failed for [{SwapIds}]; reconnect loop will retry",
-                string.Join(", ", swapIds));
+            _logger?.LogWarning(ex,
+                "websocket {Operation} failed for [{SwapIds}]; reconnect loop will retry",
+                operation, string.Join(", ", swapIds));
         }
         finally
         {
@@ -742,48 +651,34 @@ public partial class BoltzSwapProvider : ISwapProvider
         }
     }
 
-    /// <summary>
-    /// Unsubscribe swap ids from the current persistent websocket. Failures
-    /// are logged and swallowed — leaving a terminal swap subscribed costs
-    /// only a stray status push that the channel reader will route to a
-    /// no-op poll.
-    /// </summary>
-    private async Task UnsubscribeOnWebsocketAsync(IReadOnlyList<string> swapIds, CancellationToken cancellationToken)
-    {
-        if (swapIds.Count == 0) return;
-        await _websocketLock.WaitAsync(cancellationToken);
-        try
-        {
-            if (_websocket is null) return;
-            await _websocket.UnsubscribeAsync(swapIds.ToArray(), cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger?.LogDebug(ex, "websocket Unsubscribe failed for [{SwapIds}]; swap is already terminal locally so this is non-fatal",
-                string.Join(", ", swapIds));
-        }
-        finally
-        {
-            _websocketLock.Release();
-        }
-    }
-
-    private Task OnSwapEventReceived(WebSocketResponse? response)
+    private async Task OnSwapEventReceived(WebSocketResponse? response)
     {
         try
         {
             if (response is null)
-                return Task.CompletedTask;
+                return;
 
             if (response.Event == "update" && response is { Channel: "swap.update", Args.Count: > 0 })
             {
-                var swapUpdate = response.Args[0];
-                if (swapUpdate != null)
+                foreach (var swapUpdate in response.Args)
                 {
-                    var id = swapUpdate["id"]!.GetValue<string>();
-                    var status = swapUpdate["status"]?.GetValue<string>();
-                    _logger?.LogDebug("Websocket event: swap {SwapId} status '{Status}'", id, status);
-                    _triggerChannel.Writer.TryWrite($"id:{id}");
+                    var id = swapUpdate?["id"]?.GetValue<string>();
+                    var status = swapUpdate?.Deserialize<SwapStatusResponse>();
+                    if (id is null || status?.Status is null)
+                        continue;
+
+                    try
+                    {
+                        await ProcessSwapStatus(id, status, _shutdownCts.Token);
+                    }
+                    catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogError(ex, "Swap {SwapId}: WebSocket update failed", id);
+                    }
                 }
             }
         }
@@ -791,8 +686,6 @@ public partial class BoltzSwapProvider : ISwapProvider
         {
             _logger?.LogError(ex, "Error processing websocket event");
         }
-
-        return Task.CompletedTask;
     }
 
     // ─── Swap Creation (delegated from SwapsManagementService) ────
