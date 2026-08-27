@@ -29,4 +29,9 @@
             <_Parameter1>NArk.Tests</_Parameter1>
         </AssemblyAttribute>
     </ItemGroup>
+
+
+    <ItemGroup>
+      <Folder Include="Onchain\" />
+    </ItemGroup>
 </Project>

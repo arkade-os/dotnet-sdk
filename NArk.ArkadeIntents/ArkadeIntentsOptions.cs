@@ -21,4 +21,21 @@ public sealed class ArkadeIntentsOptions
     /// </para>
     /// </remarks>
     public string? EmulatorPubkeyOverride { get; set; }
+
+    /// <summary>
+    /// Refuse a receive quote that bills the payer more than this, in sats. Unset means no ceiling.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A receive request pins one leg and leaves the other to the solver. Pinning what the payer is
+    /// billed fixes it exactly and needs no ceiling; pinning what lands on Arkade leaves the payer's
+    /// side as the solver's free variable, and this is the only thing bounding it.
+    /// </para>
+    /// <para>
+    /// Nothing is at risk either way — a quote is refused before an invoice reaches anyone, and the
+    /// amount that lands is checked separately. What a ceiling prevents is handing a customer an
+    /// invoice for more than the order they approved, which their wallet may refuse outright.
+    /// </para>
+    /// </remarks>
+    public long? MaxPayAmountSats { get; set; }
 }

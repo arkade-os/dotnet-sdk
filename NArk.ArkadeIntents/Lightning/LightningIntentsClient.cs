@@ -62,6 +62,9 @@ public sealed partial class LightningIntentsClient
     /// <summary>A co-signer supplied in place of the network's pin, or <c>null</c>.</summary>
     private readonly string? _emulatorPubkeyOverride;
 
+    /// <summary>The ceiling on what a receive quote may bill the payer, or <c>null</c> for none.</summary>
+    private readonly long? _maxPayAmountSats;
+
     private readonly TimeProvider _time;
     private readonly ILogger<LightningIntentsClient>? _logger;
 
@@ -82,8 +85,8 @@ public sealed partial class LightningIntentsClient
     /// out the worst-case lag instead.
     /// </param>
     /// <param name="options">
-    /// Corridor settings. Only the covenant co-signer override is read here; unset means the
-    /// network's pinned key.
+    /// Corridor settings: the covenant co-signer override, and the ceiling on what a receive quote
+    /// may bill the payer.
     /// </param>
     /// <param name="time">Clock for the deadline comparisons; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
@@ -110,7 +113,9 @@ public sealed partial class LightningIntentsClient
         _walletProvider = walletProvider;
         _cipher = cipher ?? new AesGcmCipher();
         _blockchain = blockchain;
-        _emulatorPubkeyOverride = (options?.Value ?? new ArkadeIntentsOptions()).EmulatorPubkeyOverride;
+        var resolved = options?.Value ?? new ArkadeIntentsOptions();
+        _emulatorPubkeyOverride = resolved.EmulatorPubkeyOverride;
+        _maxPayAmountSats = resolved.MaxPayAmountSats;
         _time = time ?? TimeProvider.System;
         _logger = logger;
     }

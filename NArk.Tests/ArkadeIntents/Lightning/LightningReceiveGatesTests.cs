@@ -209,6 +209,47 @@ public class LightningReceiveGatesTests
         Assert.That(payDeadline, Is.EqualTo(expiry - 900));
     }
 
+    [Test]
+    public void AssertReceivable_RefusesAQuoteBillingThePayerAboveTheCeiling()
+    {
+        // Pinning what lands on Arkade leaves the payer's side to the solver. Without a ceiling
+        // nothing bounds it, and the invoice a customer is handed is the first place it shows.
+        var invoice = BOLT11PaymentRequest.Parse(Invoice, Network.RegTest);
+        var expiry = invoice.ExpiryDate.ToUnixTimeSeconds();
+        var quote = Quote(Invoice, AmountSats, fromAmount: 80_000,
+            validUntil: expiry + 600, refundLocktime: expiry + 3600);
+
+        var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
+            LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 600, maxPayAmountSats: 60_000));
+
+        Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.PriceTooHigh));
+    }
+
+    [Test]
+    public void AssertReceivable_AcceptsAQuoteAtTheCeiling()
+    {
+        var invoice = BOLT11PaymentRequest.Parse(Invoice, Network.RegTest);
+        var expiry = invoice.ExpiryDate.ToUnixTimeSeconds();
+        var quote = Quote(Invoice, AmountSats, fromAmount: 60_000,
+            validUntil: expiry + 600, refundLocktime: expiry + 3600);
+
+        Assert.DoesNotThrow(() =>
+            LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 600, maxPayAmountSats: 60_000));
+    }
+
+    [Test]
+    public void AssertReceivable_WithNoCeiling_DoesNotBoundThePayersSide()
+    {
+        // The default stays permissive: a deployment that pins the payer's leg does not need this,
+        // and turning it on silently would refuse quotes that were always fine.
+        var invoice = BOLT11PaymentRequest.Parse(Invoice, Network.RegTest);
+        var expiry = invoice.ExpiryDate.ToUnixTimeSeconds();
+        var quote = Quote(Invoice, AmountSats, fromAmount: 10_000_000,
+            validUntil: expiry + 600, refundLocktime: expiry + 3600);
+
+        Assert.DoesNotThrow(() => LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 600));
+    }
+
     private static RfqQuote<LightningReceiveQuoteProfile> Quote(
         string? invoice, long toAmount, long? fromAmount = null,
         long validUntil = 1_800_000_900, long refundLocktime = 1_800_605_184) => new()

@@ -162,8 +162,10 @@ public sealed partial class LightningIntentsClient
             quote, sealed_.PaymentHash, amountSats, amountSide, serverInfo.Network);
 
         // The last check before the invoice can reach a payer: paying into a window too short to
-        // claim in parks the payer's money in a held HTLC until it lapses.
-        LightningReceiveGates.AssertReceivable(quote, invoice, _time.GetUtcNow().ToUnixTimeSeconds());
+        // claim in parks the payer's money in a held HTLC until it lapses, and a quote billing more
+        // than the deployment allows is one whose invoice should never be handed out.
+        LightningReceiveGates.AssertReceivable(
+            quote, invoice, _time.GetUtcNow().ToUnixTimeSeconds(), _maxPayAmountSats);
 
         var contract = await DeriveLockupAsync(
             quote, sealed_.PaymentHash, payoutDescriptor, payoutPkScript, serverInfo, cancellationToken);
