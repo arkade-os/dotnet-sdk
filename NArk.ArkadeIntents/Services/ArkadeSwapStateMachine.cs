@@ -87,6 +87,16 @@ public enum SwapStepKind
     /// <summary>The counterparty funds its side.</summary>
     CounterpartyFunds,
 
+    /// <summary>
+    /// Waiting for the counterparty's on-chain funding to reach the confirmations it was quoted at.
+    /// </summary>
+    /// <remarks>
+    /// Only the onchain corridor has this: every other rail either settles instantly from this
+    /// SDK's point of view or reports its own progress. Here the wait is real work, and the count
+    /// is the solver's to name and this SDK's to refuse if it is unreasonable.
+    /// </remarks>
+    AwaitConfirmations,
+
     /// <summary>The counterparty fills — pays the invoice, or takes the offer.</summary>
     CounterpartyFills,
 
@@ -182,7 +192,8 @@ public static class ArkadeSwapStateMachine
             // completed, which in a payment processor means an order settled against money that came
             // back. A fill cannot happen without the preimage being revealed, and the preimage is
             // checkable against the payment hash, so this is provable rather than inferred.
-            ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc =>
+            ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc
+                or ArkadeSwapIntentType.BtcToOnchain =>
                 o.PreimageRevealed ? ArkadeSwapIntentStatus.Fulfilled : ArkadeSwapIntentStatus.Resolved,
 
             // The asset corridors have no such leaf: a spend can only be the fill.
@@ -196,13 +207,14 @@ public static class ArkadeSwapStateMachine
         {
             // We funded and are waiting on the solver. Once the refund path opens the money is ours
             // to take back, and nobody else will do it.
-            ArkadeSwapIntentType.BtcToLightning when o.PastLocktime =>
+            (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain)
+                when o.PastLocktime =>
                 Changed(current, ArkadeSwapIntentStatus.Refundable),
 
             // Seeing the lockup at all is proof the funding spend landed, which is the only
             // confirmation a swap recorded before its own spend ever gets. From Pending this is a
             // no-op; from Funding it is the promotion.
-            ArkadeSwapIntentType.BtcToLightning =>
+            ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain =>
                 Changed(current, ArkadeSwapIntentStatus.Pending),
 
             // The solver funded and only our preimage moves it. An unspent lockup here is not a swap
@@ -285,6 +297,10 @@ public static class ArkadeSwapStateMachine
             ArkadeIntentAction.ClaimReceive,
         (ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Refundable) =>
             ArkadeIntentAction.RefundSend,
+        (ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentStatus.Pending) =>
+            ArkadeIntentAction.ClaimOnchain,
+        (ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentStatus.Refundable) =>
+            ArkadeIntentAction.RefundSend,
         _ => ArkadeIntentAction.None,
     };
 
@@ -295,7 +311,7 @@ public static class ArkadeSwapStateMachine
     /// Not every step moves the swap — negotiating and verifying leave no trace in storage, and are
     /// listed anyway because the sequence is the thing a caller needs to reason about. The ones that
     /// do move it are checked against the transition table by test, so this cannot describe a state
-    /// the machine never reaches.
+    /// the machine never reache
     /// </remarks>
     /// <param name="type">Which corridor.</param>
     /// <returns>The steps, in order.</returns>
