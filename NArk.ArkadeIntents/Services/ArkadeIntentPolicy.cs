@@ -11,6 +11,17 @@ public enum ArkadeIntentAction
     /// <summary>The counterparty funded a receive swap; spend the claim before its window closes.</summary>
     ClaimReceive,
 
+    /// <summary>
+    /// An off-board's L1 HTLC may be ready to claim — the check is the corridor's, not the status's.
+    /// </summary>
+    /// <remarks>
+    /// Unlike the other actions this one is proposed on every pass rather than gated by a status,
+    /// because what it waits for happens on a chain no VTXO event reports: the solver's funding, and
+    /// then its confirmations. The corridor answers "not yet" until both hold, which the advance
+    /// loop already treats as an ordinary outcome.
+    /// </remarks>
+    ClaimOnchain,
+
     /// <summary>A send swap's refund path opened and nobody else will push it.</summary>
     RefundSend,
 }
