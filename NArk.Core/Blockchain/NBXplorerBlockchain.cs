@@ -286,9 +286,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             if (string.IsNullOrWhiteSpace(hex))
                 return null;
 
-            // Raw Bitcoin transaction parsing is network-independent (the BTC consensus
-            // factory is shared across main/test/regtest).
-            var tx = Transaction.Parse(hex, Network.Main);
+            var tx = Transaction.Parse(hex, _explorerClient.Network.NBitcoinNetwork);
             // Verify the transaction actually hashes to what we asked for rather than
             // trusting the label on the response.
             return tx.GetHash() == txid ? tx : null;

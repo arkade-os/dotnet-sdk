@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Helpers;
 using NArk.Abstractions.VirtualTxs;
@@ -288,6 +289,38 @@ public class PrevArkTxTests
             .ResolveAsync([wanted.GetHash()], Net);
 
         Assert.That(resolved, Is.Empty);
+    }
+
+    [Test]
+    public async Task Provider_BackendWithoutRawTxSupport_GivesUpAfterTheFirstTxid()
+    {
+        // NotSupportedException is structural: the backend has no raw-tx endpoint at all, so
+        // every remaining txid would fail identically. Asking N times would turn one missing
+        // override into N failed calls and N warnings, burying the cause.
+        var first = SampleTx(Money.Coins(1));
+        var second = SampleTx(Money.Coins(2));
+
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns([]);
+
+        var chain = Substitute.For<IBitcoinBlockchain>();
+        chain.GetRawTransactionAsync(Arg.Any<uint256>(), Arg.Any<CancellationToken>())
+            .Returns<Task<Transaction?>>(_ => throw new NotSupportedException("no raw tx endpoint"));
+
+        var logger = Substitute.For<ILogger<PrevArkTxProvider>>();
+
+        var resolved = await new PrevArkTxProvider(transport, virtualTxStorage: null, blockchain: chain, logger: logger)
+            .ResolveAsync([first.GetHash(), second.GetHash()], Net);
+
+        Assert.That(resolved, Is.Empty, "neither txid is resolvable without a raw-tx endpoint");
+        await chain.Received(1).GetRawTransactionAsync(Arg.Any<uint256>(), Arg.Any<CancellationToken>());
+        logger.Received(1).Log(
+            LogLevel.Warning,
+            Arg.Any<EventId>(),
+            Arg.Any<Arg.AnyType>(),
+            Arg.Any<NotSupportedException>(),
+            Arg.Any<Func<Arg.AnyType, Exception?, string>>());
     }
 
     [Test]
