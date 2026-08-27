@@ -120,6 +120,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         PaymentHash = e.PaymentHash,
         HtlcPubkey = e.HtlcPubkey,
         HtlcLocktime = e.HtlcLocktime,
+        OnchainPayoutAddress = e.OnchainPayoutAddress,
         Preimage = e.Preimage,
         RefundLocktime = e.RefundLocktime,
         SpentTxid = e.SpentTxid,
@@ -151,6 +152,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         e.PaymentHash = i.PaymentHash;
         e.HtlcPubkey = i.HtlcPubkey;
         e.HtlcLocktime = i.HtlcLocktime;
+        e.OnchainPayoutAddress = i.OnchainPayoutAddress;
         e.RefundLocktime = i.RefundLocktime;
         e.SpentTxid = i.SpentTxid;
     }

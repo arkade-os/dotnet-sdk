@@ -3,6 +3,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents.Lightning;
 using NArk.Core.Transport;
 using NArk.ArkadeIntents.Models;
+using NArk.ArkadeIntents.Onchain;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.SolverRegistry;
 
@@ -67,6 +68,10 @@ public sealed class ArkadeIntentsService
 {
     private readonly AssetIntentsManager _assets;
     private readonly LightningIntentsClient _lightning;
+
+    /// <summary>The off-board corridor, when one is registered. Optional: it needs L1 access, which
+    /// a lightning-only deployment has no reason to wire up.</summary>
+    private readonly OnchainIntentsClient? _onchain;
     private readonly IArkadeIntentStorage _intentStorage;
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IClientTransport _transport;
@@ -78,6 +83,10 @@ public sealed class ArkadeIntentsService
     /// <param name="lightning">Both Lightning corridors.</param>
     /// <param name="intentStorage">Where every kind of swap is recorded.</param>
     /// <param name="vtxoStorage">The chain view reconciliation compares against.</param>
+    /// <param name="onchain">
+    /// The off-board corridor, or <c>null</c>. Absent, an off-board swap's L1 leg is never acted on
+    /// — which the advance pass reports rather than hides.
+    /// </param>
     /// <param name="time">Clock for the timelock comparisons; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
     public ArkadeIntentsService(
@@ -86,6 +95,7 @@ public sealed class ArkadeIntentsService
         IArkadeIntentStorage intentStorage,
         IVtxoStorage vtxoStorage,
         IClientTransport transport,
+        OnchainIntentsClient? onchain = null,
         TimeProvider? time = null,
         ILogger<ArkadeIntentsService>? logger = null)
     {
@@ -94,6 +104,7 @@ public sealed class ArkadeIntentsService
         _intentStorage = intentStorage;
         _vtxoStorage = vtxoStorage;
         _transport = transport;
+        _onchain = onchain;
         _time = time ?? TimeProvider.System;
         _logger = logger;
     }
@@ -287,6 +298,26 @@ public sealed class ArkadeIntentsService
 
         try
         {
+            // Handled apart from the others because its ordinary answer is "not yet": the L1 leg it
+            // watches produces no event, so this action is proposed on every pass and most passes
+            // find nothing to do. That is an outcome, not a failure, and it moves no swap.
+            if (action == ArkadeIntentAction.ClaimOnchain)
+            {
+                if (_onchain is null)
+                {
+                    return new ArkadeIntentAdvance(
+                        swapId, action, Acted: false,
+                        Error: "no onchain corridor is registered to act on this swap");
+                }
+
+                var outcome = await _onchain.ClaimOnchainAsync(swapId, cancellationToken);
+                if (outcome.Claimed)
+                {
+                    _logger?.LogInformation("Swap {SwapId}: claimed on L1 in {Txid}", swapId, outcome.Txid);
+                }
+                return new ArkadeIntentAdvance(swapId, action, outcome.Claimed, outcome.Txid, outcome.Detail);
+            }
+
             var updated = action switch
             {
                 ArkadeIntentAction.ClaimReceive =>

@@ -97,6 +97,17 @@ public class ArkadeSwapIntent
     /// </remarks>
     public long? HtlcLocktime { get; set; }
 
+    /// <summary>
+    /// Where the off-board pays out on Bitcoin L1 (<see cref="ArkadeSwapIntentType.BtcToOnchain"/>
+    /// only) — the address the client asked to be paid at.
+    /// </summary>
+    /// <remarks>
+    /// The claim chooses this destination, not the HTLC, so it is not committed to by either
+    /// contract and has to be remembered. A swap whose row is lost can still be claimed once
+    /// rebuilt, but the sats would land wherever that rebuild names.
+    /// </remarks>
+    public string? OnchainPayoutAddress { get; set; }
+
     /// <summary>The ark tx that fulfilled the swap (spent the covenant VTXO); set once <see cref="ArkadeSwapIntentStatus.Fulfilled"/>.</summary>
     public string? SpentTxid { get; set; }
 }

@@ -61,6 +61,9 @@ public class ArkadeSwapIntentEntity
     /// <summary>Unix seconds the L1 HTLC's refund leaf opens — onchain corridor only.</summary>
     public long? HtlcLocktime { get; set; }
 
+    /// <summary>Where an off-board pays out on L1 — onchain corridor only.</summary>
+    public string? OnchainPayoutAddress { get; set; }
+
     public string? SpentTxid { get; set; }
 
     public static void Configure(EntityTypeBuilder<ArkadeSwapIntentEntity> builder, ArkStorageOptions options)
