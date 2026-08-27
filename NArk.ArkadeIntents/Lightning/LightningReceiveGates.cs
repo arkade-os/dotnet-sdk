@@ -28,6 +28,9 @@ public enum LightningReceiveRefusalReason
 
     /// <summary>Too little time between the payment deadline and the solver's reclaim opening.</summary>
     ClaimWindowTooShort,
+
+    /// <summary>The quote bills the payer more than the caller's ceiling allows.</summary>
+    PriceTooHigh,
 }
 
 /// <summary>Thrown when a client's own checks refuse a receive quote.</summary>
@@ -162,6 +165,9 @@ public static class LightningReceiveGates
     /// <param name="quote">The solver's quote.</param>
     /// <param name="invoice">The decoded invoice the payer will pay.</param>
     /// <param name="now">The current time, unix seconds.</param>
+    /// <param name="maxPayAmountSats">
+    /// Refuse a quote billing the payer more than this. <c>null</c> for no ceiling.
+    /// </param>
     /// <returns>The payment deadline — the earlier of the invoice's expiry and the quote's
     /// <c>valid_until</c> — unix seconds.</returns>
     /// <exception cref="LightningReceiveNotUsableException">A deadline is already past, or the
@@ -172,9 +178,19 @@ public static class LightningReceiveGates
     /// lockup the solver can reclaim moments after funding it, turns the swap into money parked in
     /// a held HTLC until it lapses. Checked here rather than at claim time because the payment is
     /// the point of no return — once the payer has the invoice, refusing later helps nobody.
+    /// </para>
+    /// <para>
+    /// <paramref name="maxPayAmountSats"/> bounds the leg the request did not pin. Asking to receive
+    /// a fixed amount on Arkade leaves what the payer is billed as the solver's to choose, and this
+    /// is the only thing that limits it — which matters to whoever hands that invoice to a customer,
+    /// not to the swap, since a refusal here costs nothing and the payout is checked separately.
+    /// </para>
     /// </remarks>
     public static long AssertReceivable(
-        RfqQuote<LightningReceiveQuoteProfile> quote, BOLT11PaymentRequest invoice, long now)
+        RfqQuote<LightningReceiveQuoteProfile> quote,
+        BOLT11PaymentRequest invoice,
+        long now,
+        long? maxPayAmountSats = null)
     {
         var payDeadline = Math.Min(invoice.ExpiryDate.ToUnixTimeSeconds(), quote.ValidUntil);
         if (now >= payDeadline)
@@ -190,6 +206,13 @@ public static class LightningReceiveGates
                 LightningReceiveRefusalReason.ClaimWindowTooShort,
                 $"only {quote.RefundLocktime - payDeadline}s to claim after the payment deadline, " +
                 $"need {MinClaimWindowSeconds}s");
+        }
+
+        if (maxPayAmountSats is { } ceiling && quote.FromAmount > ceiling)
+        {
+            throw new LightningReceiveNotUsableException(
+                LightningReceiveRefusalReason.PriceTooHigh,
+                $"the quote bills the payer {quote.FromAmount} sats, above the {ceiling} ceiling");
         }
 
         return payDeadline;
