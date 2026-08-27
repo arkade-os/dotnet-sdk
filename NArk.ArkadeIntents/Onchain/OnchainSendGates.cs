@@ -71,6 +71,21 @@ public static class OnchainSendGates
     public const long MinHeadroomSeconds = 90 * 60;
 
     /// <summary>
+    /// Whether there is still time to claim the L1 HTLC before its refund leaf opens.
+    /// </summary>
+    /// <param name="htlcLocktime">When the counterparty's refund leaf matures, unix seconds.</param>
+    /// <param name="now">Unix seconds.</param>
+    /// <returns><c>true</c> while claiming is still safe.</returns>
+    /// <remarks>
+    /// Claiming near the locktime is a race that can be lost after showing our hand: a broadcast
+    /// that does not confirm before the counterparty's refund does leaves it with its sats back and
+    /// our preimage out of the mempool, which takes the Arkade side too. Both legs, for the sake of
+    /// a few minutes. Declining costs only the covenant refund, which is still ours.
+    /// </remarks>
+    public static bool ClaimWindowIsOpen(long htlcLocktime, long now) =>
+        htlcLocktime - now >= ClaimMarginSeconds;
+
+    /// <summary>
     /// Refuse a quote this corridor cannot safely fund.
     /// </summary>
     /// <param name="quote">The solver's quote.</param>

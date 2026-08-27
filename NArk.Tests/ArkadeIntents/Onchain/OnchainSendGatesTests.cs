@@ -94,6 +94,21 @@ public class OnchainSendGatesTests
         Assert.That(Refusal(stripped, Now), Is.EqualTo(OnchainSendRefusalReason.IncompleteQuote));
     }
 
+    [Test]
+    public void TheClaimWindowClosesBeforeTheCounterpartysRefundOpens()
+    {
+        // Not at the locktime — 90 minutes before it. A claim broadcast inside that margin can fail
+        // to confirm before the refund does, which loses the L1 sats and hands over the preimage
+        // that takes the Arkade side as well.
+        Assert.Multiple(() =>
+        {
+            Assert.That(OnchainSendGates.ClaimWindowIsOpen(Now + 91 * 60, Now), Is.True);
+            Assert.That(OnchainSendGates.ClaimWindowIsOpen(Now + 90 * 60, Now), Is.True, "the margin itself is still open");
+            Assert.That(OnchainSendGates.ClaimWindowIsOpen(Now + 89 * 60, Now), Is.False);
+            Assert.That(OnchainSendGates.ClaimWindowIsOpen(Now - 1, Now), Is.False, "past the locktime");
+        });
+    }
+
     private static OnchainSendRefusalReason Refusal(RfqQuote<OnchainSendQuoteProfile> quote, long now) =>
         Assert.Throws<OnchainSendNotFundableException>(() => OnchainSendGates.AssertFundable(quote, now))!.Reason;
 
