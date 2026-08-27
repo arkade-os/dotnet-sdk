@@ -63,6 +63,7 @@ public sealed class OnchainIntentsClient(
     IContractService contractService,
     ISpendingService spendingService,
     IArkadeIntentStorage intentStorage,
+    IContractStorage contractStorage,
     IVtxoStorage vtxoStorage,
     IWalletProvider walletProvider,
     IBitcoinBlockchain blockchain,
@@ -77,7 +78,8 @@ public sealed class OnchainIntentsClient(
     /// <summary>
     /// Negotiate an off-board and fund its Arkade side.
     /// </summary>
-    /// <param name="walletId">The wallet paying, and receiving both the payout and any refund.</param>
+    /// <param name="walletId">The wallet paying, and receiving any refund.</param>
+    /// <param name="payoutAddress">The Bitcoin L1 address the off-board pays out to.</param>
     /// <param name="amountSats">The size, on the leg <paramref name="amountSide"/> names.</param>
     /// <param name="amountSide">Which leg the size pins.</param>
     /// <param name="rfqTransport">How to reach the solver.</param>
@@ -88,6 +90,7 @@ public sealed class OnchainIntentsClient(
     /// <exception cref="OnchainSendNotFundableException">A safety gate refused — nothing was funded.</exception>
     public async Task<FundedOnchainSend> SendToOnchainAsync(
         string walletId,
+        BitcoinAddress payoutAddress,
         long amountSats,
         RfqAmountSide amountSide,
         IRfqTransport rfqTransport,
@@ -168,6 +171,7 @@ public sealed class OnchainIntentsClient(
             // them, so it cannot drift from what derived it.
             HtlcPubkey = quote.Profile!.HtlcPubkey,
             HtlcLocktime = quote.Profile.HtlcLocktime,
+            OnchainPayoutAddress = payoutAddress.ToString(),
         };
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
@@ -267,6 +271,176 @@ public sealed class OnchainIntentsClient(
             : Convert.FromHexString(rfqId);
 
         return await PreimageProvisioning.DerivePreimageAsync(signer, clientKey, salt, cancellationToken);
+    }
+
+
+    /// <summary>What a pass over an off-board's L1 leg found.</summary>
+    /// <param name="Claimed">True when this pass broadcast the claim.</param>
+    /// <param name="Detail">Why not, when it did not.</param>
+    /// <param name="Txid">The claim transaction, when one was broadcast.</param>
+    public sealed record OnchainClaimOutcome(bool Claimed, string? Detail = null, string? Txid = null);
+
+    /// <summary>
+    /// Claim the solver's L1 HTLC, if it is there and confirmed enough to act on.
+    /// </summary>
+    /// <param name="swapId">The swap's id.</param>
+    /// <param name="cancellationToken">Cancels before the broadcast.</param>
+    /// <returns>What the pass found; <see cref="OnchainClaimOutcome.Claimed"/> false is ordinary.</returns>
+    /// <exception cref="InvalidOperationException">The swap is unknown, or not an off-board.</exception>
+    /// <remarks>
+    /// <para>
+    /// Called on every advance pass rather than when something says it is time, because nothing
+    /// does: the solver's funding lands on a chain no VTXO event reports. "Not yet" is the normal
+    /// answer and is not an error.
+    /// </para>
+    /// <para>
+    /// The claim publishes the preimage, which is what pays the solver on the Arkade side. It is
+    /// therefore refused for less than the swap promised — an underfunded HTLC claimed anyway would
+    /// hand over the secret for a fraction of the price.
+    /// </para>
+    /// </remarks>
+    public async Task<OnchainClaimOutcome> ClaimOnchainAsync(
+        string swapId, CancellationToken cancellationToken = default)
+    {
+        var intent = await intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
+            ?? throw new InvalidOperationException($"Swap '{swapId}' is unknown.");
+
+        if (intent.Type != ArkadeSwapIntentType.BtcToOnchain)
+        {
+            throw new InvalidOperationException($"Swap '{swapId}' is not an off-board.");
+        }
+
+        if (intent.Preimage is not { Length: > 0 } preimageHex
+            || intent.HtlcPubkey is not { Length: > 0 } htlcPubkey
+            || intent.HtlcLocktime is not { } htlcLocktime
+            || intent.OnchainPayoutAddress is not { Length: > 0 } payoutAddress)
+        {
+            return new OnchainClaimOutcome(false, "the swap's L1 leg is not recorded on this row");
+        }
+
+        var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
+        var network = serverInfo.Network;
+
+        // The same rebuild the Lightning refund path uses: the imported contract row is where the
+        // client key lives once the funding is behind us.
+        var contract = await LightningCorridor.LoadLockupAsync(
+            contractStorage, intent.SwapPkScript, intent.Id, network, cancellationToken);
+        var clientKey = contract.Sender;
+        var preimage = Convert.FromHexString(preimageHex);
+        var htlc = OnchainHtlc.Derive(
+            new uint256(System.Security.Cryptography.SHA256.HashData(preimage)),
+            clientKey.ToXOnlyPubKey(),
+            ECXOnlyPubKey.Create(Convert.FromHexString(htlcPubkey)),
+            htlcLocktime,
+            network);
+
+        var utxos = await blockchain.GetUtxosAsync(htlc.Address.ToString(), cancellationToken);
+        if (utxos.Count == 0)
+        {
+            return new OnchainClaimOutcome(false, "the solver has not funded the L1 HTLC yet");
+        }
+
+        var chain = await blockchain.GetChainTime(cancellationToken);
+        // The corridor's ceiling, not the count this swap was quoted at: that count is not
+        // persisted, and of the two ways to be wrong about it, waiting longer than asked is the one
+        // that cannot lose anything. Worth revisiting if the wait becomes the complaint.
+        var required = OnchainSendGates.MaxMinConfirmations;
+        var ready = utxos
+            .Where(u => u.Confirmed && chain.Height - u.BlockHeight + 1 >= required)
+            .ToList();
+
+        if (ready.Count == 0)
+        {
+            return new OnchainClaimOutcome(
+                false, $"the L1 funding has not reached {required} confirmation(s) yet");
+        }
+
+        // Every confirmed output at the address, not the first: the solver may have funded in more
+        // than one, and claiming one would leave the rest for its refund leaf to take back.
+        var total = ready.Aggregate(0UL, (sum, u) => sum + u.Amount);
+        if ((long)total < intent.WantAmount.Satoshi)
+        {
+            return new OnchainClaimOutcome(
+                false,
+                $"the L1 HTLC holds {total} sats, less than the quoted {intent.WantAmount.Satoshi} — "
+                + "refusing to publish the preimage for less than the swap promised");
+        }
+
+        var signed = await BuildClaimAsync(
+            htlc, ready, preimage, clientKey, BitcoinAddress.Create(payoutAddress, network),
+            walletId: intent.WalletId, cancellationToken);
+
+        if (!await blockchain.BroadcastAsync(signed, cancellationToken))
+        {
+            return new OnchainClaimOutcome(false, "the claim transaction was not accepted");
+        }
+
+        logger?.LogInformation(
+            "Swap {SwapId}: claimed {Sats} sats on L1 in {Txid}", swapId, total, signed.GetHash());
+
+        return new OnchainClaimOutcome(true, Txid: signed.GetHash().ToString());
+    }
+
+    /// <summary>Build and sign the script-path spend of the HTLC's claim leaf.</summary>
+    /// <remarks>
+    /// The witness is <c>[signature, preimage, claimLeaf, controlBlock]</c>: the leaf reads the
+    /// preimage off the top of the stack before hashing it, so it is pushed last of the two.
+    /// </remarks>
+    private async Task<Transaction> BuildClaimAsync(
+        OnchainHtlc htlc,
+        IReadOnlyList<BoardingUtxo> inputs,
+        byte[] preimage,
+        OutputDescriptor clientKey,
+        BitcoinAddress payoutAddress,
+        string walletId,
+        CancellationToken cancellationToken)
+    {
+        var signer = await walletProvider.GetSignerAsync(walletId, cancellationToken)
+            ?? throw new InvalidOperationException(
+                $"Wallet '{walletId}' cannot sign, so its L1 claim cannot be built.");
+
+        var tx = Transaction.Create(payoutAddress.Network);
+        var spent = new List<TxOut>();
+
+        foreach (var utxo in inputs)
+        {
+            tx.Inputs.Add(new OutPoint(uint256.Parse(utxo.Txid), utxo.Vout));
+            spent.Add(new TxOut(Money.Satoshis(utxo.Amount), htlc.PkScript));
+        }
+
+        var total = inputs.Aggregate(0UL, (sum, u) => sum + u.Amount);
+        var feeRate = await blockchain.EstimateFeeRateAsync(cancellationToken: cancellationToken);
+
+        // One output, so the fee comes out of the sweep rather than needing a change address the
+        // wallet would then have to watch. Sized against the signed shape: a taproot script-path
+        // witness of a signature, a 32-byte preimage, the leaf and its control block.
+        var weight = 200 + inputs.Count * (
+            41 * 4 + 1 + 65 + 33 + htlc.ClaimLeaf.Length + htlc.ClaimControlBlock.ToBytes().Length);
+        var fee = feeRate.GetFee(weight / 4);
+        var payout = Money.Satoshis((long)total) - fee;
+        if (payout <= Money.Zero)
+        {
+            throw new InvalidOperationException(
+                $"the L1 fee of {fee} exceeds the {total} sats at the HTLC, so there is nothing to claim");
+        }
+
+        tx.Outputs.Add(payout, payoutAddress);
+
+        var leaf = htlc.ClaimLeaf.ToTapScript(TapLeafVersion.C0);
+        for (var i = 0; i < tx.Inputs.Count; i++)
+        {
+            var execData = new TaprootExecutionData(i, leaf.LeafHash) { SigHash = TaprootSigHash.Default };
+            var sighash = tx.GetSignatureHashTaproot(spent.ToArray(), execData);
+            var (_, signature) = await signer.Sign(clientKey, sighash, cancellationToken);
+
+            tx.Inputs[i].WitScript = new WitScript(
+                Op.GetPushOp(signature.ToBytes()),
+                Op.GetPushOp(preimage),
+                Op.GetPushOp(htlc.ClaimLeaf.ToBytes()),
+                Op.GetPushOp(htlc.ClaimControlBlock.ToBytes()));
+        }
+
+        return tx;
     }
 
     private static OutputDescriptor UserKeyOf(ArkContract contract) => contract switch
