@@ -391,10 +391,6 @@ public sealed class OnchainIntentsClient(
     }
 
     /// <summary>Build and sign the script-path spend of the HTLC's claim leaf.</summary>
-    /// <remarks>
-    /// The witness is <c>[signature, preimage, claimLeaf, controlBlock]</c>: the leaf reads the
-    /// preimage off the top of the stack before hashing it, so it is pushed last of the two.
-    /// </remarks>
     private async Task<Transaction> BuildClaimAsync(
         OnchainHtlc htlc,
         IReadOnlyList<BoardingUtxo> inputs,
@@ -408,48 +404,12 @@ public sealed class OnchainIntentsClient(
             ?? throw new InvalidOperationException(
                 $"Wallet '{walletId}' cannot sign, so its L1 claim cannot be built.");
 
-        var tx = Transaction.Create(payoutAddress.Network);
-        var spent = new List<TxOut>();
-
-        foreach (var utxo in inputs)
-        {
-            tx.Inputs.Add(new OutPoint(uint256.Parse(utxo.Txid), utxo.Vout));
-            spent.Add(new TxOut(Money.Satoshis(utxo.Amount), htlc.PkScript));
-        }
-
-        var total = inputs.Aggregate(0UL, (sum, u) => sum + u.Amount);
         var feeRate = await blockchain.EstimateFeeRateAsync(cancellationToken: cancellationToken);
 
-        // One output, so the fee comes out of the sweep rather than needing a change address the
-        // wallet would then have to watch. Sized against the signed shape: a taproot script-path
-        // witness of a signature, a 32-byte preimage, the leaf and its control block.
-        var weight = 200 + inputs.Count * (
-            41 * 4 + 1 + 65 + 33 + htlc.ClaimLeaf.Length + htlc.ClaimControlBlock.ToBytes().Length);
-        var fee = feeRate.GetFee(weight / 4);
-        var payout = Money.Satoshis((long)total) - fee;
-        if (payout <= Money.Zero)
-        {
-            throw new InvalidOperationException(
-                $"the L1 fee of {fee} exceeds the {total} sats at the HTLC, so there is nothing to claim");
-        }
-
-        tx.Outputs.Add(payout, payoutAddress);
-
-        var leaf = htlc.ClaimLeaf.ToTapScript(TapLeafVersion.C0);
-        for (var i = 0; i < tx.Inputs.Count; i++)
-        {
-            var execData = new TaprootExecutionData(i, leaf.LeafHash) { SigHash = TaprootSigHash.Default };
-            var sighash = tx.GetSignatureHashTaproot(spent.ToArray(), execData);
-            var (_, signature) = await signer.Sign(clientKey, sighash, cancellationToken);
-
-            tx.Inputs[i].WitScript = new WitScript(
-                Op.GetPushOp(signature.ToBytes()),
-                Op.GetPushOp(preimage),
-                Op.GetPushOp(htlc.ClaimLeaf.ToBytes()),
-                Op.GetPushOp(htlc.ClaimControlBlock.ToBytes()));
-        }
-
-        return tx;
+        return await OnchainClaimBuilder.BuildAsync(
+            htlc, inputs, preimage, payoutAddress, feeRate,
+            async hash => (await signer.Sign(clientKey, hash, cancellationToken)).Item2,
+            cancellationToken);
     }
 
     private static OutputDescriptor UserKeyOf(ArkContract contract) => contract switch
