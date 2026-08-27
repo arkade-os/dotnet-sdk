@@ -1214,6 +1214,25 @@ SolverTerms.AssertWithinLimits(card, "lightning:BTC->arkade:BTC", 30_000);
 SolverTerms.AssertFeeWithinAdvertised(card, quote);
 ```
 
+### Bounding what a payer is billed
+
+A receive request pins one leg and leaves the other to the solver. Pin what the payer is billed
+(`RfqAmountSide.From`) and it is fixed exactly. Pin what lands on Arkade (`RfqAmountSide.To`) and the
+payer's side becomes the solver's free variable — `MaxPayAmountSats` is what bounds it:
+
+```csharp
+services.AddArkadeIntentsServices(new ArkadeIntentsOptions
+{
+    // Refuse a receive quote billing the payer more than this. Unset means no ceiling.
+    MaxPayAmountSats = 250_000,
+});
+```
+
+A quote above it is refused with `LightningReceiveRefusalReason.PriceTooHigh`, before its invoice
+reaches anyone. Nothing is at risk without it — the amount that lands on Arkade is checked
+separately — but a customer handed an invoice for more than the order they approved is a payment
+their wallet may refuse outright.
+
 ### The covenant co-signer
 
 Every swap contract on both corridors commits to a co-signer key, and every party to the swap has to
