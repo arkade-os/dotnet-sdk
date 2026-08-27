@@ -55,6 +55,12 @@ public class ArkadeSwapIntentEntity
     public string? Preimage { get; set; }
 
     /// <summary>The ark tx that fulfilled the swap; set once fulfilled.</summary>
+    /// <summary>The counterparty's L1 HTLC refund key, hex — onchain corridor only.</summary>
+    public string? HtlcPubkey { get; set; }
+
+    /// <summary>Unix seconds the L1 HTLC's refund leaf opens — onchain corridor only.</summary>
+    public long? HtlcLocktime { get; set; }
+
     public string? SpentTxid { get; set; }
 
     public static void Configure(EntityTypeBuilder<ArkadeSwapIntentEntity> builder, ArkStorageOptions options)
