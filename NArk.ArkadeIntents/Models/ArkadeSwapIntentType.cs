@@ -24,4 +24,16 @@ public enum ArkadeSwapIntentType
     /// the solver — choose that secret.
     /// </summary>
     LightningToBtc,
+
+    /// <summary>
+    /// Deposit Ark BTC, take delivery on Bitcoin L1. Two contracts on two rails linked by one
+    /// secret: the client funds an Arkade covenant, the solver funds an L1 HTLC paying the client,
+    /// and the client's L1 claim publishes the preimage the solver needs for the Arkade side.
+    /// </summary>
+    /// <remarks>
+    /// From the Arkade side this behaves exactly like <see cref="BtcToLightning"/> — a covenant the
+    /// client funded and the solver fills. What differs is that the delivery leg is a chain this
+    /// SDK must watch and spend on itself, rather than a payment network reporting back.
+    /// </remarks>
+    BtcToOnchain,
 }
