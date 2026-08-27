@@ -75,6 +75,28 @@ public class ArkadeSwapIntent
     /// </remarks>
     public string? Preimage { get; set; }
 
+    /// <summary>
+    /// The counterparty's x-only key on the L1 HTLC's refund leaf, hex
+    /// (<see cref="ArkadeSwapIntentType.BtcToOnchain"/> only).
+    /// </summary>
+    /// <remarks>
+    /// This and <see cref="HtlcLocktime"/> are the only parts of the L1 leg that are nobody's to
+    /// re-derive: everything else about that contract comes from this row's payment hash and the
+    /// wallet's own key. The address is deliberately NOT stored — recomputing it from these keeps a
+    /// derived value from drifting away from what derived it.
+    /// </remarks>
+    public string? HtlcPubkey { get; set; }
+
+    /// <summary>
+    /// Unix seconds at which the L1 HTLC's refund leaf opens for the counterparty
+    /// (<see cref="ArkadeSwapIntentType.BtcToOnchain"/> only).
+    /// </summary>
+    /// <remarks>
+    /// Always earlier than <see cref="RefundLocktime"/>, and by a margin — the ordering the corridor
+    /// refuses to fund without.
+    /// </remarks>
+    public long? HtlcLocktime { get; set; }
+
     /// <summary>The ark tx that fulfilled the swap (spent the covenant VTXO); set once <see cref="ArkadeSwapIntentStatus.Fulfilled"/>.</summary>
     public string? SpentTxid { get; set; }
 }

@@ -118,6 +118,8 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         ToAssetId = e.ToAssetId,
         Invoice = e.Invoice,
         PaymentHash = e.PaymentHash,
+        HtlcPubkey = e.HtlcPubkey,
+        HtlcLocktime = e.HtlcLocktime,
         Preimage = e.Preimage,
         RefundLocktime = e.RefundLocktime,
         SpentTxid = e.SpentTxid,
@@ -147,6 +149,8 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         e.Invoice = i.Invoice;
         e.Preimage = i.Preimage;
         e.PaymentHash = i.PaymentHash;
+        e.HtlcPubkey = i.HtlcPubkey;
+        e.HtlcLocktime = i.HtlcLocktime;
         e.RefundLocktime = i.RefundLocktime;
         e.SpentTxid = i.SpentTxid;
     }
