@@ -210,7 +210,7 @@ public class ArkadeHtlcTests
             ctx.Safety, TestStorage.CreateIntentStorage(),
             postSpendEventHandlers: [], logger: null,
             extensionPacketProviders: [new ArkadeEmulatorPacketProvider()],
-            submitHandlers: [new ArkadeEmulatorSpendSubmitter(ctx.Emulator)]);
+            submitHandlers: [new ArkadeEmulatorSpendSubmitter(ctx.Emulator, new PrevArkTxProvider(ctx.Transport))]);
 
         return await spendingService.Spend(ctx.WalletId, [coin], outputs);
     }
