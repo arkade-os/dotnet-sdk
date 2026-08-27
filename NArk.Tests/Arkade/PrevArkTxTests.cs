@@ -269,6 +269,28 @@ public class PrevArkTxTests
     }
 
     [Test]
+    public async Task Provider_BackendWithoutRawTxSupport_IsAMissNotACrash()
+    {
+        // IBitcoinBlockchain.GetRawTransactionAsync defaults to NotSupportedException, so a
+        // third-party backend that skips the override must degrade to "unresolved" — the
+        // caller then throws naming the txid — rather than taking down the resolve call.
+        var wanted = SampleTx(Money.Coins(1));
+
+        var transport = Substitute.For<IClientTransport>();
+        transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+            .Returns([]);
+
+        var chain = Substitute.For<IBitcoinBlockchain>();
+        chain.GetRawTransactionAsync(Arg.Any<uint256>(), Arg.Any<CancellationToken>())
+            .Returns<Task<Transaction?>>(_ => throw new NotSupportedException("no raw tx endpoint"));
+
+        var resolved = await new PrevArkTxProvider(transport, virtualTxStorage: null, blockchain: chain)
+            .ResolveAsync([wanted.GetHash()], Net);
+
+        Assert.That(resolved, Is.Empty);
+    }
+
+    [Test]
     public void Provider_IndexerFailure_PropagatesWhenThereIsNoChainToFallBackOn()
     {
         var transport = Substitute.For<IClientTransport>();

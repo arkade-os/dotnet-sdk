@@ -108,8 +108,9 @@ public interface IBitcoinBlockchain
     /// <param name="txid">The transaction id to fetch.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="NotSupportedException">
-    /// The backend cannot serve raw transactions. Default behaviour, so an
-    /// existing implementation keeps compiling; every in-box backend overrides it.
+    /// The backend cannot serve raw transactions. This is the default, so a
+    /// third-party implementation keeps compiling; the in-box Esplora, NBXplorer
+    /// and Bitcoin Core RPC backends all override it.
     /// </exception>
     Task<Transaction?> GetRawTransactionAsync(uint256 txid, CancellationToken cancellationToken = default)
         => throw new NotSupportedException(

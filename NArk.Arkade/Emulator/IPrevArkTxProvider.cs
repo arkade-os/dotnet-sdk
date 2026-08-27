@@ -146,6 +146,19 @@ public sealed class PrevArkTxProvider(
                 if (await blockchain.GetRawTransactionAsync(txid, cancellationToken) is { } onchain)
                     resolved[txid] = onchain;
             }
+            catch (NotSupportedException e)
+            {
+                // The backend has no raw-tx endpoint at all, so every remaining txid would
+                // fail identically. Say so once and loudly: swallowed per-txid at debug
+                // level, the caller's "could not be resolved" error names the symptom and
+                // hides the cause, which is a missing override on a custom backend.
+                logger?.LogWarning(e,
+                    "{Backend} cannot serve raw transactions, so previous transactions with an " +
+                    "on-chain parent cannot be resolved. Override GetRawTransactionAsync on it to " +
+                    "support boarding and commitment parents.",
+                    blockchain.GetType().Name);
+                break;
+            }
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 // A miss is reported by the caller alongside every other unresolved txid.

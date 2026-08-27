@@ -106,6 +106,15 @@ public static class ArkadePsbtExtensions
     /// Callers that submit checkpoints — <see cref="ArkadeEmulatorSpendSubmitter"/> — call
     /// <see cref="IEmulatorProvider.SubmitTxAsync"/> directly and consume both halves.
     /// </para>
+    /// <para>
+    /// <b>Does not attach <c>prevarktx</c>.</b> Emulator <c>v0.0.7</c>+ requires that field on
+    /// every input and rejects the submission with <c>missing prevout tx for input N</c>
+    /// without it, so call <see cref="AttachPrevArkTxsAsync"/> (or
+    /// <see cref="AttachIntentPrevArkTxsAsync"/> for an intent proof) on the PSBT first. It
+    /// also submits an empty checkpoint list, which that same version rejects for an Arkade
+    /// transaction — this helper is for callers driving the emulator themselves against a
+    /// submission shape it accepts.
+    /// </para>
     /// </remarks>
     /// <param name="psbt">PSBT with user partial sigs already attached.</param>
     /// <param name="emulator">Provider client for the configured emulator instance.</param>
