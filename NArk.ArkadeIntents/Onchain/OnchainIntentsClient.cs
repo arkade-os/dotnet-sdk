@@ -364,6 +364,15 @@ public sealed class OnchainIntentsClient(
                 false, $"the L1 funding has not reached {required} confirmation(s) yet");
         }
 
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
+        if (!OnchainSendGates.ClaimWindowIsOpen(htlcLocktime, now))
+        {
+            return new OnchainClaimOutcome(
+                false,
+                $"the L1 refund leaf opens in {htlcLocktime - now}s, too soon to claim safely — "
+                + "let the Arkade covenant refund instead");
+        }
+
         // Every confirmed output at the address, not the first: the solver may have funded in more
         // than one, and claiming one would leave the rest for its refund leaf to take back.
         var total = ready.Aggregate(0UL, (sum, u) => sum + u.Amount);
