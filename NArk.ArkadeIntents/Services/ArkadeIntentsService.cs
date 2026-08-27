@@ -310,7 +310,7 @@ public sealed class ArkadeIntentsService
                         Error: "no onchain corridor is registered to act on this swap");
                 }
 
-                var outcome = await _onchain.ClaimOnchainAsync(swapId, cancellationToken);
+                var outcome = await _onchain.ClaimOnchainAsync(swapId, cancellationToken: cancellationToken);
                 if (outcome.Claimed)
                 {
                     _logger?.LogInformation("Swap {SwapId}: claimed on L1 in {Txid}", swapId, outcome.Txid);

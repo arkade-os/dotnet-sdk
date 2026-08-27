@@ -38,4 +38,21 @@ public sealed class ArkadeIntentsOptions
     /// </para>
     /// </remarks>
     public long? MaxPayAmountSats { get; set; }
+
+    /// <summary>
+    /// Confirmations to require on an off-board's L1 funding before claiming it. Defaults to the
+    /// most any solver may ask for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The quoted count is not persisted, so the automatic claim pass cannot read it back — this is
+    /// what that pass waits for instead. The default is the corridor's ceiling, which is longer than
+    /// most solvers ask: of the two ways to be wrong about a confirmation count, waiting too long
+    /// costs time and waiting too little costs the trade.
+    /// </para>
+    /// <para>
+    /// A caller driving the claim itself passes its own count and never reads this.
+    /// </para>
+    /// </remarks>
+    public int OnchainClaimConfirmations { get; set; } = Onchain.OnchainSendGates.MaxMinConfirmations;
 }

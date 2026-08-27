@@ -72,8 +72,9 @@ public sealed class OnchainIntentsClient(
     ILogger<OnchainIntentsClient>? logger = null)
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
-    private readonly string? _emulatorPubkeyOverride =
-        (options?.Value ?? new ArkadeIntentsOptions()).EmulatorPubkeyOverride;
+    private readonly ArkadeIntentsOptions _options = options?.Value ?? new ArkadeIntentsOptions();
+
+    private string? EmulatorPubkeyOverride => _options.EmulatorPubkeyOverride;
 
     /// <summary>
     /// Negotiate an off-board and fund its Arkade side.
@@ -248,7 +249,7 @@ public sealed class OnchainIntentsClient(
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             LightningCorridor.NormalizeToXOnly(
-                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
+                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, EmulatorPubkeyOverride))),
             nonInteractiveClaimPkScript: Convert.FromHexString(receiverPkScript),
             nonInteractiveRefundPkScript: refundPkScript));
     }
@@ -284,6 +285,10 @@ public sealed class OnchainIntentsClient(
     /// Claim the solver's L1 HTLC, if it is there and confirmed enough to act on.
     /// </summary>
     /// <param name="swapId">The swap's id.</param>
+    /// <param name="minConfirmations">
+    /// How many confirmations the L1 funding must have. Omitted, the deployment's
+    /// <see cref="ArkadeIntentsOptions.OnchainClaimConfirmations"/> applies.
+    /// </param>
     /// <param name="cancellationToken">Cancels before the broadcast.</param>
     /// <returns>What the pass found; <see cref="OnchainClaimOutcome.Claimed"/> false is ordinary.</returns>
     /// <exception cref="InvalidOperationException">The swap is unknown, or not an off-board.</exception>
@@ -300,8 +305,16 @@ public sealed class OnchainIntentsClient(
     /// </para>
     /// </remarks>
     public async Task<OnchainClaimOutcome> ClaimOnchainAsync(
-        string swapId, CancellationToken cancellationToken = default)
+        string swapId, int? minConfirmations = null, CancellationToken cancellationToken = default)
     {
+        var required = minConfirmations ?? _options.OnchainClaimConfirmations;
+        if (required < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(minConfirmations), required,
+                "an unconfirmed L1 funding is one the solver can still replace, so at least one is required");
+        }
+
         var intent = await intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
             ?? throw new InvalidOperationException($"Swap '{swapId}' is unknown.");
 
@@ -341,10 +354,6 @@ public sealed class OnchainIntentsClient(
         }
 
         var chain = await blockchain.GetChainTime(cancellationToken);
-        // The corridor's ceiling, not the count this swap was quoted at: that count is not
-        // persisted, and of the two ways to be wrong about it, waiting longer than asked is the one
-        // that cannot lose anything. Worth revisiting if the wait becomes the complaint.
-        var required = OnchainSendGates.MaxMinConfirmations;
         var ready = utxos
             .Where(u => u.Confirmed && chain.Height - u.BlockHeight + 1 >= required)
             .ToList();
