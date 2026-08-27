@@ -1,5 +1,7 @@
 using System.Net.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using NArk.ArkadeIntents.Onchain;
 using Microsoft.Extensions.Logging;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Services;
@@ -38,6 +40,9 @@ public static class ArkadeIntentsCollectionExtensions
             sp.GetService<ILogger<SolverDiscoveryService>>()));
         services.AddSingleton<AssetIntentsManager>();
         services.AddSingleton<LightningIntentsClient>();
+        // TryAdd, not Add: the off-board corridor needs IBitcoinBlockchain, and a deployment with no
+        // L1 access should get an ArkadeIntentsService without it rather than a resolution failure.
+        services.TryAddSingleton<OnchainIntentsClient>();
         services.AddSingleton<ArkadeIntentsService>();
         services.AddHostedService<ArkadeSwapIntentMonitoringService>();
         // Registered beside the monitor on purpose. The monitor only observes; without something
