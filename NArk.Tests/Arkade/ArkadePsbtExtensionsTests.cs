@@ -1,4 +1,5 @@
 using NArk.Abstractions;
+using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Scripts;
 using NArk.Arkade.Emulator;
@@ -133,7 +134,8 @@ public class ArkadePsbtExtensionsTests
         var (alice, bob, emulator) = MakeKeys();
         var arkade = new ArkadeNofNMultisigTapScript([0xc4], [alice], [emulator]);
         var plain = new NofNMultisigTapScript([alice, bob]);
-        var submitter = new ArkadeEmulatorSpendSubmitter(Substitute.For<IEmulatorProvider>());
+        var submitter = new ArkadeEmulatorSpendSubmitter(
+            Substitute.For<IEmulatorProvider>(), Substitute.For<IPrevArkTxProvider>());
 
         Assert.That(submitter.ShouldHandle([MakeCoin(alice, bob, arkade)]), Is.True);
         Assert.That(submitter.ShouldHandle([MakeCoin(alice, bob, plain)]), Is.False);
@@ -143,9 +145,7 @@ public class ArkadePsbtExtensionsTests
     public async Task SpendSubmitter_SubmitAsync_ForwardsArkTxAndCheckpointsToEmulator()
     {
         var network = Network.RegTest;
-        var (alice, bob, _) = MakeKeys();
-        var arkTx = BuildEmptyPsbt(network, alice, bob);
-        var checkpoint = BuildEmptyPsbt(network, alice, bob);
+        var (funding, checkpoint, arkTx) = BuildChainedSpend(network);
 
         var emulator = Substitute.For<IEmulatorProvider>();
         // A fully-submitted spend returns the Arkade transaction plus one signed checkpoint per
@@ -153,13 +153,16 @@ public class ArkadePsbtExtensionsTests
         emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new EmulatorSubmitTxResult(arkTx.ToBase64(), [checkpoint.ToBase64()])));
 
-        var submitter = new ArkadeEmulatorSpendSubmitter(emulator);
+        var submitter = new ArkadeEmulatorSpendSubmitter(emulator, StubPrevArkTxProvider(funding));
         await submitter.SubmitAsync([], arkTx, [checkpoint], CancellationToken.None);
 
+        // The submitted Arkade transaction is the one the submitter annotated with prevarktx,
+        // not the base64 captured before the call.
         await emulator.Received(1).SubmitTxAsync(
             arkTx.ToBase64(),
             Arg.Is<IReadOnlyList<string>>(l => l.Count == 1 && l[0] == checkpoint.ToBase64()),
             Arg.Any<CancellationToken>());
+        Assert.That(arkTx.Inputs[0].GetArkFieldPrevArkTx(network)!.GetHash(), Is.EqualTo(funding.GetHash()));
     }
 
     [Test]
@@ -169,15 +172,13 @@ public class ArkadePsbtExtensionsTests
         // required non-arkd signer; otherwise it returns just its own signatures and the
         // spend was never submitted. That must surface rather than look like success.
         var network = Network.RegTest;
-        var (alice, bob, _) = MakeKeys();
-        var arkTx = BuildEmptyPsbt(network, alice, bob);
-        var checkpoint = BuildEmptyPsbt(network, alice, bob);
+        var (funding, checkpoint, arkTx) = BuildChainedSpend(network);
 
         var emulator = Substitute.For<IEmulatorProvider>();
         emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new EmulatorSubmitTxResult(arkTx.ToBase64(), [])));
 
-        var submitter = new ArkadeEmulatorSpendSubmitter(emulator);
+        var submitter = new ArkadeEmulatorSpendSubmitter(emulator, StubPrevArkTxProvider(funding));
 
         Assert.That(
             async () => await submitter.SubmitAsync([], arkTx, [checkpoint], CancellationToken.None),
@@ -188,17 +189,16 @@ public class ArkadePsbtExtensionsTests
     public void SpendSubmitter_EmptySignedArkTx_Throws()
     {
         var network = Network.RegTest;
-        var (alice, bob, _) = MakeKeys();
-        var arkTx = BuildEmptyPsbt(network, alice, bob);
+        var (funding, checkpoint, arkTx) = BuildChainedSpend(network);
 
         var emulator = Substitute.For<IEmulatorProvider>();
         emulator.SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new EmulatorSubmitTxResult(string.Empty, [])));
 
-        var submitter = new ArkadeEmulatorSpendSubmitter(emulator);
+        var submitter = new ArkadeEmulatorSpendSubmitter(emulator, StubPrevArkTxProvider(funding));
 
         Assert.That(
-            async () => await submitter.SubmitAsync([], arkTx, [], CancellationToken.None),
+            async () => await submitter.SubmitAsync([], arkTx, [checkpoint], CancellationToken.None),
             Throws.InstanceOf<InvalidOperationException>());
     }
 
@@ -245,6 +245,41 @@ public class ArkadePsbtExtensionsTests
             sequence: null,
             swept: false,
             unrolled: false);
+    }
+
+    /// <summary>
+    /// A funding tx, the single-input checkpoint spending it, and the Arkade transaction
+    /// spending that checkpoint — the shape the emulator's prevout validation expects.
+    /// </summary>
+    private static (Transaction funding, PSBT checkpoint, PSBT arkTx) BuildChainedSpend(Network network)
+    {
+        var funding = Transaction.Create(network);
+        funding.Inputs.Add(new TxIn(new OutPoint(uint256.One, 0)));
+        funding.Outputs.Add(new TxOut(Money.Coins(1), new Script(OpcodeType.OP_TRUE)));
+
+        var checkpoint = Transaction.Create(network);
+        checkpoint.Inputs.Add(new TxIn(new OutPoint(funding, 0)));
+        checkpoint.Outputs.Add(new TxOut(Money.Coins(1), new Script(OpcodeType.OP_TRUE)));
+
+        var arkTx = Transaction.Create(network);
+        arkTx.Inputs.Add(new TxIn(new OutPoint(checkpoint, 0)));
+        arkTx.Outputs.Add(new TxOut(Money.Coins(1), new Script(OpcodeType.OP_TRUE)));
+
+        return (funding, PSBT.FromTransaction(checkpoint, network), PSBT.FromTransaction(arkTx, network));
+    }
+
+    /// <summary>A provider that resolves exactly the given transactions and nothing else.</summary>
+    private static IPrevArkTxProvider StubPrevArkTxProvider(params Transaction[] txs)
+    {
+        var byTxid = txs.ToDictionary(t => t.GetHash());
+        var provider = Substitute.For<IPrevArkTxProvider>();
+        provider.ResolveAsync(Arg.Any<IReadOnlyCollection<uint256>>(), Arg.Any<Network>(), Arg.Any<CancellationToken>())
+            .Returns(ci => Task.FromResult<IReadOnlyDictionary<uint256, Transaction>>(
+                ci.Arg<IReadOnlyCollection<uint256>>()
+                    .Where(byTxid.ContainsKey)
+                    .Distinct()
+                    .ToDictionary(t => t, t => byTxid[t])));
+        return provider;
     }
 
     private static PSBT BuildEmptyPsbt(Network network, ECXOnlyPubKey a, ECXOnlyPubKey b)

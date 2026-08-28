@@ -165,6 +165,36 @@ public class EsploraBlockchain : IBitcoinBlockchain
         }
     }
 
+    // ── Raw transaction ──────────────────────────────────────────────
+
+    /// <inheritdoc />
+    public async Task<Transaction?> GetRawTransactionAsync(
+        uint256 txid, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(txid);
+        try
+        {
+            var response = await _httpClient.GetAsync($"tx/{txid}/hex", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            var hex = (await response.Content.ReadAsStringAsync(cancellationToken)).Trim();
+            // Unlike the RPC and NBXplorer backends, this one is constructed from a bare
+            // base URI and so has no network to hand. Parsing does not need one: the BTC
+            // consensus factory is shared across main/test/regtest, and the txid check
+            // below is what actually establishes the result is the transaction we asked for.
+            var tx = Transaction.Parse(hex, Network.Main);
+            // The backend names the transaction; verify it actually hashes to the
+            // txid we asked for rather than trusting the label on the response.
+            return tx.GetHash() == txid ? tx : null;
+        }
+        catch (Exception e)
+        {
+            _logger?.LogDebug(e, "Failed to fetch raw transaction {Txid} from Esplora", txid);
+            return null;
+        }
+    }
+
     // ── Fee estimate ─────────────────────────────────────────────────
 
     public async Task<FeeRate> EstimateFeeRateAsync(int confirmTarget = 6, CancellationToken cancellationToken = default)

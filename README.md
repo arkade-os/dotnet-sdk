@@ -1270,7 +1270,29 @@ var fin    = await emulator.SubmitFinalizationAsync(...);// POST /v1/finalizatio
 var onchn  = await emulator.SubmitOnchainTxAsync(...);   // POST /v1/onchain-tx  (fully on-chain spends)
 ```
 
-For a `/v1/onchain-tx` spend whose ArkadeScript introspects a previous output, attach that output's transaction to the PSBT input so the emulator can read it — via `PsbtHelpers.SetArkFieldPrevoutTx(input, prevTx)` (the `prevouttx` ark field, key type `0xde`).
+#### Previous-transaction fields (`prevarktx` / `prevouttx`)
+
+Emulator `v0.0.7`+ requires each submitted input to carry the transaction that funded it, whether or not that input's ArkadeScript introspects a previous output. A submission missing it is rejected with `missing prevout tx for input N`.
+
+For offchain spends (`/v1/tx`) this is automatic: `AddArkadeEmulator` registers an `IPrevArkTxProvider` and `ArkadeEmulatorSpendSubmitter` annotates the Arkade transaction just before submitting. The provider reads from `IVirtualTxStorage` when the wallet already holds the VTXO's branch, then arkd's indexer, then — for boarding and commitment parents the indexer cannot serve — `IBitcoinBlockchain.GetRawTransactionAsync`. So a spend usually costs no extra round-trip. The field belongs to the PSBT's `unknown` map, which no signature commits to, so it is attached after signing; an input already carrying one is left alone, since the emulator rejects an input bearing two.
+
+To annotate a PSBT yourself — an intent proof, or a transaction you build outside the spend path:
+
+```csharp
+using NArk.Arkade.Emulator;
+
+// Offchain Arkade transaction: needs its checkpoints, since the transaction attached to
+// Arkade input i is the one funding that input's *checkpoint*, not the checkpoint itself.
+await arkTx.AttachPrevArkTxsAsync(checkpoints, prevArkTxProvider);
+
+// BIP322 intent proof: input 0 is the message input (the emulator synthesises its
+// prevout); inputs 1..N each get the transaction that created their outpoint.
+await intentProof.AttachIntentPrevArkTxsAsync(prevArkTxProvider);
+```
+
+Both throw `InvalidOperationException` naming the input index and txid when a previous transaction cannot be resolved, rather than letting the emulator reject the submission.
+
+`/v1/onchain-tx` uses the sibling `prevouttx` field. Attach each input's previous transaction with `PsbtHelpers.SetArkFieldPrevoutTx(input, prevTx)` (key type `0xde`) before submitting, fetching it via `IBitcoinBlockchain.GetRawTransactionAsync`.
 
 Or co-sign a PSBT inline once it carries the user's partial sigs:
 

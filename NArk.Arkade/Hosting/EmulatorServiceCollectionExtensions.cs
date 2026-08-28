@@ -1,8 +1,13 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Batches;
+using NArk.Abstractions.Blockchain;
+using NArk.Abstractions.VirtualTxs;
 using NArk.Arkade.Emulator;
 using NArk.Core.Assets;
 using NArk.Core.Helpers;
+using NArk.Core.Transport;
 
 namespace NArk.Arkade.Hosting;
 
@@ -71,6 +76,15 @@ public static class EmulatorServiceCollectionExtensions
         Action<EmulatorClientOptions> configure)
     {
         AddEmulatorClient(services, configure);
+        // Resolves the previous Arkade transaction the emulator demands on every submitted
+        // input. Storage-first when an IVirtualTxStorage is registered (the wallet already
+        // holds each VTXO's branch), then arkd's indexer, then chain — the last covering
+        // boarding and commitment parents the indexer cannot serve.
+        services.TryAddSingleton<IPrevArkTxProvider>(sp => new PrevArkTxProvider(
+            sp.GetRequiredService<IClientTransport>(),
+            sp.GetService<IVirtualTxStorage>(),
+            sp.GetService<IBitcoinBlockchain>(),
+            sp.GetService<ILogger<PrevArkTxProvider>>()));
         services.AddSingleton<IBatchSessionExtension, ArkadeBatchSessionExtension>();
         // Attaches the emulator OP_RETURN packet to arkade-bound offchain spends so
         // covenant inputs carry their script + witness to the co-signer.

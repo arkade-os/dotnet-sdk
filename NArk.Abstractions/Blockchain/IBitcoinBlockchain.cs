@@ -94,6 +94,27 @@ public interface IBitcoinBlockchain
     /// and the claim-tx builder.
     /// </summary>
     Task<FeeRate> EstimateFeeRateAsync(int confirmTarget = 6, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fetch a confirmed or mempool transaction in full, by txid. Returns
+    /// <c>null</c> when the backend does not know the transaction.
+    /// <para>
+    /// Needed to carry a boarding or commitment transaction as a PSBT prevout
+    /// field: the Arkade emulator requires the transaction behind every input
+    /// of a submitted intent proof, and those two have no off-chain source, so
+    /// arkd's indexer cannot serve them.
+    /// </para>
+    /// </summary>
+    /// <param name="txid">The transaction id to fetch.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="NotSupportedException">
+    /// The backend cannot serve raw transactions. This is the default, so a
+    /// third-party implementation keeps compiling; the in-box Esplora, NBXplorer
+    /// and Bitcoin Core RPC backends all override it.
+    /// </exception>
+    Task<Transaction?> GetRawTransactionAsync(uint256 txid, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException(
+            $"{GetType().Name} cannot fetch raw transactions by txid.");
 }
 
 /// <summary>

@@ -15,10 +15,12 @@ namespace NArk.Arkade.Emulator;
 /// Engages only when at least one input is arkade-bound
 /// (<see cref="ArkadePsbtExtensions.RequiresEmulatorCoSigning"/>); every other spend
 /// falls through to the unchanged arkd cooperative flow. The Arkade transaction and checkpoints
-/// arrive already user-signed — this handler only adds the emulator round-trip.
+/// arrive already user-signed — this handler only adds the <c>prevarktx</c> annotation the
+/// emulator requires on every input plus the emulator round-trip.
 /// </remarks>
 public sealed class ArkadeEmulatorSpendSubmitter(
     IEmulatorProvider emulator,
+    IPrevArkTxProvider prevArkTxProvider,
     ILogger<ArkadeEmulatorSpendSubmitter>? logger = null) : ISpendSubmitHandler
 {
     /// <inheritdoc />
@@ -37,6 +39,13 @@ public sealed class ArkadeEmulatorSpendSubmitter(
     {
         ArgumentNullException.ThrowIfNull(arkTx);
         ArgumentNullException.ThrowIfNull(checkpoints);
+
+        // Emulator v0.0.7+ rejects a submission whose inputs don't each carry the transaction
+        // that funded them (`missing prevout tx for input N`). The field sits in the PSBT's
+        // unknown map, which no signature covers, so annotating the already-signed transaction
+        // here is safe — and doing it at submit time keeps the resolution off the hot signing
+        // path for spends that never reach the emulator.
+        await arkTx.AttachPrevArkTxsAsync(checkpoints, prevArkTxProvider, cancellationToken);
 
         logger?.LogInformation(
             "ArkadeEmulatorSpendSubmitter: submitting covenant spend with {Count} checkpoint(s) to the emulator",

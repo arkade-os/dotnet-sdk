@@ -102,17 +102,47 @@ await spendingService.Spend(walletId, [coin], [payout], cancellationToken);
 
 ## How a covenant spend is submitted
 
-Spending a covenant VTXO differs from an ordinary spend in two places, both wired by `AddArkadeEmulator`:
+Spending a covenant VTXO differs from an ordinary spend in three places, all wired by `AddArkadeEmulator`:
 
 1. `ArkadeEmulatorPacketProvider` attaches an `EmulatorPacket` to the spend's single Extension `OP_RETURN`, carrying each Arkade-bound input's script and witness so the emulator can validate them. This shares the output with the asset packet, and must be attached before signing since signatures commit to the output set.
-2. `ArkadeEmulatorSpendSubmitter` routes the signed transaction to the emulator instead of arkd. The emulator validates, co-signs, forwards to arkd and finalizes.
+2. `ArkadeEmulatorSpendSubmitter` annotates every input of the signed transaction with the `prevarktx` ark PSBT field (see below), then routes it to the emulator instead of arkd. The emulator validates, co-signs, forwards to arkd and finalizes.
 
 Spends with no Arkade-bound input are untouched and follow the normal arkd flow.
+
+## Previous-transaction fields
+
+Emulator `v0.0.7`+ (`validate checkpoints and prevouts`) requires every submitted input to carry the transaction that funded it — unconditionally, not only the inputs whose ArkadeScript introspects a previous output. Submissions missing it are rejected with `missing prevout tx for input N`.
+
+The emulator only reads that transaction's *outputs*: it checks the txid, reconciles value and `scriptPubKey` against the declared witness utxo, and exposes the outputs to introspection opcodes. An unsigned copy therefore resolves correctly, which is why the SDK can serve a PSBT's global transaction without waiting for signatures to propagate. The field also lives in the PSBT `unknown` map, which no sighash covers, so it is attached after signing.
+
+`IPrevArkTxProvider` resolves those transactions. The default `PrevArkTxProvider` reads from `IVirtualTxStorage` when the wallet already holds the VTXO's branch, then arkd's indexer (`GetVirtualTxs`), then — when an `IBitcoinBlockchain` is registered — from chain. Every fetched body is keyed by the txid parsed out of it, since arkd returns them in database order rather than request order.
+
+The on-chain step exists because boarding and commitment transactions have no off-chain body. Offchain Arkade spends never need it (every input is a VTXO with a virtual parent), but an intent proof registering a boarding input does. It uses `IBitcoinBlockchain.GetRawTransactionAsync`, implemented by the Esplora and NBXplorer backends; a custom backend that does not override it throws `NotSupportedException` and the provider treats that as a miss.
+
+An input already carrying the field is left alone rather than overwritten — the emulator rejects an input bearing two, so a caller-supplied value (a recursive covenant spending an Arkade transaction the indexer cannot serve yet) wins outright.
+
+```csharp
+using NArk.Arkade.Emulator;
+
+// Offchain Arkade transaction. The transaction attached to Arkade input i is the one
+// funding that input's *checkpoint* — not the checkpoint itself, which the emulator
+// already holds — so the checkpoints must be supplied.
+await arkTx.AttachPrevArkTxsAsync(checkpoints, prevArkTxProvider);
+
+// BIP322 intent proof. Input 0 is the message input, whose prevout the emulator
+// synthesises; inputs 1..N each get the transaction that created their outpoint.
+await intentProof.AttachIntentPrevArkTxsAsync(prevArkTxProvider);
+```
+
+Both throw `InvalidOperationException` naming the input index and txid when a previous transaction cannot be resolved, rather than letting the emulator reject the submission.
+
+`POST /v1/onchain-tx` uses the sibling `prevouttx` field. Attach each input's previous transaction with `PsbtHelpers.SetArkFieldPrevoutTx(input, prevTx)`, fetching it via `IBitcoinBlockchain.GetRawTransactionAsync`.
 
 ## Notes and current limits
 
 - **Opcode values track the deployed VM.** Byte values follow `arkade-os/emulator` (`pkg/arkade/opcode.go`), which is authoritative and diverges from the ts-sdk table at `0xd7`–`0xe2`. A script built against the wrong table executes as a *different* opcode.
-- **Batch co-signing covers tree signing only.** `ArkadeBatchSessionExtension` handles the post-tree-signing phase. Forfeit signing throws `NotSupportedException`: the emulator signs forfeits through `POST /v1/finalization`, which requires the emulator-co-signed intent proof from intent-registration time plus the connector tree and commitment transaction. Submitting forfeits to `POST /v1/tx` would return them unsigned, so this fails loudly instead.
+- **`ArkadeBatchSessionExtension` refuses both of its phases against a current emulator.** Tree signing routed through `POST /v1/tx` with an empty checkpoint list, and `v0.0.7`+ requires one checkpoint per input plus a `prevarktx` field on every input before it inspects anything else — a tree transaction has neither, so that phase now throws `NotSupportedException` rather than sending a request the emulator cannot accept. It needs a checkpoint-carrying shape or a dedicated endpoint. Forfeit signing throws for a separate reason: the emulator signs forfeits through `POST /v1/finalization`, which requires the emulator-co-signed intent proof from intent-registration time plus the connector tree and commitment transaction, and submitting them to `POST /v1/tx` would return them unsigned. The offchain spend path is unaffected by either.
+- **Resolving an on-chain parent needs a blockchain backend.** Without an `IBitcoinBlockchain` registered, `PrevArkTxProvider` sees only virtual transactions, and a coin whose parent came from chain fails with a named unresolved txid rather than a silent submission.
 - **Packet bounds are enforced on parse**, matching the emulator's decoder: at most 1000 entries, script 1–10000 bytes, encoded witness at most 1,000,000 bytes.
 
 ## See also

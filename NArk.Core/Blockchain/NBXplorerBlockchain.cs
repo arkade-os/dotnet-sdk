@@ -265,6 +265,39 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         }
     }
 
+    // ── Raw transaction ──────────────────────────────────────────────
+
+    /// <inheritdoc />
+    public async Task<Transaction?> GetRawTransactionAsync(
+        uint256 txid, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(txid);
+        try
+        {
+            // verbose=false returns the raw hex directly; Core serves mempool
+            // transactions as well as confirmed ones.
+            var response = await _explorerClient.RPCClient.SendCommandAsync(
+                "getrawtransaction", cancellationToken, txid.ToString(), false);
+
+            if (response.Error is not null)
+                return null;
+
+            var hex = (string?)response.Result;
+            if (string.IsNullOrWhiteSpace(hex))
+                return null;
+
+            var tx = Transaction.Parse(hex, _explorerClient.Network.NBitcoinNetwork);
+            // Verify the transaction actually hashes to what we asked for rather than
+            // trusting the label on the response.
+            return tx.GetHash() == txid ? tx : null;
+        }
+        catch (Exception e)
+        {
+            _logger?.LogDebug(e, "Failed to fetch raw transaction {Txid} over RPC", txid);
+            return null;
+        }
+    }
+
     // ── Fee estimate (RPC estimatesmartfee) ──────────────────────────
 
     public async Task<FeeRate> EstimateFeeRateAsync(int confirmTarget = 6, CancellationToken cancellationToken = default)
