@@ -40,7 +40,7 @@ public class CustomRailSettlementTests
 
     // The settlement loop debounces, evaluates and routes before anything is observable, and a
     // shared CI runner is slow enough that the default wait clips it.
-    private const int TimeoutMs = 10_000;
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     // An address shape the SDK cannot parse, on a network it does not know.
     private static readonly SettlementDestination EvmUsdc =
@@ -198,8 +198,8 @@ public class CustomRailSettlementTests
             .Returns(Task.FromResult(uint256.One));
 
         await RunEngine();
-        await WaitForAsync(() => _spendingService.ReceivedCalls()
-            .Any(call => call.GetMethodInfo().Name == nameof(ISpendingService.Spend)));
+        await TryWaitFor(() => _spendingService.ReceivedCalls()
+            .Any(call => call.GetMethodInfo().Name == nameof(ISpendingService.Spend)), Timeout);
 
         // BTC went out through the built-in sweep, the asset through the application rail,
         // each drawing on its own remainder.
@@ -239,7 +239,7 @@ public class CustomRailSettlementTests
 
         _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, Vtxo());
 
-        await WaitForAsync(() => _appRail.Requests.Count >= expectedRailCalls, TimeoutMs);
+        await TryWaitFor(() => _appRail.Requests.Count >= expectedRailCalls, Timeout);
 
         await service.StopAsync(CancellationToken.None);
     }

@@ -30,7 +30,7 @@ public class SettlementServiceTests
 
     // The settlement loop debounces, evaluates and routes before anything is observable, and a
     // shared CI runner is slow enough that the default wait clips it.
-    private const int TimeoutMs = 10_000;
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     private static readonly SettlementDestination Destination = SettlementDestination.Ark("ark1qexample");
     private static readonly TimeHeight CurrentTime = new(DateTimeOffset.UtcNow, 800_000);
@@ -208,7 +208,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await WaitForAsync(() => gate.ReceivedCalls().Any(), TimeoutMs);
+        await TryWaitFor(() => gate.ReceivedCalls().Any(), Timeout);
         await Task.Delay(200);
 
         await _rail.DidNotReceive().SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>());
@@ -377,17 +377,17 @@ public class SettlementServiceTests
 
     private int EventCalls => _eventHandler.ReceivedCalls().Count();
 
-    private Task WaitForSettlements(int count) => WaitForAsync(() => SettleCalls >= count, TimeoutMs);
+    private Task WaitForSettlements(int count) => TryWaitFor(() => SettleCalls >= count, Timeout);
 
-    private Task WaitForEvents(int count) => WaitForAsync(() => EventCalls >= count, TimeoutMs);
+    private Task WaitForEvents(int count) => TryWaitFor(() => EventCalls >= count, Timeout);
 
     // Nothing observable happens when the engine stands down, so wait for the evaluation to
     // have started — the coins are always read before any policy runs — and give the pass a
     // moment to finish before asserting that no settlement followed.
     private async Task WaitForEvaluation()
     {
-        await WaitForAsync(() => _spendingService.ReceivedCalls()
-            .Any(call => call.GetMethodInfo().Name == nameof(ISpendingService.GetAvailableCoins)), TimeoutMs);
+        await TryWaitFor(() => _spendingService.ReceivedCalls()
+            .Any(call => call.GetMethodInfo().Name == nameof(ISpendingService.GetAvailableCoins)), Timeout);
         await Task.Delay(200);
     }
 

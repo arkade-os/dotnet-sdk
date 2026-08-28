@@ -18,6 +18,9 @@ namespace NArk.Tests.Services;
 [TestFixture]
 public class ContractReconciliationServiceTests
 {
+    // Matches the timeout this fixture's own poll helper used before it moved to TestWaiter.
+    private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(2);
+
     private IWalletStorage _walletStorage = null!;
     private IContractStorage _contractStorage = null!;
     private ISingleKeyDefaultEnsurer _ensurer = null!;
@@ -198,8 +201,8 @@ public class ContractReconciliationServiceTests
 
         _walletStorage.WalletSaved += Raise.Event<EventHandler<ArkWalletInfo>>(_walletStorage, wallet);
 
-        await WaitForAsync(() => _ensurer.ReceivedCalls()
-            .Any(c => c.GetMethodInfo().Name == nameof(ISingleKeyDefaultEnsurer.EnsureDefaultAsync)));
+        await TryWaitFor(() => _ensurer.ReceivedCalls()
+            .Any(c => c.GetMethodInfo().Name == nameof(ISingleKeyDefaultEnsurer.EnsureDefaultAsync)), PollTimeout);
 
         await _ensurer.Received().EnsureDefaultAsync("w1", Arg.Any<CancellationToken>());
     }
@@ -245,8 +248,8 @@ public class ContractReconciliationServiceTests
 
         _walletStorage.WalletSaved += Raise.Event<EventHandler<ArkWalletInfo>>(_walletStorage, hd);
 
-        await WaitForAsync(() => _walletStorage.ReceivedCalls()
-            .Any(c => c.GetMethodInfo().Name == nameof(IWalletStorage.SetMetadataValue)));
+        await TryWaitFor(() => _walletStorage.ReceivedCalls()
+            .Any(c => c.GetMethodInfo().Name == nameof(IWalletStorage.SetMetadataValue)), PollTimeout);
 
         await _walletStorage.Received().SetMetadataValue(
             hd.Id, DestinationSafety.PendingConfirmationMetadataKey,
@@ -285,10 +288,10 @@ public class ContractReconciliationServiceTests
 
         // The first pass fails the availability probe (nothing reconciled); the bounded retry
         // re-runs the pass once the backend is reachable, and the wallet is then reconciled.
-        await WaitForAsync(
+        await TryWaitFor(
             () => _ensurer.ReceivedCalls().Any(c =>
                 c.GetMethodInfo().Name == nameof(ISingleKeyDefaultEnsurer.EnsureDefaultAsync)),
-            timeoutMs: 3000);
+            TimeSpan.FromSeconds(3));
 
         Assert.That(probeCalls, Is.GreaterThanOrEqualTo(2),
             "backend-unavailable startup pass should be retried");

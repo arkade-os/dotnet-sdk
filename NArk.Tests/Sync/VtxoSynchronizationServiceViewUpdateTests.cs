@@ -17,6 +17,9 @@ namespace NArk.Tests.Sync;
 [TestFixture]
 public class VtxoSynchronizationServiceViewUpdateTests
 {
+    // Matches the timeout this fixture's own poll helper used before it moved to TestWaiter.
+    private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(3);
+
     private const string ScriptA = "5120aa";
     private const string ScriptB = "5120bb";
     private const string ScriptC = "5120cc";
@@ -54,7 +57,7 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => StreamOpenCount() >= 1);
+        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
 
         // Stream opened with initial scripts and no existing ID.
         _transport.Received().OpenSubscriptionStreamAsync(
@@ -72,12 +75,12 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => StreamOpenCount() >= 1);
+        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
 
         scripts.Add(ScriptC);
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
 
-        await WaitForAsync(() => UpdateCount() >= 1);
+        await TryWaitFor(() => UpdateCount() >= 1, PollTimeout);
 
         // In-place update: add ScriptC on the existing subscription, do not restart stream.
         await _transport.Received().UpdateSubscriptionScriptsAsync(
@@ -96,12 +99,12 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => StreamOpenCount() >= 1);
+        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
 
         scripts.Remove(ScriptB);
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
 
-        await WaitForAsync(() => UpdateCount() >= 1);
+        await TryWaitFor(() => UpdateCount() >= 1, PollTimeout);
 
         await _transport.Received().UpdateSubscriptionScriptsAsync(
             Arg.Any<string>(),
@@ -119,12 +122,12 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => StreamOpenCount() >= 1);
+        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
 
         scripts.Clear();
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
 
-        await WaitForAsync(() => sut.ListenedScripts.Count == 0, timeoutMs: 3000);
+        await TryWaitFor(() => sut.ListenedScripts.Count == 0, TimeSpan.FromMilliseconds(3000), PollTimeout);
 
         Assert.That(sut.ListenedScripts, Is.Empty);
         // No extra stream opens after teardown.
@@ -145,13 +148,13 @@ public class VtxoSynchronizationServiceViewUpdateTests
 
         await using var sut = New([provider]);
         await sut.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => StreamOpenCount() >= 1);
+        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
 
         scripts.Add(ScriptC);
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
 
         // GC → UpdateSubscription throws → supervisor reopens fresh → second stream open.
-        await WaitForAsync(() => StreamOpenCount() >= 2);
+        await TryWaitFor(() => StreamOpenCount() >= 2, PollTimeout);
 
         Assert.That(StreamOpenCount(), Is.GreaterThanOrEqualTo(2), "GC'd subscription must cause a fresh stream open");
         Assert.That(sut.ListenedScripts, Does.Contain(ScriptC));
@@ -166,13 +169,13 @@ public class VtxoSynchronizationServiceViewUpdateTests
 
         await using var sut = New([vtxoProvider, contractProvider], TimeSpan.FromMilliseconds(100));
         await sut.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => sut.ListenedScripts.Count > 0);
+        await TryWaitFor(() => sut.ListenedScripts.Count > 0, PollTimeout);
 
         // Contract becomes active WITHOUT raising the event — only the safety-net poll can find it.
         contractScripts.Add(ScriptC);
 
-        await WaitForAsync(() => PolledScripts().Contains(ScriptC));
-        await WaitForAsync(() => sut.ListenedScripts.Contains(ScriptC));
+        await TryWaitFor(() => PolledScripts().Contains(ScriptC), PollTimeout);
+        await TryWaitFor(() => sut.ListenedScripts.Contains(ScriptC), PollTimeout);
 
         Assert.That(PolledScripts(), Does.Contain(ScriptC));
         Assert.That(sut.ListenedScripts, Does.Contain(ScriptC));
@@ -188,7 +191,7 @@ public class VtxoSynchronizationServiceViewUpdateTests
 
         await using var sut = New([healthy, faulty], TimeSpan.FromMilliseconds(100));
         await sut.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => PolledScripts().Contains(ScriptA));
+        await TryWaitFor(() => PolledScripts().Contains(ScriptA), PollTimeout);
 
         Assert.That(sut.ListenedScripts, Does.Contain(ScriptA),
             "a failing provider must be skipped, not blank the set");
