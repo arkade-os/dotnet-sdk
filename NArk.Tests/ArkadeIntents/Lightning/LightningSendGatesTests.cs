@@ -1,6 +1,12 @@
+using System.Security.Cryptography;
+using NArk.Abstractions.Extensions;
+using NArk.Arkade.Contracts;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
+using NBitcoin;
+using NBitcoin.Scripting;
+using NBitcoin.Secp256k1;
 
 namespace NArk.Tests.ArkadeIntents.Lightning;
 
@@ -121,33 +127,87 @@ public class LightningSendGatesTests
     }
 
     [Test]
-    public void VerifyLockupAddress_ReturnsTheAddressWhenItMatches()
+    public void ResolveLockupContract_AcceptsTheEightLeafShapeWhenItMatches()
     {
-        var quote = Quote(lockupAddress: "ark1qlockup");
+        var (eightLeaf, nineLeaf) = Candidates();
+        var quote = Quote(lockupAddress: eightLeaf.GetArkAddress().ToString(false));
 
-        Assert.That(LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"), Is.EqualTo("ark1qlockup"));
+        var resolved = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(eightLeaf));
     }
 
     [Test]
-    public void VerifyLockupAddress_ThrowsOnAnyDifference()
+    public void ResolveLockupContract_AcceptsTheNineLeafShapeWhenItMatches()
     {
+        // The whole point: a solver that has turned on NonInteractiveRefundWithoutReceiver quotes an
+        // address this client would never have derived on its own before, and the swap must still
+        // go through rather than refuse a perfectly good quote.
+        var (eightLeaf, nineLeaf) = Candidates();
+        var quote = Quote(lockupAddress: nineLeaf.GetArkAddress().ToString(false));
+
+        var resolved = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(nineLeaf));
+    }
+
+    [Test]
+    public void ResolveLockupContract_ThrowsWhenTheQuoteMatchesNeitherShape()
+    {
+        // The refusal that must never soften: an address matching neither of our own derivations
+        // must never be accepted, or a wrong or malicious solver could walk the maker into funding a
+        // script nobody here can rebuild.
+        var (eightLeaf, nineLeaf) = Candidates();
         var quote = Quote(lockupAddress: "ark1qsomewhere-else");
 
         var ex = Assert.Throws<LockupAddressMismatchException>(() =>
-            LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"));
+            LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
 
-        Assert.That(ex!.Derived, Is.EqualTo("ark1qlockup"));
+        Assert.That(ex!.DerivedEightLeaf, Is.EqualTo(eightLeaf.GetArkAddress().ToString(false)));
+        Assert.That(ex.DerivedNineLeaf, Is.EqualTo(nineLeaf.GetArkAddress().ToString(false)));
         Assert.That(ex.Quoted, Is.EqualTo("ark1qsomewhere-else"));
     }
 
     [Test]
-    public void VerifyLockupAddress_ThrowsWhenTheSolverSentNoneAtAll()
+    public void ResolveLockupContract_ThrowsWhenTheSolverSentNoneAtAll()
     {
-        // A missing address must not read as "nothing to compare, carry on".
+        // A missing address must not read as "nothing to compare, carry on" — true of one candidate
+        // before, and just as true of two now.
+        var (eightLeaf, nineLeaf) = Candidates();
         var quote = Quote(lockupAddress: null);
 
         Assert.Throws<LockupAddressMismatchException>(() =>
-            LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"));
+            LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
+    }
+
+    /// <summary>Two lockup shapes built from one shared, otherwise-arbitrary parameter set.</summary>
+    private static (VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf) Candidates() =>
+        LightningCorridor.DeriveBothLockupShapes(
+            RandomDescriptor(),
+            RandomDescriptor(),
+            RandomDescriptor(),
+            new uint160(RandomNumberGenerator.GetBytes(20), false),
+            new LockTime(1_800_600_000),
+            new Sequence(TimeSpan.FromSeconds(512)),
+            new Sequence(TimeSpan.FromSeconds(512)),
+            new Sequence(TimeSpan.FromSeconds(1024)),
+            RandomXOnly(),
+            RandomP2trPkScript(),
+            RandomP2trPkScript());
+
+    private static OutputDescriptor RandomDescriptor() =>
+        KeyExtensions.ParseOutputDescriptor(new Key().PubKey.ToHex(), Network.RegTest);
+
+    private static ECXOnlyPubKey RandomXOnly() =>
+        ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes());
+
+    private static byte[] RandomP2trPkScript()
+    {
+        var script = new byte[34];
+        script[0] = 0x51;
+        script[1] = 0x20;
+        new Key().PubKey.TaprootInternalKey.ToBytes().CopyTo(script, 2);
+        return script;
     }
 
     private static RfqQuote<LightningSendQuoteProfile> Quote(

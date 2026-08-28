@@ -131,12 +131,16 @@ public sealed partial class LightningIntentsClient
             SolverTerms.AssertFeeWithinAdvertised(solverCard, quote);
         }
 
-        var contract = await DeriveLockupAsync(
+        var (eightLeaf, nineLeaf) = await DeriveLockupAsync(
             quote, decoded, refundPkScript, clientRefund, serverInfo, cancellationToken);
-        var lockupArkAddress = contract.GetArkAddress();
-        var lockupAddress = lockupArkAddress.ToString(serverInfo.Network == Network.Main);
+        var isMainnet = serverInfo.Network == Network.Main;
 
-        LightningSendGates.VerifyLockupAddress(quote, lockupAddress);
+        // Accepts whichever of the two shapes matches — see VHTLCv2Contract's own remarks on
+        // NonInteractiveRefundWithoutReceiver. Nothing on the wire says which one this solver has
+        // deployed, and refusing to fund is still the outcome when the quote matches neither.
+        var contract = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet);
+        var lockupArkAddress = contract.GetArkAddress();
+        var lockupAddress = lockupArkAddress.ToString(isMainnet);
 
         // Checked here, immediately before the irreversible step — not when the quote arrived.
         LightningSendGates.AssertFundable(
@@ -419,12 +423,12 @@ public sealed partial class LightningIntentsClient
     public static ArkAddress RefundAddressOf(VHTLCv2Contract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey) =>
         ArkAddress.FromScriptPubKey(new Script(contract.NonInteractiveRefundPkScript), serverKey);
 
-    // Builds the contract from the quote's binding fields and the maker's own data. The one value
-    // taken from the non-binding half is `receiver_pk_script`, and only because every leaf feeds the
-    // merkle root: without the solver's own claim destination the address cannot be reproduced at
-    // all. Safe to take, because that leaf pays the solver — a wrong value costs it a spending path
-    // and the maker nothing.
-    private async Task<VHTLCv2Contract> DeriveLockupAsync(
+    // Builds both lockup shapes from the quote's binding fields and the maker's own data. The one
+    // value taken from the non-binding half is `receiver_pk_script`, and only because every leaf
+    // feeds the merkle root: without the solver's own claim destination the address cannot be
+    // reproduced at all. Safe to take, because that leaf pays the solver — a wrong value costs it a
+    // spending path and the maker nothing.
+    private async Task<(VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf)> DeriveLockupAsync(
         RfqQuote<LightningSendQuoteProfile> quote,
         BOLT11PaymentRequest invoice,
         byte[] refundPkScript,
@@ -439,7 +443,7 @@ public sealed partial class LightningIntentsClient
                 "the quote carries no receiver_pk_script, so the covenant's nonInteractiveClaim leaf " +
                 "cannot be reconstructed and the lockup address cannot be derived");
 
-        return new VHTLCv2Contract(
+        return LightningCorridor.DeriveBothLockupShapes(
             serverInfo.SignerKey,
             // Roles are positional: on this corridor the maker sends and the solver receives.
             sender: clientRefund,

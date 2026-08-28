@@ -167,14 +167,16 @@ public sealed partial class LightningIntentsClient
         LightningReceiveGates.AssertReceivable(
             quote, invoice, _time.GetUtcNow().ToUnixTimeSeconds(), _maxPayAmountSats);
 
-        var contract = await DeriveLockupAsync(
+        var (eightLeaf, nineLeaf) = await DeriveLockupAsync(
             quote, sealed_.PaymentHash, payoutDescriptor, payoutPkScript, serverInfo, cancellationToken);
-        var lockupAddress = contract.GetArkAddress().ToString(serverInfo.Network == Network.Main);
+        var isMainnet = serverInfo.Network == Network.Main;
 
-        if (quote.Profile?.LockupAddress is { } quoted && quoted != lockupAddress)
-        {
-            throw new LockupAddressMismatchException(lockupAddress, quoted);
-        }
+        // Accepts whichever of the two shapes matches what the solver quoted — see
+        // LightningReceiveGates.ResolveLockupContract. The solver is the one funding this corridor's
+        // lockup, so getting the shape wrong here means never seeing the funding at all, not merely
+        // funding the wrong script.
+        var contract = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet);
+        var lockupAddress = contract.GetArkAddress().ToString(isMainnet);
 
         // Imported and recorded BEFORE the invoice is handed out. Once a payer has it the solver
         // can fund at any moment, and from that point the swap is only claimable by whoever holds
@@ -413,11 +415,11 @@ public sealed partial class LightningIntentsClient
         return live;
     }
 
-    // Build the funding contract from the quote's binding fields and the client's own data. Roles
+    // Build both lockup shapes from the quote's binding fields and the client's own data. Roles
     // invert here relative to the send leg: the solver funds, so it is the covenant's
     // destinations follow them — <c>nonInteractiveClaim</c> pays the client,
     // <c>nonInteractiveRefund</c> pays the solver.
-    private async Task<VHTLCv2Contract> DeriveLockupAsync(
+    private async Task<(VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf)> DeriveLockupAsync(
         RfqQuote<LightningReceiveQuoteProfile> quote,
         string paymentHash,
         OutputDescriptor payoutDescriptor,
@@ -432,7 +434,7 @@ public sealed partial class LightningIntentsClient
                 "the quote carries no solver_refund_pk_script, so the covenant's nonInteractiveRefund " +
                 "leaf cannot be reconstructed and the lockup address cannot be derived");
 
-        return new VHTLCv2Contract(
+        return LightningCorridor.DeriveBothLockupShapes(
             serverInfo.SignerKey,
             sender: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
             receiver: payoutDescriptor,

@@ -1,3 +1,4 @@
+using NArk.Arkade.Contracts;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 
@@ -32,29 +33,37 @@ public sealed class LightningSendNotFundableException : Exception
     public FundingRefusal Reason { get; }
 }
 
-/// <summary>Thrown when the solver's address does not match the maker's own derivation.</summary>
+/// <summary>Thrown when the solver's address matches neither shape the maker derives.</summary>
 /// <remarks>
 /// Never fund past this. It is the single check that makes a wrong or malicious solver able to
-/// produce only an address the maker declines, rather than one that traps funds.
+/// produce only an address the maker declines, rather than one that traps funds. Two shapes are
+/// compared, not one, because <see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/> is
+/// opt-in and nothing on the wire says whether a given solver has turned it on — refusing here means
+/// the quoted address matched <b>neither</b> derivation, not merely a single guessed one.
 /// </remarks>
 public sealed class LockupAddressMismatchException : Exception
 {
     /// <summary>Creates the exception.</summary>
-    /// <param name="derived">The address the maker derived from its own data.</param>
+    /// <param name="derivedEightLeaf">The address derived without the opt-in ninth leaf.</param>
+    /// <param name="derivedNineLeaf">The address derived with it.</param>
     /// <param name="quoted">The address the solver sent for comparison.</param>
-    public LockupAddressMismatchException(string derived, string? quoted)
-        // Both addresses belong in the message. A mismatch is a derivation disagreement, and the
-        // first thing anyone needs is the two strings side by side — a bare "they differ" turns a
+    public LockupAddressMismatchException(string derivedEightLeaf, string derivedNineLeaf, string? quoted)
+        // Every candidate belongs in the message. A mismatch is a derivation disagreement, and the
+        // first thing anyone needs is the addresses side by side — a bare "they differ" turns a
         // one-glance diff into a debugging session, at exactly the moment funding is on the line.
-        : base("solver's lockup address does not match the local derivation — refusing to fund. " +
-               $"derived {derived}, quoted {quoted ?? "<none>"}")
+        : base("solver's lockup address matches neither shape we derive — refusing to fund. " +
+               $"eight-leaf {derivedEightLeaf}, nine-leaf {derivedNineLeaf}, quoted {quoted ?? "<none>"}")
     {
-        Derived = derived;
+        DerivedEightLeaf = derivedEightLeaf;
+        DerivedNineLeaf = derivedNineLeaf;
         Quoted = quoted;
     }
 
-    /// <summary>What the maker derived.</summary>
-    public string Derived { get; }
+    /// <summary>What the maker derived without the opt-in ninth leaf.</summary>
+    public string DerivedEightLeaf { get; }
+
+    /// <summary>What the maker derived with the opt-in ninth leaf.</summary>
+    public string DerivedNineLeaf { get; }
 
     /// <summary>What the solver claimed, if anything.</summary>
     public string? Quoted { get; }
@@ -128,19 +137,42 @@ public static class LightningSendGates
     }
 
     /// <summary>
-    /// Compare the solver's address against the maker's own derivation.
+    /// Accept whichever of the maker's two derived lockup shapes matches the solver's quoted address;
+    /// refuse if neither does.
     /// </summary>
     /// <param name="quote">The quote carrying the compare-only address.</param>
-    /// <param name="derivedAddress">The address the maker derived locally.</param>
-    /// <returns><paramref name="derivedAddress"/>, so calls can chain.</returns>
-    /// <exception cref="LockupAddressMismatchException">The two disagree.</exception>
-    public static string VerifyLockupAddress(RfqQuote<LightningSendQuoteProfile> quote, string derivedAddress)
+    /// <param name="eightLeaf">The candidate without the opt-in ninth leaf.</param>
+    /// <param name="nineLeaf">The candidate with it.</param>
+    /// <param name="isMainnet">Which network's address encoding to compare under.</param>
+    /// <returns>Whichever candidate matched.</returns>
+    /// <remarks>
+    /// Comparing against both, rather than a single guessed shape, is what makes this corridor
+    /// tolerant of a solver either side of turning on
+    /// <see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/> — nothing on the wire says
+    /// which one it has deployed. Accepting either is safe because both pin the covenant's refund to
+    /// the maker's own address; what must never happen is accepting an address that matches neither.
+    /// </remarks>
+    /// <exception cref="LockupAddressMismatchException">The quoted address matches neither candidate.</exception>
+    public static VHTLCv2Contract ResolveLockupContract(
+        RfqQuote<LightningSendQuoteProfile> quote,
+        VHTLCv2Contract eightLeaf,
+        VHTLCv2Contract nineLeaf,
+        bool isMainnet)
     {
         var quoted = quote.Profile?.LockupAddress;
-        if (!string.Equals(derivedAddress, quoted, StringComparison.Ordinal))
+
+        var eightAddress = eightLeaf.GetArkAddress().ToString(isMainnet);
+        if (string.Equals(eightAddress, quoted, StringComparison.Ordinal))
         {
-            throw new LockupAddressMismatchException(derivedAddress, quoted);
+            return eightLeaf;
         }
-        return derivedAddress;
+
+        var nineAddress = nineLeaf.GetArkAddress().ToString(isMainnet);
+        if (string.Equals(nineAddress, quoted, StringComparison.Ordinal))
+        {
+            return nineLeaf;
+        }
+
+        throw new LockupAddressMismatchException(eightAddress, nineAddress, quoted);
     }
 }

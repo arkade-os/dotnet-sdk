@@ -137,11 +137,16 @@ public sealed class OnchainIntentsClient(
         var htlc = DeriveHtlc(quote, preimage, clientKey, serverInfo.Network);
         AssertMatches(htlc.Address.ToString(), quote.Profile?.HtlcAddress, "L1 HTLC");
 
-        var contract = await DeriveLockupAsync(
+        var (eightLeaf, nineLeaf) = await DeriveLockupAsync(
             quote, paymentHash, refundArkAddress.ScriptPubKey.ToBytes(), clientKey, serverInfo);
+        var isMainnet = serverInfo.Network == Network.Main;
+
+        // Accepts whichever of the two shapes matches — see VHTLCv2Contract's own remarks on
+        // NonInteractiveRefundWithoutReceiver. Nothing on the wire says which one this solver has
+        // deployed, and refusing to fund is still the outcome when the quote matches neither.
+        var contract = ResolveLockupContract(eightLeaf, nineLeaf, quote.Profile?.LockupAddress, isMainnet);
         var lockupArkAddress = contract.GetArkAddress();
-        var lockupAddress = lockupArkAddress.ToString(serverInfo.Network == Network.Main);
-        AssertMatches(lockupAddress, quote.Profile?.LockupAddress, "Arkade lockup");
+        var lockupAddress = lockupArkAddress.ToString(isMainnet);
 
         // Imported before funding, recorded before the spend — the same ordering the other corridors
         // keep, and for the same reason: a crash between the money moving and the record existing is
@@ -224,8 +229,42 @@ public sealed class OnchainIntentsClient(
         }
     }
 
-    /// <summary>The Arkade covenant, built exactly as the Lightning send leg builds its own.</summary>
-    private async Task<VHTLCv2Contract> DeriveLockupAsync(
+    /// <summary>
+    /// Accept whichever of the client's two derived lockup shapes matches the solver's quoted
+    /// address; refuse if neither does.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="AssertMatches"/> — which the L1 HTLC has no need of, since it has only ever
+    /// had one shape — the Arkade lockup is a <see cref="VHTLCv2Contract"/>, whose opt-in ninth leaf
+    /// (<see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/>) nothing on the wire
+    /// distinguishes. Accepting either derived shape is safe because both pin the covenant's refund
+    /// to the client's own address; what must never happen is accepting an address that matches
+    /// neither.
+    /// </remarks>
+    /// <exception cref="OnchainSendNotFundableException">The quoted address matches neither candidate.</exception>
+    internal static VHTLCv2Contract ResolveLockupContract(
+        VHTLCv2Contract eightLeaf, VHTLCv2Contract nineLeaf, string? quoted, bool isMainnet)
+    {
+        var eightAddress = eightLeaf.GetArkAddress().ToString(isMainnet);
+        if (string.Equals(eightAddress, quoted, StringComparison.Ordinal))
+        {
+            return eightLeaf;
+        }
+
+        var nineAddress = nineLeaf.GetArkAddress().ToString(isMainnet);
+        if (string.Equals(nineAddress, quoted, StringComparison.Ordinal))
+        {
+            return nineLeaf;
+        }
+
+        throw new OnchainSendNotFundableException(
+            OnchainSendRefusalReason.IncompleteQuote,
+            $"our Arkade lockup derivation is {eightAddress} (eight-leaf) or {nineAddress} (nine-leaf), "
+            + $"the solver quoted {quoted ?? "(none)"} — refusing to fund an address matching neither");
+    }
+
+    /// <summary>Both Arkade covenant shapes, built exactly as the Lightning send leg builds its own.</summary>
+    private async Task<(VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf)> DeriveLockupAsync(
         RfqQuote<OnchainSendQuoteProfile> quote,
         string paymentHash,
         byte[] refundPkScript,
@@ -239,7 +278,7 @@ public sealed class OnchainIntentsClient(
                 "the quote carries no receiver_pk_script, so the covenant's nonInteractiveClaim leaf "
                 + "cannot be reconstructed and the lockup address cannot be derived");
 
-        return await Task.FromResult(new VHTLCv2Contract(
+        return await Task.FromResult(LightningCorridor.DeriveBothLockupShapes(
             serverInfo.SignerKey,
             sender: clientKey,
             receiver: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),

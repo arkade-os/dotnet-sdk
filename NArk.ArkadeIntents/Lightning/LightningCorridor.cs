@@ -136,6 +136,46 @@ public static class LightningCorridor
         KeyExtensions.ParseOutputDescriptor("02" + xOnlyHex.ToLowerInvariant(), network);
 
     /// <summary>
+    /// Build both VHTLC lockup shapes — with and without the opt-in
+    /// <see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/> leaf — from one shared
+    /// parameter set.
+    /// </summary>
+    /// <returns>
+    /// The eight-leaf contract and the nine-leaf contract, differing from each other in nothing but
+    /// that flag.
+    /// </returns>
+    /// <remarks>
+    /// Nothing on the wire says which shape a given solver has deployed, so a client cannot know in
+    /// advance which one to build — see the flag's own remarks on <see cref="VHTLCv2Contract"/>. Both
+    /// corridors derive both shapes here and accept whichever matches the solver's quoted address,
+    /// which stays safe because both shapes pin the covenant's refund to the same client-controlled
+    /// destination: the flag only changes how the sender may eventually exit, never who it pays.
+    /// Building both from ONE parameter set — rather than two independently assembled calls — is what
+    /// guarantees they cannot drift from each other in any field but the flag.
+    /// </remarks>
+    public static (VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf) DeriveBothLockupShapes(
+        OutputDescriptor server,
+        OutputDescriptor sender,
+        OutputDescriptor receiver,
+        uint160 hash,
+        LockTime refundLocktime,
+        Sequence unilateralClaimDelay,
+        Sequence unilateralRefundDelay,
+        Sequence unilateralRefundWithoutReceiverDelay,
+        ECXOnlyPubKey emulatorPubKey,
+        byte[] nonInteractiveClaimPkScript,
+        byte[] nonInteractiveRefundPkScript)
+    {
+        VHTLCv2Contract Build(bool nineLeaf) => new(
+            server, sender, receiver, hash, refundLocktime,
+            unilateralClaimDelay, unilateralRefundDelay, unilateralRefundWithoutReceiverDelay,
+            emulatorPubKey, nonInteractiveClaimPkScript, nonInteractiveRefundPkScript,
+            nonInteractiveRefundWithoutReceiver: nineLeaf);
+
+        return (Build(false), Build(true));
+    }
+
+    /// <summary>
     /// Rebuild a funded lockup from the contract imported before it was funded.
     /// </summary>
     /// <param name="contractStorage">Where the lockup was imported.</param>

@@ -1,8 +1,13 @@
+using System.Security.Cryptography;
 using BTCPayServer.Lightning;
+using NArk.Abstractions.Extensions;
+using NArk.Arkade.Contracts;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NBitcoin;
+using NBitcoin.Scripting;
+using NBitcoin.Secp256k1;
 
 namespace NArk.Tests.ArkadeIntents.Lightning;
 
@@ -250,9 +255,98 @@ public class LightningReceiveGatesTests
         Assert.DoesNotThrow(() => LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 600));
     }
 
+    // ─── ResolveLockupContract: which shape the solver will actually fund ─────
+
+    [Test]
+    public void ResolveLockupContract_AcceptsTheEightLeafShapeWhenItMatches()
+    {
+        var (eightLeaf, nineLeaf) = Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: eightLeaf.GetArkAddress().ToString(false));
+
+        var resolved = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(eightLeaf));
+    }
+
+    [Test]
+    public void ResolveLockupContract_AcceptsTheNineLeafShapeWhenItMatches()
+    {
+        // A solver that has turned on NonInteractiveRefundWithoutReceiver funds an address this
+        // client would never have derived on its own before — the swap must still be recognised.
+        var (eightLeaf, nineLeaf) = Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: nineLeaf.GetArkAddress().ToString(false));
+
+        var resolved = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(nineLeaf));
+    }
+
+    [Test]
+    public void ResolveLockupContract_ThrowsWhenTheQuoteMatchesNeitherShape()
+    {
+        // The refusal that must never soften: on this corridor the SOLVER funds the lockup, so
+        // accepting an address matching neither derivation would have the client import and watch a
+        // script nothing says the solver will ever pay.
+        var (eightLeaf, nineLeaf) = Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: "ark1qsomewhere-else");
+
+        var ex = Assert.Throws<LockupAddressMismatchException>(() =>
+            LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
+
+        Assert.That(ex!.DerivedEightLeaf, Is.EqualTo(eightLeaf.GetArkAddress().ToString(false)));
+        Assert.That(ex.DerivedNineLeaf, Is.EqualTo(nineLeaf.GetArkAddress().ToString(false)));
+        Assert.That(ex.Quoted, Is.EqualTo("ark1qsomewhere-else"));
+    }
+
+    [Test]
+    public void ResolveLockupContract_DefaultsToTheEightLeafShapeWhenTheSolverQuotesNoAddressAtAll()
+    {
+        // Unlike the send leg, an absent lockup_address is not itself a refusal on this corridor —
+        // see LightningReceiveQuoteProfile.LockupAddress. With nothing to compare against, this keeps
+        // the same shape the corridor always defaulted to before the ninth leaf existed, rather than
+        // guessing the opt-in one.
+        var (eightLeaf, nineLeaf) = Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: null);
+
+        var resolved = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(eightLeaf));
+    }
+
+    /// <summary>Two lockup shapes built from one shared, otherwise-arbitrary parameter set.</summary>
+    private static (VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf) Candidates() =>
+        LightningCorridor.DeriveBothLockupShapes(
+            RandomDescriptor(),
+            RandomDescriptor(),
+            RandomDescriptor(),
+            new uint160(RandomNumberGenerator.GetBytes(20), false),
+            new LockTime(1_800_600_000),
+            new Sequence(TimeSpan.FromSeconds(512)),
+            new Sequence(TimeSpan.FromSeconds(512)),
+            new Sequence(TimeSpan.FromSeconds(1024)),
+            RandomXOnly(),
+            RandomP2trPkScript(),
+            RandomP2trPkScript());
+
+    private static OutputDescriptor RandomDescriptor() =>
+        KeyExtensions.ParseOutputDescriptor(new Key().PubKey.ToHex(), Network.RegTest);
+
+    private static ECXOnlyPubKey RandomXOnly() =>
+        ECXOnlyPubKey.Create(new Key().PubKey.TaprootInternalKey.ToBytes());
+
+    private static byte[] RandomP2trPkScript()
+    {
+        var script = new byte[34];
+        script[0] = 0x51;
+        script[1] = 0x20;
+        new Key().PubKey.TaprootInternalKey.ToBytes().CopyTo(script, 2);
+        return script;
+    }
+
     private static RfqQuote<LightningReceiveQuoteProfile> Quote(
         string? invoice, long toAmount, long? fromAmount = null,
-        long validUntil = 1_800_000_900, long refundLocktime = 1_800_605_184) => new()
+        long validUntil = 1_800_000_900, long refundLocktime = 1_800_605_184,
+        string? lockupAddress = null) => new()
     {
         RfqId = new string('9', 64),
         Pair = LightningReceiveProfile.Pair,
@@ -261,7 +355,7 @@ public class LightningReceiveGatesTests
         SolverPubkey = new string('e', 64),
         ValidUntil = validUntil,
         RefundLocktime = refundLocktime,
-        Profile = new LightningReceiveQuoteProfile { Invoice = invoice },
+        Profile = new LightningReceiveQuoteProfile { Invoice = invoice, LockupAddress = lockupAddress },
     };
 
     /// <summary>
