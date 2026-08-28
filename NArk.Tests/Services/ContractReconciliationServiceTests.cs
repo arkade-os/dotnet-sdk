@@ -11,6 +11,7 @@ using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NSubstitute;
+using static NArk.Tests.Common.TestWaiter;
 
 namespace NArk.Tests.Services;
 
@@ -294,16 +295,6 @@ public class ContractReconciliationServiceTests
         await _ensurer.Received().EnsureDefaultAsync("w1", Arg.Any<CancellationToken>());
     }
 
-    private static async Task WaitForAsync(Func<bool> condition, int timeoutMs = 2000)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (condition())
-                return;
-            await Task.Delay(20);
-        }
-    }
 
     // ── Destination-safety tests ──────────────────────────────────────────────
 

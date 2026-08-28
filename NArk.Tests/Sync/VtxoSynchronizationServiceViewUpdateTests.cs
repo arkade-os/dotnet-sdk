@@ -4,6 +4,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NSubstitute;
+using static NArk.Tests.Common.TestWaiter;
 
 namespace NArk.Tests.Sync;
 
@@ -237,13 +238,4 @@ public class VtxoSynchronizationServiceViewUpdateTests
             await tcs.Task;
     }
 
-    private static async Task WaitForAsync(Func<bool> predicate, int timeoutMs = 3000)
-    {
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (predicate()) return;
-            await Task.Delay(10);
-        }
-    }
 }

@@ -19,6 +19,7 @@ using NArk.Core.Transport;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NSubstitute;
+using static NArk.Tests.Common.TestWaiter;
 
 namespace NArk.Tests.Settlement;
 
@@ -36,6 +37,10 @@ public class CustomRailSettlementTests
     private const long BtcCoinAmount = 100_000;
     private const long AssetCarrierSats = 1_000;
     private const ulong AssetBalance = 750_000;
+
+    // The settlement loop debounces, evaluates and routes before anything is observable, and a
+    // shared CI runner is slow enough that the default wait clips it.
+    private const int TimeoutMs = 10_000;
 
     // An address shape the SDK cannot parse, on a network it does not know.
     private static readonly SettlementDestination EvmUsdc =
@@ -193,6 +198,8 @@ public class CustomRailSettlementTests
             .Returns(Task.FromResult(uint256.One));
 
         await RunEngine();
+        await WaitForAsync(() => _spendingService.ReceivedCalls()
+            .Any(call => call.GetMethodInfo().Name == nameof(ISpendingService.Spend)));
 
         // BTC went out through the built-in sweep, the asset through the application rail,
         // each drawing on its own remainder.
@@ -220,13 +227,19 @@ public class CustomRailSettlementTests
         _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>(configs));
 
-    private async Task RunEngine()
+    /// <param name="expectedRailCalls">
+    /// How many requests the application rail should receive before the assertions run. The
+    /// engine settles on a background loop, so waiting for the outcome beats sleeping for a
+    /// fixed span that a loaded machine outruns.
+    /// </param>
+    private async Task RunEngine(int expectedRailCalls = 1)
     {
         using var service = CreateService();
         await service.StartAsync(CancellationToken.None);
 
         _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, Vtxo());
-        await Task.Delay(300);
+
+        await WaitForAsync(() => _appRail.Requests.Count >= expectedRailCalls, TimeoutMs);
 
         await service.StopAsync(CancellationToken.None);
     }

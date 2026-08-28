@@ -15,6 +15,7 @@ using NArk.Core.Settlement;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NSubstitute;
+using static NArk.Tests.Common.TestWaiter;
 
 namespace NArk.Tests.Settlement;
 
@@ -26,6 +27,10 @@ public class SettlementServiceTests
     private const long CoinAmount = 100_000;
     private const long AssetCarrierSats = 1_000;
     private const string Usdt0 = "usdt0-asset-id";
+
+    // The settlement loop debounces, evaluates and routes before anything is observable, and a
+    // shared CI runner is slow enough that the default wait clips it.
+    private const int TimeoutMs = 10_000;
 
     private static readonly SettlementDestination Destination = SettlementDestination.Ark("ark1qexample");
     private static readonly TimeHeight CurrentTime = new(DateTimeOffset.UtcNow, 800_000);
@@ -95,7 +100,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForSettlements(1);
 
         await _rail.Received(1).SettleAsync(
             Arg.Is<SettlementRequest>(request =>
@@ -120,7 +125,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForSettlements(1);
 
         await _rail.Received(1).SettleAsync(
             Arg.Is<SettlementRequest>(request =>
@@ -148,7 +153,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForSettlements(1);
 
         await _rail.Received(1).SettleAsync(
             Arg.Is<SettlementRequest>(request =>
@@ -179,7 +184,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForSettlements(2);
 
         // Settling the whole BTC balance must not stop the asset plan behind it: the two
         // denominations draw on separate remainders.
@@ -203,7 +208,8 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForAsync(() => gate.ReceivedCalls().Any(), TimeoutMs);
+        await Task.Delay(200);
 
         await _rail.DidNotReceive().SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>());
 
@@ -220,7 +226,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForEvaluation();
 
         await _rail.DidNotReceive().SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>());
 
@@ -243,7 +249,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForSettlements(2);
 
         await _rail.Received(1).SettleAsync(
             Arg.Is<SettlementRequest>(r => r.Destination == first && r.Amount == 40_000),
@@ -273,7 +279,9 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        // The second plan is skipped for want of balance, so one settlement is all there is
+        // to wait for; the assertion below is what proves the second never followed.
+        await WaitForSettlements(1);
 
         await _rail.Received(1).SettleAsync(
             Arg.Is<SettlementRequest>(r => r.Destination == first && r.Amount == CoinAmount),
@@ -305,7 +313,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForSettlements(2);
 
         // The failed plan committed nothing, so the whole balance is still available.
         await _rail.Received(1).SettleAsync(
@@ -325,7 +333,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForEvents(1);
 
         await _eventHandler.Received(1).HandleAsync(
             Arg.Is<PostSettlementActionEvent>(e =>
@@ -336,7 +344,7 @@ public class SettlementServiceTests
 
         // The loop must survive a failing rail: a later trigger is still processed.
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForSettlements(2);
 
         await _rail.Received(2).SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>());
 
@@ -350,7 +358,7 @@ public class SettlementServiceTests
         await service.StartAsync(CancellationToken.None);
 
         RaiseVtxoChanged();
-        await Task.Delay(300);
+        await WaitForEvents(1);
 
         await _eventHandler.Received(1).HandleAsync(
             Arg.Is<PostSettlementActionEvent>(e =>
@@ -363,6 +371,25 @@ public class SettlementServiceTests
 
     private void RaiseVtxoChanged() =>
         _vtxoStorage.VtxosChanged += Raise.Event<EventHandler<ArkVtxo>>(_vtxoStorage, CreateVtxo());
+
+    private int SettleCalls =>
+        _rail.ReceivedCalls().Count(call => call.GetMethodInfo().Name == nameof(ISettlementService.SettleAsync));
+
+    private int EventCalls => _eventHandler.ReceivedCalls().Count();
+
+    private Task WaitForSettlements(int count) => WaitForAsync(() => SettleCalls >= count, TimeoutMs);
+
+    private Task WaitForEvents(int count) => WaitForAsync(() => EventCalls >= count, TimeoutMs);
+
+    // Nothing observable happens when the engine stands down, so wait for the evaluation to
+    // have started — the coins are always read before any policy runs — and give the pass a
+    // moment to finish before asserting that no settlement followed.
+    private async Task WaitForEvaluation()
+    {
+        await WaitForAsync(() => _spendingService.ReceivedCalls()
+            .Any(call => call.GetMethodInfo().Name == nameof(ISpendingService.GetAvailableCoins)), TimeoutMs);
+        await Task.Delay(200);
+    }
 
     private SettlementService CreateService(IEnumerable<ISettlementGate>? gates = null) =>
         new(
