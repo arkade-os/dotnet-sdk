@@ -106,6 +106,36 @@ public class VHTLCv2NineLeafTests
             parsedEight.GetArkAddress().ToString(false), Is.EqualTo(eight.GetArkAddress().ToString(false)));
     }
 
+    [Test]
+    public void RoundTrip_ThrowsOnAMalformedFlagValue()
+    {
+        // Reading a present-but-wrong value as "not set" would silently re-derive the eight-leaf
+        // script — a different address — with no indication the row was corrupt. ts-sdk's
+        // deserializeParams throws for the same reason; the two SDKs must fail identically here
+        // rather than quietly disagreeing about what a contract's address is.
+        var nine = MakeContract(nonInteractiveRefundWithoutReceiver: true);
+        var corrupted = nine.ToString().Replace(
+            "nonInteractiveRefundWithoutReceiver=1", "nonInteractiveRefundWithoutReceiver=true");
+
+        var ex = Assert.Throws<ArgumentException>(() => ArkContractParser.Parse(corrupted, Network.RegTest));
+
+        Assert.That(ex!.Message, Does.Contain("nonInteractiveRefundWithoutReceiver"));
+        Assert.That(ex.Message, Does.Contain("\"true\""));
+    }
+
+    [Test]
+    public void RoundTrip_AbsentFlagIsFalseNotAThrow()
+    {
+        // The negative space of the check above: an eight-leaf contract has no key at all, and
+        // that must keep parsing cleanly rather than being caught by the malformed-value guard.
+        var eight = MakeContract(nonInteractiveRefundWithoutReceiver: false);
+
+        var parsed = ArkContractParser.Parse(eight.ToString(), Network.RegTest) as VHTLCv2Contract;
+
+        Assert.That(parsed, Is.Not.Null);
+        Assert.That(parsed!.NonInteractiveRefundWithoutReceiver, Is.False);
+    }
+
     private static VHTLCv2Contract MakeContract(bool nonInteractiveRefundWithoutReceiver)
     {
         var o = Fixture.Options;

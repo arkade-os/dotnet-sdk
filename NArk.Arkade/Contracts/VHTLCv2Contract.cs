@@ -1,3 +1,4 @@
+using System.Text.Json;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
@@ -14,9 +15,12 @@ using NBitcoin.Secp256k1;
 namespace NArk.Arkade.Contracts;
 
 /// <summary>
-/// The eight-leaf VHTLC used by the Lightning swap corridors: the six leaves of the reference
-/// VHTLC construction, plus two whose co-signer is an emulator key tweaked by a covenant that
-/// pins where the spend may pay.
+/// The VHTLC used by the Lightning swap corridors: the six leaves of the reference VHTLC
+/// construction, plus two whose co-signer is an emulator key tweaked by a covenant that pins
+/// where the spend may pay. In the wider design <c>nonInteractiveClaim</c> and
+/// <c>nonInteractiveRefund</c> are each independently optional, but this C# type does not offer
+/// that: both non-interactive pkScripts are mandatory constructor arguments, so this class is
+/// eight leaves by default and nine when <see cref="NonInteractiveRefundWithoutReceiver"/> is set.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -289,8 +293,30 @@ public class VHTLCv2Contract : ArkContract
             ECXOnlyPubKey.Create(Convert.FromHexString(contractData["emulator"])),
             Convert.FromHexString(contractData["niClaimPkScript"]),
             Convert.FromHexString(contractData["niRefundPkScript"]),
-            nonInteractiveRefundWithoutReceiver:
-                contractData.TryGetValue("nonInteractiveRefundWithoutReceiver", out var nirwr) && nirwr == "1");
+            nonInteractiveRefundWithoutReceiver: ParseNonInteractiveRefundWithoutReceiver(contractData));
+
+    /// <summary>
+    /// Reads the <c>nonInteractiveRefundWithoutReceiver</c> flag <see cref="GetContractData"/>
+    /// wrote. Absent means false — the flag was never set. Present means it must be exactly
+    /// <c>"1"</c>: silently reading any other value as false would re-derive the eight-leaf script
+    /// — a different address — instead of surfacing that the stored row is malformed. Matches
+    /// ts-sdk's <c>VHTLCV2ContractHandler.deserializeParams</c>, so the two SDKs fail identically
+    /// on bad input rather than quietly disagreeing about what a contract's address is.
+    /// </summary>
+    private static bool ParseNonInteractiveRefundWithoutReceiver(Dictionary<string, string> contractData)
+    {
+        if (!contractData.TryGetValue("nonInteractiveRefundWithoutReceiver", out var value))
+        {
+            return false;
+        }
+        if (value != "1")
+        {
+            throw new ArgumentException(
+                "nonInteractiveRefundWithoutReceiver must be \"1\" when present, got "
+                + JsonSerializer.Serialize(value));
+        }
+        return true;
+    }
 
     /// <summary>
     /// The receiver's payout: the <c>claim</c> leaf, opened by revealing the preimage.
