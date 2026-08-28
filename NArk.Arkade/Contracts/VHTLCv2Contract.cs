@@ -282,9 +282,17 @@ public class VHTLCv2Contract : ArkContract
             { "niClaimPkScript", Convert.ToHexString(NonInteractiveClaimPkScript).ToLowerInvariant() },
             { "niRefundPkScript", Convert.ToHexString(NonInteractiveRefundPkScript).ToLowerInvariant() },
         };
-        // Matches ts-sdk's VHTLCV2ContractHandler.serializeParams exactly — key and value both —
-        // so a contract registered by one SDK deserializes in the other. Omitted rather than "false"
-        // when unset, for the same reason: a dropped flag must re-derive the eight-leaf script.
+        // This key's name and its "1" value match ts-sdk's VHTLCV2ContractHandler.serializeParams
+        // exactly and deliberately, so the FLAG ITSELF round-trips identically between the two
+        // SDKs. That does not generalize to the rest of this dictionary: the two SDKs' param maps
+        // are not interchangeable. The "type" discriminator differs ("HTLCv2" vs "vhtlc-v2"), so
+        // does every delay key name (unilateralClaimDelay vs claimDelay, and so on), and the
+        // covenant pkScript keys (niClaimPkScript vs nonInteractiveClaimReceiverPkScript, and so
+        // on); one shared "emulator" key here stands in for two independent ones there
+        // (nonInteractiveClaimEmulatorPubkey / nonInteractiveRefundEmulatorPubkey); and
+        // sender/receiver/server serialize as output descriptors here versus raw hex pubkeys
+        // there. Omitted rather than "false" when unset, for the same reason this key exists at
+        // all: a dropped flag must re-derive the eight-leaf script.
         if (NonInteractiveRefundWithoutReceiver)
         {
             data["nonInteractiveRefundWithoutReceiver"] = "1";

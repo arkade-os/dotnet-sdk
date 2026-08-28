@@ -88,8 +88,10 @@ public class VHTLCv2NineLeafTests
         var nine = MakeContract(nonInteractiveRefundWithoutReceiver: true);
         var eight = MakeContract(nonInteractiveRefundWithoutReceiver: false);
 
-        // Exact wire shape: this is what lets a contract registered by one SDK deserialize in
-        // the other, so the key name and the value "1" (not "true") both matter here.
+        // Exact wire shape for this one flag: the key name and the value "1" (not "true") are
+        // what let the FLAG ITSELF round-trip identically between the two SDKs. That is narrower
+        // than "a contract round-trips across SDKs" in general — it does not, for the many other
+        // keys in GetContractData() — see that method's own comment for the specifics.
         Assert.That(nine.ToString(), Does.Contain("&nonInteractiveRefundWithoutReceiver=1"));
         Assert.That(eight.ToString(), Does.Not.Contain("nonInteractiveRefundWithoutReceiver"));
 
