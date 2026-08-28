@@ -65,8 +65,16 @@ public class SettlementService(
             _queuedWallets.TryRemove(walletId, out _);
     }
 
-    /// <inheritdoc />
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    /// <summary>
+    /// Subscribes to the wallet activity the engine reacts to, then starts the loop.
+    /// <para>
+    /// The subscriptions happen here rather than inside <see cref="ExecuteAsync"/> because the
+    /// host schedules that method instead of running it inline: anything raised between the
+    /// service starting and the loop actually running would be missed, and the wallet would
+    /// wait for the next heartbeat.
+    /// </para>
+    /// </summary>
+    public override Task StartAsync(CancellationToken cancellationToken)
     {
         logger?.LogInformation("Starting settlement service");
 
@@ -75,6 +83,12 @@ public class SettlementService(
         foreach (var source in triggerSources)
             source.WalletActivity += OnTriggerSourceActivity;
 
+        return base.StartAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
         try
         {
             var heartbeat = HeartbeatLoop(stoppingToken);
@@ -99,10 +113,9 @@ public class SettlementService(
         }
         finally
         {
-            vtxoStorage.VtxosChanged -= OnVtxoChanged;
-            intentStorage.IntentChanged -= OnIntentChanged;
-            foreach (var source in triggerSources)
-                source.WalletActivity -= OnTriggerSourceActivity;
+            // Also unsubscribed by StopAsync; doing it here as well covers the loop ending on
+            // its own, and detaching a handler twice is a no-op.
+            Unsubscribe();
 
             logger?.LogInformation("Settlement service stopped");
         }
@@ -228,6 +241,21 @@ public class SettlementService(
                     return;
             }
         }
+    }
+
+    /// <inheritdoc />
+    public override Task StopAsync(CancellationToken cancellationToken)
+    {
+        Unsubscribe();
+        return base.StopAsync(cancellationToken);
+    }
+
+    private void Unsubscribe()
+    {
+        vtxoStorage.VtxosChanged -= OnVtxoChanged;
+        intentStorage.IntentChanged -= OnIntentChanged;
+        foreach (var source in triggerSources)
+            source.WalletActivity -= OnTriggerSourceActivity;
     }
 
     /// <summary>
