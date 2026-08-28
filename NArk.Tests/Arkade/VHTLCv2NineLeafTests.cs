@@ -136,6 +136,29 @@ public class VHTLCv2NineLeafTests
         Assert.That(parsed!.NonInteractiveRefundWithoutReceiver, Is.False);
     }
 
+    [Test]
+    public void CreateNonInteractiveRefundWithoutReceiverScript_ThrowsWhenTheFlagIsOff()
+    {
+        // Called directly on an eight-leaf contract this leaf is not in the taproot tree, so a
+        // witness built against it would be silently rejected on-chain with no SDK-level error —
+        // the guard turns that into an immediate, named failure instead. ts-sdk's equivalent
+        // accessor throws the identical message for the identical reason.
+        var eight = MakeContract(nonInteractiveRefundWithoutReceiver: false);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => eight.CreateNonInteractiveRefundWithoutReceiverScript());
+
+        Assert.That(ex!.Message, Is.EqualTo("VHTLC has no non-interactive refund-without-receiver leaf"));
+    }
+
+    [Test]
+    public void Fixture_IsTheNineLeafVariant()
+    {
+        // A cheap guard that this fixture has not been swapped for a differently-shaped one:
+        // WithoutReceiver is otherwise deserialized and never read anywhere in this file.
+        Assert.That(Fixture.Options.NonInteractiveRefund.WithoutReceiver, Is.True);
+    }
+
     private static VHTLCv2Contract MakeContract(bool nonInteractiveRefundWithoutReceiver)
     {
         var o = Fixture.Options;

@@ -113,6 +113,10 @@ public class VHTLCv2Contract : ArkContract
         NonInteractiveClaimPkScript = nonInteractiveClaimPkScript;
         NonInteractiveRefundPkScript = nonInteractiveRefundPkScript;
         NonInteractiveRefundWithoutReceiver = nonInteractiveRefundWithoutReceiver;
+        // Computed once here, not re-derived per leaf build, so CreateNonInteractiveRefundScript()
+        // and CreateNonInteractiveRefundWithoutReceiverScript() are structurally guaranteed to pin
+        // the same destination rather than merely happening to match.
+        _nonInteractiveRefundCosigner = CovenantKey(NonInteractiveRefundPkScript);
     }
 
     /// <inheritdoc />
@@ -191,26 +195,38 @@ public class VHTLCv2Contract : ArkContract
     /// </summary>
     public ScriptBuilder CreateNonInteractiveRefundScript() =>
         new CollaborativePathArkTapScript(
-            NonInteractiveRefundCosigner, new NofNMultisigTapScript([ServerKey, ReceiverKey]));
+            _nonInteractiveRefundCosigner, new NofNMultisigTapScript([ServerKey, ReceiverKey]));
 
     /// <summary>
     /// Server + the covenant key, pinned to the sender's own payout, spendable after
     /// <see cref="RefundLocktime"/> with no receiver signature at all — the non-interactive
     /// analogue of <see cref="CreateRefundWithoutReceiverScript"/>. Reuses
-    /// <see cref="NonInteractiveRefundCosigner"/> rather than re-deriving it, so this leaf and
+    /// <see cref="_nonInteractiveRefundCosigner"/> rather than re-deriving it, so this leaf and
     /// <see cref="CreateNonInteractiveRefundScript"/> commit to the same key by construction.
     /// </summary>
-    public ScriptBuilder CreateNonInteractiveRefundWithoutReceiverScript() =>
-        new CollaborativePathArkTapScript(
-            NonInteractiveRefundCosigner,
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="NonInteractiveRefundWithoutReceiver"/> is false, so this leaf is not part of the
+    /// taproot tree — a witness built against it would be rejected on-chain with no SDK-level error
+    /// otherwise.
+    /// </exception>
+    public ScriptBuilder CreateNonInteractiveRefundWithoutReceiverScript()
+    {
+        if (!NonInteractiveRefundWithoutReceiver)
+        {
+            throw new InvalidOperationException("VHTLC has no non-interactive refund-without-receiver leaf");
+        }
+
+        return new CollaborativePathArkTapScript(
+            _nonInteractiveRefundCosigner,
             new CompositeTapScript(new LockTimeTapScript(RefundLocktime), new NofNMultisigTapScript([ServerKey])));
+    }
 
     /// <summary>
     /// The covenant-tweaked emulator key that both <c>nonInteractiveRefund</c> leaves co-sign with.
-    /// Derived once from <see cref="NonInteractiveRefundPkScript"/> so the two leaves cannot drift
-    /// apart into pinning different destinations.
+    /// Computed once in the constructor — not re-derived per leaf build — so the two leaves are
+    /// structurally guaranteed to pin the same destination rather than merely happening to match.
     /// </summary>
-    private ECXOnlyPubKey NonInteractiveRefundCosigner => CovenantKey(NonInteractiveRefundPkScript);
+    private readonly ECXOnlyPubKey _nonInteractiveRefundCosigner;
 
     /// <summary>
     /// The ArkadeScript a covenant leaf's key commits to: "the output at this input's index pays
