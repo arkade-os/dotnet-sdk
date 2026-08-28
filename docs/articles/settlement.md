@@ -37,7 +37,7 @@ public class MySettlementConfigProvider(IMySettingsStore store) : ISettlementCon
             .Select(setting => new SettlementConfig(
                 WalletId: setting.WalletId,
                 Destination: SettlementDestination.Ark(setting.PayoutAddress),
-                ThresholdSats: setting.ThresholdSats))
+                Threshold: setting.Threshold))
             .ToArray();
     }
 }
@@ -45,7 +45,34 @@ public class MySettlementConfigProvider(IMySettingsStore store) : ISettlementCon
 services.AddSingleton<ISettlementConfigProvider, MySettlementConfigProvider>();
 ```
 
-The threshold gates **when** a settlement fires, never **how much** moves: a wallet configured at 100 000 sats that reaches 250 000 settles all 250 000. Cap a single settlement with `SettlementConfig.MaxAmountSats` when a rail has an upper limit.
+The threshold gates **when** a settlement fires, never **how much** moves: a wallet configured at 100 000 sats that reaches 250 000 settles all 250 000. Cap a single settlement with `SettlementConfig.MaxAmount` when a rail has an upper limit.
+
+### What counts towards the threshold
+
+Each rule measures exactly one denomination, named by `SettlementConfig.SourceAsset`: `SettlementAssets.Btc` by default, or the id of an Arkade-issued asset. Coins locked by a pending intent and coins past their expiry are out of both.
+
+BTC and assets are then kept apart. An asset VTXO holds a dust-sized satoshi amount as the asset's carrier, not as spendable BTC — spending it for BTC would take the asset with it — so asset carriers land in `SettlementContext.AssetCoins` / `AssetBalances` and never in `AvailableCoins` / `AvailableBalanceSats`. A wallet holding nothing but assets never crosses a BTC threshold, and a BTC balance far above an asset rule's number never fires it.
+
+## Settling an Arkade asset
+
+```csharp
+// Pay out USDT0 once the wallet holds 500 000 units of it, whatever its BTC balance is.
+new SettlementConfig(
+    WalletId: walletId,
+    Destination: SettlementDestination.ArkAsset(payoutAddress, usdt0AssetId),
+    Threshold: 500_000,
+    SourceAsset: usdt0AssetId);
+```
+
+Thresholds, `MaxAmount`, `SettlementPlan.Amount`, and `SettlementRequest.Amount` are all denominated in the source asset's atomic units — satoshis only when that asset is BTC. Configure one rule per asset you settle; a rule never spills over into another denomination.
+
+`ArkAssetSettlementService`, registered by `AddArkSettlement()`, is the rail for these. It sends the asset to an Arkade address, or consolidates it onto a freshly derived address of the settling wallet when the destination carries none, and it keeps the mechanics of an asset VTXO intact:
+
+- the remainder of a partial settlement comes back as an **asset change output**, so the packet never shows more asset going in than coming out;
+- each asset output is funded with one dust carrier, topped up from the wallet's BTC coins when the spent carriers alone do not cover them;
+- the wallet's **auto-sweep destination** is not applied. That setting resolves every send-to-self to the configured consolidation address, which is what the sweeper and the intent scheduler rely on — but here it would send the asset there rather than where the rule points, and would move the very remainder a `MaxAmount` cap chose to keep for the next settlement.
+
+The rail transfers, it does not convert: the asset leaving the wallet has to be the asset the destination expects, or it throws `SettlementNotSupportedException`. Settling USDT0 *into* something else — BTC, another stablecoin, an exchange balance — is a conversion, and that is one more `ISettlementService` (see [Adding a rail](#adding-a-rail)) whose `CanSettle` accepts the destination and which reads `SettlementRequest.SourceAsset` for what it is being handed.
 
 ## Destinations
 
@@ -73,7 +100,7 @@ services.AddArkSettlement(options => options.EnableCollaborativeExit = true);
 
 That is off by default so an application that pays Bitcoin out its own way — a swap, an exchange withdrawal, a batching service — can register that rail without competing with the built-in one for the same destination.
 
-Arkade-issued assets are not handled here either: settlement amounts are denominated in satoshis, so an asset balance needs its own rail.
+Arkade-issued assets are not handled here: every amount on this rail is satoshis, and an asset-denominated request is rejected rather than spent as satoshis. `ArkAssetSettlementService` handles those instead.
 
 ## Adding a rail
 
@@ -92,14 +119,17 @@ public class UsdtSettlementService(IMyStablecoinClient client) : ISettlementServ
         SettlementRequest request,
         CancellationToken cancellationToken = default)
     {
+        // request.SourceAsset says what is leaving the wallet — BTC, or an Arkade asset id —
+        // and request.Amount is denominated in it.
         var transfer = await client.Send(
-            request.WalletId, request.AmountSats, request.Destination.Address!, cancellationToken);
+            request.WalletId, request.SourceAsset, request.Amount,
+            request.Destination.Address!, cancellationToken);
 
         return new SettlementResult(
             TransferId: transfer.Id,
-            SourceAmountSats: request.AmountSats,
+            SourceAmount: request.Amount,
             DestinationAmountSats: transfer.NetSats,
-            FeesPaidSats: request.AmountSats - transfer.NetSats,
+            FeesPaidSats: transfer.FeeSats,
             DestinationAtomicAmount: transfer.AtomicUnits);
     }
 }
@@ -109,6 +139,7 @@ services.AddSingleton<ISettlementService, UsdtSettlementService>();
 
 Notes for rail authors:
 
+- `CanSettle` sees the destination only. Check `SettlementRequest.SourceAsset` inside `SettleAsync` and reject what the rail cannot spend — a BTC-only rail handed an asset amount would move the wrong value.
 - `CanSettle` must be cheap and side-effect free — it runs on every routing decision.
 - Report a rail that is configured but temporarily unusable as `Available = false` with an `UnavailableReason`; routing skips it and the reason surfaces in the error when nothing else matches, instead of failing a settlement.
 - Use `DestinationAtomicAmount` for destinations that are not denominated in satoshis.
@@ -138,11 +169,11 @@ public class WeeklyPayoutPolicy(IMySchedule schedule) : ISettlementPolicy
 }
 ```
 
-Plans are executed against a balance that shrinks as each one commits, so two policies that independently plan the whole balance do not over-spend the wallet — the second is skipped. A plan whose settlement *failed* commits nothing and leaves the balance to the plans behind it.
+Plans are executed against a balance that shrinks as each one commits, so two policies that independently plan the whole balance do not over-spend the wallet — the second is skipped. A plan whose settlement *failed* commits nothing and leaves the balance to the plans behind it. The remainder is tracked per denomination, so an asset payout never eats into the satoshis a BTC rule is waiting on: set `SettlementPlan.SourceAsset` and read the matching balance with `context.GetAvailableBalance(asset)`.
 
 The engine evaluates every queued wallet: a policy that ignores `ISettlementConfigProvider` and decides on its own needs no extra opt-in.
 
-`SettlementContext` gives the policy the wallet's spendable coins, with coins locked by pending intents and coins past expiry already removed, plus the chain time they were computed against. Set `SettlementPlan.Coins` to pin the exact coins to spend — the settlement counterpart of the coins a sweep policy yields. The destination sweep honours it, while the collaborative-exit path rejects it because it performs its own coin selection and fee estimation.
+`SettlementContext` gives the policy the wallet's spendable coins, with coins locked by pending intents and coins past expiry already removed, plus the chain time they were computed against. `AvailableCoins` / `AvailableBalanceSats` are BTC only; `AssetCoins` / `AssetBalances` hold the asset carriers, and `GetAvailableBalance(asset)` / `GetAvailableCoins(asset)` read either through one call. Set `SettlementPlan.Coins` to pin the exact coins to spend — the settlement counterpart of the coins a sweep policy yields. The destination sweep honours it, while the collaborative-exit path rejects it because it performs its own coin selection and fee estimation.
 
 ## Blocking settlement
 

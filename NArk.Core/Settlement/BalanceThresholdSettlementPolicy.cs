@@ -11,9 +11,15 @@ namespace NArk.Core.Settlement;
 /// <para>
 /// The threshold gates <em>when</em> a settlement happens, never <em>how much</em> moves —
 /// a wallet configured at 100 000 sats that reaches 250 000 settles all 250 000. Cap a
-/// single settlement with <see cref="SettlementConfig.MaxAmountSats"/> when a rail has
+/// single settlement with <see cref="SettlementConfig.MaxAmount"/> when a rail has
 /// an upper limit; with a cap in place a second matching rule can settle the remainder,
 /// since the engine executes plans against a shrinking balance.
+/// </para>
+/// <para>
+/// Each rule measures one denomination, named by <see cref="SettlementConfig.SourceAsset"/>:
+/// satoshis for BTC, atomic units for an Arkade-issued asset. A rule on an asset reads only
+/// that asset's balance, so a wallet holding an asset and no BTC still settles the asset, and
+/// the dust its carriers hold never pushes a BTC rule over its threshold.
 /// </para>
 /// </summary>
 public class BalanceThresholdSettlementPolicy(
@@ -25,37 +31,42 @@ public class BalanceThresholdSettlementPolicy(
         SettlementContext context,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (context.AvailableBalanceSats <= 0)
+        if (context.AvailableBalanceSats <= 0 && context.AssetBalances.Count == 0)
             yield break;
 
         var configs = await configProvider.GetConfigs(context.WalletId, cancellationToken);
 
         // Providers are free to ignore the walletId filter, so filter again here.
+        // Thresholds are only comparable within one denomination, so rules are grouped by
+        // their source asset before being ordered lowest-first.
         var candidates = configs
             .Where(config => config.Enabled && config.WalletId == context.WalletId)
-            .Where(config => context.AvailableBalanceSats >= config.ThresholdSats)
-            .OrderBy(config => config.ThresholdSats);
+            .Where(config => context.GetAvailableBalance(config.SourceAsset) >= config.Threshold)
+            .OrderBy(config => config.SourceAsset, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(config => config.Threshold);
 
         foreach (var config in candidates)
         {
-            var amount = config.MaxAmountSats is { } max
-                ? Math.Min(context.AvailableBalanceSats, max)
-                : context.AvailableBalanceSats;
+            var balance = context.GetAvailableBalance(config.SourceAsset);
+
+            var amount = config.MaxAmount is { } max
+                ? Math.Min(balance, max)
+                : balance;
 
             if (amount <= 0)
             {
                 logger?.LogWarning(
-                    "Wallet {WalletId} matched a settlement rule with a non-positive cap {MaxAmountSats}; skipping",
-                    context.WalletId, config.MaxAmountSats);
+                    "Wallet {WalletId} matched a settlement rule with a non-positive cap {MaxAmount}; skipping",
+                    context.WalletId, config.MaxAmount);
                 continue;
             }
 
             logger?.LogDebug(
-                "Wallet {WalletId} balance {BalanceSats} sats reached threshold {ThresholdSats} sats; planning settlement of {AmountSats} sats to {Network}/{Asset}",
-                context.WalletId, context.AvailableBalanceSats, config.ThresholdSats, amount,
+                "Wallet {WalletId} balance {Balance} {SourceAsset} reached threshold {Threshold}; planning settlement of {Amount} to {Network}/{Asset}",
+                context.WalletId, balance, config.SourceAsset, config.Threshold, amount,
                 config.Destination.Network, config.Destination.Asset);
 
-            yield return new SettlementPlan(config.Destination, amount);
+            yield return new SettlementPlan(config.Destination, amount, config.SourceAsset);
         }
     }
 }

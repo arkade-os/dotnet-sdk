@@ -24,6 +24,8 @@ public class SettlementServiceTests
     private const string WalletId = "test-wallet";
     private const string ScriptHex = "a914" + "0000000000000000000000000000000000000000" + "87";
     private const long CoinAmount = 100_000;
+    private const long AssetCarrierSats = 1_000;
+    private const string Usdt0 = "usdt0-asset-id";
 
     private static readonly SettlementDestination Destination = SettlementDestination.Ark("ark1qexample");
     private static readonly TimeHeight CurrentTime = new(DateTimeOffset.UtcNow, 800_000);
@@ -62,8 +64,8 @@ public class SettlementServiceTests
         _rail.CanSettle(Arg.Any<SettlementDestination>()).Returns(true);
         _rail.SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>())
             .Returns(call => Task.FromResult(
-                new SettlementResult("transfer-1", call.Arg<SettlementRequest>().AmountSats,
-                    call.Arg<SettlementRequest>().AmountSats, 0)));
+                new SettlementResult("transfer-1", call.Arg<SettlementRequest>().Amount,
+                    call.Arg<SettlementRequest>().Amount, 0)));
 
         _blockchain.GetChainTime(Arg.Any<CancellationToken>()).Returns(Task.FromResult(CurrentTime));
 
@@ -98,8 +100,94 @@ public class SettlementServiceTests
         await _rail.Received(1).SettleAsync(
             Arg.Is<SettlementRequest>(request =>
                 request.WalletId == WalletId &&
-                request.AmountSats == CoinAmount &&
+                request.Amount == CoinAmount &&
                 request.Destination == Destination),
+            Arg.Any<CancellationToken>());
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task LeavesAssetCarriersOutOfTheBtcBalance()
+    {
+        // The asset VTXO's dust is the asset's carrier, not spendable BTC: settling it would
+        // take the asset along, so only the plain coin funds a BTC settlement.
+        _spendingService.GetAvailableCoins(WalletId, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlySet<ArkCoin>>(
+                new HashSet<ArkCoin> { CreateCoin(), CreateAssetCoin(Usdt0, 750_000) }));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        RaiseVtxoChanged();
+        await Task.Delay(300);
+
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(request =>
+                request.Amount == CoinAmount &&
+                request.SourceAsset == SettlementAssets.Btc),
+            Arg.Any<CancellationToken>());
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task SettlesAnAssetBalance_OnAnAssetRule()
+    {
+        var assetDestination = SettlementDestination.ArkAsset("ark1qassetpayout", Usdt0);
+        _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>(
+                [new SettlementConfig(WalletId, assetDestination, 500_000, SourceAsset: Usdt0)]));
+
+        // No plain BTC coin at all: an asset rule must still fire.
+        _spendingService.GetAvailableCoins(WalletId, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlySet<ArkCoin>>(
+                new HashSet<ArkCoin> { CreateAssetCoin(Usdt0, 750_000) }));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        RaiseVtxoChanged();
+        await Task.Delay(300);
+
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(request =>
+                request.SourceAsset == Usdt0 &&
+                request.Amount == 750_000 &&
+                request.Destination == assetDestination),
+            Arg.Any<CancellationToken>());
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task SpendsBtcAndAssetRemaindersIndependently()
+    {
+        var assetDestination = SettlementDestination.ArkAsset("ark1qassetpayout", Usdt0);
+        _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>(
+            [
+                new SettlementConfig(WalletId, Destination, 0),
+                new SettlementConfig(WalletId, assetDestination, 0, SourceAsset: Usdt0)
+            ]));
+
+        _spendingService.GetAvailableCoins(WalletId, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlySet<ArkCoin>>(
+                new HashSet<ArkCoin> { CreateCoin(), CreateAssetCoin(Usdt0, 750_000) }));
+
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        RaiseVtxoChanged();
+        await Task.Delay(300);
+
+        // Settling the whole BTC balance must not stop the asset plan behind it: the two
+        // denominations draw on separate remainders.
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(r => r.SourceAsset == SettlementAssets.Btc && r.Amount == CoinAmount),
+            Arg.Any<CancellationToken>());
+        await _rail.Received(1).SettleAsync(
+            Arg.Is<SettlementRequest>(r => r.SourceAsset == Usdt0 && r.Amount == 750_000),
             Arg.Any<CancellationToken>());
 
         await service.StopAsync(CancellationToken.None);
@@ -147,8 +235,8 @@ public class SettlementServiceTests
         _configProvider.GetConfigs(Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyCollection<SettlementConfig>>(
             [
-                new SettlementConfig(WalletId, first, 0, MaxAmountSats: 40_000),
-                new SettlementConfig(WalletId, second, 10_000, MaxAmountSats: 25_000)
+                new SettlementConfig(WalletId, first, 0, MaxAmount: 40_000),
+                new SettlementConfig(WalletId, second, 10_000, MaxAmount: 25_000)
             ]));
 
         using var service = CreateService();
@@ -158,10 +246,10 @@ public class SettlementServiceTests
         await Task.Delay(300);
 
         await _rail.Received(1).SettleAsync(
-            Arg.Is<SettlementRequest>(r => r.Destination == first && r.AmountSats == 40_000),
+            Arg.Is<SettlementRequest>(r => r.Destination == first && r.Amount == 40_000),
             Arg.Any<CancellationToken>());
         await _rail.Received(1).SettleAsync(
-            Arg.Is<SettlementRequest>(r => r.Destination == second && r.AmountSats == 25_000),
+            Arg.Is<SettlementRequest>(r => r.Destination == second && r.Amount == 25_000),
             Arg.Any<CancellationToken>());
 
         await service.StopAsync(CancellationToken.None);
@@ -188,7 +276,7 @@ public class SettlementServiceTests
         await Task.Delay(300);
 
         await _rail.Received(1).SettleAsync(
-            Arg.Is<SettlementRequest>(r => r.Destination == first && r.AmountSats == CoinAmount),
+            Arg.Is<SettlementRequest>(r => r.Destination == first && r.Amount == CoinAmount),
             Arg.Any<CancellationToken>());
         await _rail.DidNotReceive().SettleAsync(
             Arg.Is<SettlementRequest>(r => r.Destination == second),
@@ -221,7 +309,7 @@ public class SettlementServiceTests
 
         // The failed plan committed nothing, so the whole balance is still available.
         await _rail.Received(1).SettleAsync(
-            Arg.Is<SettlementRequest>(r => r.Destination == second && r.AmountSats == CoinAmount),
+            Arg.Is<SettlementRequest>(r => r.Destination == second && r.Amount == CoinAmount),
             Arg.Any<CancellationToken>());
 
         await service.StopAsync(CancellationToken.None);
@@ -317,7 +405,15 @@ public class SettlementServiceTests
             WalletIdentifier: WalletId,
             CreatedAt: DateTimeOffset.UtcNow);
 
-    private static ArkCoin CreateCoin()
+    private static ArkCoin CreateAssetCoin(string assetId, ulong amount) =>
+        CreateCoin(
+            outPoint: new OutPoint(uint256.One, 1),
+            amountSats: AssetCarrierSats,
+            assets: [new VtxoAsset(assetId, amount)]);
+
+    private static ArkCoin CreateCoin() => CreateCoin(new OutPoint(uint256.One, 0), CoinAmount, null);
+
+    private static ArkCoin CreateCoin(OutPoint outPoint, long amountSats, IReadOnlyList<VtxoAsset>? assets)
     {
         var script = new GenericTapScript([Op.GetPushOp(1), OpcodeType.OP_TRUE]);
         var contract = new GenericArkContract(TestServerKey, [script]);
@@ -328,14 +424,15 @@ public class SettlementServiceTests
             birth: DateTimeOffset.UtcNow,
             expiresAt: DateTimeOffset.UtcNow.AddDays(30),
             expiresAtHeight: null,
-            outPoint: new OutPoint(uint256.One, 0),
-            txOut: new TxOut(Money.Satoshis(CoinAmount), Script.FromHex(ScriptHex)),
+            outPoint: outPoint,
+            txOut: new TxOut(Money.Satoshis(amountSats), Script.FromHex(ScriptHex)),
             signerDescriptor: null,
             spendingScriptBuilder: script,
             spendingConditionWitness: null,
             lockTime: null,
             sequence: null,
             swept: false,
-            unrolled: false);
+            unrolled: false,
+            assets: assets);
     }
 }

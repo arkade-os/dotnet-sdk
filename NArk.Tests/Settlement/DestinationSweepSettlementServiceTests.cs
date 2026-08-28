@@ -128,7 +128,7 @@ public class DestinationSweepSettlementServiceTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(result.SourceAmountSats, Is.EqualTo(75_000));
+            Assert.That(result.SourceAmount, Is.EqualTo(75_000));
             Assert.That(result.DestinationAmountSats, Is.EqualTo(75_000));
             Assert.That(result.TransactionId, Is.EqualTo(uint256.One));
         });
@@ -140,7 +140,7 @@ public class DestinationSweepSettlementServiceTests
         var coin = CreateCoin();
 
         await CreateService().SettleAsync(
-            new SettlementRequest(WalletId, 100_000, SettlementDestination.Ark(TestArkAddress()), [coin]));
+            new SettlementRequest(WalletId, 100_000, SettlementDestination.Ark(TestArkAddress()), Coins: [coin]));
 
         await _spendingService.Received(1).Spend(
             WalletId,
@@ -172,6 +172,16 @@ public class DestinationSweepSettlementServiceTests
 
         Assert.ThrowsAsync<SettlementNotSupportedException>(() =>
             CreateService().SettleAsync(new SettlementRequest(WalletId, 30_000, destination)));
+    }
+
+    [Test]
+    public void Throws_ForAnAssetDenominatedRequest()
+    {
+        // Every amount on this rail is satoshis, so an asset amount reaching it would be spent
+        // as satoshis — even when the destination itself looks like a plain Arkade address.
+        Assert.ThrowsAsync<SettlementNotSupportedException>(() =>
+            CreateService().SettleAsync(new SettlementRequest(
+                WalletId, 500_000, SettlementDestination.Ark(TestArkAddress()), "usdt0-asset-id")));
     }
 
     [Test]

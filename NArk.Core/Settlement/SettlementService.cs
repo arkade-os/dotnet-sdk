@@ -176,7 +176,7 @@ public class SettlementService(
         }
 
         var context = await BuildContext(walletId, cancellationToken);
-        if (context.AvailableBalanceSats <= 0)
+        if (context.AvailableBalanceSats <= 0 && context.AssetBalances.Count == 0)
             return;
 
         // The union of what every policy yields, executed in order — the same shape as
@@ -184,36 +184,47 @@ public class SettlementService(
         // HashSet deduplicates, amounts do not: two policies can independently plan the
         // whole balance. Committing against a shrinking remainder is what keeps that from
         // over-spending the wallet.
-        var remainingSats = context.AvailableBalanceSats;
+        //
+        // The remainder is tracked per denomination: BTC and each Arkade-issued asset are
+        // separate pots, so an asset payout never eats into the satoshi balance a BTC rule
+        // is waiting on, and vice versa.
+        var remaining = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+        {
+            [SettlementAssets.Btc] = context.AvailableBalanceSats
+        };
+        foreach (var (assetId, amount) in context.AssetBalances)
+            remaining[assetId] = (long)amount;
 
         foreach (var policy in policyList)
         {
             await foreach (var plan in policy.EvaluateAsync(context, cancellationToken))
             {
-                if (plan.AmountSats <= 0)
+                if (plan.Amount <= 0)
                     continue;
 
-                if (plan.AmountSats > remainingSats)
+                var remainingForAsset = remaining.GetValueOrDefault(plan.SourceAsset);
+                if (plan.Amount > remainingForAsset)
                 {
                     logger?.LogDebug(
-                        "Skipping {Policy} plan of {AmountSats} sats for wallet {WalletId}: only {RemainingSats} sats left after earlier plans",
-                        policy.GetType().Name, plan.AmountSats, walletId, remainingSats);
+                        "Skipping {Policy} plan of {Amount} {SourceAsset} for wallet {WalletId}: only {Remaining} left after earlier plans",
+                        policy.GetType().Name, plan.Amount, plan.SourceAsset, walletId, remainingForAsset);
                     continue;
                 }
 
                 var request = new SettlementRequest(
                     walletId,
-                    plan.AmountSats,
+                    plan.Amount,
                     plan.Destination,
+                    plan.SourceAsset,
                     plan.Coins,
                     plan.Reference);
 
                 // Only a settlement that actually committed funds consumes the balance;
                 // a failed one leaves the remainder for the plans behind it.
                 if (await SettleAsync(request, cancellationToken) is not null)
-                    remainingSats -= plan.AmountSats;
+                    remaining[plan.SourceAsset] = remainingForAsset - plan.Amount;
 
-                if (remainingSats <= 0)
+                if (remaining.Values.All(amount => amount <= 0))
                     return;
             }
         }
@@ -233,9 +244,10 @@ public class SettlementService(
             var result = await settlementRouter.SettleAsync(request, cancellationToken);
 
             logger?.LogInformation(
-                "Wallet {WalletId} settled {SourceAmountSats} sats to {Network}/{Asset}; transfer {TransferId}, expected {DestinationAmount}, fees {FeesPaidSats} sats",
+                "Wallet {WalletId} settled {SourceAmount} {SourceAsset} to {Network}/{Asset}; transfer {TransferId}, expected {DestinationAmount}, fees {FeesPaidSats} sats",
                 request.WalletId,
-                result.SourceAmountSats,
+                result.SourceAmount,
+                request.SourceAsset,
                 request.Destination.Network,
                 request.Destination.Asset,
                 result.TransferId,
@@ -251,8 +263,9 @@ public class SettlementService(
         catch (Exception ex)
         {
             logger?.LogError(ex,
-                "Failed to settle {AmountSats} sats from wallet {WalletId} to {Network}/{Asset}",
-                request.AmountSats, request.WalletId, request.Destination.Network, request.Destination.Asset);
+                "Failed to settle {Amount} {SourceAsset} from wallet {WalletId} to {Network}/{Asset}",
+                request.Amount, request.SourceAsset, request.WalletId,
+                request.Destination.Network, request.Destination.Asset);
 
             await postSettlementHandlers.SafeHandleEventAsync(
                 new PostSettlementActionEvent(request, null, ActionState.Failed, ex.Message),
@@ -268,15 +281,29 @@ public class SettlementService(
         var coins = await spendingService.GetAvailableCoins(walletId, cancellationToken);
         var locked = (await intentStorage.GetLockedVtxoOutpoints(walletId, cancellationToken)).ToHashSet();
 
-        var available = coins
+        var spendable = coins
             .Where(coin => !coin.Unrolled && !coin.IsRecoverable(chainTime) && !locked.Contains(coin.Outpoint))
             .ToArray();
 
+        // A coin carrying an Arkade-issued asset holds a dust-sized satoshi amount purely as the
+        // asset's carrier, and that amount is not free to move: spending the coin for BTC would
+        // take the asset with it. Counting it would let a BTC threshold fire on value the wallet
+        // cannot actually settle, so the two denominations are split here and stay split all the
+        // way through the policies and the per-asset remainders in ProcessWallet.
+        var assetCoins = spendable.Where(coin => coin.Assets is { Count: > 0 }).ToArray();
+        var btcCoins = spendable.Where(coin => coin.Assets is null or { Count: 0 }).ToArray();
+
+        var assetBalances = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+        foreach (var asset in assetCoins.SelectMany(coin => coin.Assets!))
+            assetBalances[asset.AssetId] = assetBalances.GetValueOrDefault(asset.AssetId) + asset.Amount;
+
         return new SettlementContext(
             walletId,
-            available,
-            available.Sum(coin => coin.Amount.Satoshi),
-            chainTime);
+            btcCoins,
+            btcCoins.Sum(coin => coin.Amount.Satoshi),
+            chainTime,
+            assetCoins,
+            assetBalances);
     }
 
     private async void OnVtxoChanged(object? sender, ArkVtxo vtxo)

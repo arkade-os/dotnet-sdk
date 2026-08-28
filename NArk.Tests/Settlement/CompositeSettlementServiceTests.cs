@@ -22,8 +22,8 @@ public class CompositeSettlementServiceTests
             .Returns(call => call.Arg<SettlementDestination>().Is(handles.Network, handles.Asset));
         rail.SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>())
             .Returns(call => Task.FromResult(
-                new SettlementResult("transfer", call.Arg<SettlementRequest>().AmountSats,
-                    call.Arg<SettlementRequest>().AmountSats, 0)));
+                new SettlementResult("transfer", call.Arg<SettlementRequest>().Amount,
+                    call.Arg<SettlementRequest>().Amount, 0)));
         return rail;
     }
 

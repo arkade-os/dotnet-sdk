@@ -68,8 +68,8 @@ public class CompositeSettlementService(
             throw new SettlementNotSupportedException(request.Destination, DescribeMissingRail(request.Destination));
 
         logger?.LogDebug(
-            "Routing settlement of {AmountSats} sats for wallet {WalletId} to {Rail}",
-            request.AmountSats, request.WalletId, rail.GetType().Name);
+            "Routing settlement of {Amount} {SourceAsset} for wallet {WalletId} to {Rail}",
+            request.Amount, request.SourceAsset, request.WalletId, rail.GetType().Name);
 
         return rail.SettleAsync(request, cancellationToken);
     }

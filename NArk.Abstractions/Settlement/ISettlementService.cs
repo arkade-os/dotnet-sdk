@@ -32,6 +32,11 @@ public interface ISettlementService
     /// <summary>
     /// Executes the settlement. Throws when the transfer could not be started;
     /// once it returns, funds are considered committed to the destination.
+    /// <para>
+    /// Read <see cref="SettlementRequest.SourceAsset"/> before spending: the amount is
+    /// denominated in it, so a rail that only handles BTC must reject a request whose
+    /// source is an Arkade-issued asset even when the destination looks familiar.
+    /// </para>
     /// </summary>
     /// <exception cref="SettlementNotSupportedException">The destination is not handled by this rail.</exception>
     Task<SettlementResult> SettleAsync(SettlementRequest request, CancellationToken cancellationToken = default);

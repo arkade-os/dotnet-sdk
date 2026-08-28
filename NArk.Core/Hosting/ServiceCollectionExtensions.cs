@@ -189,8 +189,10 @@ public static class ServiceCollectionExtensions
     /// Registers the threshold-based settlement engine: the background
     /// <see cref="SettlementService"/>, destination routing via
     /// <see cref="CompositeSettlementService"/>, the
-    /// <see cref="DestinationSweepSettlementService"/> rail, and the
-    /// <see cref="BalanceThresholdSettlementPolicy"/>.
+    /// <see cref="DestinationSweepSettlementService"/> and
+    /// <see cref="ArkAssetSettlementService"/> rails, and the
+    /// <see cref="BalanceThresholdSettlementPolicy"/> — so a rule can settle either the
+    /// wallet's BTC balance or the balance of one Arkade-issued asset.
     /// <para>
     /// Opt-in, and inert until the application registers an
     /// <see cref="ISettlementConfigProvider"/> that returns rules. Settlement is
@@ -221,6 +223,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<CompositeSettlementService>();
         services.AddSingleton<ISettlementService, DestinationSweepSettlementService>();
+        services.AddSingleton<ISettlementService, ArkAssetSettlementService>();
         services.AddSingleton<ISettlementPolicy, BalanceThresholdSettlementPolicy>();
         services.AddSingleton<SettlementService>();
         services.AddHostedService(sp => sp.GetRequiredService<SettlementService>());

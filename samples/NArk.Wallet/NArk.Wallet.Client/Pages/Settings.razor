@@ -130,11 +130,20 @@
                 settles through a collaborative exit. The threshold decides <em>when</em> a payout
                 fires — each payout sweeps the whole available balance.
             </p>
+            <p class="text-secondary" style="font-size:12px;margin-bottom:12px;">
+                Leave the asset field empty to settle BTC. Fill it with an Arkade asset id to settle
+                that asset instead: the threshold then counts the asset's own units, the wallet's
+                satoshi balance is ignored, and the payout needs an <span class="mono">ark1…</span>
+                destination.
+            </p>
 
             <p class="input-label">Destination address</p>
             <input class="input mb-12" placeholder="ark1… or bc1…" @bind="_settlementDestination" />
 
-            <p class="input-label">Threshold (sats)</p>
+            <p class="input-label">Asset id (empty = BTC)</p>
+            <input class="input mb-12" placeholder="Arkade asset id" @bind="_settlementAssetId" />
+
+            <p class="input-label">@(string.IsNullOrWhiteSpace(_settlementAssetId) ? "Threshold (sats)" : "Threshold (asset units)")</p>
             <input class="input mb-12" type="number" min="0" @bind="_settlementThreshold" />
 
             <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:12px;">
@@ -229,6 +238,7 @@
     private bool _recoveryInFlight;
     private string? _recoveryMessage;
     private string _settlementDestination = string.Empty;
+    private string _settlementAssetId = string.Empty;
     private long _settlementThreshold;
     private bool _settlementEnabled;
     private bool _settlementSaving;
@@ -268,7 +278,8 @@
             if (rule is not null && rule.WalletId == State.ActiveWalletId)
             {
                 _settlementDestination = rule.Destination;
-                _settlementThreshold = rule.ThresholdSats;
+                _settlementAssetId = rule.AssetId ?? string.Empty;
+                _settlementThreshold = rule.Threshold;
                 _settlementEnabled = rule.Enabled;
             }
         }
@@ -290,15 +301,19 @@
             }
             else
             {
+                var assetId = string.IsNullOrWhiteSpace(_settlementAssetId) ? null : _settlementAssetId.Trim();
+
                 await SettlementConfig.SaveRule(new LocalSettlementConfigProvider.SettlementRule(
                     State.ActiveWalletId,
                     _settlementDestination.Trim(),
                     Math.Max(0, _settlementThreshold),
-                    _settlementEnabled));
+                    _settlementEnabled,
+                    assetId));
 
-                var destination = LocalSettlementConfigProvider.ParseDestination(_settlementDestination.Trim());
+                var destination = LocalSettlementConfigProvider.ParseDestination(_settlementDestination.Trim(), assetId);
+                var unit = assetId is null ? "sats" : $"units of {assetId}";
                 _settlementMessage = _settlementEnabled
-                    ? $"Settling to {destination.Network} once the balance reaches {_settlementThreshold:N0} sats."
+                    ? $"Settling to {destination.Network} once the balance reaches {_settlementThreshold:N0} {unit}."
                     : "Saved, but disabled — no payouts will fire.";
             }
         }

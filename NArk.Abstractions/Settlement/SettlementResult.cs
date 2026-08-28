@@ -9,10 +9,15 @@ namespace NArk.Abstractions.Settlement;
 /// Implementation-defined identifier for the transfer — an Arkade transaction id, an intent
 /// id, a swap id. Stable enough to correlate later status updates against.
 /// </param>
-/// <param name="SourceAmountSats">Satoshis actually taken from the wallet.</param>
+/// <param name="SourceAmount">
+/// What was actually taken from the wallet, in the request's source asset atomic units —
+/// satoshis for BTC.
+/// </param>
 /// <param name="DestinationAmountSats">
-/// Satoshis expected at the destination. Equal to <paramref name="SourceAmountSats"/> for
-/// same-asset settlements; for a swap it is the amount net of swap and miner fees.
+/// Satoshis expected at the destination. Equal to <paramref name="SourceAmount"/> for
+/// same-asset BTC settlements; for a swap it is the amount net of swap and miner fees. For an
+/// asset settlement it is the satoshi carrier the asset rides on, with the asset amount itself
+/// reported in <paramref name="DestinationAtomicAmount"/>.
 /// </param>
 /// <param name="FeesPaidSats">Total fees paid, in satoshis.</param>
 /// <param name="TransactionId">The Arkade transaction id, when the settlement produced one directly.</param>
@@ -23,7 +28,7 @@ namespace NArk.Abstractions.Settlement;
 /// </param>
 public record SettlementResult(
     string TransferId,
-    long SourceAmountSats,
+    long SourceAmount,
     long DestinationAmountSats,
     long FeesPaidSats,
     uint256? TransactionId = null,

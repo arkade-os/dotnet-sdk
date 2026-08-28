@@ -19,8 +19,8 @@ namespace NArk.Core.Settlement;
 /// <see cref="SettlementOptions.EnableCollaborativeExit"/> is set.</item>
 /// </list>
 /// <para>
-/// Arkade-issued assets are not handled here: settlement amounts are denominated in
-/// satoshis, so moving an asset balance needs its own rail.
+/// Arkade-issued assets are not handled here: every amount on this rail is denominated in
+/// satoshis. <see cref="ArkAssetSettlementService"/> moves an asset balance instead.
 /// </para>
 /// </summary>
 public class DestinationSweepSettlementService(
@@ -56,9 +56,15 @@ public class DestinationSweepSettlementService(
         SettlementRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (request.AmountSats <= 0)
+        if (request.Amount <= 0)
             throw new ArgumentOutOfRangeException(
-                nameof(request), request.AmountSats, "Settlement amount must be positive.");
+                nameof(request), request.Amount, "Settlement amount must be positive.");
+
+        // Amounts here are satoshis end to end, so an asset-denominated request would be
+        // read as a satoshi amount and quietly move the wrong value.
+        if (!request.IsBtc)
+            throw new SettlementNotSupportedException(request.Destination,
+                $"The destination sweep settles BTC only; source asset {request.SourceAsset} needs an asset rail.");
 
         if (!CanSettle(request.Destination))
             throw new SettlementNotSupportedException(request.Destination,
@@ -81,7 +87,7 @@ public class DestinationSweepSettlementService(
                 request.WalletId, NextContractPurpose.SendToSelf, cancellationToken: cancellationToken))
             .GetArkAddress();
 
-        var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(request.AmountSats), destination);
+        var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(request.Amount), destination);
 
         var txId = request.Coins is { Count: > 0 } coins
             ? await spendingService.Spend(request.WalletId, [.. coins], [output], cancellationToken)
@@ -89,14 +95,14 @@ public class DestinationSweepSettlementService(
 
         logger?.LogInformation(
             "Settled {AmountSats} sats from wallet {WalletId} to Arkade destination, txId {TxId}",
-            request.AmountSats, request.WalletId, txId);
+            request.Amount, request.WalletId, txId);
 
         // An Arkade off-chain send carries no fee at this layer: whatever the selected
         // coins exceed the output by returns to the wallet as change.
         return new SettlementResult(
             txId.ToString(),
-            request.AmountSats,
-            request.AmountSats,
+            request.Amount,
+            request.Amount,
             0,
             txId);
     }
@@ -116,20 +122,20 @@ public class DestinationSweepSettlementService(
 
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
         var destination = BitcoinAddress.Create(request.Destination.Address!, serverInfo.Network);
-        var output = new ArkTxOut(ArkTxOutType.Onchain, Money.Satoshis(request.AmountSats), destination);
+        var output = new ArkTxOut(ArkTxOutType.Onchain, Money.Satoshis(request.Amount), destination);
 
         var intentId = await onchainService.InitiateCollaborativeExit(request.WalletId, output, cancellationToken);
 
         logger?.LogInformation(
             "Settled {AmountSats} sats from wallet {WalletId} to on-chain address {Address} via collaborative exit, intent {IntentId}",
-            request.AmountSats, request.WalletId, destination, intentId);
+            request.Amount, request.WalletId, destination, intentId);
 
         // The exit spends more than the requested amount to cover the batch fee; the
         // exact fee is only known once the batch confirms, so it is reported as zero here.
         return new SettlementResult(
             intentId,
-            request.AmountSats,
-            request.AmountSats,
+            request.Amount,
+            request.Amount,
             0);
     }
 }
