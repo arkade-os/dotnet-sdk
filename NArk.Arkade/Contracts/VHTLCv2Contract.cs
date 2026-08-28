@@ -70,6 +70,14 @@ public class VHTLCv2Contract : ArkContract
     /// <summary>Where <c>nonInteractiveRefund</c> must pay — the sender's P2TR scriptPubKey.</summary>
     public byte[] NonInteractiveRefundPkScript { get; }
 
+    /// <summary>
+    /// When true, a ninth leaf is emitted: the Arkade Service key plus the SAME
+    /// covenant-tweaked co-signer <c>nonInteractiveRefund</c> uses, spendable
+    /// after <see cref="RefundLocktime"/> with no participant signature at all.
+    /// Off by default — a ninth leaf changes the merkle root, and so the address.
+    /// </summary>
+    public bool NonInteractiveRefundWithoutReceiver { get; }
+
     public VHTLCv2Contract(
         OutputDescriptor server,
         OutputDescriptor sender,
@@ -81,7 +89,8 @@ public class VHTLCv2Contract : ArkContract
         Sequence unilateralRefundWithoutReceiverDelay,
         ECXOnlyPubKey emulatorPubKey,
         byte[] nonInteractiveClaimPkScript,
-        byte[] nonInteractiveRefundPkScript) : base(server)
+        byte[] nonInteractiveRefundPkScript,
+        bool nonInteractiveRefundWithoutReceiver = false) : base(server)
     {
         ValidateTimeLock(unilateralClaimDelay, nameof(unilateralClaimDelay));
         ValidateTimeLock(unilateralRefundDelay, nameof(unilateralRefundDelay));
@@ -99,6 +108,7 @@ public class VHTLCv2Contract : ArkContract
         EmulatorPubKey = emulatorPubKey;
         NonInteractiveClaimPkScript = nonInteractiveClaimPkScript;
         NonInteractiveRefundPkScript = nonInteractiveRefundPkScript;
+        NonInteractiveRefundWithoutReceiver = nonInteractiveRefundWithoutReceiver;
     }
 
     /// <inheritdoc />
@@ -111,7 +121,9 @@ public class VHTLCv2Contract : ArkContract
     public override ContractScope DefaultScope => ContractScope.Offchain;
 
     /// <summary>
-    /// The eight leaves, in the order that fixes the merkle root. Do not reorder.
+    /// The eight leaves, in the order that fixes the merkle root, plus a ninth when
+    /// <see cref="NonInteractiveRefundWithoutReceiver"/> is set. Do not reorder — the ninth leaf must
+    /// stay last, since every earlier leaf's index is load-bearing for existing addresses.
     /// </summary>
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {
@@ -123,6 +135,8 @@ public class VHTLCv2Contract : ArkContract
         yield return CreateUnilateralRefundWithoutReceiverScript();
         yield return CreateNonInteractiveClaimScript();
         yield return CreateNonInteractiveRefundScript();
+        if (NonInteractiveRefundWithoutReceiver)
+            yield return CreateNonInteractiveRefundWithoutReceiverScript();
     }
 
     /// <summary>Preimage + receiver + server.</summary>
@@ -173,8 +187,26 @@ public class VHTLCv2Contract : ArkContract
     /// </summary>
     public ScriptBuilder CreateNonInteractiveRefundScript() =>
         new CollaborativePathArkTapScript(
-            CovenantKey(NonInteractiveRefundPkScript),
-            new NofNMultisigTapScript([ServerKey, ReceiverKey]));
+            NonInteractiveRefundCosigner, new NofNMultisigTapScript([ServerKey, ReceiverKey]));
+
+    /// <summary>
+    /// Server + the covenant key, pinned to the sender's own payout, spendable after
+    /// <see cref="RefundLocktime"/> with no receiver signature at all — the non-interactive
+    /// analogue of <see cref="CreateRefundWithoutReceiverScript"/>. Reuses
+    /// <see cref="NonInteractiveRefundCosigner"/> rather than re-deriving it, so this leaf and
+    /// <see cref="CreateNonInteractiveRefundScript"/> commit to the same key by construction.
+    /// </summary>
+    public ScriptBuilder CreateNonInteractiveRefundWithoutReceiverScript() =>
+        new CollaborativePathArkTapScript(
+            NonInteractiveRefundCosigner,
+            new CompositeTapScript(new LockTimeTapScript(RefundLocktime), new NofNMultisigTapScript([ServerKey])));
+
+    /// <summary>
+    /// The covenant-tweaked emulator key that both <c>nonInteractiveRefund</c> leaves co-sign with.
+    /// Derived once from <see cref="NonInteractiveRefundPkScript"/> so the two leaves cannot drift
+    /// apart into pinning different destinations.
+    /// </summary>
+    private ECXOnlyPubKey NonInteractiveRefundCosigner => CovenantKey(NonInteractiveRefundPkScript);
 
     /// <summary>
     /// The ArkadeScript a covenant leaf's key commits to: "the output at this input's index pays
@@ -213,21 +245,32 @@ public class VHTLCv2Contract : ArkContract
         new(Hash.ToBytes(false), HashLockTypeOption.Hash160, PreimageSize);
 
     /// <inheritdoc />
-    protected override Dictionary<string, string> GetContractData() => new()
+    protected override Dictionary<string, string> GetContractData()
     {
-        { "type", ContractType },
-        { "server", Server?.ToString() ?? string.Empty },
-        { "sender", Sender.ToString() },
-        { "receiver", Receiver.ToString() },
-        { "hash", Hash.ToString() },
-        { "refundLocktime", RefundLocktime.Value.ToString() },
-        { "unilateralClaimDelay", UnilateralClaimDelay.Value.ToString() },
-        { "unilateralRefundDelay", UnilateralRefundDelay.Value.ToString() },
-        { "unilateralRefundWithoutReceiverDelay", UnilateralRefundWithoutReceiverDelay.Value.ToString() },
-        { "emulator", Convert.ToHexString(EmulatorPubKey.ToBytes()).ToLowerInvariant() },
-        { "niClaimPkScript", Convert.ToHexString(NonInteractiveClaimPkScript).ToLowerInvariant() },
-        { "niRefundPkScript", Convert.ToHexString(NonInteractiveRefundPkScript).ToLowerInvariant() },
-    };
+        var data = new Dictionary<string, string>
+        {
+            { "type", ContractType },
+            { "server", Server?.ToString() ?? string.Empty },
+            { "sender", Sender.ToString() },
+            { "receiver", Receiver.ToString() },
+            { "hash", Hash.ToString() },
+            { "refundLocktime", RefundLocktime.Value.ToString() },
+            { "unilateralClaimDelay", UnilateralClaimDelay.Value.ToString() },
+            { "unilateralRefundDelay", UnilateralRefundDelay.Value.ToString() },
+            { "unilateralRefundWithoutReceiverDelay", UnilateralRefundWithoutReceiverDelay.Value.ToString() },
+            { "emulator", Convert.ToHexString(EmulatorPubKey.ToBytes()).ToLowerInvariant() },
+            { "niClaimPkScript", Convert.ToHexString(NonInteractiveClaimPkScript).ToLowerInvariant() },
+            { "niRefundPkScript", Convert.ToHexString(NonInteractiveRefundPkScript).ToLowerInvariant() },
+        };
+        // Matches ts-sdk's VHTLCV2ContractHandler.serializeParams exactly — key and value both —
+        // so a contract registered by one SDK deserializes in the other. Omitted rather than "false"
+        // when unset, for the same reason: a dropped flag must re-derive the eight-leaf script.
+        if (NonInteractiveRefundWithoutReceiver)
+        {
+            data["nonInteractiveRefundWithoutReceiver"] = "1";
+        }
+        return data;
+    }
 
     /// <summary>Rebuild a contract from the data <see cref="GetContractData"/> wrote.</summary>
     /// <param name="contractData">The parsed <c>arkcontract=</c> fields.</param>
@@ -245,7 +288,9 @@ public class VHTLCv2Contract : ArkContract
             new Sequence(uint.Parse(contractData["unilateralRefundWithoutReceiverDelay"])),
             ECXOnlyPubKey.Create(Convert.FromHexString(contractData["emulator"])),
             Convert.FromHexString(contractData["niClaimPkScript"]),
-            Convert.FromHexString(contractData["niRefundPkScript"]));
+            Convert.FromHexString(contractData["niRefundPkScript"]),
+            nonInteractiveRefundWithoutReceiver:
+                contractData.TryGetValue("nonInteractiveRefundWithoutReceiver", out var nirwr) && nirwr == "1");
 
     /// <summary>
     /// The receiver's payout: the <c>claim</c> leaf, opened by revealing the preimage.

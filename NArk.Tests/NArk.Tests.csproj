@@ -51,6 +51,11 @@
         derivation test here.
       -->
       <Content Include="ArkadeIntents\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+      <!--
+        The VHTLC.ScriptV2 nine-leaf conformance vector, shared verbatim with the ts-sdk repo's
+        own test/fixtures copy so both SDKs' derivations are pinned against the same file.
+      -->
+      <Content Include="Arkade\vhtlc-v2-nine-leaf.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>
