@@ -220,14 +220,14 @@ public static class LightningReceiveGates
     }
 
     /// <summary>
-    /// Pick which of the client's two derived lockup shapes the solver will actually fund.
+    /// Pick which of the client's two derived lockup shapes the solver will actually fund; refuse if
+    /// neither matches, including when the solver sends no address at all.
     /// </summary>
-    /// <param name="quote">The quote carrying the compare-only address, when the solver sends one.</param>
+    /// <param name="quote">The quote carrying the compare-only address.</param>
     /// <param name="eightLeaf">The candidate without the opt-in ninth leaf.</param>
     /// <param name="nineLeaf">The candidate with it.</param>
     /// <param name="isMainnet">Which network's address encoding to compare under.</param>
-    /// <returns>Whichever candidate matched — or <paramref name="eightLeaf"/> when the solver sent
-    /// no address to compare against at all.</returns>
+    /// <returns>Whichever candidate matched.</returns>
     /// <remarks>
     /// <para>
     /// The solver is the one who funds this corridor's lockup, so getting the shape right here is not
@@ -238,25 +238,23 @@ public static class LightningReceiveGates
     /// the wire says which one a given solver has deployed.
     /// </para>
     /// <para>
-    /// <c>lockup_address</c> is optional on this profile: when the solver omits it there is nothing to
-    /// compare against, and this keeps the pre-existing behaviour of defaulting to the eight-leaf
-    /// shape rather than guessing nine — the same shape this corridor always derived before the
-    /// ninth leaf existed.
+    /// <c>lockup_address</c> is a REQUIRED field of the RFQ protocol's receive quote (the spec marks
+    /// optional fields explicitly elsewhere, e.g. <c>payment_evidence</c>, <c>claim_packet</c> — this
+    /// one isn't among them). A solver that omits it is already out of spec, and defaulting to a
+    /// guessed shape for it would mean trusting exactly the solver that broke the one contract this
+    /// check exists to hold it to. This corridor used to default to the eight-leaf shape here, which
+    /// was correct while only one shape existed; now that a second shape exists, an absent address
+    /// is refused the same way Send and Onchain already refuse it, not defaulted.
     /// </para>
     /// </remarks>
-    /// <exception cref="LockupAddressMismatchException">
-    /// The solver sent an address, and it matches neither candidate.
-    /// </exception>
+    /// <exception cref="LockupAddressMismatchException">The quoted address matches neither candidate.</exception>
     public static VHTLCv2Contract ResolveLockupContract(
         RfqQuote<LightningReceiveQuoteProfile> quote,
         VHTLCv2Contract eightLeaf,
         VHTLCv2Contract nineLeaf,
         bool isMainnet)
     {
-        if (quote.Profile?.LockupAddress is not { } quoted)
-        {
-            return eightLeaf;
-        }
+        var quoted = quote.Profile?.LockupAddress;
 
         var eightAddress = eightLeaf.GetArkAddress().ToString(isMainnet);
         if (string.Equals(eightAddress, quoted, StringComparison.Ordinal))

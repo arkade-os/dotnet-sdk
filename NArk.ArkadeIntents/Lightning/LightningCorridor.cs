@@ -146,12 +146,16 @@ public static class LightningCorridor
     /// </returns>
     /// <remarks>
     /// Nothing on the wire says which shape a given solver has deployed, so a client cannot know in
-    /// advance which one to build — see the flag's own remarks on <see cref="VHTLCv2Contract"/>. Both
-    /// corridors derive both shapes here and accept whichever matches the solver's quoted address,
-    /// which stays safe because both shapes pin the covenant's refund to the same client-controlled
-    /// destination: the flag only changes how the sender may eventually exit, never who it pays.
-    /// Building both from ONE parameter set — rather than two independently assembled calls — is what
-    /// guarantees they cannot drift from each other in any field but the flag.
+    /// advance which one to build — see the flag's own remarks on <see cref="VHTLCv2Contract"/>. All
+    /// three corridors derive both shapes here and accept whichever matches the solver's quoted
+    /// address, which stays safe because both shapes pin the covenant's refund to the SAME
+    /// destination as each other — whatever <paramref name="nonInteractiveRefundPkScript"/> names,
+    /// which is the client's own address on the send and onchain-send corridors but the SOLVER's on
+    /// the receive corridor. Either way the two candidates cannot disagree about it, because both are
+    /// built from this one shared parameter set: the flag only changes how the sender may eventually
+    /// exit, never who the refund pays. Building both from ONE parameter set — rather than two
+    /// independently assembled calls — is what guarantees they cannot drift from each other in any
+    /// field but the flag.
     /// </remarks>
     public static (VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf) DeriveBothLockupShapes(
         OutputDescriptor server,

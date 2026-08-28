@@ -299,18 +299,18 @@ public class LightningReceiveGatesTests
     }
 
     [Test]
-    public void ResolveLockupContract_DefaultsToTheEightLeafShapeWhenTheSolverQuotesNoAddressAtAll()
+    public void ResolveLockupContract_ThrowsWhenTheSolverSentNoneAtAll()
     {
-        // Unlike the send leg, an absent lockup_address is not itself a refusal on this corridor —
-        // see LightningReceiveQuoteProfile.LockupAddress. With nothing to compare against, this keeps
-        // the same shape the corridor always defaulted to before the ninth leaf existed, rather than
-        // guessing the opt-in one.
+        // lockup_address is a REQUIRED field of the RFQ protocol's receive quote — a solver that
+        // omits it is already out of spec. This corridor used to default to the eight-leaf shape
+        // here, which was correct while only one shape existed; now that a second shape exists,
+        // defaulting would mean trusting exactly the solver that broke the contract this check exists
+        // to hold it to. Send and Onchain already refuse the same way — this brings Receive in line.
         var (eightLeaf, nineLeaf) = Candidates();
         var quote = Quote(Invoice, AmountSats, lockupAddress: null);
 
-        var resolved = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
-
-        Assert.That(resolved, Is.SameAs(eightLeaf));
+        Assert.Throws<LockupAddressMismatchException>(() =>
+            LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
     }
 
     /// <summary>Two lockup shapes built from one shared, otherwise-arbitrary parameter set.</summary>
