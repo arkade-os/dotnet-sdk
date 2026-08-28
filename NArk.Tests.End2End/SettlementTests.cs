@@ -38,12 +38,13 @@ public class SettlementTests
         // Bob arrives with funds of his own, so the settlement is only visible as a delta.
         var bobBefore = await ReadBtcBalance(bob);
 
-        // Alice holds 500 000 sats; the rule fires well below that and caps the payout, so the
-        // rest stays behind as change rather than emptying the wallet.
+        // Alice holds 500 000 sats. The cap moves 100 000 and leaves 400 000, which is below the
+        // threshold — settling drops the balance, the wallet is re-evaluated, and the rule has to
+        // stop firing rather than draining the wallet in 100 000-sat steps.
         var rule = new SettlementConfig(
             alice.walletIdentifier,
             SettlementDestination.Ark(bobAddress.ToString(false)),
-            Threshold: 400_000,
+            Threshold: 450_000,
             MaxAmount: 100_000);
 
         using var engine = CreateEngine(alice, rule);
@@ -70,12 +71,14 @@ public class SettlementTests
         var bobAddress = (await bob.contractService.DeriveContract(
             bob.walletIdentifier, NextContractPurpose.Receive)).GetArkAddress();
 
-        // Threshold and cap are in the asset's own units, not satoshis: fire at 500 units, move
-        // 400, leave 600 as asset change.
+        // Threshold and cap are in the asset's own units, not satoshis: fire at 700 units and move
+        // 400, leaving 600 — under the threshold, so the rule fires once. A threshold the leftover
+        // still clears would fire again on the next VTXO change and keep draining in 400-unit
+        // steps, which is the engine working as designed, just not what this test is about.
         var rule = new SettlementConfig(
             alice.walletIdentifier,
             SettlementDestination.ArkAsset(bobAddress.ToString(false), issuance.AssetId),
-            Threshold: 500,
+            Threshold: 700,
             SourceAsset: issuance.AssetId,
             MaxAmount: 400);
 
