@@ -588,6 +588,8 @@ public class UsdcSettlementService : ISettlementService
 services.AddSingleton<ISettlementService, UsdcSettlementService>();
 ```
 
+The engine serialises settlements per wallet, but does not deduplicate across retries: a settlement broadcast without its result coming back looks the same as one that never ran, and the heartbeat will fire the rule again. Record attempts from `PostSettlementActionEvent` and gate the wallet with an `ISettlementGate` while one is in flight — the SDK persists nothing itself.
+
 `PostSettlementActionEvent` is raised for every attempt. See [docs/articles/settlement.md](docs/articles/settlement.md) for policies, gates, trigger sources, and options.
 
 ## Querying Intents by Proof

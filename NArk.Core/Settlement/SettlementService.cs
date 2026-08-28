@@ -48,6 +48,13 @@ public class SettlementService(
     private readonly Channel<string> _walletQueue = Channel.CreateUnbounded<string>();
     private readonly ConcurrentDictionary<string, byte> _queuedWallets = new();
 
+    // One settlement at a time per wallet. The engine only avoids over-committing a balance
+    // because it executes plans against a shrinking remainder, and that bookkeeping lives
+    // inside a single evaluation: a user-initiated SettleAsync running beside a background
+    // pass would read the same balance and spend it twice. Entries are keyed by wallet and
+    // never removed — one semaphore per wallet the process has ever settled.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _walletLocks = new();
+
     /// <summary>
     /// Queues a wallet for evaluation. Safe to call for any wallet — unknown and
     /// unconfigured wallets are dropped during processing, and a wallet already queued
@@ -97,10 +104,13 @@ public class SettlementService(
             {
                 while (_walletQueue.Reader.TryRead(out var walletId))
                 {
-                    _queuedWallets.TryRemove(walletId, out _);
-
                     if (options.Value.Debounce > TimeSpan.Zero)
                         await Task.Delay(options.Value.Debounce, stoppingToken);
+
+                    // Released only once the wait is over: dropping it first would let activity
+                    // arriving inside the debounce window queue the same wallet a second time,
+                    // which is exactly what the window is meant to absorb.
+                    _queuedWallets.TryRemove(walletId, out _);
 
                     await ProcessWalletSafely(walletId, stoppingToken);
                 }
@@ -179,6 +189,11 @@ public class SettlementService(
         if (policyList.Length == 0)
             return;
 
+        var walletLock = LockFor(walletId);
+        await walletLock.WaitAsync(cancellationToken);
+        try
+        {
+
         foreach (var gate in gates)
         {
             if (!await gate.IsBlockedAsync(walletId, cancellationToken))
@@ -205,8 +220,8 @@ public class SettlementService(
         {
             [SettlementAssets.Btc] = context.AvailableBalanceSats
         };
-        foreach (var (assetId, amount) in context.AssetBalances)
-            remaining[assetId] = (long)amount;
+        foreach (var assetId in context.AssetBalances.Keys)
+            remaining[assetId] = context.GetAvailableBalance(assetId);
 
         foreach (var policy in policyList)
         {
@@ -233,15 +248,24 @@ public class SettlementService(
                     plan.Reference);
 
                 // Only a settlement that actually committed funds consumes the balance;
-                // a failed one leaves the remainder for the plans behind it.
-                if (await SettleAsync(request, cancellationToken) is not null)
+                // a failed one leaves the remainder for the plans behind it. The lock is
+                // already held, so this goes straight to the rail.
+                if (await RouteAsync(request, cancellationToken) is not null)
                     remaining[plan.SourceAsset] = remainingForAsset - plan.Amount;
 
                 if (remaining.Values.All(amount => amount <= 0))
                     return;
             }
         }
+        }
+        finally
+        {
+            walletLock.Release();
+        }
     }
+
+    private SemaphoreSlim LockFor(string walletId) =>
+        _walletLocks.GetOrAdd(walletId, _ => new SemaphoreSlim(1, 1));
 
     /// <inheritdoc />
     public override Task StopAsync(CancellationToken cancellationToken)
@@ -267,6 +291,25 @@ public class SettlementService(
         SettlementRequest request,
         CancellationToken cancellationToken = default)
     {
+        // Serialised against the background pass and against other callers for this wallet:
+        // two settlements reading the same balance would both plan to spend it.
+        var walletLock = LockFor(request.WalletId);
+        await walletLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await RouteAsync(request, cancellationToken);
+        }
+        finally
+        {
+            walletLock.Release();
+        }
+    }
+
+    // Routes and reports one settlement. The caller holds the wallet's lock.
+    private async Task<SettlementResult?> RouteAsync(
+        SettlementRequest request,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var result = await settlementRouter.SettleAsync(request, cancellationToken);
@@ -287,6 +330,16 @@ public class SettlementService(
                 cancellationToken: cancellationToken);
 
             return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The rail may have committed the funds before the token fired. Reporting this as a
+            // failed settlement would tell the application the value is still in the wallet, so
+            // the cancellation surfaces instead and the outcome stays unresolved.
+            logger?.LogWarning(
+                "Settlement of {Amount} {SourceAsset} for wallet {WalletId} was cancelled; whether the rail committed is unknown",
+                request.Amount, request.SourceAsset, request.WalletId);
+            throw;
         }
         catch (Exception ex)
         {

@@ -144,6 +144,7 @@ Notes for rail authors:
 - Report a rail that is configured but temporarily unusable as `Available = false` with an `UnavailableReason`; routing skips it and the reason surfaces in the error when nothing else matches, instead of failing a settlement.
 - Use `DestinationAtomicAmount` for destinations that are not denominated in satoshis.
 - Throw from `SettleAsync` only when funds have **not** been committed. Once value has left the wallet, return a result — a throw makes the engine retry and can double-spend the balance.
+- Report a fee the rail cannot know yet as `FeesPaidSats: null` rather than zero; zero reads as "free" in an application's accounting.
 - Rails are tried in registration order, so register a specific rail before a broader one.
 
 ## Custom policies
@@ -174,6 +175,19 @@ Plans are executed against a balance that shrinks as each one commits, so two po
 The engine evaluates every queued wallet: a policy that ignores `ISettlementConfigProvider` and decides on its own needs no extra opt-in.
 
 `SettlementContext` gives the policy the wallet's spendable coins, with coins locked by pending intents and coins past expiry already removed, plus the chain time they were computed against. `AvailableCoins` / `AvailableBalanceSats` are BTC only; `AssetCoins` / `AssetBalances` hold the asset carriers, and `GetAvailableBalance(asset)` / `GetAvailableCoins(asset)` read either through one call. Set `SettlementPlan.Coins` to pin the exact coins to spend — the settlement counterpart of the coins a sweep policy yields. The destination sweep honours it, while the collaborative-exit path rejects it because it performs its own coin selection and fee estimation.
+
+## Retries, and what the engine does not guarantee
+
+The engine serialises work per wallet: a background evaluation, a manual `SettleAsync`, and a second caller for the same wallet queue behind each other, so no two settlements read the same balance and both plan to spend it.
+
+What it does **not** do is deduplicate across attempts. The heartbeat re-queues every configured wallet, which is the retry behind the event-driven path — and a settlement whose transaction was broadcast but whose result never came back (a transport error, a process stopped mid-flight) is indistinguishable from one that never ran. If the spent VTXO is not yet visible as spent, the rule fires again on the next beat.
+
+The SDK cannot close that on its own: knowing an attempt is already in flight means persisting it, and settlement configuration and history belong to the application. Two hooks are the place to do it:
+
+- record every attempt from `PostSettlementActionEvent`, which is raised for success and failure alike, keyed by `SettlementRequest.Reference` when you set one;
+- register an `ISettlementGate` that blocks the wallet while your own record shows a settlement in flight.
+
+A rail that can accept an idempotency key should take `Reference` as one. Note that a repeated amount to a repeated destination is not by itself a duplicate: with `MaxAmount` set, a rule legitimately fires again on the next evaluation until the balance drops below the threshold.
 
 ## Blocking settlement
 

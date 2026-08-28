@@ -46,7 +46,11 @@ public class DestinationSweepSettlementService(
         if (destination.IsNetwork(SettlementNetworks.Ark))
             return true;
 
+        // Unlike an Arkade destination, which reads a missing address as "back to this wallet",
+        // there is nothing to derive on-chain: without an address the exit would have nowhere
+        // to pay, and BitcoinAddress.Create would throw well past the point of no return.
         return destination.IsNetwork(SettlementNetworks.Bitcoin)
+               && !string.IsNullOrWhiteSpace(destination.Address)
                && options.Value.EnableCollaborativeExit
                && onchainService is not null;
     }
@@ -130,12 +134,13 @@ public class DestinationSweepSettlementService(
             "Settled {AmountSats} sats from wallet {WalletId} to on-chain address {Address} via collaborative exit, intent {IntentId}",
             request.Amount, request.WalletId, destination, intentId);
 
-        // The exit spends more than the requested amount to cover the batch fee; the
-        // exact fee is only known once the batch confirms, so it is reported as zero here.
+        // The exit spends more than the requested amount to cover the batch fee, and the exact
+        // figure only exists once the batch confirms — hence null rather than a zero that would
+        // read as "free".
         return new SettlementResult(
             intentId,
             request.Amount,
             request.Amount,
-            0);
+            null);
     }
 }

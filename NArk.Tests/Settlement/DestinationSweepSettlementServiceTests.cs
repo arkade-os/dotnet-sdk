@@ -110,6 +110,17 @@ public class DestinationSweepSettlementServiceTests
     }
 
     [Test]
+    public void CannotSettle_OnchainBitcoin_WithoutAnAddress()
+    {
+        // An Arkade destination reads a missing address as "back to this wallet"; on-chain there
+        // is nothing to derive, and accepting it would only fail once the exit is under way.
+        Assert.That(
+            CreateService(enableCollaborativeExit: true, onchainService: _onchainService)
+                .CanSettle(new SettlementDestination(SettlementNetworks.Bitcoin, SettlementAssets.Btc, null)),
+            Is.False);
+    }
+
+    [Test]
     public async Task SpendsToTheArkadeDestination()
     {
         var address = TestArkAddress();

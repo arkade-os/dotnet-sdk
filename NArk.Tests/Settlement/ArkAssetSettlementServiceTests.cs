@@ -186,6 +186,22 @@ public class ArkAssetSettlementServiceTests
     }
 
     [Test]
+    public void Throws_RatherThanSpendBeyondThePinnedCoins()
+    {
+        // Pinned coins are the caller's decision about what may be spent. One carrier holding a
+        // single dust cannot fund both the payout and the asset change, and topping it up from
+        // coins the caller did not pin would spend outside that mandate.
+        var carrier = AssetCoin(750_000);
+
+        var ex = Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CreateService().SettleAsync(new SettlementRequest(
+                WalletId, 500_000, SettlementDestination.ArkAsset(TestArkAddress(), Usdt0), Usdt0,
+                Coins: [carrier])));
+
+        Assert.That(ex!.Message, Does.Contain("carry the asset outputs"));
+    }
+
+    [Test]
     public void Throws_WhenTheRailWouldHaveToConvert()
     {
         // Handing USDT0 to a destination expecting another asset is a conversion, not a transfer.

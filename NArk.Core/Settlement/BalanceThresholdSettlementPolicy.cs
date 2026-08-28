@@ -36,11 +36,14 @@ public class BalanceThresholdSettlementPolicy(
 
         var configs = await configProvider.GetConfigs(context.WalletId, cancellationToken);
 
-        // Providers are free to ignore the walletId filter, so filter again here.
+        // Providers are free to ignore the walletId filter, so filter again here. Wallet ids are
+        // output descriptors, where case is part of the identity — unlike asset ids, which are
+        // compared case-insensitively throughout.
         // Thresholds are only comparable within one denomination, so rules are grouped by
         // their source asset before being ordered lowest-first.
         var candidates = configs
-            .Where(config => config.Enabled && config.WalletId == context.WalletId)
+            .Where(config => config.Enabled
+                             && string.Equals(config.WalletId, context.WalletId, StringComparison.Ordinal))
             .Where(config => context.GetAvailableBalance(config.SourceAsset) >= config.Threshold)
             .OrderBy(config => config.SourceAsset, StringComparer.OrdinalIgnoreCase)
             .ThenBy(config => config.Threshold);

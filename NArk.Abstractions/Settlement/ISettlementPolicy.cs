@@ -73,7 +73,14 @@ public record SettlementContext(
         if (asset.Equals(SettlementAssets.Btc, StringComparison.OrdinalIgnoreCase))
             return AvailableBalanceSats;
 
-        return AssetBalances.TryGetValue(asset, out var amount) ? (long)amount : 0;
+        if (!AssetBalances.TryGetValue(asset, out var amount))
+            return 0;
+
+        // Asset amounts are unsigned and thresholds are signed. An 18-decimal asset reaches
+        // long.MaxValue at about 9.2 tokens, so a plain cast is not academic: it would wrap to
+        // a negative balance, and a rule would silently never fire. Saturating instead settles
+        // as much as the signed range allows and leaves the rest for the next evaluation.
+        return amount > long.MaxValue ? long.MaxValue : (long)amount;
     }
 
     /// <summary>

@@ -199,6 +199,59 @@ public class SettlementServiceTests
     }
 
     [Test]
+    public async Task SerialisesSettlementsForOneWallet()
+    {
+        // Two callers reading the same balance would both plan to spend it, so the second has to
+        // wait for the first rather than overlap with it.
+        var inFlight = 0;
+        var overlapped = false;
+
+        _rail.SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                if (Interlocked.Increment(ref inFlight) > 1)
+                    overlapped = true;
+                await Task.Delay(150);
+                Interlocked.Decrement(ref inFlight);
+                return new SettlementResult("transfer", call.Arg<SettlementRequest>().Amount, 0, 0);
+            });
+
+        using var service = CreateService();
+        var request = new SettlementRequest(WalletId, 10_000, Destination);
+
+        await Task.WhenAll(
+            service.SettleAsync(request),
+            service.SettleAsync(request));
+
+        Assert.That(overlapped, Is.False, "two settlements for one wallet ran at the same time");
+        await _rail.Received(2).SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public void DoesNotReportAFailure_WhenTheSettlementIsCancelled()
+    {
+        // The rail may have committed before the token fired, so reporting Failed would tell the
+        // application the value is still in the wallet. The cancellation surfaces instead.
+        using var cts = new CancellationTokenSource();
+        _rail.SettleAsync(Arg.Any<SettlementRequest>(), Arg.Any<CancellationToken>())
+            .Returns<Task<SettlementResult>>(_ =>
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            });
+
+        using var service = CreateService();
+
+        Assert.ThrowsAsync<OperationCanceledException>(() =>
+            service.SettleAsync(new SettlementRequest(WalletId, 10_000, Destination), cts.Token));
+
+        Assert.That(
+            _eventHandler.ReceivedCalls().Any(),
+            Is.False,
+            "a cancelled settlement must not be reported as failed");
+    }
+
+    [Test]
     public async Task DoesNotSettle_WhenAGateBlocksTheWallet()
     {
         var gate = Substitute.For<ISettlementGate>();

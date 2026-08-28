@@ -19,7 +19,11 @@ namespace NArk.Abstractions.Settlement;
 /// asset settlement it is the satoshi carrier the asset rides on, with the asset amount itself
 /// reported in <paramref name="DestinationAtomicAmount"/>.
 /// </param>
-/// <param name="FeesPaidSats">Total fees paid, in satoshis.</param>
+/// <param name="FeesPaidSats">
+/// Total fees paid, in satoshis, or <see langword="null"/> when the rail cannot know them yet —
+/// a collaborative exit pays a batch fee that is only settled at confirmation. Reporting zero
+/// there would put a wrong number into an application's fee accounting rather than an absent one.
+/// </param>
 /// <param name="TransactionId">The Arkade transaction id, when the settlement produced one directly.</param>
 /// <param name="DestinationAtomicAmount">
 /// Expected amount in the destination asset's own atomic units, for destinations that are
@@ -30,6 +34,6 @@ public record SettlementResult(
     string TransferId,
     long SourceAmount,
     long DestinationAmountSats,
-    long FeesPaidSats,
+    long? FeesPaidSats,
     uint256? TransactionId = null,
     long? DestinationAtomicAmount = null);
