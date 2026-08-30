@@ -38,6 +38,26 @@ public class BatchExpiryOptionsValidationTests
         });
     }
 
+    [Test]
+    [TestCase(1)]
+    [TestCase(300)]
+    [TestCase(511)]
+    public void FloorBelowOneGranularityUnit_IsRejectedAtStartup(int floorSeconds)
+    {
+        // Below 512s the floor rounds down to zero and stops rejecting anything, so it has to fail
+        // here rather than look accepted and quietly wave every declared expiry through.
+        Assert.Throws<OptionsValidationException>(
+            () => Resolve(o => o.MinimumExpiry = TimeSpan.FromSeconds(floorSeconds)));
+    }
+
+    [Test]
+    public void FloorOfExactlyOneGranularityUnit_IsAccepted()
+    {
+        var options = Resolve(o => o.MinimumExpiry = TimeSpan.FromSeconds(512));
+
+        Assert.That(options.MinimumExpiry, Is.EqualTo(TimeSpan.FromSeconds(512)));
+    }
+
     private static BatchExpiryOptions Resolve(Action<BatchExpiryOptions> configure)
     {
         // Exercises the same registration AddArkCoreServices uses, without standing up the whole SDK.

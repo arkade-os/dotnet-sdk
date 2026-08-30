@@ -31,16 +31,26 @@ public sealed record BatchExpiryPolicy
     /// Builds a policy.
     /// </summary>
     /// <param name="allowBlockTypedExpiry">Whether a block-typed expiry is acceptable.</param>
-    /// <param name="minimumExpiry">Shortest acceptable seconds-typed expiry.</param>
+    /// <param name="minimumExpiry">
+    /// Shortest acceptable seconds-typed expiry. Must be at least one BIP-68 granularity unit
+    /// (<see cref="SecondsGranularity"/> seconds).
+    /// </param>
     /// <param name="minimumExpiryBlocks">Shortest acceptable block-typed expiry, in blocks.</param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Either floor is zero or negative. The floors can be lowered but not disabled.
+    /// <paramref name="minimumExpiryBlocks"/> is zero or negative, or <paramref name="minimumExpiry"/>
+    /// is below one granularity unit. The floors can be lowered but not disabled.
     /// </exception>
     public BatchExpiryPolicy(bool allowBlockTypedExpiry, TimeSpan minimumExpiry, int minimumExpiryBlocks)
     {
-        if (minimumExpiry <= TimeSpan.Zero)
+        // Validate compares against the floor rounded down to a multiple of SecondsGranularity, so a
+        // floor below one unit rounds to zero and accepts every seconds-typed expiry — including the
+        // 512s minimum the encoding allows. Such a floor reads as lowered but behaves as switched
+        // off, so it is rejected here rather than silently disabling the check.
+        if (minimumExpiry < TimeSpan.FromSeconds(SecondsGranularity))
             throw new ArgumentOutOfRangeException(nameof(minimumExpiry), minimumExpiry,
-                "Minimum batch expiry must be greater than zero. The floor can be lowered but not disabled.");
+                $"Minimum batch expiry must be at least {SecondsGranularity} seconds, the BIP-68 granularity " +
+                "unit the floor is rounded down to. A shorter floor rounds down to zero and would accept " +
+                "any expiry. The floor can be lowered but not disabled.");
         if (minimumExpiryBlocks <= 0)
             throw new ArgumentOutOfRangeException(nameof(minimumExpiryBlocks), minimumExpiryBlocks,
                 "Minimum batch expiry in blocks must be greater than zero. The floor can be lowered but not disabled.");
@@ -65,6 +75,9 @@ public sealed record BatchExpiryPolicy
     /// <param name="network">The network the Arkade server advertises.</param>
     /// <param name="options">Optional overrides; <c>null</c> properties keep the default.</param>
     /// <returns>The policy to enforce.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// An override would disable rather than lower a floor. See the constructor for the bounds.
+    /// </exception>
     /// <remarks>
     /// Regtest allows a block-typed expiry with a 10-block floor, mirroring arkd, whose block-typed
     /// VTXO tree expiry is regtest-only; every other network requires a seconds-typed expiry of at

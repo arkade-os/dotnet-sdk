@@ -167,6 +167,41 @@ public class BatchExpiryPolicyTests
     }
 
     [Test]
+    [TestCase(1, TestName = "A one-second floor")]
+    [TestCase(300, TestName = "A five-minute floor")]
+    [TestCase(511, TestName = "One second below a granularity unit")]
+    public void SecondsFloorBelowOneGranularityUnit_IsRejected(int floorSeconds)
+    {
+        // The seconds floor is rounded down to a multiple of 512 before comparison, so anything
+        // below 512 rounds to zero and would accept every seconds-typed expiry the server declares
+        // — a floor that reads as "lowered" but behaves as "switched off".
+        Assert.Multiple(() =>
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => new BatchExpiryPolicy(false, TimeSpan.FromSeconds(floorSeconds), 144));
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => BatchExpiryPolicy.ForNetwork(
+                    Network.Main, new BatchExpiryOptions { MinimumExpiry = TimeSpan.FromSeconds(floorSeconds) }));
+        });
+    }
+
+    [Test]
+    public void SecondsFloorOfExactlyOneGranularityUnit_IsAccepted()
+    {
+        // 512s is the shortest floor that still compares against something, and is the regtest default.
+        var policy = new BatchExpiryPolicy(
+            false, TimeSpan.FromSeconds(BatchExpiryPolicy.SecondsGranularity), 144);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(policy.Validate(BatchExpiryPolicy.SecondsGranularity).LockPeriod.TotalSeconds,
+                Is.EqualTo(BatchExpiryPolicy.SecondsGranularity));
+            Assert.That(BatchExpiryPolicy.ForNetwork(Network.RegTest).MinimumExpiry,
+                Is.EqualTo(TimeSpan.FromSeconds(BatchExpiryPolicy.SecondsGranularity)));
+        });
+    }
+
+    [Test]
     public void Defaults_AreNetworkSpecific()
     {
         Assert.Multiple(() =>

@@ -68,13 +68,16 @@ builder.AddArk().ConfigureBatchExpiry(options =>
 Without the host builder, configure `BatchExpiryOptions` directly. Each property is optional; `null`
 keeps the network default:
 
-- `MinimumExpiry` — floor for seconds-typed expiries.
-- `MinimumExpiryBlocks` — floor for block-typed expiries.
+- `MinimumExpiry` — floor for seconds-typed expiries. At least 512 seconds when set.
+- `MinimumExpiryBlocks` — floor for block-typed expiries. Greater than zero when set.
 - `AllowBlockTypedExpiry` — opts a non-regtest network into block-typed expiries. Only set this for a
   server you know is configured that way.
 
-Floors can be lowered but not disabled: zero or less fails at startup rather than silently turning the
-check off.
+Floors can be lowered but not disabled: a floor that would stop rejecting anything fails at startup
+rather than silently turning the check off. That means zero or less for either floor, and anything
+below 512 seconds for `MinimumExpiry` — because the floor is rounded down to a multiple of 512 before
+comparison, a shorter one rounds to zero and would accept every seconds-typed expiry, down to the
+512-second minimum the encoding itself allows.
 
 ## Limitations
 

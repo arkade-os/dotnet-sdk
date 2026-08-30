@@ -6,8 +6,10 @@ namespace NArk.Core.Models.Options;
 /// described on <see cref="NArk.Core.Batches.BatchExpiryPolicy"/>.
 /// </summary>
 /// <remarks>
-/// The floors can be lowered but not switched off — a non-null floor of zero or less is rejected
-/// when the policy is built, rather than silently disabling the check.
+/// The floors can be lowered but not switched off. A non-null floor that would stop rejecting
+/// anything is refused at startup rather than silently disabling the check: zero or less for either
+/// floor, and additionally anything below 512 seconds for <see cref="MinimumExpiry"/>, which is
+/// rounded down to a multiple of 512 before comparison and so would round to zero.
 /// </remarks>
 public class BatchExpiryOptions
 {
@@ -18,13 +20,15 @@ public class BatchExpiryOptions
     /// <remarks>
     /// BIP-68 encodes seconds in units of 512, so the floor is itself rounded down to a multiple of
     /// 512 before comparison. A 24-hour floor therefore accepts 86016 (168 x 512), the closest
-    /// encodable value below a literal 86400.
+    /// encodable value below a literal 86400. For the same reason it must be at least 512 seconds
+    /// when set: a shorter floor rounds down to zero and would accept any declared expiry.
     /// </remarks>
     public TimeSpan? MinimumExpiry { get; set; }
 
     /// <summary>
     /// Shortest block-typed batch expiry this client will accept, in blocks. Only consulted when
-    /// block-typed expiries are allowed at all. Defaults to 10 on regtest.
+    /// block-typed expiries are allowed at all. Defaults to 10 on regtest. Must be greater than
+    /// zero when set.
     /// </summary>
     public int? MinimumExpiryBlocks { get; set; }
 

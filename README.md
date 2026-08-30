@@ -1070,7 +1070,8 @@ builder.AddArk().ConfigureBatchExpiry(options =>
 });
 ```
 
-Floors can be lowered but not disabled — zero or less throws at startup. See
+Floors can be lowered but not disabled — zero or less throws at startup, as does a `MinimumExpiry`
+below 512 seconds, which would round down to zero and accept anything. See
 [Batch Expiry Validation](docs/articles/batch-expiry.md) for the attack it prevents, the
 `AllowBlockTypedExpiry` escape hatch, and BIP-68 granularity.
 
