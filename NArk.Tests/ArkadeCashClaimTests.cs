@@ -119,7 +119,7 @@ public class ArkadeCashClaimTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(Dust),
             SignerKey: OutputDescriptor.Parse($"tr({Convert.ToHexString(signerKey.ToBytes()).ToLowerInvariant()})", Network.RegTest),
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),

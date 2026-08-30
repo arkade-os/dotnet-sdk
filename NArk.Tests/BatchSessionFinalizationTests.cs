@@ -253,7 +253,7 @@ public class BatchSessionFinalizationTests
         new(
             Dust: Money.Satoshis(546),
             SignerKey: NewKey().ToOutputDescriptor(Net),
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
             Network: Net,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),

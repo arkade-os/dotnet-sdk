@@ -32,7 +32,7 @@ public static class ArkadeCashExtensions
     /// </remarks>
     public static ArkPaymentContract ToContract(this ArkadeCash cash, ArkServerInfo serverInfo)
     {
-        if (!ECXOnlyPubKeyComparer.Instance.Equals(serverInfo.SignerKey.ToXOnlyPubKey(), cash.ServerPubkey))
+        if (serverInfo.SignerKey.ToXOnlyPubKey() != cash.ServerPubkey)
         {
             throw new InvalidOperationException(
                 "ArkadeCash was issued against a different Arkade server key than the one this server reports.");

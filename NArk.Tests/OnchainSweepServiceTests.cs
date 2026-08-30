@@ -107,7 +107,7 @@ public class OnchainSweepServiceTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: TestServerKey,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
             Network: Network.RegTest,
             UnilateralExit: BoardingExitDelay,
             BoardingExit: BoardingExitDelay,
