@@ -12,15 +12,15 @@ namespace NArk.Arkade.Emulator;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="BatchExtensionPhase.PostTreeSigning"/> routes through the
-/// emulator's <c>POST /v1/tx</c> endpoint via
-/// <see cref="ArkadePsbtExtensions.CoSignWithEmulatorAsync"/>. The
-/// emulator internally decides whether to sign each input (only those
-/// whose attached ArkadeScript validates against its tweaked key) and
-/// returns the union of the input PSBT and its own partial sigs. Inputs
-/// that aren't arkade-bound are passed through untouched on the server
-/// side; non-arkade batches are short-circuited locally via
-/// <see cref="ShouldHandleAsync"/>.
+/// <see cref="BatchExtensionPhase.PostTreeSigning"/> is deliberately
+/// <em>not</em> implemented and throws. It routed through the emulator's
+/// <c>POST /v1/tx</c> endpoint with an empty checkpoint list, which emulator
+/// <c>v0.0.7</c>+ rejects outright: that endpoint requires exactly one
+/// checkpoint per input, plus the <c>prevarktx</c> field on every input,
+/// before it inspects anything else. Neither is available at this phase —
+/// tree transactions have no checkpoints — so the hop needs a
+/// checkpoint-carrying shape or an endpoint of its own. Until then, failing
+/// here beats sending the emulator a submission it cannot accept.
 /// </para>
 /// <para>
 /// <see cref="BatchExtensionPhase.PreForfeitFinalization"/> is deliberately
@@ -37,6 +37,10 @@ namespace NArk.Arkade.Emulator;
 /// </remarks>
 public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
 {
+    // Retained though no phase currently submits: the co-signing client is this class's
+    // reason to exist, and the submission arm that will use it lands in CoSignAsync's switch
+    // once a phase the emulator can accept exists. Dropping it would break every caller's
+    // construction only to have it added back.
     private readonly IEmulatorProvider _emulator;
     private readonly ILogger<ArkadeBatchSessionExtension>? _logger;
 
@@ -86,38 +90,37 @@ public sealed class ArkadeBatchSessionExtension : IBatchSessionExtension
             return psbts;
         }
 
-        // Forfeits need POST /v1/finalization (signed intent proof + connector tree +
-        // commitment tx), not POST /v1/tx. Sending them to /v1/tx returns a PSBT with no
-        // forfeit signature, which would look like success — refuse instead. See the
-        // class remarks for what wiring this up requires.
-        if (phase == BatchExtensionPhase.PreForfeitFinalization)
+        // Neither phase can be handed to the emulator as it stands, so there is deliberately
+        // no submission path below this point. When one is introduced, its round-trip goes
+        // in the corresponding switch arm — see the class remarks for the shape POST /v1/tx
+        // requires (one checkpoint per input, prevarktx on every input, EmulatorPacket in
+        // the extension output).
+        throw phase switch
         {
-            throw new NotSupportedException(
+            // Forfeits need POST /v1/finalization (signed intent proof + connector tree +
+            // commitment tx), not POST /v1/tx. Sending them to /v1/tx returns a PSBT with no
+            // forfeit signature, which would look like success — refuse instead.
+            BatchExtensionPhase.PreForfeitFinalization => new NotSupportedException(
                 "ArkadeBatchSessionExtension cannot co-sign forfeits: the emulator signs those via " +
                 "POST /v1/finalization, which requires the emulator-co-signed intent proof from " +
                 "intent-registration time (plus the connector tree and commitment tx). Submitting " +
-                "them to POST /v1/tx would produce forfeits with an incomplete witness.");
-        }
+                "them to POST /v1/tx would produce forfeits with an incomplete witness."),
 
-        _logger?.LogInformation(
-            "ArkadeBatchSessionExtension: co-signing {Count} PSBT(s) at {Phase}",
-            psbts.Count, phase);
+            // Tree transactions carry no checkpoints, and POST /v1/tx requires exactly one per
+            // input plus a prevarktx field on every input before it inspects anything else
+            // (emulator v0.0.7, internal/application/prevout.go). Submitting anyway reaches the
+            // emulator with a malformed request; refuse at the call site, where the reason is
+            // legible.
+            BatchExtensionPhase.PostTreeSigning => new NotSupportedException(
+                "ArkadeBatchSessionExtension cannot co-sign tree transactions against emulator " +
+                "v0.0.7+: POST /v1/tx requires one checkpoint per input and a prevarktx field on " +
+                "every input, and a tree transaction has neither. This hop needs a " +
+                "checkpoint-carrying shape or a dedicated endpoint."),
 
-        var signed = new PSBT[psbts.Count];
-        for (var i = 0; i < psbts.Count; i++)
-        {
-            try
-            {
-                signed[i] = await psbts[i].CoSignWithEmulatorAsync(_emulator, cancellationToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger?.LogError(ex,
-                    "ArkadeBatchSessionExtension: emulator rejected PSBT {Index}/{Count} at {Phase}",
-                    i, psbts.Count, phase);
-                throw;
-            }
-        }
-        return signed;
+            _ => new ArgumentOutOfRangeException(nameof(phase), phase,
+                "Unknown batch extension phase. A newly added phase that the emulator can accept " +
+                "needs its own submission arm here; one that it cannot needs a NotSupportedException " +
+                "explaining why, as the two above do."),
+        };
     }
 }

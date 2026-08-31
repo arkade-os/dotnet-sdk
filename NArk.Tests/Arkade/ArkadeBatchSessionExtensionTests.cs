@@ -14,8 +14,9 @@ namespace NArk.Tests.Arkade;
 
 /// <summary>
 /// Drives <see cref="ArkadeBatchSessionExtension"/> with a substituted
-/// <see cref="IEmulatorProvider"/> and verifies the engagement gate +
-/// the per-PSBT co-signing routing.
+/// <see cref="IEmulatorProvider"/> and verifies the engagement gate plus the
+/// two phases it refuses rather than submitting a request the emulator cannot
+/// accept.
 /// </summary>
 [TestFixture]
 public class ArkadeBatchSessionExtensionTests
@@ -58,23 +59,23 @@ public class ArkadeBatchSessionExtensionTests
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>());
     }
 
-    [TestCase(BatchExtensionPhase.PostTreeSigning)]
-    public async Task CoSign_DispatchesEachPsbtToEmulator(BatchExtensionPhase phase)
+    [Test]
+    public async Task CoSign_RefusesTreeTransactions_RatherThanSubmittingAMalformedRequest()
     {
+        // POST /v1/tx requires one checkpoint per input plus a prevarktx field on every
+        // input before it inspects anything else (emulator v0.0.7,
+        // internal/application/prevout.go). A tree transaction has neither, so this hop
+        // reached the emulator with a request it cannot accept. Refuse at the call site,
+        // where the reason is legible, and never touch the emulator.
         var coins = new[] { MakeCoin(MakeArkadeBuilder()) };
-        var psbts = new[] { BuildEmptyPsbt(), BuildEmptyPsbt(), BuildEmptyPsbt() };
+        var psbts = new[] { BuildEmptyPsbt() };
 
-        // Provider returns a fresh PSBT base64 each call so we can assert the
-        // result isn't the input collection by reference.
-        _emulator
-            .SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
-            .Returns(callInfo => Task.FromResult(
-                new EmulatorSubmitTxResult(BuildEmptyPsbt().ToBase64(), [])));
+        Assert.That(
+            async () => await _sut.CoSignAsync(
+                BatchExtensionPhase.PostTreeSigning, psbts, coins, CancellationToken.None),
+            Throws.InstanceOf<NotSupportedException>().With.Message.Contains("checkpoint"));
 
-        var signed = await _sut.CoSignAsync(phase, psbts, coins, CancellationToken.None);
-
-        Assert.That(signed, Has.Count.EqualTo(psbts.Length));
-        await _emulator.Received(psbts.Length).SubmitTxAsync(
+        await _emulator.DidNotReceive().SubmitTxAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>());
     }
 
@@ -93,23 +94,6 @@ public class ArkadeBatchSessionExtensionTests
             async () => await _sut.CoSignAsync(
                 BatchExtensionPhase.PreForfeitFinalization, psbts, coins, CancellationToken.None),
             Throws.InstanceOf<NotSupportedException>());
-    }
-
-    [Test]
-    public async Task CoSign_PropagatesEmulatorFailure()
-    {
-        var coins = new[] { MakeCoin(MakeArkadeBuilder()) };
-        var psbts = new[] { BuildEmptyPsbt() };
-
-        _emulator
-            .SubmitTxAsync(Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
-            .Returns<Task<EmulatorSubmitTxResult>>(_ =>
-                throw new HttpRequestException("emulator down"));
-
-        var ex = Assert.ThrowsAsync<HttpRequestException>(async () =>
-            await _sut.CoSignAsync(
-                BatchExtensionPhase.PostTreeSigning, psbts, coins, CancellationToken.None));
-        Assert.That(ex!.Message, Does.Contain("emulator down"));
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────
