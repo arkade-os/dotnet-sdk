@@ -5,7 +5,6 @@
       "NArk.Abstractions/NArk.Abstractions.csproj",
       "NArk.Core/NArk.Core.csproj",
       "NArk.Storage.EfCore/NArk.Storage.EfCore.csproj",
-      "NArk.Swaps/NArk.Swaps.csproj",
       "NArk/NArk.csproj",
       "NArk.Tests/NArk.Tests.csproj",
       "NArk.Arkade/NArk.Arkade.csproj",
