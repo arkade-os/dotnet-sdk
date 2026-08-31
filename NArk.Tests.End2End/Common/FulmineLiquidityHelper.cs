@@ -1,7 +1,6 @@
 using System.Text.Json.Nodes;
 using NArk.Tests.End2End.Core;
 using NBitcoin;
-using NArk.Tests.End2End.Swaps;
 
 namespace NArk.Tests.End2End.Common;
 

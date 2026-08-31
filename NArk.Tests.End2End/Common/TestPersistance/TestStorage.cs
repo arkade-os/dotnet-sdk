@@ -50,17 +50,5 @@ internal class TestStorage : IDisposable
         return sp.GetRequiredService<IIntentStorage>();
     }
 
-    /// <summary>
-    /// Clears all swap records from the database. Used for testing swap restoration.
-    /// </summary>
-    public async Task ClearSwaps()
-    {
-        var factory = _serviceProvider.GetRequiredService<IArkDbContextFactory>();
-        await using var db = await factory.CreateDbContextAsync();
-        var swapEntities = db.Set<Storage.EfCore.Entities.ArkSwapEntity>();
-        swapEntities.RemoveRange(swapEntities);
-        await db.SaveChangesAsync();
-    }
-
     public void Dispose() => _serviceProvider.Dispose();
 }
