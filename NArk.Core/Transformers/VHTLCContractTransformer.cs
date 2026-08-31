@@ -10,6 +10,7 @@ using NBitcoin;
 
 namespace NArk.Swaps.Transformers;
 
+[Obsolete]
 public class VHTLCContractTransformer(IWalletProvider walletProvider, IBitcoinBlockchain chainTimeProvider, ILogger<VHTLCContractTransformer>? logger = null) : IContractTransformer
 {
     public async Task<bool> CanTransform(string walletIdentifier, ArkContract contract, ArkVtxo vtxo)
