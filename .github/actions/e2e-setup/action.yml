@@ -3,9 +3,9 @@ description: Configure .NET + Node, start regtest infrastructure, build. Require
 
 inputs:
   profile:
-    description: regtest compose profile(s) to start, comma-separated (e.g. "boltz,delegate" or "solver,boltz").
+    description: regtest compose profile(s) to start, comma-separated (e.g. "delegate" or "solver,delegate").
     required: false
-    default: boltz,delegate
+    default: delegate
   start-attempts:
     description: >-
       How many times to try bringing the regtest stack up before failing the job. Docker on hosted
