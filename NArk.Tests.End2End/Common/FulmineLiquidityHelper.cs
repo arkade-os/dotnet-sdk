@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using NArk.Tests.End2End.Core;
 using NBitcoin;
 using NArk.Tests.End2End.Swaps;
 
@@ -24,7 +25,7 @@ public static class FulmineLiquidityHelper
     /// </remarks>
     public static async Task EnsureArkLiquidity(long minBalance = 200_000, int maxAttempts = 20)
     {
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(SharedSwapInfrastructure.FulmineEndpoint.ToString()) };
+        var fulmineHttp = new HttpClient { BaseAddress = SharedArkInfrastructure.FulmineEndpoint };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -76,7 +77,7 @@ public static class FulmineLiquidityHelper
     /// </summary>
     public static async Task<T> RetryWithSettle<T>(Func<Task<T>> action, int maxAttempts = 5)
     {
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(SharedSwapInfrastructure.FulmineEndpoint.ToString()) };
+        var fulmineHttp = new HttpClient { BaseAddress = SharedArkInfrastructure.FulmineEndpoint };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {

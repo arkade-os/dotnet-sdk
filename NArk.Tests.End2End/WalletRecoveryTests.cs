@@ -1,12 +1,10 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Recovery;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
-using NArk.Blockchain;
 using NArk.Core.Contracts;
 using NArk.Core.Models.Options;
 using NArk.Core.Services;
@@ -15,8 +13,6 @@ using NArk.Core.Wallet;
 using NArk.Hosting;
 using NArk.Safety.AsyncKeyedLock;
 using NArk.Storage.EfCore.Hosting;
-using NArk.Swaps.Boltz.Models;
-using NArk.Swaps.Recovery;
 using NArk.Tests.End2End.Common;
 using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
@@ -54,20 +50,7 @@ public class WalletRecoveryTests
                 s.AddDbContextFactory<TestDbContext>(o => o.UseInMemoryDatabase(dbName));
                 s.AddArkEfCoreStorage<TestDbContext>();
                 s.AddNBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
-                // AddArkSwapServices is required for WalletRecoveryService (it
-                // lives in NArk.Swaps.Recovery and pulls SwapsManagementService).
-                // Point the boltz client at the real fixture endpoint so the
-                // recovery service's read-only boltz queries (HD scan's boltz
-                // discovery provider + ScanRecoverableSwapsAsync) resolve in a
-                // bounded time. This test never creates a swap — that path's
-                // flake (nginx 504 from boltz under load) is covered by the
-                // BTCPay plugin E2E instead.
-                s.AddArkSwapServices();
-                s.Configure<BoltzClientOptions>(o =>
-                {
-                    o.BoltzUrl = SharedSwapInfrastructure.BoltzEndpoint.ToString();
-                    o.WebsocketUrl = SharedSwapInfrastructure.BoltzWsEndpoint.ToString();
-                });
+
                 s.Configure<SimpleIntentSchedulerOptions>(o =>
                 {
                     o.Threshold = TimeSpan.FromHours(2);

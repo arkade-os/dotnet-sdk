@@ -4,7 +4,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CliWrap;
 using CliWrap.Buffered;
-using NArk.Swaps.Boltz;
 using NBitcoin;
 
 namespace NArk.Tests.End2End.Common;
@@ -299,59 +298,6 @@ public static class DockerHelper
     }
 
     /// <summary>
-    /// Forces a Boltz swap into <paramref name="status"/> using the best
-    /// available method. Use <see cref="SubmarineSwapStatus"/> or <see cref="ChainSwapStatus"/>
-    /// constants for the <paramref name="status"/> argument.
-    /// <list type="number">
-    /// <item>Tries <c>boltzr-cli swap set-status</c> — works for submarine swaps.</item>
-    /// <item>Falls back to a direct <c>postgres</c> UPDATE on <c>"chainSwaps"</c>
-    /// — required for chain swaps because the CLI only resolves submarine IDs.</item>
-    /// </list>
-    /// Returns <c>true</c> when either path succeeded; <c>false</c> when both fail
-    /// (lets callers call <c>Assert.Ignore</c> instead of hard-failing).
-    /// </summary>
-    public static async Task<bool> TrySetBoltzSwapStatus(
-        string swapId, string status, CancellationToken ct = default)
-    {
-        var cliResult = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", Container.Boltz,
-                "/boltz-backend/target/release/boltzr-cli",
-                "-c", "/home/boltz/.boltz/certificates",
-                "swap", "set-status", swapId, status
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-
-        if (cliResult.IsSuccess) return true;
-
-        // boltzr-cli only resolves submarine swap IDs — chain swaps live in
-        // "chainSwaps". Update the DB directly, then restart Boltz so its
-        // in-memory nursery re-reads the new state from postgres. Without the
-        // restart Boltz refuses cooperative refund requests because its nursery
-        // still holds the old status in memory.
-        var dbResult = await Cli.Wrap("docker")
-            .WithArguments(["exec", Container.Postgres,
-                "psql", "-U", "postgres", "-d", "boltz",
-                "-v", $"sid={swapId}", "-v", $"status={status}",
-                "-c", "UPDATE \"chainSwaps\" SET status = :'status' WHERE id = :'sid'"])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-
-        if (!dbResult.IsSuccess || !dbResult.StandardOutput.Contains("UPDATE 1"))
-        {
-            Console.WriteLine(
-                $"[DockerHelper] TrySetBoltzSwapStatus {swapId}→{status} failed on both paths. " +
-                $"CLI: {cliResult.StandardError.Trim()} | " +
-                $"DB: {dbResult.StandardOutput.Trim()} {dbResult.StandardError.Trim()}");
-            return false;
-        }
-
-        await RestartBoltzAndWait(ct);
-        return true;
-    }
-
-    /// <summary>
     /// Returns the output index (vout) of the first output in <paramref name="txid"/>
     /// whose address matches <paramref name="address"/>. Requires the transaction to be
     /// a wallet transaction or txindex to be enabled on the Bitcoin Core node.
@@ -368,108 +314,8 @@ public static class DockerHelper
         }
         throw new InvalidOperationException($"Address {address} not found in outputs of tx {txid}");
     }
-
-    /// <summary>
-    /// Forces a BTC→ARK chain swap into <c>swap.expired</c> and sets the
-    /// BTC-side lockup transaction ID in Boltz's DB so the cooperative refund
-    /// path can retrieve the lockup tx hex from Boltz's status response after
-    /// a restart. Mirrors <see cref="SetArkToBtcChainSwapExpiredWithLockup"/>
-    /// for the opposite direction.
-    /// </summary>
-    /// <param name="swapId">Boltz swap ID.</param>
-    /// <param name="lockupTxid">txid of the BTC transaction that funded the lockup address.</param>
-    /// <param name="lockupVout">Output index of the lockup output within that transaction.</param>
-    public static async Task SetBtcToArkChainSwapExpiredWithLockup(
-        string swapId, string lockupTxid, int lockupVout, CancellationToken ct = default)
-    {
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", Container.Postgres,
-                "psql", "-U", "postgres", "-d", "boltz",
-                "-c", $"UPDATE \"chainSwaps\" SET status = '{BoltzSwapStatus.SwapExpired}' WHERE id = '{swapId}'"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-
-        // Setting transactionId+transactionVout for symbol='BTC' ensures Boltz includes
-        // the lockup tx hex in the swap.expired status response after restart — without
-        // this, CoopRefundBtcToArkChainSwap cannot find the outpoint to spend.
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", Container.Postgres,
-                "psql", "-U", "postgres", "-d", "boltz",
-                "-c", $"UPDATE \"chainSwapData\" SET \"transactionId\" = '{lockupTxid}', \"transactionVout\" = {lockupVout} WHERE \"swapId\" = '{swapId}' AND symbol = 'BTC'"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-
-        await RestartBoltzAndWait(ct);
-    }
-
-    /// <summary>
-    /// Forces an ARK→BTC chain swap into <c>swap.expired</c> and manually sets the
-    /// ARK-side lockup transaction ID in Boltz's DB — bypassing the normal swap flow.
-    /// Call this while Boltz is already stopped; the method updates the DB and then
-    /// starts Boltz and waits for it to be healthy.
-    /// </summary>
-    /// <param name="swapId">Boltz swap ID.</param>
-    /// <param name="lockupTxid">txid of the ARK VTXO at the VHTLC (from arkd).</param>
-    /// <param name="lockupVout">Output index of the VTXO within that virtual tx.</param>
-    public static async Task SetArkToBtcChainSwapExpiredWithLockup(
-        string swapId, string lockupTxid, int lockupVout, CancellationToken ct = default)
-    {
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", Container.Postgres,
-                "psql", "-U", "postgres", "-d", "boltz",
-                "-c", $"UPDATE \"chainSwaps\" SET status = '{BoltzSwapStatus.SwapExpired}' WHERE id = '{swapId}'"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-
-        await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", Container.Postgres,
-                "psql", "-U", "postgres", "-d", "boltz",
-                "-c", $"UPDATE \"chainSwapData\" SET \"transactionId\" = '{lockupTxid}', \"transactionVout\" = {lockupVout} WHERE \"swapId\" = '{swapId}' AND symbol = 'ARK'"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-
-        await RestartBoltzAndWait(ct);
-    }
-
-    /// <summary>
-    /// Restarts the Boltz container and waits until its REST API is healthy
-    /// and the ARK/BTC chain pairs are loaded. Use after a direct DB status
-    /// update so Boltz's in-memory nursery picks up the new swap state.
-    /// </summary>
-    public static async Task RestartBoltzAndWait(CancellationToken ct = default)
-    {
-        Console.WriteLine("[DockerHelper] Restarting Boltz container...");
-        await StopContainer(Container.Boltz, ct);
-        await Task.Delay(TimeSpan.FromSeconds(2), ct);
-        await StartContainer(Container.Boltz, ct);
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        for (var i = 1; i <= 60; i++)
-        {
-            try
-            {
-                var resp = await http.GetAsync("http://localhost:9069/v2/swap/chain", ct);
-                if (resp.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"[DockerHelper] Boltz ready (attempt {i})");
-                    return;
-                }
-            }
-            catch { /* not up yet */ }
-
-            if (i < 60) await Task.Delay(TimeSpan.FromSeconds(2), ct);
-        }
-
-        throw new InvalidOperationException("Boltz did not become healthy within 120 s after restart");
-    }
+    
+    
 
     /// <summary>Docker container names used by the denigiri regtest stack.</summary>
     internal static class Container
