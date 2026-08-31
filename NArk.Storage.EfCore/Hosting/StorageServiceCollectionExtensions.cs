@@ -1,15 +1,13 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Payments;
 using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
+using NArk.Core.Services;
 using NArk.Storage.EfCore.Storage;
-using NArk.Swaps.Abstractions;
-using NArk.Swaps.Services;
 
 namespace NArk.Storage.EfCore.Hosting;
 
@@ -43,9 +41,6 @@ public static class StorageServiceCollectionExtensions
 
         services.AddSingleton<EfCoreIntentStorage>();
         services.AddSingleton<IIntentStorage>(sp => sp.GetRequiredService<EfCoreIntentStorage>());
-
-        services.AddSingleton<EfCoreSwapStorage>();
-        services.AddSingleton<ISwapStorage>(sp => sp.GetRequiredService<EfCoreSwapStorage>());
 
         services.AddSingleton<EfCoreWalletStorage>();
         services.AddSingleton<IWalletStorage>(sp => sp.GetRequiredService<EfCoreWalletStorage>());
