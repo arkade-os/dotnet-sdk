@@ -57,7 +57,6 @@ public class ArkWalletEntity
     public Dictionary<string, string>? Metadata { get; set; }
 
     public List<ArkWalletContractEntity> Contracts { get; set; } = [];
-    public List<ArkSwapEntity> Swaps { get; set; } = [];
 
     internal static void Configure(EntityTypeBuilder<ArkWalletEntity> builder, ArkStorageOptions options)
     {
@@ -92,9 +91,5 @@ public class ArkWalletEntity
         builder.HasMany(w => w.Contracts)
             .WithOne(c => c.Wallet)
             .HasForeignKey(c => c.WalletId);
-
-        builder.HasMany(w => w.Swaps)
-            .WithOne(s => s.Wallet)
-            .HasForeignKey(s => s.WalletId);
     }
 }

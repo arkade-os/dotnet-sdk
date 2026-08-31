@@ -18,7 +18,6 @@ public class ArkStorageOptions
     public string VtxosTable { get; set; } = "Vtxos";
     public string IntentsTable { get; set; } = "Intents";
     public string IntentVtxosTable { get; set; } = "IntentVtxos";
-    public string SwapsTable { get; set; } = "Swaps";
     public string PaymentsTable { get; set; } = "Payments";
     public string PaymentRequestsTable { get; set; } = "PaymentRequests";
     public string VirtualTxsTable { get; set; } = "VirtualTxs";

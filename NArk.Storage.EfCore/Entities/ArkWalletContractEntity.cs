@@ -45,8 +45,6 @@ public class ArkWalletContractEntity
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    public List<ArkSwapEntity> Swaps { get; set; } = [];
-
     internal static void Configure(EntityTypeBuilder<ArkWalletContractEntity> builder, ArkStorageOptions options)
     {
         builder.ToTable(options.WalletContractsTable, options.Schema);
