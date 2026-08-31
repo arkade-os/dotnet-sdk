@@ -154,7 +154,7 @@ public class AssetTests
         var preBatchBalance = await GetAssetBalance(walletDetails.vtxoStorage, assetId);
         Assert.That(preBatchBalance, Is.EqualTo(1000UL), "Pre-batch asset balance should be 1000");
 
-        // Set up batch round services (same sequential pattern as BatchSessionTests)
+        // Set up batch services (same sequential pattern as BatchSessionTests)
         var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var intentStorage = TestStorage.CreateIntentStorage();
 
@@ -209,7 +209,7 @@ public class AssetTests
         await intentSync.StartAsync(CancellationToken.None);
         await newSubmittedIntentTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
 
-        // Step 3: Participate in batch round
+        // Step 3: Participate in a batch
         await using var batchManager = new BatchManagementService(
             intentStorage, walletDetails.clientTransport, walletDetails.vtxoStorage,
             walletDetails.contracts, walletDetails.walletProvider, coinService,

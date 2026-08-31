@@ -71,7 +71,7 @@ public class UnilateralExitTests
         var vtxos = await setup.VtxoStorage.GetVtxos();
         var vtxo = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Unrolled);
         Assert.That(vtxo, Is.Not.Null,
-            "Expected an unspent settled VTXO after batch round; got: " +
+            "Expected an unspent settled VTXO after the batch; got: " +
             string.Join(", ", vtxos.Select(v => $"{v.TransactionId[..8]}..:{v.TransactionOutputIndex} spent={v.IsSpent()} unrolled={v.Unrolled}")));
 
         var claimAddress = await GetFreshOnchainAddress();

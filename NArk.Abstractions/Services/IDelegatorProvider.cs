@@ -4,7 +4,7 @@ namespace NArk.Abstractions.Services;
 /// Provides communication with a delegator service (e.g. Fulmine)
 /// for automatic VTXO rollover. The client creates a partially signed intent
 /// and forfeit transactions, then sends them to the delegator which registers
-/// the intent and participates in batch rounds on the owner's behalf.
+/// the intent and participates in batches on the owner's behalf.
 /// </summary>
 public interface IDelegatorProvider
 {
@@ -16,7 +16,7 @@ public interface IDelegatorProvider
 
     /// <summary>
     /// Delegates the refresh of VTXOs by sending a partially signed intent and forfeit transactions.
-    /// The delegator will register the intent and participate in batch rounds on behalf of the owner.
+    /// The delegator will register the intent and participate in batches on behalf of the owner.
     /// </summary>
     /// <param name="intentMessage">The intent message in plain-text (stringified JSON).</param>
     /// <param name="intentProof">The intent proof tx (PSBT in base64 format).</param>
