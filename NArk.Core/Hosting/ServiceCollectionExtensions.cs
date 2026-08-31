@@ -165,6 +165,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<HdWalletRecoveryService>();
         services.AddSingleton<SingleKeyVtxoRecoveryService>();
         services.AddSingleton<ISingleKeyDefaultEnsurer>(sp => sp.GetRequiredService<SingleKeyVtxoRecoveryService>());
+        // Wallet-type-agnostic facade over the recovery building blocks above.
+        services.AddSingleton<IWalletRecoveryService, WalletRecoveryService>();
         services.AddSingleton<IContractDiscoveryProvider, IndexerVtxoDiscoveryProvider>();
         // BoardingUtxoDiscoveryProvider activates only when an IBitcoinBlockchain has
         // been registered (typically by the plugin via NBXplorer/Esplora). When absent the
