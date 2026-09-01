@@ -410,6 +410,10 @@ public sealed partial class LightningIntentsClient
     /// <param name="contract">The rebuilt lockup contract.</param>
     /// <param name="serverKey">The Arkade server key the address is derived against.</param>
     /// <returns>Where a refund of this swap pays.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The lockup carries no <c>nonInteractiveRefund</c> leaf, so it never committed to a
+    /// destination for this to read back.
+    /// </exception>
     /// <remarks>
     /// Taken from the script the <c>nonInteractiveRefund</c> covenant pins its payout to. That leaf
     /// is not the one we spend through, but it is where the destination was committed at funding
@@ -417,7 +421,12 @@ public sealed partial class LightningIntentsClient
     /// same place.
     /// </remarks>
     public static ArkAddress RefundAddressOf(VHTLCv2Contract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey) =>
-        ArkAddress.FromScriptPubKey(new Script(contract.NonInteractiveRefundPkScript), serverKey);
+        ArkAddress.FromScriptPubKey(
+            new Script(contract.NonInteractiveRefund?.SenderPkScript
+                ?? throw new InvalidOperationException(
+                    "the lockup carries no nonInteractiveRefund leaf, so the refund destination it " +
+                    "committed to cannot be read back")),
+            serverKey);
 
     // Builds the contract from the quote's binding fields and the maker's own data. The one value
     // taken from the non-binding half is `receiver_pk_script`, and only because every leaf feeds the
@@ -439,6 +448,9 @@ public sealed partial class LightningIntentsClient
                 "the quote carries no receiver_pk_script, so the covenant's nonInteractiveClaim leaf " +
                 "cannot be reconstructed and the lockup address cannot be derived");
 
+        var emulatorPubKey = LightningCorridor.NormalizeToXOnly(
+            Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride)));
+
         return new VHTLCv2Contract(
             serverInfo.SignerKey,
             // Roles are positional: on this corridor the maker sends and the solver receives.
@@ -449,10 +461,9 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            LightningCorridor.NormalizeToXOnly(
-                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
-            nonInteractiveClaimPkScript: Convert.FromHexString(receiverPkScript),
-            nonInteractiveRefundPkScript: refundPkScript);
+            nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
+                Convert.FromHexString(receiverPkScript), emulatorPubKey),
+            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(refundPkScript, emulatorPubKey));
     }
 
     // The key the covenant's client-side refund leaves are built around, and the one that signs

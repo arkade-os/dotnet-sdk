@@ -147,6 +147,13 @@ Both corridors build the same eight-leaf contract,
 [`VHTLCv2Contract`](xref:NArk.Arkade.Contracts.VHTLCv2Contract) — six leaves of the reference VHTLC
 plus two whose co-signer is an emulator key tweaked by a covenant pinning where the spend may pay.
 
+Eight is this corridor's shape, not the class's only one. Both covenant leaves are optional, and the
+covenant can bind an [Arkade asset](xref:NArk.Arkade.Contracts.VHTLCv2Asset) or a
+[quoted amount](xref:NArk.Arkade.Contracts.VHTLCv2StrictClaim). Each is a different merkle root and
+therefore a different address, which is why the option set is as much a part of the agreement as the
+keys are — a solver that turns one on is quoting an address this corridor's shape will not
+reproduce.
+
 Roles are **positional**, not fixed to a party. On the send corridor you are `sender` and the solver
 is `receiver`; on the receive corridor they swap.
 

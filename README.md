@@ -1414,10 +1414,30 @@ having, because the claim window is a couple of hours.
 > started yourself. They also drive a Lightning node through `docker exec … lncli`
 > (`ARKADE_LND_CONTAINER`, default `lnd`) to mint and pay the invoices.
 
-Both corridors build the same eight-leaf `VHTLCv2Contract`. Because the contract is an agreement
-about bytes with no wire versioning, the derivation is pinned to golden vectors generated from the
-counterparty's own implementation — regenerate them whenever the solver moves to a newer
-ts-sdk pin:
+Both corridors build the same eight-leaf `VHTLCv2Contract`: the six leaves of the reference VHTLC,
+plus `nonInteractiveClaim` and `nonInteractiveRefund`, whose co-signer is an emulator key tweaked by
+a covenant pinning where the spend may pay.
+
+Both of those leaves are optional, so the ladder is six, seven or eight leaves. The covenant can
+also be denominated in an Arkade asset (`VHTLCv2Asset`) or bound to a quoted amount
+(`VHTLCv2StrictClaim`). Each of those is a different leaf set or a different covenant, hence a
+different taproot merkle root and a **different address**, so the option set is part of what the two
+sides must agree on — the corridors above agree on the eight-leaf, sat-only, unbounded shape.
+
+```csharp
+var lockup = new VHTLCv2Contract(
+    serverInfo.SignerKey, sender, receiver,
+    preimageHash, refundLocktime,
+    unilateralClaimDelay, unilateralRefundDelay, unilateralRefundWithoutReceiverDelay,
+    nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(receiverPkScript, emulatorPubKey),
+    nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(senderPkScript, emulatorPubKey));
+
+var address = lockup.GetArkAddress();
+```
+
+Because the contract is an agreement about bytes with no wire versioning, the derivation is pinned
+to golden vectors generated from the counterparty's own implementation — for every option set, not
+only the corridors'. Regenerate them whenever the solver moves to a newer ts-sdk pin:
 
 ```bash
 node NArk.Tests/ArkadeIntents/Fixtures/generate-covenant-vectors.mjs \

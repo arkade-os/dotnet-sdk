@@ -239,6 +239,9 @@ public sealed class OnchainIntentsClient(
                 "the quote carries no receiver_pk_script, so the covenant's nonInteractiveClaim leaf "
                 + "cannot be reconstructed and the lockup address cannot be derived");
 
+        var emulatorPubKey = LightningCorridor.NormalizeToXOnly(
+            Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, EmulatorPubkeyOverride)));
+
         return await Task.FromResult(new VHTLCv2Contract(
             serverInfo.SignerKey,
             sender: clientKey,
@@ -248,10 +251,9 @@ public sealed class OnchainIntentsClient(
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            LightningCorridor.NormalizeToXOnly(
-                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, EmulatorPubkeyOverride))),
-            nonInteractiveClaimPkScript: Convert.FromHexString(receiverPkScript),
-            nonInteractiveRefundPkScript: refundPkScript));
+            nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
+                Convert.FromHexString(receiverPkScript), emulatorPubKey),
+            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(refundPkScript, emulatorPubKey)));
     }
 
     /// <summary>The preimage, derived from the wallet so a lost record does not lose the claim.</summary>
