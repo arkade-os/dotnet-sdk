@@ -148,7 +148,7 @@ public static class LightningSendGates
     /// <remarks>
     /// Comparing against both, rather than a single guessed shape, is what makes this corridor
     /// tolerant of a solver either side of
-    /// <see cref="EmulatorCovenantsLegacy.PreTimelockedRefund"/> — nothing on the wire says
+    /// <see cref="NonInteractiveParametersLegacy.PreTimelockedRefund"/> — nothing on the wire says
     /// which one it has deployed. Accepting either is safe because both pin the covenant's refund to
     /// the maker's own address; what must never happen is accepting an address that matches neither.
     /// </remarks>

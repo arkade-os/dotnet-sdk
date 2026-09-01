@@ -56,12 +56,12 @@ public class LiveQuoteDerivationTests
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
                 receiverPkScript: Convert.FromHexString(ReceiverPkScript),
                 senderPkScript: Convert.FromHexString(RefundPkScript),
                 // The solver that quoted these addresses funded the pre-timelocked-refund shape.
-                EmulatorCovenantsLegacy.PreTimelockedRefund));
+                NonInteractiveParametersLegacy.PreTimelockedRefund));
 
         Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(QuotedLockupAddress));
     }
@@ -95,12 +95,12 @@ public class LiveQuoteDerivationTests
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
                 // The solver's payout pins the claim leaf; the trader's own address pins the refund leaf.
                 receiverPkScript: Convert.FromHexString(SolverClaimPkScript),
                 senderPkScript: Convert.FromHexString(TraderRefundPkScript),
-                EmulatorCovenantsLegacy.PreTimelockedRefund));
+                NonInteractiveParametersLegacy.PreTimelockedRefund));
 
         Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(DistinctQuotedAddress));
     }
@@ -134,11 +134,11 @@ public class LiveQuoteDerivationTests
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
                 receiverPkScript: Convert.FromHexString(PayoutPkScript),
                 senderPkScript: Convert.FromHexString(SolverRefundPkScript),
-                EmulatorCovenantsLegacy.PreTimelockedRefund));
+                NonInteractiveParametersLegacy.PreTimelockedRefund));
 
         Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(ReceiveQuotedLockupAddress));
     }

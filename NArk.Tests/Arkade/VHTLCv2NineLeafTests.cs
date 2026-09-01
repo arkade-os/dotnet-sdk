@@ -100,12 +100,12 @@ public class VHTLCv2NineLeafTests
 
         Assert.That(parsedNine, Is.Not.Null);
         Assert.That(parsedEight, Is.Not.Null);
-        Assert.That(parsedNine!.EmulatorCovenants, Is.Not.Null);
-        Assert.That(parsedNine.EmulatorCovenants!.Legacy, Is.Null);
-        Assert.That(parsedEight!.EmulatorCovenants, Is.Not.Null);
+        Assert.That(parsedNine!.NonInteractiveParameters, Is.Not.Null);
+        Assert.That(parsedNine.NonInteractiveParameters!.Legacy, Is.Null);
+        Assert.That(parsedEight!.NonInteractiveParameters, Is.Not.Null);
         Assert.That(
-            parsedEight.EmulatorCovenants!.Legacy,
-            Is.EqualTo(EmulatorCovenantsLegacy.PreTimelockedRefund));
+            parsedEight.NonInteractiveParameters!.Legacy,
+            Is.EqualTo(NonInteractiveParametersLegacy.PreTimelockedRefund));
         Assert.That(
             parsedNine.GetArkAddress().ToString(false), Is.EqualTo(nine.GetArkAddress().ToString(false)));
         Assert.That(
@@ -141,8 +141,8 @@ public class VHTLCv2NineLeafTests
 
         Assert.That(parsed, Is.Not.Null);
         Assert.That(
-            parsed!.EmulatorCovenants!.Legacy,
-            Is.EqualTo(EmulatorCovenantsLegacy.PreTimelockedRefund));
+            parsed!.NonInteractiveParameters!.Legacy,
+            Is.EqualTo(NonInteractiveParametersLegacy.PreTimelockedRefund));
         Assert.That(
             parsed.GetArkAddress().ToString(false), Is.EqualTo(eight.GetArkAddress().ToString(false)));
     }
@@ -171,7 +171,7 @@ public class VHTLCv2NineLeafTests
 
         var parsed = ArkContractParser.Parse(contract.ToString(), Network.RegTest) as VHTLCv2Contract;
         Assert.That(parsed, Is.Not.Null);
-        Assert.That(parsed!.EmulatorCovenants, Is.Null);
+        Assert.That(parsed!.NonInteractiveParameters, Is.Null);
         Assert.That(
             parsed.GetArkAddress().ToString(false),
             Is.EqualTo(contract.GetArkAddress().ToString(false)));
@@ -215,11 +215,11 @@ public class VHTLCv2NineLeafTests
             // The fixture predates the all-or-nothing group and so stores the suite per leaf;
             // both leaves carry the SAME emulator key by design, which is exactly what the
             // group's single key encodes.
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 XOnly(o.NonInteractiveRefund.EmulatorPubkey),
                 receiverPkScript: Convert.FromHexString(o.NonInteractiveClaim.ReceiverPkScript),
                 senderPkScript: Convert.FromHexString(o.NonInteractiveRefund.SenderPkScript),
-                nineLeaf ? null : EmulatorCovenantsLegacy.PreTimelockedRefund));
+                nineLeaf ? null : NonInteractiveParametersLegacy.PreTimelockedRefund));
     }
 
     private static Sequence ToSequence(FixtureDelay delay) => delay.Type switch

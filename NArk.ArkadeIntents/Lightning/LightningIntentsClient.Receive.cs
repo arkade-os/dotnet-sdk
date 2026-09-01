@@ -275,7 +275,7 @@ public sealed partial class LightningIntentsClient
         // swap did not name.
         var destination = ArkAddress.FromScriptPubKey(
             new Script(
-                contract.EmulatorCovenants?.ReceiverPkScript
+                contract.NonInteractiveParameters?.ReceiverPkScript
                 ?? throw new InvalidOperationException(
                     $"Swap '{swapId}'s lockup carries no emulator covenant suite, so it commits to " +
                     "no claim destination — refusing to claim to an address the swap did not name.")),
@@ -450,7 +450,7 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             // No legacy selector: which of the two suite shapes the solver funded is exactly the
             // question the quoted-address comparison answers.
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 LightningCorridor.NormalizeToXOnly(
                     Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
                 receiverPkScript: payoutPkScript,

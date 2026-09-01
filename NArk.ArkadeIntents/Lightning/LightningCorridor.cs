@@ -137,7 +137,7 @@ public static class LightningCorridor
 
     /// <summary>
     /// Build both VHTLC lockup shapes — the full covenant suite and its
-    /// <see cref="EmulatorCovenantsLegacy.PreTimelockedRefund"/> shape — from one shared
+    /// <see cref="NonInteractiveParametersLegacy.PreTimelockedRefund"/> shape — from one shared
     /// parameter set.
     /// </summary>
     /// <returns>
@@ -146,7 +146,7 @@ public static class LightningCorridor
     /// </returns>
     /// <remarks>
     /// Nothing on the wire says which shape a given solver has deployed, so a client cannot know in
-    /// advance which one to build — see the group's own remarks on <see cref="EmulatorCovenants"/>.
+    /// advance which one to build — see the group's own remarks on <see cref="NonInteractiveParameters"/>.
     /// All three corridors derive both shapes here and accept whichever matches the solver's quoted
     /// address, which stays safe because both shapes pin the covenant's refund to the SAME
     /// destination as each other — whatever the group's sender pkScript names, which is the
@@ -166,18 +166,18 @@ public static class LightningCorridor
         Sequence unilateralClaimDelay,
         Sequence unilateralRefundDelay,
         Sequence unilateralRefundWithoutReceiverDelay,
-        EmulatorCovenants emulatorCovenants)
+        NonInteractiveParameters nonInteractiveParameters)
     {
-        VHTLCv2Contract Build(EmulatorCovenantsLegacy? legacy) => new(
+        VHTLCv2Contract Build(NonInteractiveParametersLegacy? legacy) => new(
             server, sender, receiver, hash, refundLocktime,
             unilateralClaimDelay, unilateralRefundDelay, unilateralRefundWithoutReceiverDelay,
-            new EmulatorCovenants(
-                emulatorCovenants.EmulatorPubKey,
-                emulatorCovenants.ReceiverPkScript,
-                emulatorCovenants.SenderPkScript,
+            new NonInteractiveParameters(
+                nonInteractiveParameters.EmulatorPubKey,
+                nonInteractiveParameters.ReceiverPkScript,
+                nonInteractiveParameters.SenderPkScript,
                 legacy));
 
-        return (Build(EmulatorCovenantsLegacy.PreTimelockedRefund), Build(null));
+        return (Build(NonInteractiveParametersLegacy.PreTimelockedRefund), Build(null));
     }
 
     /// <summary>

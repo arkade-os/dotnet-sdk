@@ -191,7 +191,7 @@ public class LightningSendGatesTests
             new Sequence(TimeSpan.FromSeconds(512)),
             new Sequence(TimeSpan.FromSeconds(512)),
             new Sequence(TimeSpan.FromSeconds(1024)),
-            new EmulatorCovenants(RandomXOnly(), RandomP2trPkScript(), RandomP2trPkScript()));
+            new NonInteractiveParameters(RandomXOnly(), RandomP2trPkScript(), RandomP2trPkScript()));
 
     private static OutputDescriptor RandomDescriptor() =>
         KeyExtensions.ParseOutputDescriptor(new Key().PubKey.ToHex(), Network.RegTest);

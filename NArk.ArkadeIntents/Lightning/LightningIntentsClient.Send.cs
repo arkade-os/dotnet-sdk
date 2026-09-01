@@ -135,7 +135,7 @@ public sealed partial class LightningIntentsClient
             quote, decoded, refundPkScript, clientRefund, serverInfo, cancellationToken);
         var isMainnet = serverInfo.Network == Network.Main;
 
-        // Accepts whichever of the two shapes matches — see EmulatorCovenants' remarks on the
+        // Accepts whichever of the two shapes matches — see NonInteractiveParameters' remarks on the
         // legacy selector. Nothing on the wire says which one this solver has
         // deployed, and refusing to fund is still the outcome when the quote matches neither.
         var contract = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet);
@@ -423,7 +423,7 @@ public sealed partial class LightningIntentsClient
     public static ArkAddress RefundAddressOf(VHTLCv2Contract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey) =>
         ArkAddress.FromScriptPubKey(
             new Script(
-                contract.EmulatorCovenants?.SenderPkScript
+                contract.NonInteractiveParameters?.SenderPkScript
                 ?? throw new InvalidOperationException(
                     "the contract carries no emulator covenant suite, so it commits to no refund " +
                     "destination — this is not a corridor lockup")),
@@ -461,7 +461,7 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             // No legacy selector: which of the two suite shapes the solver funded is exactly the
             // question the quoted-address comparison answers.
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 LightningCorridor.NormalizeToXOnly(
                     Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
                 receiverPkScript: Convert.FromHexString(receiverPkScript),

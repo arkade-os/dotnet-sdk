@@ -234,7 +234,7 @@ public static class LightningReceiveGates
     /// merely a funding gate the way it is on the send leg — a wrong guess would leave the client
     /// watching an address the solver never pays, and the swap would simply never be seen as funded.
     /// Comparing against both shapes, rather than a single guessed one, is what makes this tolerant of
-    /// either side of <see cref="EmulatorCovenantsLegacy.PreTimelockedRefund"/> — nothing on
+    /// either side of <see cref="NonInteractiveParametersLegacy.PreTimelockedRefund"/> — nothing on
     /// the wire says which one a given solver has deployed.
     /// </para>
     /// <para>

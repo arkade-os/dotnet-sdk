@@ -43,11 +43,11 @@ public class LightningSendRefundTests
             new Sequence(TimeSpan.FromSeconds(4096)),
             new Sequence(TimeSpan.FromSeconds(4608)),
             new Sequence(TimeSpan.FromSeconds(5120)),
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 NBitcoin.Secp256k1.ECXOnlyPubKey.Create(Key(9)),
                 receiverPkScript: P2tr(Key(2)),
                 senderPkScript: refundPkScript,
-                EmulatorCovenantsLegacy.PreTimelockedRefund));
+                NonInteractiveParametersLegacy.PreTimelockedRefund));
 
         var recovered = LightningIntentsClient.RefundAddressOf(
             contract, NBitcoin.Secp256k1.ECXOnlyPubKey.Create(serverKey));
