@@ -55,6 +55,7 @@ namespace NArk.Tests.End2End.Arkade;
 /// </remarks>
 [TestFixture]
 [Category("LightningCorridors")]
+[Category("ArkadeIntents")]
 public class ArkadeLightningTests
 {
     private const long SwapSats = 50_000;

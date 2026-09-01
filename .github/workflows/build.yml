@@ -53,6 +53,14 @@ jobs:
     needs: build
     uses: ./.github/workflows/e2e-arkade.yml
 
+# Not enabled yet: these need a live solver, and the Lightning half additionally needs a Lightning
+# node the regtest profile does not start. The workflow is written and the tests carry the
+# `ArkadeIntents` category (which e2e-core deliberately excludes), so switching it on is
+# uncommenting this block — and adding `arkade-intents-e2e` to `publish.needs` below.
+#  arkade-intents-e2e:
+#    needs: build
+#    uses: ./.github/workflows/e2e-arkade-intents.yml
+
   publish:
     name: Publish NuGet Packages
     runs-on: ubuntu-latest

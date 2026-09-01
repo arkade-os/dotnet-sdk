@@ -23,6 +23,7 @@ namespace NArk.Tests.End2End.Arkade;
 /// The fulfill path is the solver's job (a separate service) and needs a live solver to exercise.
 /// </summary>
 [TestFixture]
+[Category("ArkadeIntents")]
 public class ArkadeSwapTests
 {
     private static readonly Uri EmulatorEndpoint = new("http://localhost:7073");
