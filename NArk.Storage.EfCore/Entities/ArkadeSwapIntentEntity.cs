@@ -75,5 +75,16 @@ public class ArkadeSwapIntentEntity
         builder.HasIndex(x => new { x.WalletId, x.Status });
         // A solver dedupes a Lightning negotiation on the payment hash, so we look swaps up by it.
         builder.HasIndex(x => x.PaymentHash);
+
+        // Stored as the member NAME, not the ordinal EF would default to. An ordinal is positional:
+        // adding a corridor or a status anywhere but the end silently reinterprets every row already
+        // written, turning a `BtcToLightning` swap into a `LightningToBtc` one with no migration, no
+        // error, and nothing in the row to say it happened. The name survives any reordering — and a
+        // rename, which does break it, is a visible source change rather than an invisible one.
+        //
+        // It also makes the column readable: a support question about a stuck swap is answered by
+        // looking at the row, not by counting enum members in a matching build of the SDK.
+        builder.Property(x => x.Type).HasConversion<string>().HasMaxLength(32);
+        builder.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
     }
 }

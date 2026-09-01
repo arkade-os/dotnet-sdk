@@ -47,6 +47,30 @@ public class EfCoreArkadeIntentStorageTests
     }
 
     [Test]
+    public async Task TypeAndStatus_ArePersistedAsNames_NotOrdinals()
+    {
+        // An ordinal is positional. Adding a corridor or a status anywhere but the end of its enum
+        // silently reinterprets every row already written — a `BtcToLightning` swap becomes a
+        // `LightningToBtc` one with no migration, no error, and nothing in the row to say so. This
+        // reads the raw column rather than round-tripping through EF, because a round trip agrees
+        // with itself whichever storage type is in use and would pass on the very change it exists
+        // to catch.
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx1", "script1", status: ArkadeSwapIntentStatus.Claimable));
+
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT Type, Status FROM ArkadeSwapIntents WHERE Id = 'tx1'";
+        await using var reader = await cmd.ExecuteReaderAsync();
+
+        Assert.That(await reader.ReadAsync(), Is.True, "the intent was not written");
+        Assert.Multiple(() =>
+        {
+            Assert.That(reader.GetString(0), Is.EqualTo(nameof(ArkadeSwapIntentType.BtcToAsset)));
+            Assert.That(reader.GetString(1), Is.EqualTo(nameof(ArkadeSwapIntentStatus.Claimable)));
+        });
+    }
+
+    [Test]
     public async Task GetActiveScripts_ReturnsOnlyPendingScripts()
     {
         await _storage.SaveArkadeSwapIntent(Intent("tx1", "pending-script"));
