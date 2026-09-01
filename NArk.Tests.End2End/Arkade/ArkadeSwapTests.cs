@@ -41,7 +41,7 @@ public class ArkadeSwapTests
 
         Assert.That(intent.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
         Assert.That(intent.SwapPkScript, Is.Not.Empty);
-        Assert.That(intent.OfferHex, Is.Not.Empty);
+        Assert.That(intent.AssetMetadata().OfferHex, Is.Not.Empty);
 
         // The persisted intent is the storage's active-scripts entry.
         var stored = (await ctx.IntentStorage.GetArkadeSwapIntents()).Single();
@@ -128,7 +128,7 @@ public class ArkadeSwapTests
 
         // The covenant forces the fill to pay the asset to the maker's payout script.
         var makerScript = Convert.ToHexString(
-            OfferCodec.Decode(Convert.FromHexString(intent.OfferHex)).MakerPkScript).ToLowerInvariant();
+            OfferCodec.Decode(Convert.FromHexString(intent.AssetMetadata().OfferHex)).MakerPkScript).ToLowerInvariant();
 
         var filled = await Poll(() => HasAssetVtxo(ctx, makerScript, assetIdHex), SolverFillTimeout);
         Assert.That(filled, Is.True, "solver should fulfill the offer — asset VTXO at the maker's address");
@@ -271,7 +271,7 @@ public class ArkadeSwapTests
             var leg1 = await ctx.Manager.CreateSwap(new CreateSwapRequest(
                 ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, deposit1, want1, asset));
             var maker1 = Convert.ToHexString(
-                OfferCodec.Decode(Convert.FromHexString(leg1.OfferHex)).MakerPkScript).ToLowerInvariant();
+                OfferCodec.Decode(Convert.FromHexString(leg1.AssetMetadata().OfferHex)).MakerPkScript).ToLowerInvariant();
             if (!await Poll(() => HasAssetVtxo(ctx, maker1, assetIdHex), SolverFillTimeout))
                 Assert.Ignore("first leg (BTC→asset) did not fill — cannot exercise the reverse");
 

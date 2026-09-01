@@ -162,18 +162,17 @@ public sealed class OnchainIntentsClient(
             CreatedAt = _time.GetUtcNow(),
             SwapPkScript = lockupArkAddress.ScriptPubKey.ToHex(),
             SwapAddress = lockupAddress,
-            OfferHex = "",
             FromAssetId = "btc",
             ToAssetId = "onchain:btc",
             PaymentHash = paymentHash,
-            Preimage = Convert.ToHexString(preimage).ToLowerInvariant(),
             RefundLocktime = quote.RefundLocktime,
-            // The L1 half the claim pass needs. Only these two — the address is recomputed from
-            // them, so it cannot drift from what derived it.
-            HtlcPubkey = quote.Profile!.HtlcPubkey,
-            HtlcLocktime = quote.Profile.HtlcLocktime,
-            OnchainPayoutAddress = payoutAddress.ToString(),
-        };
+            // The L1 half the claim pass needs. Only the key and the locktime — the HTLC address is
+            // recomputed from them, so it cannot drift from what derived it.
+        }.WithOnchainMetadata(new OnchainSwapMetadata(
+            Convert.ToHexString(preimage).ToLowerInvariant(),
+            quote.Profile!.HtlcPubkey,
+            quote.Profile.HtlcLocktime,
+            payoutAddress.ToString()));
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         var txid = await spendingService.Spend(
@@ -325,10 +324,11 @@ public sealed class OnchainIntentsClient(
             throw new InvalidOperationException($"Swap '{swapId}' is not an off-board.");
         }
 
-        if (intent.Preimage is not { Length: > 0 } preimageHex
-            || intent.HtlcPubkey is not { Length: > 0 } htlcPubkey
-            || intent.HtlcLocktime is not { } htlcLocktime
-            || intent.OnchainPayoutAddress is not { Length: > 0 } payoutAddress)
+        var onchain = intent.OnchainMetadata();
+        if (onchain.Preimage is not { Length: > 0 } preimageHex
+            || onchain.HtlcPubkey is not { Length: > 0 } htlcPubkey
+            || onchain.HtlcLocktime is not { } htlcLocktime
+            || onchain.PayoutAddress is not { Length: > 0 } payoutAddress)
         {
             return new OnchainClaimOutcome(false, "the swap's L1 leg is not recorded on this row");
         }

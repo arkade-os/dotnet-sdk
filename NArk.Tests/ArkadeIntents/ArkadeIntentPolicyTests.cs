@@ -106,6 +106,5 @@ public class ArkadeIntentPolicyTests
         CreatedAt = DateTimeOffset.UtcNow,
         SwapPkScript = "5120" + new string('a', 64),
         SwapAddress = "tark1example",
-        OfferHex = "",
     };
 }

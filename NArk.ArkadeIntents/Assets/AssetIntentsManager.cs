@@ -122,11 +122,9 @@ public sealed class AssetIntentsManager
             CreatedAt = DateTimeOffset.UtcNow,
             SwapPkScript = swapAddress.ScriptPubKey.ToHex(),
             SwapAddress = created.Address,
-            OfferHex = created.OfferHex,
-            MakerDescriptor = makerSigner.ToString(),
             FromAssetId = isBtcToAsset ? "btc" : request.Asset.ToString(),
             ToAssetId = isBtcToAsset ? request.Asset.ToString() : "btc",
-        };
+        }.WithAssetMetadata(new AssetSwapMetadata(created.OfferHex, makerSigner.ToString()));
         await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
         return intent;
     }
@@ -144,7 +142,8 @@ public sealed class AssetIntentsManager
                      ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
         if (intent.Status != ArkadeSwapIntentStatus.Pending)
             throw new InvalidOperationException($"Swap '{swapId}' is not pending (status {intent.Status}).");
-        if (intent.MakerDescriptor is not { } makerDescriptorStr)
+        var assetMetadata = intent.AssetMetadata();
+        if (assetMetadata.MakerDescriptor is not { } makerDescriptorStr)
             throw new InvalidOperationException($"Swap '{swapId}' has no maker descriptor to sign the cancel path.");
 
         // Move out of Pending BEFORE spending so the monitor can't read the cancel-spend as a fill.
@@ -154,7 +153,7 @@ public sealed class AssetIntentsManager
         try
         {
             var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
-            var offer = OfferCodec.Decode(Convert.FromHexString(intent.OfferHex));
+            var offer = OfferCodec.Decode(Convert.FromHexString(assetMetadata.OfferHex));
             var maker = OutputDescriptor.Parse(makerDescriptorStr, serverInfo.Network);
             var contract = OfferBuilder.BuildContract(offer, serverInfo.SignerKey, serverInfo.Network, maker);
 

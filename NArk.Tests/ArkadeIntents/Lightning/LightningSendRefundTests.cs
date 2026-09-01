@@ -142,7 +142,6 @@ public class LightningSendRefundTests
         CreatedAt = DateTimeOffset.UtcNow,
         SwapPkScript = "5120" + new string('a', 64),
         SwapAddress = "ark1qlockup",
-        OfferHex = "",
         RefundLocktime = Locktime,
     };
 

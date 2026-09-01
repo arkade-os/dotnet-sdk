@@ -49,6 +49,18 @@ not `INTEGER`. An ordinal is positional: adding a corridor or a status anywhere 
 enum reinterprets every row already written, with no migration and no error. Consumers who generated
 a migration against an earlier build of this SDK need a new one that converts those two columns.
 
+The same entity keeps everything corridor-specific in one `Metadata` JSON column rather than in a
+column each — the offer TLV of an asset swap, the BOLT11 of a Lightning one, the L1 HTLC's terms on
+an off-board. A column each made the table a union of every corridor that had ever existed, and a
+schema migration a precondition for adding one. Read and write it through the typed views in
+`ArkadeSwapIntentMetadataExtensions` (`AssetMetadata()`, `LightningMetadata()`, `OnchainMetadata()`
+and their `With…` counterparts) rather than by key: each states its corridor's shape once and refuses
+a read against the wrong `Type` instead of answering it with nulls.
+
+What stays a column is what is *not* corridor-specific, plus what is queried: `FromAssetId` /
+`ToAssetId` (every corridor sets them), `PaymentHash` (indexed — a solver dedupes a negotiation on
+it) and `RefundLocktime` (the monitor needs it to tell a fill from a refund).
+
 ## Payment Tracking (Opt-In)
 
 Payment tracking (`ArkPayment` / `ArkPaymentRequest`) is **opt-in** — consumers who don't need it carry no extra schema or services. To enable it, add the entity configuration *and* the DI registration:

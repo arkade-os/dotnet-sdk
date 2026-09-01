@@ -112,17 +112,13 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         CreatedAt = e.CreatedAt,
         SwapPkScript = e.SwapPkScript,
         SwapAddress = e.SwapAddress,
-        OfferHex = e.OfferHex,
-        MakerDescriptor = e.MakerDescriptor,
         FromAssetId = e.FromAssetId,
         ToAssetId = e.ToAssetId,
-        Invoice = e.Invoice,
         PaymentHash = e.PaymentHash,
-        HtlcPubkey = e.HtlcPubkey,
-        HtlcLocktime = e.HtlcLocktime,
-        OnchainPayoutAddress = e.OnchainPayoutAddress,
-        Preimage = e.Preimage,
         RefundLocktime = e.RefundLocktime,
+        // Copied, not shared: the entity's dictionary belongs to the change tracker, and handing it
+        // to a caller who then mutates it would edit a tracked row outside any save.
+        Metadata = new Dictionary<string, string>(e.Metadata),
         SpentTxid = e.SpentTxid,
     };
 
@@ -143,17 +139,11 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         e.CreatedAt = i.CreatedAt;
         e.SwapPkScript = i.SwapPkScript;
         e.SwapAddress = i.SwapAddress;
-        e.OfferHex = i.OfferHex;
-        e.MakerDescriptor = i.MakerDescriptor;
         e.FromAssetId = i.FromAssetId;
         e.ToAssetId = i.ToAssetId;
-        e.Invoice = i.Invoice;
-        e.Preimage = i.Preimage;
         e.PaymentHash = i.PaymentHash;
-        e.HtlcPubkey = i.HtlcPubkey;
-        e.HtlcLocktime = i.HtlcLocktime;
-        e.OnchainPayoutAddress = i.OnchainPayoutAddress;
         e.RefundLocktime = i.RefundLocktime;
+        e.Metadata = new Dictionary<string, string>(i.Metadata);
         e.SpentTxid = i.SpentTxid;
     }
 }
