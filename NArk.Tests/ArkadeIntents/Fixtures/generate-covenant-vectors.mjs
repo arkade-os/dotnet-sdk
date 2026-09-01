@@ -18,7 +18,7 @@
 
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const modulesPath = process.argv[2]
@@ -33,8 +33,22 @@ const { VHTLC } = await import(pathToFileURL(sdkEntry).href)
 
 // `@arkade-os/sdk` does not export ./package.json, so read it off the resolved entry's package
 // root instead. Recording the version is what makes a regenerated diff self-explaining.
-const sdkRoot = sdkEntry.slice(0, sdkEntry.indexOf('/@arkade-os/sdk/') + '/@arkade-os/sdk/'.length)
-const sdkVersion = JSON.parse(readFileSync(resolve(sdkRoot, 'package.json'), 'utf8')).version
+//
+// Walk up from the entry rather than slicing on `/@arkade-os/sdk/`: node resolves through symlinks
+// by default, so a workspace checkout linked into node_modules reports its real path
+// (`.../ts-sdk/packages/ts-sdk/dist/index.js`), which carries no such segment. Regenerating against
+// a local ts-sdk is exactly what this script is for whenever the change under test has not been
+// published yet.
+const sdkVersion = (() => {
+  for (let dir = dirname(sdkEntry); ; dir = dirname(dir)) {
+    try {
+      const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'))
+      if (pkg.name === '@arkade-os/sdk') return pkg.version
+    } catch { /* keep walking */ }
+    const parent = dirname(dir)
+    if (parent === dir) throw new Error(`no @arkade-os/sdk package.json above ${sdkEntry}`)
+  }
+})()
 
 const hex = (s) => Uint8Array.from(Buffer.from(s, 'hex'))
 const toHex = (b) => Buffer.from(b).toString('hex')
@@ -74,6 +88,19 @@ const UNILATERAL_REFUND_DELAY = UNILATERAL_CLAIM_DELAY
 const UNILATERAL_REFUND_WITHOUT_RECEIVER_DELAY = UNILATERAL_CLAIM_DELAY + SOLO_REFUND_HEADROOM
 
 const seconds = (value) => ({ type: 'seconds', value: BigInt(value) })
+
+// Inputs for the optional covenant shapes below. Fixed, like everything else here: these vectors
+// are a cross-implementation agreement check, not a fuzz corpus.
+//
+// The txid is in CANONICAL order — the leading 32 bytes of a serialized Asset ID. `VHTLC.ScriptV2`
+// reverses it internally, because the introspection opcodes match wire order, and a port that
+// reverses at the call site instead produces a covenant that always fails with nothing in the
+// error naming why. That asymmetry is the reason an asset vector exists at all.
+const ASSET_TXID = hex('4d1f8c2b7e05a9634f8d21c0ba97e3d5486f10729cab3e5d0817f4a26b93c0de')
+const ASSET_GROUP_INDEX = 3
+// Deliberately past OP_16, so the vector pins the script-number push and not just an OP_N byte.
+const STRICT_AMOUNT = 25000n
+const STRICT_ASSET_AMOUNT = 1234567n
 
 // The corridor is entirely a question of which participant occupies which slot; the script
 // construction is identical. On the send leg the trader funds and the solver claims with the
@@ -137,6 +164,90 @@ const derive = ({ sender, receiver, nonInteractiveClaimPkScript, nonInteractiveR
   }
 }
 
+// The optional halves of the ladder, each on the send corridor's roles so a variant differs from
+// `arkade:BTC->lightning:BTC` above in exactly the option it names. `VHTLC.Options` makes
+// `nonInteractiveClaim` and `nonInteractiveRefund` independently optional, so the leaf count is 6,
+// 7 or 8 — and each count is a different merkle root and therefore a different address. A port that
+// hard-codes eight leaves derives the right address for the corridors and the wrong one for
+// everything else, which is what these vectors exist to catch.
+//
+// `withoutReceiver`, which appends a ninth, is deliberately not covered: the .NET contract does not
+// model it yet, and it lands in its own change.
+const nic = (extra = {}) => ({
+  receiverPkScript: SOLVER_PK_SCRIPT,
+  emulatorPubkey: EMULATOR,
+  ...extra,
+})
+const nir = (extra = {}) => ({
+  senderPkScript: TRADER_PK_SCRIPT,
+  emulatorPubkey: EMULATOR,
+  ...extra,
+})
+const asset = { txid: ASSET_TXID, groupIndex: ASSET_GROUP_INDEX }
+
+const variants = {
+  // Neither covenant leaf: the plain six-leaf VHTLC, ScriptV2's preimage condition aside.
+  'no-covenant': {},
+  'claim-only': { nonInteractiveClaim: nic() },
+  'refund-only': { nonInteractiveRefund: nir() },
+  // Asset-denominated: only the covenant leaves change, and the sat clause is retained rather than
+  // replaced.
+  asset: {
+    nonInteractiveClaim: nic(),
+    nonInteractiveRefund: nir(),
+    asset,
+  },
+  // The opt-in quoted bound, sats only. Refund leaves never take one: a refund returns what
+  // arrived, so a quote has no place in it.
+  'strict-sats': { nonInteractiveClaim: nic({ strict: { amount: STRICT_AMOUNT } }) },
+  // ...and both bounds, which is the only shape an asset contract may ask for: strict on the sat
+  // CARRIER alone would say nothing about the asset that is the actual amount.
+  'strict-asset': {
+    nonInteractiveClaim: nic({
+      strict: { amount: STRICT_AMOUNT, assetAmount: STRICT_ASSET_AMOUNT },
+    }),
+    nonInteractiveRefund: nir(),
+    asset,
+  },
+}
+
+const deriveVariant = (options) => {
+  const script = new VHTLC.ScriptV2({
+    sender: TRADER,
+    receiver: SOLVER,
+    server: SERVER,
+    preimageHash: PREIMAGE_HASH,
+    refundLocktime: REFUND_LOCKTIME,
+    unilateralClaimDelay: seconds(UNILATERAL_CLAIM_DELAY),
+    unilateralRefundDelay: seconds(UNILATERAL_REFUND_DELAY),
+    unilateralRefundWithoutReceiverDelay: seconds(UNILATERAL_REFUND_WITHOUT_RECEIVER_DELAY),
+    ...options,
+  })
+
+  // Only the leaves this variant actually carries, in ladder order. An absent key is the vector
+  // saying the leaf is not there, which is as much of the agreement as its bytes would be.
+  const leaves = {
+    claim: script.claimScript,
+    refund: script.refundScript,
+    refundWithoutReceiver: script.refundWithoutReceiverScript,
+    unilateralClaim: script.unilateralClaimScript,
+    unilateralRefund: script.unilateralRefundScript,
+    unilateralRefundWithoutReceiver: script.unilateralRefundWithoutReceiverScript,
+  }
+  if (script.nonInteractiveClaimScript) leaves.nonInteractiveClaim = script.nonInteractiveClaimScript
+  if (script.nonInteractiveRefundScript) leaves.nonInteractiveRefund = script.nonInteractiveRefundScript
+
+  const arkadeScripts = {}
+  if (script.nonInteractiveClaimArkadeScript) {
+    arkadeScripts.nonInteractiveClaim = toHex(script.nonInteractiveClaimArkadeScript)
+  }
+  if (script.nonInteractiveRefundArkadeScript) {
+    arkadeScripts.nonInteractiveRefund = toHex(script.nonInteractiveRefundArkadeScript)
+  }
+
+  return { leafCount: Object.keys(leaves).length, leaves, arkadeScripts, pkScript: toHex(script.pkScript) }
+}
+
 console.log(
   JSON.stringify(
     {
@@ -163,6 +274,21 @@ console.log(
       ),
       corridors: Object.fromEntries(
         Object.entries(corridors).map(([pair, roles]) => [pair, derive(roles)]),
+      ),
+      // Every variant uses the send corridor's roles and these destinations, so a variant's only
+      // difference from `arkade:BTC->lightning:BTC` is the option it is named for.
+      variantInputs: {
+        sender: toHex(TRADER),
+        receiver: toHex(SOLVER),
+        nonInteractiveClaimPkScript: toHex(SOLVER_PK_SCRIPT),
+        nonInteractiveRefundPkScript: toHex(TRADER_PK_SCRIPT),
+        assetTxid: toHex(ASSET_TXID),
+        assetGroupIndex: ASSET_GROUP_INDEX,
+        strictAmount: Number(STRICT_AMOUNT),
+        strictAssetAmount: Number(STRICT_ASSET_AMOUNT),
+      },
+      variants: Object.fromEntries(
+        Object.entries(variants).map(([name, options]) => [name, deriveVariant(options)]),
       ),
     },
     null,

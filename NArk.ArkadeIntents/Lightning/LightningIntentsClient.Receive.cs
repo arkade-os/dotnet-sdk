@@ -271,8 +271,12 @@ public sealed partial class LightningIntentsClient
         // Where the claim pays was fixed at negotiation time, in the leaf that pins our payout.
         // Reading it back rather than deriving afresh keeps a claim from ever landing somewhere the
         // swap did not name.
+        var claimPkScript = contract.NonInteractiveClaim?.ReceiverPkScript
+            ?? throw new InvalidOperationException(
+                "the lockup carries no nonInteractiveClaim leaf, so the payout this swap committed " +
+                "to cannot be read back");
         var destination = ArkAddress.FromScriptPubKey(
-            new Script(contract.NonInteractiveClaimPkScript), serverInfo.SignerKey.ToXOnlyPubKey());
+            new Script(claimPkScript), serverInfo.SignerKey.ToXOnlyPubKey());
         var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)total), destination);
 
         var txid = await _spendingService.Spend(intent.WalletId, coins, [output], cancellationToken);
@@ -432,6 +436,9 @@ public sealed partial class LightningIntentsClient
                 "the quote carries no solver_refund_pk_script, so the covenant's nonInteractiveRefund " +
                 "leaf cannot be reconstructed and the lockup address cannot be derived");
 
+        var emulatorPubKey = LightningCorridor.NormalizeToXOnly(
+            Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride)));
+
         return new VHTLCv2Contract(
             serverInfo.SignerKey,
             sender: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
@@ -441,10 +448,9 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            LightningCorridor.NormalizeToXOnly(
-                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
-            nonInteractiveClaimPkScript: payoutPkScript,
-            nonInteractiveRefundPkScript: Convert.FromHexString(solverRefundPkScript));
+            nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(payoutPkScript, emulatorPubKey),
+            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(
+                Convert.FromHexString(solverRefundPkScript), emulatorPubKey));
     }
 
 }

@@ -28,6 +28,10 @@ public class LiveQuoteDerivationTests
     // arkade-regtest stack.
     private const string ArkdSigner = "02e35799157be4b37565bb5afe4d04e6a0fa0a4b6a4f4e48b0d904685d253cdbdb";
     private const string EmulatorSigner = "02999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9";
+
+    /// <summary>The emulator's x-only key — every leaf commits to it without the parity byte.</summary>
+    private static ECXOnlyPubKey Emulator() =>
+        ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]);
     private const string SolverPubkey = "df5e3a677c20ff3af3c1701e5ed75aa7cc1e3ff8069ea4a8df5012494d7af6eb";
     private const string ClientRefundPubkey = "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394";
     private const string PaymentHash = "ea7ad684b1ae3975cbbdab9512cd042ccbb5218636d6998262c41ed31693ecd9";
@@ -56,9 +60,10 @@ public class LiveQuoteDerivationTests
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
-            nonInteractiveClaimPkScript: Convert.FromHexString(ReceiverPkScript),
-            nonInteractiveRefundPkScript: Convert.FromHexString(RefundPkScript));
+            nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
+                Convert.FromHexString(ReceiverPkScript), Emulator()),
+            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(
+                Convert.FromHexString(RefundPkScript), Emulator()));
 
         Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(QuotedLockupAddress));
     }
@@ -92,10 +97,11 @@ public class LiveQuoteDerivationTests
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
             // The solver's payout pins the claim leaf; the trader's own address pins the refund leaf.
-            nonInteractiveClaimPkScript: Convert.FromHexString(SolverClaimPkScript),
-            nonInteractiveRefundPkScript: Convert.FromHexString(TraderRefundPkScript));
+            nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
+                Convert.FromHexString(SolverClaimPkScript), Emulator()),
+            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(
+                Convert.FromHexString(TraderRefundPkScript), Emulator()));
 
         Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(DistinctQuotedAddress));
     }
@@ -129,9 +135,10 @@ public class LiveQuoteDerivationTests
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            ECXOnlyPubKey.Create(Convert.FromHexString(EmulatorSigner)[1..]),
-            nonInteractiveClaimPkScript: Convert.FromHexString(PayoutPkScript),
-            nonInteractiveRefundPkScript: Convert.FromHexString(SolverRefundPkScript));
+            nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
+                Convert.FromHexString(PayoutPkScript), Emulator()),
+            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(
+                Convert.FromHexString(SolverRefundPkScript), Emulator()));
 
         Assert.That(contract.GetArkAddress().ToString(false), Is.EqualTo(ReceiveQuotedLockupAddress));
     }

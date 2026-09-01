@@ -72,6 +72,7 @@ public class ArkContractParserRegistrationTests
     {
         var preimageHash = new uint160(Enumerable.Repeat((byte)0x11, 20).ToArray(), false);
         var pkScript = new Key().PubKey.GetScriptPubKey(ScriptPubKeyType.TaprootBIP86).ToBytes();
+        var emulator = ECXOnlyPubKey.Create(new Key().PubKey.GetTaprootFullPubKey().OutputKey.ToBytes());
 
         return new VHTLCv2Contract(
             Descriptor(), Descriptor(), Descriptor(),
@@ -80,9 +81,8 @@ public class ArkContractParserRegistrationTests
             new Sequence(TimeSpan.FromSeconds(1024)),
             new Sequence(TimeSpan.FromSeconds(1536)),
             new Sequence(TimeSpan.FromSeconds(2048)),
-            ECXOnlyPubKey.Create(new Key().PubKey.GetTaprootFullPubKey().OutputKey.ToBytes()),
-            pkScript,
-            pkScript);
+            new VHTLCv2NonInteractiveClaim(pkScript, emulator),
+            new VHTLCv2NonInteractiveRefund(pkScript, emulator));
     }
 
     private static OutputDescriptor Descriptor() =>
