@@ -174,15 +174,14 @@ public sealed partial class LightningIntentsClient
             CreatedAt = _time.GetUtcNow(),
             SwapPkScript = lockupArkAddress.ScriptPubKey.ToHex(),
             SwapAddress = lockupAddress,
-            // No offer TLV: this direction is negotiated by RFQ, and the covenant is rebuilt from
-            // the imported contract rather than from a wire offer.
-            OfferHex = "",
             FromAssetId = "btc",
             ToAssetId = "lightning:btc",
-            Invoice = invoice,
             PaymentHash = decoded.PaymentHash.ToString(),
             RefundLocktime = quote.RefundLocktime,
-        };
+            // No offer TLV on this corridor: it is negotiated by RFQ, and the covenant is rebuilt
+            // from the imported contract rather than from a wire offer. No preimage either — on a
+            // send the solver holds it, and its reveal in their claim is what settles our side.
+        }.WithLightningMetadata(new LightningSwapMetadata(invoice, null));
         await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         var txid = await _spendingService.Spend(

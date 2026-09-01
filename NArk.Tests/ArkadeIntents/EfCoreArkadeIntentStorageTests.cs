@@ -42,7 +42,8 @@ public class EfCoreArkadeIntentStorageTests
         Assert.That(loaded.Type, Is.EqualTo(ArkadeSwapIntentType.BtcToAsset));
         Assert.That(loaded.OfferAmount, Is.EqualTo(Money.Satoshis(10_000)));
         Assert.That(loaded.WantAmount, Is.EqualTo(Money.Satoshis(500)));
-        Assert.That(loaded.OfferHex, Is.EqualTo("deadbeef"));
+        Assert.That(loaded.AssetMetadata().OfferHex, Is.EqualTo("deadbeef"));
+        Assert.That(loaded.AssetMetadata().MakerDescriptor, Is.EqualTo("wpkh(maker)"));
         Assert.That(loaded.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
     }
 
@@ -132,7 +133,7 @@ public class EfCoreArkadeIntentStorageTests
         Assert.That(events, Is.EqualTo(2));
     }
 
-    private static ArkadeSwapIntent Intent(string id, string pkScript, ArkadeSwapIntentStatus status = ArkadeSwapIntentStatus.Pending) => new()
+    private static ArkadeSwapIntent Intent(string id, string pkScript, ArkadeSwapIntentStatus status = ArkadeSwapIntentStatus.Pending) => new ArkadeSwapIntent
     {
         Id = id,
         WalletId = "w1",
@@ -143,10 +144,9 @@ public class EfCoreArkadeIntentStorageTests
         CreatedAt = DateTimeOffset.UtcNow,
         SwapPkScript = pkScript,
         SwapAddress = "tark1...",
-        OfferHex = "deadbeef",
         FromAssetId = "btc",
         ToAssetId = "asset-x",
-    };
+    }.WithAssetMetadata(new AssetSwapMetadata("deadbeef", "wpkh(maker)"));
 
     private sealed class TestDb(DbContextOptions<TestDb> options) : DbContext(options)
     {

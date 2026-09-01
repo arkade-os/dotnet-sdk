@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using NArk.ArkadeIntents.Models;
 
@@ -29,18 +31,8 @@ public class ArkadeSwapIntentEntity
 
     public string SwapAddress { get; set; } = "";
 
-    /// <summary>Hex-encoded offer TLV — rebuilds the covenant for the cancel path.</summary>
-    public string OfferHex { get; set; } = "";
-
-    /// <summary>The maker's signing output descriptor — the wallet-spendable cancel <c>$user</c> key.</summary>
-    public string? MakerDescriptor { get; set; }
-
     public string? FromAssetId { get; set; }
     public string? ToAssetId { get; set; }
-
-
-    /// <summary>The BOLT11 paid by a Lightning swap; unrecoverable from the covenant, which commits to a one-way hash.</summary>
-    public string? Invoice { get; set; }
 
     /// <summary>The invoice's payment hash (hex) — a solver's natural key for the negotiation.</summary>
     public string? PaymentHash { get; set; }
@@ -48,22 +40,10 @@ public class ArkadeSwapIntentEntity
     /// <summary>Unix seconds at which a Lightning swap's covenant refund path opens.</summary>
     public long? RefundLocktime { get; set; }
 
-    /// <summary>
-    /// The preimage a receive swap settles on, hex — chosen locally and unrecoverable from anywhere
-    /// else, so it lives here or the claim cannot be made.
-    /// </summary>
-    public string? Preimage { get; set; }
+    /// <summary>Corridor-specific state, stored as one JSON column.</summary>
+    public Dictionary<string, string> Metadata { get; set; } = new();
 
     /// <summary>The ark tx that fulfilled the swap; set once fulfilled.</summary>
-    /// <summary>The counterparty's L1 HTLC refund key, hex — onchain corridor only.</summary>
-    public string? HtlcPubkey { get; set; }
-
-    /// <summary>Unix seconds the L1 HTLC's refund leaf opens — onchain corridor only.</summary>
-    public long? HtlcLocktime { get; set; }
-
-    /// <summary>Where an off-board pays out on L1 — onchain corridor only.</summary>
-    public string? OnchainPayoutAddress { get; set; }
-
     public string? SpentTxid { get; set; }
 
     public static void Configure(EntityTypeBuilder<ArkadeSwapIntentEntity> builder, ArkStorageOptions options)
@@ -86,5 +66,25 @@ public class ArkadeSwapIntentEntity
         // looking at the row, not by counting enum members in a matching build of the SDK.
         builder.Property(x => x.Type).HasConversion<string>().HasMaxLength(32);
         builder.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+
+        // Corridor-specific state as a JSON string column, the same way ArkWalletEntity carries its
+        // Metadata. Provider-agnostic — Postgres jsonb / SQLite TEXT / SQL Server nvarchar(max) —
+        // because the value converter does the round trip rather than binding to one database's JSON
+        // support. A column per corridor field is what this replaces: eight nullable columns of
+        // which any row uses three, and a migration for every corridor added.
+        builder.Property(x => x.Metadata)
+            .HasConversion(
+                v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                v => string.IsNullOrEmpty(v)
+                    ? new Dictionary<string, string>()
+                    : JsonSerializer.Deserialize<Dictionary<string, string>>(v, (JsonSerializerOptions?)null)
+                      ?? new Dictionary<string, string>())
+            // Without a comparer EF compares the dictionary by reference, so a mutation through the
+            // typed views would not mark the row dirty and the save would silently write nothing.
+            .Metadata.SetValueComparer(new ValueComparer<Dictionary<string, string>>(
+                (a, b) => ReferenceEquals(a, b) ||
+                          (a != null && b != null && a.Count == b.Count && !a.Except(b).Any()),
+                d => d == null ? 0 : d.Aggregate(0, (h, kv) => HashCode.Combine(h, kv.Key, kv.Value)),
+                d => new Dictionary<string, string>(d)));
     }
 }

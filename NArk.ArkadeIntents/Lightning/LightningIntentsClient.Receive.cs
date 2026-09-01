@@ -198,16 +198,15 @@ public sealed partial class LightningIntentsClient
             CreatedAt = _time.GetUtcNow(),
             SwapPkScript = contract.GetScriptPubKey().ToHex(),
             SwapAddress = lockupAddress,
-            // No offer TLV: negotiated by RFQ, and the covenant is rebuilt from the imported
-            // contract rather than from a wire offer.
-            OfferHex = "",
             FromAssetId = "lightning:btc",
             ToAssetId = "btc",
-            Invoice = invoice.ToString(),
             PaymentHash = sealed_.PaymentHash,
-            Preimage = Convert.ToHexString(sealed_.Preimage).ToLowerInvariant(),
             RefundLocktime = quote.RefundLocktime,
-        }, cancellationToken);
+            // No offer TLV on this corridor: it is negotiated by RFQ, and the covenant is rebuilt
+            // from the imported contract rather than from a wire offer.
+        }.WithLightningMetadata(new LightningSwapMetadata(
+            invoice.ToString(), Convert.ToHexString(sealed_.Preimage).ToLowerInvariant())),
+            cancellationToken);
 
         _logger?.LogInformation(
             "Receive swap {RfqId} negotiated: {Amount} sats to {Payout}, lockup {Lockup}",
@@ -258,7 +257,7 @@ public sealed partial class LightningIntentsClient
         var contract = await LightningCorridor.LoadLockupAsync(
             _contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
 
-        var preimage = intent.Preimage is { Length: > 0 } preimageHex
+        var preimage = intent.LightningMetadata().Preimage is { Length: > 0 } preimageHex
             ? Convert.FromHexString(preimageHex)
             : await RederivePreimageAsync(intent, contract, cancellationToken);
 

@@ -47,7 +47,7 @@ public class AssetIntentsManagerTests
 
     private static ArkadeSwapIntent Intent(
         string id, ArkadeSwapIntentStatus status, string? makerDescriptor = "wpkh(02aa)") =>
-        new()
+        new ArkadeSwapIntent
         {
             Id = id,
             WalletId = "wallet-1",
@@ -58,9 +58,7 @@ public class AssetIntentsManagerTests
             CreatedAt = DateTimeOffset.UtcNow,
             SwapPkScript = "5120aa",
             SwapAddress = "ark1swap",
-            OfferHex = "00",
-            MakerDescriptor = makerDescriptor,
-        };
+        }.WithAssetMetadata(new AssetSwapMetadata("00", makerDescriptor));
 
     [Test]
     public void CancelSwap_Throws_WhenSwapNotFound()

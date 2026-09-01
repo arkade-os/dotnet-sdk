@@ -174,7 +174,6 @@ public class ArkadeSwapIntentMonitoringServiceTests
             CreatedAt = DateTimeOffset.UtcNow,
             SwapPkScript = "script1",
             SwapAddress = "tark1example",
-            OfferHex = "",
             RefundLocktime = refundLocktime,
             PaymentHash = isLightning ? PaymentHash : null,
         };

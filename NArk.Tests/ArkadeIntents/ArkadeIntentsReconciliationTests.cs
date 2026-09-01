@@ -279,7 +279,6 @@ public class ArkadeIntentsReconciliationTests
         CreatedAt = DateTimeOffset.UtcNow,
         SwapPkScript = "5120" + new string('a', 64),
         SwapAddress = "tark1example",
-        OfferHex = "",
         RefundLocktime = Locktime,
         PaymentHash = withPaymentHash
             ? Convert.ToHexString(NBitcoin.Crypto.Hashes.SHA256(Preimage)).ToLowerInvariant()
