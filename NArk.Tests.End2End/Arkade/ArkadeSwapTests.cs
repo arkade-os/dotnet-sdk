@@ -355,7 +355,7 @@ public class ArkadeSwapTests
             new NArk.Core.CoinSelector.DefaultCoinSelector(), w.safetyService, TestStorage.CreateIntentStorage(),
             postSpendEventHandlers: [], logger: null,
             extensionPacketProviders: [new ArkadeEmulatorPacketProvider()],
-            submitHandlers: [new ArkadeEmulatorSpendSubmitter(emulator)]);
+            submitHandlers: [new ArkadeEmulatorSpendSubmitter(emulator, new PrevArkTxProvider(w.clientTransport))]);
 
         var intentStorage = new InMemoryIntentStorage();
         var manager = new AssetIntentsManager(
