@@ -1413,6 +1413,12 @@ having, because the claim window is a couple of hours.
 > `--filter TestCategory=LightningCorridors` and point `ARKADE_LN_SOLVER_URL` at a solver you
 > started yourself. They also drive a Lightning node through `docker exec … lncli`
 > (`ARKADE_LND_CONTAINER`, default `lnd`) to mint and pay the invoices.
+>
+> Every `NArk.ArkadeIntents` E2E fixture also carries the umbrella category `ArkadeIntents` —
+> `--filter TestCategory=ArkadeIntents` runs the asset corridor and both Lightning corridors
+> together. `.github/workflows/e2e-arkade-intents.yml` is the CI job for it, written but **not
+> enabled**: its caller in `build.yml` is commented out and `e2e-core` excludes the category, so
+> nothing runs it until a solver is part of the stack.
 
 Both corridors build the same eight-leaf `VHTLCv2Contract`: the six leaves of the reference VHTLC,
 plus `nonInteractiveClaim` and `nonInteractiveRefund`, whose co-signer is an emulator key tweaked by

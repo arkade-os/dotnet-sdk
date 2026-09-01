@@ -1,0 +1,59 @@
+# NOT WIRED UP YET. The caller in build.yml is commented out, and `ArkadeIntents` is excluded
+# from e2e-core's catch-all filter, so nothing runs these today. This file exists so turning the
+# suite on is a one-line change rather than a new workflow written under pressure.
+#
+# Before enabling, two things still need settling:
+#
+#  1. The Lightning half (`ArkadeLightningTests`) drives a real solver over Nostr and a Lightning
+#     node through `docker exec … lncli`. Neither is in the `solver,boltz` profile below: those
+#     tests read `ARKADE_LN_SOLVER_URL` and `ARKADE_LND_CONTAINER`, and self-`Ignore` when the
+#     first is unset. So enabling this as-is exercises the asset corridor and skips Lightning —
+#     green, but only because half the suite opted out.
+#  2. The off-board corridor has no E2E at all yet. When it gets one it belongs in this category.
+name: Arkade Intents E2E Tests
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Arkade Intents E2E Tests
+    runs-on: ubuntu-latest
+    env:
+      # Same reasoning as e2e-arkade: at the default level the solver logs nothing once it is up,
+      # so a swap it silently declines to fill looks identical to one it never received. Level 5
+      # puts the fill decision in the logs collected below.
+      SOLVER_LOG_LEVEL: '5'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      # `solver` pulls in arkd + emulator, starts the mock pricefeed and solver, and runs
+      # solver-init so there is a live market to quote against. `boltz` adds fulmine, which is the
+      # funding endpoint the shared harness tops wallets up from.
+      - uses: ./.github/actions/e2e-setup
+        with:
+          profile: solver,boltz
+      - name: Run Arkade Intents E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=ArkadeIntents"
+        # Matches e2e-arkade's headroom: a fill normally lands in a few seconds, but any one test
+        # can wait out SolverFillTimeout when its offer queues behind a solver settlement.
+        timeout-minutes: 25
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs solver > /tmp/solver-logs.txt 2>&1 || true
+          docker logs solver-init > /tmp/solver-init-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arkade-intents-docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
