@@ -224,7 +224,7 @@ public static class LightningReceiveGates
     /// neither matches, including when the solver sends no address at all.
     /// </summary>
     /// <param name="quote">The quote carrying the compare-only address.</param>
-    /// <param name="eightLeaf">The candidate without the opt-in ninth leaf.</param>
+    /// <param name="eightLeaf">The candidate without the timelocked refund leaf.</param>
     /// <param name="nineLeaf">The candidate with it.</param>
     /// <param name="isMainnet">Which network's address encoding to compare under.</param>
     /// <returns>Whichever candidate matched.</returns>
@@ -234,7 +234,7 @@ public static class LightningReceiveGates
     /// merely a funding gate the way it is on the send leg — a wrong guess would leave the client
     /// watching an address the solver never pays, and the swap would simply never be seen as funded.
     /// Comparing against both shapes, rather than a single guessed one, is what makes this tolerant of
-    /// either side of <see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/> — nothing on
+    /// either side of <see cref="EmulatorCovenantsLegacy.PreTimelockedRefund"/> — nothing on
     /// the wire says which one a given solver has deployed.
     /// </para>
     /// <para>

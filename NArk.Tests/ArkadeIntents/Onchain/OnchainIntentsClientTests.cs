@@ -37,7 +37,7 @@ public class OnchainIntentsClientTests
     [Test]
     public void ResolveLockupContract_AcceptsTheNineLeafShapeWhenItMatches()
     {
-        // A solver that has turned on NonInteractiveRefundWithoutReceiver quotes an address this
+        // A solver funding the full nine-leaf suite quotes an address this
         // client would never have derived on its own before — the swap must still be fundable.
         var (eightLeaf, nineLeaf) = Candidates();
         var quoted = nineLeaf.GetArkAddress().ToString(false);
@@ -86,9 +86,7 @@ public class OnchainIntentsClientTests
             new Sequence(TimeSpan.FromSeconds(512)),
             new Sequence(TimeSpan.FromSeconds(512)),
             new Sequence(TimeSpan.FromSeconds(1024)),
-            RandomXOnly(),
-            RandomP2trPkScript(),
-            RandomP2trPkScript());
+            new EmulatorCovenants(RandomXOnly(), RandomP2trPkScript(), RandomP2trPkScript()));
 
     private static OutputDescriptor RandomDescriptor() =>
         KeyExtensions.ParseOutputDescriptor(new Key().PubKey.ToHex(), Network.RegTest);

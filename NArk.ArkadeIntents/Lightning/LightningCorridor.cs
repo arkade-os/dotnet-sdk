@@ -136,26 +136,26 @@ public static class LightningCorridor
         KeyExtensions.ParseOutputDescriptor("02" + xOnlyHex.ToLowerInvariant(), network);
 
     /// <summary>
-    /// Build both VHTLC lockup shapes — with and without the opt-in
-    /// <see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/> leaf — from one shared
+    /// Build both VHTLC lockup shapes — the full covenant suite and its
+    /// <see cref="EmulatorCovenantsLegacy.PreTimelockedRefund"/> shape — from one shared
     /// parameter set.
     /// </summary>
     /// <returns>
-    /// The eight-leaf contract and the nine-leaf contract, differing from each other in nothing but
-    /// that flag.
+    /// The eight-leaf (legacy) contract and the nine-leaf contract, differing from each other in
+    /// nothing but the legacy selector.
     /// </returns>
     /// <remarks>
     /// Nothing on the wire says which shape a given solver has deployed, so a client cannot know in
-    /// advance which one to build — see the flag's own remarks on <see cref="VHTLCv2Contract"/>. All
-    /// three corridors derive both shapes here and accept whichever matches the solver's quoted
+    /// advance which one to build — see the group's own remarks on <see cref="EmulatorCovenants"/>.
+    /// All three corridors derive both shapes here and accept whichever matches the solver's quoted
     /// address, which stays safe because both shapes pin the covenant's refund to the SAME
-    /// destination as each other — whatever <paramref name="nonInteractiveRefundPkScript"/> names,
-    /// which is the client's own address on the send and onchain-send corridors but the SOLVER's on
-    /// the receive corridor. Either way the two candidates cannot disagree about it, because both are
-    /// built from this one shared parameter set: the flag only changes how the sender may eventually
-    /// exit, never who the refund pays. Building both from ONE parameter set — rather than two
+    /// destination as each other — whatever the group's sender pkScript names, which is the
+    /// client's own address on the send and onchain-send corridors but the SOLVER's on the receive
+    /// corridor. Either way the two candidates cannot disagree about it, because both are built
+    /// from this one shared group: the selector only changes how the sender may eventually exit,
+    /// never who the refund pays. Building both from ONE parameter set — rather than two
     /// independently assembled calls — is what guarantees they cannot drift from each other in any
-    /// field but the flag.
+    /// field but the selector.
     /// </remarks>
     public static (VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf) DeriveBothLockupShapes(
         OutputDescriptor server,
@@ -166,17 +166,18 @@ public static class LightningCorridor
         Sequence unilateralClaimDelay,
         Sequence unilateralRefundDelay,
         Sequence unilateralRefundWithoutReceiverDelay,
-        ECXOnlyPubKey emulatorPubKey,
-        byte[] nonInteractiveClaimPkScript,
-        byte[] nonInteractiveRefundPkScript)
+        EmulatorCovenants emulatorCovenants)
     {
-        VHTLCv2Contract Build(bool nineLeaf) => new(
+        VHTLCv2Contract Build(EmulatorCovenantsLegacy? legacy) => new(
             server, sender, receiver, hash, refundLocktime,
             unilateralClaimDelay, unilateralRefundDelay, unilateralRefundWithoutReceiverDelay,
-            emulatorPubKey, nonInteractiveClaimPkScript, nonInteractiveRefundPkScript,
-            nonInteractiveRefundWithoutReceiver: nineLeaf);
+            new EmulatorCovenants(
+                emulatorCovenants.EmulatorPubKey,
+                emulatorCovenants.ReceiverPkScript,
+                emulatorCovenants.SenderPkScript,
+                legacy));
 
-        return (Build(false), Build(true));
+        return (Build(EmulatorCovenantsLegacy.PreTimelockedRefund), Build(null));
     }
 
     /// <summary>

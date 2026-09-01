@@ -448,14 +448,13 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            // The deployed reference solver funds the pre-timelocked-refund shape; derive that,
-            // since nothing on the wire says otherwise and the quoted address is the agreement.
+            // No legacy selector: which of the two suite shapes the solver funded is exactly the
+            // question the quoted-address comparison answers.
             new EmulatorCovenants(
                 LightningCorridor.NormalizeToXOnly(
                     Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
                 receiverPkScript: payoutPkScript,
-                senderPkScript: Convert.FromHexString(solverRefundPkScript),
-                EmulatorCovenantsLegacy.PreTimelockedRefund));
+                senderPkScript: Convert.FromHexString(solverRefundPkScript)));
     }
 
 }

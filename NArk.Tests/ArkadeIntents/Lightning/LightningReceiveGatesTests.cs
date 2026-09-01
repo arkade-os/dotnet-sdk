@@ -271,7 +271,7 @@ public class LightningReceiveGatesTests
     [Test]
     public void ResolveLockupContract_AcceptsTheNineLeafShapeWhenItMatches()
     {
-        // A solver that has turned on NonInteractiveRefundWithoutReceiver funds an address this
+        // A solver funding the full nine-leaf suite funds an address this
         // client would never have derived on its own before — the swap must still be recognised.
         var (eightLeaf, nineLeaf) = Candidates();
         var quote = Quote(Invoice, AmountSats, lockupAddress: nineLeaf.GetArkAddress().ToString(false));
@@ -324,9 +324,7 @@ public class LightningReceiveGatesTests
             new Sequence(TimeSpan.FromSeconds(512)),
             new Sequence(TimeSpan.FromSeconds(512)),
             new Sequence(TimeSpan.FromSeconds(1024)),
-            RandomXOnly(),
-            RandomP2trPkScript(),
-            RandomP2trPkScript());
+            new EmulatorCovenants(RandomXOnly(), RandomP2trPkScript(), RandomP2trPkScript()));
 
     private static OutputDescriptor RandomDescriptor() =>
         KeyExtensions.ParseOutputDescriptor(new Key().PubKey.ToHex(), Network.RegTest);

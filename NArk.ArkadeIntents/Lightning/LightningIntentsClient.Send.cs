@@ -135,8 +135,8 @@ public sealed partial class LightningIntentsClient
             quote, decoded, refundPkScript, clientRefund, serverInfo, cancellationToken);
         var isMainnet = serverInfo.Network == Network.Main;
 
-        // Accepts whichever of the two shapes matches — see VHTLCv2Contract's own remarks on
-        // NonInteractiveRefundWithoutReceiver. Nothing on the wire says which one this solver has
+        // Accepts whichever of the two shapes matches — see EmulatorCovenants' remarks on the
+        // legacy selector. Nothing on the wire says which one this solver has
         // deployed, and refusing to fund is still the outcome when the quote matches neither.
         var contract = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet);
         var lockupArkAddress = contract.GetArkAddress();
@@ -459,14 +459,13 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            // The deployed reference solver funds the pre-timelocked-refund shape; derive that,
-            // since nothing on the wire says otherwise and the quoted address is the agreement.
+            // No legacy selector: which of the two suite shapes the solver funded is exactly the
+            // question the quoted-address comparison answers.
             new EmulatorCovenants(
                 LightningCorridor.NormalizeToXOnly(
                     Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
                 receiverPkScript: Convert.FromHexString(receiverPkScript),
-                senderPkScript: refundPkScript,
-                EmulatorCovenantsLegacy.PreTimelockedRefund));
+                senderPkScript: refundPkScript));
     }
 
     // The key the covenant's client-side refund leaves are built around, and the one that signs

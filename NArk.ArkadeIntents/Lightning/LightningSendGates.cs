@@ -37,14 +37,14 @@ public sealed class LightningSendNotFundableException : Exception
 /// <remarks>
 /// Never fund past this. It is the single check that makes a wrong or malicious solver able to
 /// produce only an address the maker declines, rather than one that traps funds. Two shapes are
-/// compared, not one, because <see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/> is
-/// opt-in and nothing on the wire says whether a given solver has turned it on — refusing here means
-/// the quoted address matched <b>neither</b> derivation, not merely a single guessed one.
+/// compared, not one, because the covenant suite's timelocked refund leaf postdates some
+/// deployments and nothing on the wire says whether a given solver funds with it — refusing here
+/// means the quoted address matched <b>neither</b> derivation, not merely a single guessed one.
 /// </remarks>
 public sealed class LockupAddressMismatchException : Exception
 {
     /// <summary>Creates the exception.</summary>
-    /// <param name="derivedEightLeaf">The address derived without the opt-in ninth leaf.</param>
+    /// <param name="derivedEightLeaf">The address derived without the timelocked refund leaf.</param>
     /// <param name="derivedNineLeaf">The address derived with it.</param>
     /// <param name="quoted">The address the solver sent for comparison.</param>
     public LockupAddressMismatchException(string derivedEightLeaf, string derivedNineLeaf, string? quoted)
@@ -59,10 +59,10 @@ public sealed class LockupAddressMismatchException : Exception
         Quoted = quoted;
     }
 
-    /// <summary>What the maker derived without the opt-in ninth leaf.</summary>
+    /// <summary>What the maker derived without the timelocked refund leaf.</summary>
     public string DerivedEightLeaf { get; }
 
-    /// <summary>What the maker derived with the opt-in ninth leaf.</summary>
+    /// <summary>What the maker derived with the timelocked refund leaf.</summary>
     public string DerivedNineLeaf { get; }
 
     /// <summary>What the solver claimed, if anything.</summary>
@@ -141,14 +141,14 @@ public static class LightningSendGates
     /// refuse if neither does.
     /// </summary>
     /// <param name="quote">The quote carrying the compare-only address.</param>
-    /// <param name="eightLeaf">The candidate without the opt-in ninth leaf.</param>
+    /// <param name="eightLeaf">The candidate without the timelocked refund leaf.</param>
     /// <param name="nineLeaf">The candidate with it.</param>
     /// <param name="isMainnet">Which network's address encoding to compare under.</param>
     /// <returns>Whichever candidate matched.</returns>
     /// <remarks>
     /// Comparing against both, rather than a single guessed shape, is what makes this corridor
-    /// tolerant of a solver either side of turning on
-    /// <see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/> — nothing on the wire says
+    /// tolerant of a solver either side of
+    /// <see cref="EmulatorCovenantsLegacy.PreTimelockedRefund"/> — nothing on the wire says
     /// which one it has deployed. Accepting either is safe because both pin the covenant's refund to
     /// the maker's own address; what must never happen is accepting an address that matches neither.
     /// </remarks>

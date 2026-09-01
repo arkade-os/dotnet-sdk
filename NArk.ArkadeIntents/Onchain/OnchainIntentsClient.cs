@@ -141,8 +141,8 @@ public sealed class OnchainIntentsClient(
             quote, paymentHash, refundArkAddress.ScriptPubKey.ToBytes(), clientKey, serverInfo);
         var isMainnet = serverInfo.Network == Network.Main;
 
-        // Accepts whichever of the two shapes matches — see VHTLCv2Contract's own remarks on
-        // NonInteractiveRefundWithoutReceiver. Nothing on the wire says which one this solver has
+        // Accepts whichever of the two shapes matches — see EmulatorCovenants' remarks on the
+        // legacy selector. Nothing on the wire says which one this solver has
         // deployed, and refusing to fund is still the outcome when the quote matches neither.
         var contract = ResolveLockupContract(eightLeaf, nineLeaf, quote.Profile?.LockupAddress, isMainnet);
         var lockupArkAddress = contract.GetArkAddress();
@@ -235,8 +235,8 @@ public sealed class OnchainIntentsClient(
     /// </summary>
     /// <remarks>
     /// Unlike <see cref="AssertMatches"/> — which the L1 HTLC has no need of, since it has only ever
-    /// had one shape — the Arkade lockup is a <see cref="VHTLCv2Contract"/>, whose opt-in ninth leaf
-    /// (<see cref="VHTLCv2Contract.NonInteractiveRefundWithoutReceiver"/>) nothing on the wire
+    /// had one shape — the Arkade lockup is a <see cref="VHTLCv2Contract"/>, whose covenant suite's
+    /// timelocked refund leaf (<see cref="EmulatorCovenants.Legacy"/>) nothing on the wire
     /// distinguishes. Accepting either derived shape is safe because both pin the covenant's refund
     /// to the client's own address; what must never happen is accepting an address that matches
     /// neither.
@@ -287,14 +287,13 @@ public sealed class OnchainIntentsClient(
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            // The deployed reference solver funds the pre-timelocked-refund shape; derive that,
-            // since nothing on the wire says otherwise and the quoted address is the agreement.
+            // No legacy selector: which of the two suite shapes the solver funded is exactly the
+            // question the quoted-address comparison answers.
             new EmulatorCovenants(
                 LightningCorridor.NormalizeToXOnly(
                     Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, EmulatorPubkeyOverride))),
                 receiverPkScript: Convert.FromHexString(receiverPkScript),
-                senderPkScript: refundPkScript,
-                EmulatorCovenantsLegacy.PreTimelockedRefund)));
+                senderPkScript: refundPkScript)));
     }
 
     /// <summary>The preimage, derived from the wallet so a lost record does not lose the claim.</summary>
