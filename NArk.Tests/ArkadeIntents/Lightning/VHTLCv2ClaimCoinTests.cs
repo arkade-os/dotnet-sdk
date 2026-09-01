@@ -81,10 +81,13 @@ public class VHTLCv2ClaimCoinTests
         new Sequence(TimeSpan.FromSeconds(4096)),
         new Sequence(TimeSpan.FromSeconds(4608)),
         new Sequence(TimeSpan.FromSeconds(5120)),
+        // Model the shape a deployed solver-quoted lockup actually carries —
+        // pre-timelocked-refund, same as every production call site.
         new EmulatorCovenants(
             ECXOnlyPubKey.Create(KeyBytes(0x05)),
             receiverPkScript: [0x51, 0x20, .. KeyBytes(0x06)],
-            senderPkScript: [0x51, 0x20, .. KeyBytes(0x07)]));
+            senderPkScript: [0x51, 0x20, .. KeyBytes(0x07)],
+            EmulatorCovenantsLegacy.PreTimelockedRefund));
 
     private static OutputDescriptor Descriptor(byte fill) =>
         KeyExtensions.ParseOutputDescriptor(
