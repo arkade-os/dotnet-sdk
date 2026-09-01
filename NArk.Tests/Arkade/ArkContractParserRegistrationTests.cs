@@ -80,9 +80,10 @@ public class ArkContractParserRegistrationTests
             new Sequence(TimeSpan.FromSeconds(1024)),
             new Sequence(TimeSpan.FromSeconds(1536)),
             new Sequence(TimeSpan.FromSeconds(2048)),
-            ECXOnlyPubKey.Create(new Key().PubKey.GetTaprootFullPubKey().OutputKey.ToBytes()),
-            pkScript,
-            pkScript);
+            new EmulatorCovenants(
+                ECXOnlyPubKey.Create(new Key().PubKey.GetTaprootFullPubKey().OutputKey.ToBytes()),
+                pkScript,
+                pkScript));
     }
 
     private static OutputDescriptor Descriptor() =>

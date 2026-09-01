@@ -126,9 +126,13 @@ public class VHTLCv2ContractTests
             Csv(shared.UnilateralClaimDelay),
             Csv(shared.UnilateralRefundDelay),
             Csv(shared.UnilateralRefundWithoutReceiverDelay),
-            XOnly(shared.EmulatorPubkey),
-            Convert.FromHexString(corridor.Inputs.NonInteractiveClaimPkScript),
-            Convert.FromHexString(corridor.Inputs.NonInteractiveRefundPkScript));
+            // These vectors pin the EIGHT-leaf script the deployed solver funds — the group's
+            // legacy shape, not its nine-leaf default.
+            new EmulatorCovenants(
+                XOnly(shared.EmulatorPubkey),
+                Convert.FromHexString(corridor.Inputs.NonInteractiveClaimPkScript),
+                Convert.FromHexString(corridor.Inputs.NonInteractiveRefundPkScript),
+                EmulatorCovenantsLegacy.PreTimelockedRefund));
     }
 
     private static Sequence Csv(int seconds) => new(TimeSpan.FromSeconds(seconds));

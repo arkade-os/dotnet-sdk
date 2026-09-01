@@ -16,11 +16,10 @@ namespace NArk.Arkade.Contracts;
 
 /// <summary>
 /// The VHTLC used by the Lightning swap corridors: the six leaves of the reference VHTLC
-/// construction, plus two whose co-signer is an emulator key tweaked by a covenant that pins
-/// where the spend may pay. In the wider design <c>nonInteractiveClaim</c> and
-/// <c>nonInteractiveRefund</c> are each independently optional, but this C# type does not offer
-/// that: both non-interactive pkScripts are mandatory constructor arguments, so this class is
-/// eight leaves by default and nine when <see cref="NonInteractiveRefundWithoutReceiver"/> is set.
+/// construction, plus — when <see cref="EmulatorCovenants"/> is set — the covenant suite whose
+/// co-signer is an emulator key tweaked by a covenant that pins where the spend may pay. The
+/// suite is all or nothing, so this class is six leaves without the group, the full nine with
+/// it, and eight when the group's legacy selector rebuilds the pre-timelocked-refund shape.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -65,22 +64,12 @@ public class VHTLCv2Contract : ArkContract
     /// <summary>How long after funding the sender alone may refund, needing nobody.</summary>
     public Sequence UnilateralRefundWithoutReceiverDelay { get; }
 
-    /// <summary>The emulator key both covenant leaves tweak.</summary>
-    public ECXOnlyPubKey EmulatorPubKey { get; }
-
-    /// <summary>Where <c>nonInteractiveClaim</c> must pay — the receiver's P2TR scriptPubKey.</summary>
-    public byte[] NonInteractiveClaimPkScript { get; }
-
-    /// <summary>Where <c>nonInteractiveRefund</c> must pay — the sender's P2TR scriptPubKey.</summary>
-    public byte[] NonInteractiveRefundPkScript { get; }
-
     /// <summary>
-    /// When true, a ninth leaf is emitted: the Arkade Service key plus the SAME
-    /// covenant-tweaked co-signer <c>nonInteractiveRefund</c> uses, spendable
-    /// after <see cref="RefundLocktime"/> with no participant signature at all.
-    /// Off by default — a ninth leaf changes the merkle root, and so the address.
+    /// The emulator covenant suite, or null for the plain six-leaf VHTLC. All or nothing: one
+    /// group carries every covenant leaf's parameters, so the tree can never name one leaf
+    /// without the others or two different emulator keys.
     /// </summary>
-    public bool NonInteractiveRefundWithoutReceiver { get; }
+    public EmulatorCovenants? EmulatorCovenants { get; }
 
     public VHTLCv2Contract(
         OutputDescriptor server,
@@ -91,16 +80,11 @@ public class VHTLCv2Contract : ArkContract
         Sequence unilateralClaimDelay,
         Sequence unilateralRefundDelay,
         Sequence unilateralRefundWithoutReceiverDelay,
-        ECXOnlyPubKey emulatorPubKey,
-        byte[] nonInteractiveClaimPkScript,
-        byte[] nonInteractiveRefundPkScript,
-        bool nonInteractiveRefundWithoutReceiver = false) : base(server)
+        EmulatorCovenants? emulatorCovenants = null) : base(server)
     {
         ValidateTimeLock(unilateralClaimDelay, nameof(unilateralClaimDelay));
         ValidateTimeLock(unilateralRefundDelay, nameof(unilateralRefundDelay));
         ValidateTimeLock(unilateralRefundWithoutReceiverDelay, nameof(unilateralRefundWithoutReceiverDelay));
-        ValidateP2trPkScript(nonInteractiveClaimPkScript, nameof(nonInteractiveClaimPkScript));
-        ValidateP2trPkScript(nonInteractiveRefundPkScript, nameof(nonInteractiveRefundPkScript));
 
         Sender = sender;
         Receiver = receiver;
@@ -109,14 +93,13 @@ public class VHTLCv2Contract : ArkContract
         UnilateralClaimDelay = unilateralClaimDelay;
         UnilateralRefundDelay = unilateralRefundDelay;
         UnilateralRefundWithoutReceiverDelay = unilateralRefundWithoutReceiverDelay;
-        EmulatorPubKey = emulatorPubKey;
-        NonInteractiveClaimPkScript = nonInteractiveClaimPkScript;
-        NonInteractiveRefundPkScript = nonInteractiveRefundPkScript;
-        NonInteractiveRefundWithoutReceiver = nonInteractiveRefundWithoutReceiver;
+        EmulatorCovenants = emulatorCovenants;
         // Computed once here, not re-derived per leaf build, so CreateNonInteractiveRefundScript()
         // and CreateNonInteractiveRefundWithoutReceiverScript() are structurally guaranteed to pin
         // the same destination rather than merely happening to match.
-        _nonInteractiveRefundCosigner = CovenantKey(NonInteractiveRefundPkScript);
+        _nonInteractiveRefundCosigner = emulatorCovenants is { } covenants
+            ? CovenantKey(covenants.EmulatorPubKey, covenants.SenderPkScript)
+            : null;
     }
 
     /// <inheritdoc />
@@ -129,9 +112,10 @@ public class VHTLCv2Contract : ArkContract
     public override ContractScope DefaultScope => ContractScope.Offchain;
 
     /// <summary>
-    /// The eight leaves, in the order that fixes the merkle root, plus a ninth when
-    /// <see cref="NonInteractiveRefundWithoutReceiver"/> is set. Do not reorder — the ninth leaf must
-    /// stay last, since every earlier leaf's index is load-bearing for existing addresses.
+    /// The six signature leaves, in the order that fixes the merkle root, followed by the
+    /// covenant suite when <see cref="EmulatorCovenants"/> is set: claim, refund, and — unless
+    /// its legacy selector says otherwise — the timelocked refund last. Do not reorder — every
+    /// earlier leaf's index is load-bearing for existing addresses.
     /// </summary>
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {
@@ -141,9 +125,11 @@ public class VHTLCv2Contract : ArkContract
         yield return CreateUnilateralClaimScript();
         yield return CreateUnilateralRefundScript();
         yield return CreateUnilateralRefundWithoutReceiverScript();
+        if (EmulatorCovenants is null)
+            yield break;
         yield return CreateNonInteractiveClaimScript();
         yield return CreateNonInteractiveRefundScript();
-        if (NonInteractiveRefundWithoutReceiver)
+        if (EmulatorCovenants.Legacy is null)
             yield return CreateNonInteractiveRefundWithoutReceiverScript();
     }
 
@@ -182,20 +168,34 @@ public class VHTLCv2Contract : ArkContract
     /// Preimage + server + the covenant key, pinned to the receiver's own payout. Lets the
     /// receiver's claim be pushed while the receiver is offline.
     /// </summary>
-    public ScriptBuilder CreateNonInteractiveClaimScript() =>
-        new CollaborativePathArkTapScript(
-            CovenantKey(NonInteractiveClaimPkScript),
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="EmulatorCovenants"/> is not set, so this leaf is not part of the taproot tree —
+    /// a witness built against it would be rejected on-chain with no SDK-level error otherwise.
+    /// </exception>
+    public ScriptBuilder CreateNonInteractiveClaimScript()
+    {
+        if (EmulatorCovenants is not { } covenants)
+        {
+            throw new InvalidOperationException("VHTLC has no emulator covenant leaves");
+        }
+
+        return new CollaborativePathArkTapScript(
+            CovenantKey(covenants.EmulatorPubKey, covenants.ReceiverPkScript),
             new CompositeTapScript(PreimageCondition(), new VerifyTapScript(),
                 new NofNMultisigTapScript([ServerKey])));
+    }
 
     /// <summary>
     /// Server + receiver + the covenant key, pinned to the sender's own payout. Releases the refund
     /// the moment those two agree the swap failed, without waiting out <see cref="RefundLocktime"/>
     /// and without a sender signature.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="EmulatorCovenants"/> is not set, so this leaf is not part of the taproot tree.
+    /// </exception>
     public ScriptBuilder CreateNonInteractiveRefundScript() =>
         new CollaborativePathArkTapScript(
-            _nonInteractiveRefundCosigner, new NofNMultisigTapScript([ServerKey, ReceiverKey]));
+            RefundCosigner, new NofNMultisigTapScript([ServerKey, ReceiverKey]));
 
     /// <summary>
     /// Server + the covenant key, pinned to the sender's own payout, spendable after
@@ -205,19 +205,24 @@ public class VHTLCv2Contract : ArkContract
     /// <see cref="CreateNonInteractiveRefundScript"/> commit to the same key by construction.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// <see cref="NonInteractiveRefundWithoutReceiver"/> is false, so this leaf is not part of the
-    /// taproot tree — a witness built against it would be rejected on-chain with no SDK-level error
+    /// The contract has no covenant suite, or its <see cref="EmulatorCovenants.Legacy"/> selector
+    /// names the pre-timelocked-refund shape — either way this leaf is not part of the taproot
+    /// tree, and a witness built against it would be rejected on-chain with no SDK-level error
     /// otherwise.
     /// </exception>
     public ScriptBuilder CreateNonInteractiveRefundWithoutReceiverScript()
     {
-        if (!NonInteractiveRefundWithoutReceiver)
+        if (EmulatorCovenants is null)
+        {
+            throw new InvalidOperationException("VHTLC has no emulator covenant leaves");
+        }
+        if (EmulatorCovenants.Legacy is not null)
         {
             throw new InvalidOperationException("VHTLC has no non-interactive refund-without-receiver leaf");
         }
 
         return new CollaborativePathArkTapScript(
-            _nonInteractiveRefundCosigner,
+            RefundCosigner,
             new CompositeTapScript(new LockTimeTapScript(RefundLocktime), new NofNMultisigTapScript([ServerKey])));
     }
 
@@ -225,8 +230,13 @@ public class VHTLCv2Contract : ArkContract
     /// The covenant-tweaked emulator key that both <c>nonInteractiveRefund</c> leaves co-sign with.
     /// Computed once in the constructor — not re-derived per leaf build — so the two leaves are
     /// structurally guaranteed to pin the same destination rather than merely happening to match.
+    /// Null exactly when <see cref="EmulatorCovenants"/> is.
     /// </summary>
-    private readonly ECXOnlyPubKey _nonInteractiveRefundCosigner;
+    private readonly ECXOnlyPubKey? _nonInteractiveRefundCosigner;
+
+    private ECXOnlyPubKey RefundCosigner =>
+        _nonInteractiveRefundCosigner
+        ?? throw new InvalidOperationException("VHTLC has no emulator covenant leaves");
 
     /// <summary>
     /// The ArkadeScript a covenant leaf's key commits to: "the output at this input's index pays
@@ -247,9 +257,9 @@ public class VHTLCv2Contract : ArkContract
     /// The emulator key tweaked by a covenant, which is what makes the emulator's signature
     /// conditional on the spend actually honouring that covenant.
     /// </summary>
-    public ECXOnlyPubKey CovenantKey(byte[] destinationPkScript) =>
+    private static ECXOnlyPubKey CovenantKey(ECXOnlyPubKey emulatorPubKey, byte[] destinationPkScript) =>
         ECXOnlyPubKey.Create(
-            ArkadeTweak.Tweak(new TaprootPubKey(EmulatorPubKey.ToBytes()), EnforcePayTo(destinationPkScript))
+            ArkadeTweak.Tweak(new TaprootPubKey(emulatorPubKey.ToBytes()), EnforcePayTo(destinationPkScript))
                 .ToBytes());
 
     /// <summary>The sender's x-only key, as the leaves commit to it.</summary>
@@ -278,24 +288,28 @@ public class VHTLCv2Contract : ArkContract
             { "unilateralClaimDelay", UnilateralClaimDelay.Value.ToString() },
             { "unilateralRefundDelay", UnilateralRefundDelay.Value.ToString() },
             { "unilateralRefundWithoutReceiverDelay", UnilateralRefundWithoutReceiverDelay.Value.ToString() },
-            { "emulator", Convert.ToHexString(EmulatorPubKey.ToBytes()).ToLowerInvariant() },
-            { "niClaimPkScript", Convert.ToHexString(NonInteractiveClaimPkScript).ToLowerInvariant() },
-            { "niRefundPkScript", Convert.ToHexString(NonInteractiveRefundPkScript).ToLowerInvariant() },
         };
-        // This key's name and its "1" value match ts-sdk's VHTLCV2ContractHandler.serializeParams
-        // exactly and deliberately, so the FLAG ITSELF round-trips identically between the two
-        // SDKs. That does not generalize to the rest of this dictionary: the two SDKs' param maps
-        // are not interchangeable. The "type" discriminator differs ("HTLCv2" vs "vhtlc-v2"), so
-        // does every delay key name (unilateralClaimDelay vs claimDelay, and so on), and the
-        // covenant pkScript keys (niClaimPkScript vs nonInteractiveClaimReceiverPkScript, and so
-        // on); one shared "emulator" key here stands in for two independent ones there
-        // (nonInteractiveClaimEmulatorPubkey / nonInteractiveRefundEmulatorPubkey); and
-        // sender/receiver/server serialize as output descriptors here versus raw hex pubkeys
-        // there. Omitted rather than "false" when unset, for the same reason this key exists at
-        // all: a dropped flag must re-derive the eight-leaf script.
-        if (NonInteractiveRefundWithoutReceiver)
+        if (EmulatorCovenants is { } covenants)
         {
-            data["nonInteractiveRefundWithoutReceiver"] = "1";
+            data["emulator"] = Convert.ToHexString(covenants.EmulatorPubKey.ToBytes()).ToLowerInvariant();
+            data["niClaimPkScript"] = Convert.ToHexString(covenants.ReceiverPkScript).ToLowerInvariant();
+            data["niRefundPkScript"] = Convert.ToHexString(covenants.SenderPkScript).ToLowerInvariant();
+            // This key's name and its "1" value match ts-sdk's VHTLCV2ContractHandler.serializeParams
+            // exactly and deliberately, so the FLAG ITSELF round-trips identically between the two
+            // SDKs. That does not generalize to the rest of this dictionary: the two SDKs' param maps
+            // are not interchangeable. The "type" discriminator differs ("HTLCv2" vs "vhtlc-v2"), so
+            // does every delay key name (unilateralClaimDelay vs claimDelay, and so on), and the
+            // covenant pkScript keys (niClaimPkScript vs nonInteractiveClaimReceiverPkScript, and so
+            // on); one shared "emulator" key here stands in for two there
+            // (nonInteractiveClaimEmulatorPubkey / nonInteractiveRefundEmulatorPubkey, both holding
+            // the suite's one key); and sender/receiver/server serialize as output descriptors here
+            // versus raw hex pubkeys there. The flag is the legacy marker by ABSENCE: a row without
+            // it re-derives the pre-timelocked-refund eight-leaf script — the same encoding older
+            // SDKs wrote for eight-leaf rows, so those rows read back unchanged.
+            if (covenants.Legacy is null)
+            {
+                data["nonInteractiveRefundWithoutReceiver"] = "1";
+            }
         }
         return data;
     }
@@ -314,32 +328,58 @@ public class VHTLCv2Contract : ArkContract
             new Sequence(uint.Parse(contractData["unilateralClaimDelay"])),
             new Sequence(uint.Parse(contractData["unilateralRefundDelay"])),
             new Sequence(uint.Parse(contractData["unilateralRefundWithoutReceiverDelay"])),
-            ECXOnlyPubKey.Create(Convert.FromHexString(contractData["emulator"])),
-            Convert.FromHexString(contractData["niClaimPkScript"]),
-            Convert.FromHexString(contractData["niRefundPkScript"]),
-            nonInteractiveRefundWithoutReceiver: ParseNonInteractiveRefundWithoutReceiver(contractData));
+            ParseEmulatorCovenants(contractData));
 
     /// <summary>
-    /// Reads the <c>nonInteractiveRefundWithoutReceiver</c> flag <see cref="GetContractData"/>
-    /// wrote. Absent means false — the flag was never set. Present means it must be exactly
-    /// <c>"1"</c>: silently reading any other value as false would re-derive the eight-leaf script
-    /// — a different address — instead of surfacing that the stored row is malformed. Matches
-    /// ts-sdk's <c>VHTLCV2ContractHandler.deserializeParams</c>, so the two SDKs fail identically
-    /// on bad input rather than quietly disagreeing about what a contract's address is.
+    /// Reads the covenant suite <see cref="GetContractData"/> wrote. The three keys are
+    /// all-or-nothing: a row carrying some but not all was written for a leaf subset this class
+    /// no longer derives, and rebuilding it would silently drop a leaf — a different address.
+    /// Absent entirely means the plain six-leaf contract. The legacy marker is the ABSENCE of
+    /// the <c>nonInteractiveRefundWithoutReceiver</c> flag on a covenant-bearing row — the same
+    /// encoding older SDKs wrote for eight-leaf rows; present, it must be exactly <c>"1"</c>:
+    /// silently reading any other value as absent would re-derive the eight-leaf script instead
+    /// of surfacing that the stored row is malformed. Matches ts-sdk's
+    /// <c>VHTLCV2ContractHandler.deserializeParams</c>, so the two SDKs fail identically on bad
+    /// input rather than quietly disagreeing about what a contract's address is.
     /// </summary>
-    private static bool ParseNonInteractiveRefundWithoutReceiver(Dictionary<string, string> contractData)
+    private static EmulatorCovenants? ParseEmulatorCovenants(Dictionary<string, string> contractData)
     {
-        if (!contractData.TryGetValue("nonInteractiveRefundWithoutReceiver", out var value))
+        var emulator = contractData.GetValueOrDefault("emulator");
+        var niClaim = contractData.GetValueOrDefault("niClaimPkScript");
+        var niRefund = contractData.GetValueOrDefault("niRefundPkScript");
+        var present = (emulator is not null ? 1 : 0) + (niClaim is not null ? 1 : 0) +
+            (niRefund is not null ? 1 : 0);
+        if (present == 0)
         {
-            return false;
+            if (contractData.ContainsKey("nonInteractiveRefundWithoutReceiver"))
+            {
+                throw new ArgumentException(
+                    "nonInteractiveRefundWithoutReceiver without the emulator covenant keys it " +
+                    "extends: reading this as 'not set' would re-derive a script without the leaf");
+            }
+            return null;
         }
-        if (value != "1")
+        if (present != 3)
+        {
+            throw new ArgumentException(
+                "emulator covenant params are all-or-nothing: 'emulator', 'niClaimPkScript' and " +
+                "'niRefundPkScript' must all be present or all absent — a row carrying some was " +
+                "written for a leaf subset this contract no longer derives");
+        }
+
+        var flag = contractData.GetValueOrDefault("nonInteractiveRefundWithoutReceiver");
+        if (flag is not null && flag != "1")
         {
             throw new ArgumentException(
                 "nonInteractiveRefundWithoutReceiver must be \"1\" when present, got "
-                + JsonSerializer.Serialize(value));
+                + JsonSerializer.Serialize(flag));
         }
-        return true;
+
+        return new EmulatorCovenants(
+            ECXOnlyPubKey.Create(Convert.FromHexString(emulator!)),
+            Convert.FromHexString(niClaim!),
+            Convert.FromHexString(niRefund!),
+            flag is null ? EmulatorCovenantsLegacy.PreTimelockedRefund : null);
     }
 
     /// <summary>
