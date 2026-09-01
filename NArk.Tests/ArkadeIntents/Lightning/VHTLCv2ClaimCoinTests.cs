@@ -81,9 +81,10 @@ public class VHTLCv2ClaimCoinTests
         new Sequence(TimeSpan.FromSeconds(4096)),
         new Sequence(TimeSpan.FromSeconds(4608)),
         new Sequence(TimeSpan.FromSeconds(5120)),
-        ECXOnlyPubKey.Create(KeyBytes(0x05)),
-        nonInteractiveClaimPkScript: [0x51, 0x20, .. KeyBytes(0x06)],
-        nonInteractiveRefundPkScript: [0x51, 0x20, .. KeyBytes(0x07)]);
+        new EmulatorCovenants(
+            ECXOnlyPubKey.Create(KeyBytes(0x05)),
+            receiverPkScript: [0x51, 0x20, .. KeyBytes(0x06)],
+            senderPkScript: [0x51, 0x20, .. KeyBytes(0x07)]));
 
     private static OutputDescriptor Descriptor(byte fill) =>
         KeyExtensions.ParseOutputDescriptor(

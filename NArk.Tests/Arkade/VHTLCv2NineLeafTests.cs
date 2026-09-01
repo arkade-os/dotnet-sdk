@@ -9,9 +9,9 @@ using NBitcoin.Secp256k1;
 namespace NArk.Tests.Arkade;
 
 /// <summary>
-/// Pins the ninth, off-by-default leaf — <c>nonInteractiveRefundWithoutReceiver</c> — to the
-/// TypeScript SDK's own derivation, and pins that turning the flag on leaves the first eight
-/// leaves, and so every address derived without it, untouched.
+/// Pins the covenant suite's ninth leaf — <c>nonInteractiveRefundWithoutReceiver</c> — to the
+/// TypeScript SDK's own derivation, and pins that selecting the pre-timelocked-refund legacy
+/// shape leaves the first eight leaves, and so every address derived in that shape, untouched.
 /// </summary>
 /// <remarks>
 /// <c>vhtlc-v2-nine-leaf.json</c> is shared verbatim with the ts-sdk repo's own
@@ -27,7 +27,7 @@ public class VHTLCv2NineLeafTests
     [Test]
     public void NineLeafScript_MatchesSdkVectors()
     {
-        var contract = MakeContract(nonInteractiveRefundWithoutReceiver: true);
+        var contract = MakeContract(nineLeaf: true);
 
         var leaves = contract.GetTapScriptList().Select(LeafHex).ToArray();
 
@@ -37,10 +37,10 @@ public class VHTLCv2NineLeafTests
     }
 
     [Test]
-    public void WithoutTheFlag_TheAddressIsUnchanged()
+    public void LegacyShape_LeavesTheFirstEightLeavesUntouched()
     {
-        var eight = MakeContract(nonInteractiveRefundWithoutReceiver: false);
-        var nine = MakeContract(nonInteractiveRefundWithoutReceiver: true);
+        var eight = MakeContract(nineLeaf: false);
+        var nine = MakeContract(nineLeaf: true);
 
         Assert.That(eight.GetTapScriptList(), Has.Length.EqualTo(8));
         Assert.That(
@@ -64,7 +64,7 @@ public class VHTLCv2NineLeafTests
     [TestCase("nonInteractiveRefundWithoutReceiver")]
     public void EveryLeaf_MatchesTheSdkVector(string leaf)
     {
-        var contract = MakeContract(nonInteractiveRefundWithoutReceiver: true);
+        var contract = MakeContract(nineLeaf: true);
         var built = leaf switch
         {
             "claim" => contract.CreateClaimScript(),
@@ -83,10 +83,10 @@ public class VHTLCv2NineLeafTests
     }
 
     [Test]
-    public void RoundTrip_SerializesTheFlagAsTheStringOneAndOmitsItWhenUnset()
+    public void RoundTrip_SerializesTheFlagAsTheStringOneAndOmitsItForTheLegacyShape()
     {
-        var nine = MakeContract(nonInteractiveRefundWithoutReceiver: true);
-        var eight = MakeContract(nonInteractiveRefundWithoutReceiver: false);
+        var nine = MakeContract(nineLeaf: true);
+        var eight = MakeContract(nineLeaf: false);
 
         // Exact wire shape for this one flag: the key name and the value "1" (not "true") are
         // what let the FLAG ITSELF round-trip identically between the two SDKs. That is narrower
@@ -100,8 +100,12 @@ public class VHTLCv2NineLeafTests
 
         Assert.That(parsedNine, Is.Not.Null);
         Assert.That(parsedEight, Is.Not.Null);
-        Assert.That(parsedNine!.NonInteractiveRefundWithoutReceiver, Is.True);
-        Assert.That(parsedEight!.NonInteractiveRefundWithoutReceiver, Is.False);
+        Assert.That(parsedNine!.EmulatorCovenants, Is.Not.Null);
+        Assert.That(parsedNine.EmulatorCovenants!.Legacy, Is.Null);
+        Assert.That(parsedEight!.EmulatorCovenants, Is.Not.Null);
+        Assert.That(
+            parsedEight.EmulatorCovenants!.Legacy,
+            Is.EqualTo(EmulatorCovenantsLegacy.PreTimelockedRefund));
         Assert.That(
             parsedNine.GetArkAddress().ToString(false), Is.EqualTo(nine.GetArkAddress().ToString(false)));
         Assert.That(
@@ -115,7 +119,7 @@ public class VHTLCv2NineLeafTests
         // script — a different address — with no indication the row was corrupt. ts-sdk's
         // deserializeParams throws for the same reason; the two SDKs must fail identically here
         // rather than quietly disagreeing about what a contract's address is.
-        var nine = MakeContract(nonInteractiveRefundWithoutReceiver: true);
+        var nine = MakeContract(nineLeaf: true);
         var corrupted = nine.ToString().Replace(
             "nonInteractiveRefundWithoutReceiver=1", "nonInteractiveRefundWithoutReceiver=true");
 
@@ -126,26 +130,61 @@ public class VHTLCv2NineLeafTests
     }
 
     [Test]
-    public void RoundTrip_AbsentFlagIsFalseNotAThrow()
+    public void RoundTrip_AbsentFlagReadsAsTheLegacyShapeNotAThrow()
     {
-        // The negative space of the check above: an eight-leaf contract has no key at all, and
-        // that must keep parsing cleanly rather than being caught by the malformed-value guard.
-        var eight = MakeContract(nonInteractiveRefundWithoutReceiver: false);
+        // The negative space of the check above: a pre-timelocked-refund row has no flag key at
+        // all, and that must keep parsing cleanly — as the legacy shape, not as an error caught
+        // by the malformed-value guard.
+        var eight = MakeContract(nineLeaf: false);
 
         var parsed = ArkContractParser.Parse(eight.ToString(), Network.RegTest) as VHTLCv2Contract;
 
         Assert.That(parsed, Is.Not.Null);
-        Assert.That(parsed!.NonInteractiveRefundWithoutReceiver, Is.False);
+        Assert.That(
+            parsed!.EmulatorCovenants!.Legacy,
+            Is.EqualTo(EmulatorCovenantsLegacy.PreTimelockedRefund));
+        Assert.That(
+            parsed.GetArkAddress().ToString(false), Is.EqualTo(eight.GetArkAddress().ToString(false)));
     }
 
     [Test]
-    public void CreateNonInteractiveRefundWithoutReceiverScript_ThrowsWhenTheFlagIsOff()
+    public void WithoutTheSuite_TheContractIsThePlainSixLeafVhtlc()
     {
-        // Called directly on an eight-leaf contract this leaf is not in the taproot tree, so a
-        // witness built against it would be silently rejected on-chain with no SDK-level error —
-        // the guard turns that into an immediate, named failure instead. ts-sdk's equivalent
-        // accessor throws the identical message for the identical reason.
-        var eight = MakeContract(nonInteractiveRefundWithoutReceiver: false);
+        // The group is nullable: absent, the contract is exactly the six signature leaves, none
+        // of the covenant builders apply, and the serialized row carries no covenant keys — all
+        // of which must round-trip rather than coming back as a covenant-bearing shape.
+        var contract = new VHTLCv2Contract(
+            Descriptor(Fixture.Options.Server),
+            Descriptor(Fixture.Options.Sender),
+            Descriptor(Fixture.Options.Receiver),
+            new uint160(Convert.FromHexString(Fixture.Options.PreimageHash), false),
+            new LockTime(uint.Parse(Fixture.Options.RefundLocktime)),
+            ToSequence(Fixture.Options.UnilateralClaimDelay),
+            ToSequence(Fixture.Options.UnilateralRefundDelay),
+            ToSequence(Fixture.Options.UnilateralRefundWithoutReceiverDelay));
+
+        Assert.That(contract.GetTapScriptList(), Has.Length.EqualTo(6));
+        Assert.Throws<InvalidOperationException>(() => contract.CreateNonInteractiveClaimScript());
+        Assert.Throws<InvalidOperationException>(() => contract.CreateNonInteractiveRefundScript());
+        Assert.Throws<InvalidOperationException>(
+            () => contract.CreateNonInteractiveRefundWithoutReceiverScript());
+
+        var parsed = ArkContractParser.Parse(contract.ToString(), Network.RegTest) as VHTLCv2Contract;
+        Assert.That(parsed, Is.Not.Null);
+        Assert.That(parsed!.EmulatorCovenants, Is.Null);
+        Assert.That(
+            parsed.GetArkAddress().ToString(false),
+            Is.EqualTo(contract.GetArkAddress().ToString(false)));
+    }
+
+    [Test]
+    public void CreateNonInteractiveRefundWithoutReceiverScript_ThrowsWhenTheLegacyShapeIsSelected()
+    {
+        // Called directly on a pre-timelocked-refund contract this leaf is not in the taproot
+        // tree, so a witness built against it would be silently rejected on-chain with no
+        // SDK-level error — the guard turns that into an immediate, named failure instead.
+        // ts-sdk's equivalent accessor throws the identical message for the identical reason.
+        var eight = MakeContract(nineLeaf: false);
 
         var ex = Assert.Throws<InvalidOperationException>(
             () => eight.CreateNonInteractiveRefundWithoutReceiverScript());
@@ -161,7 +200,7 @@ public class VHTLCv2NineLeafTests
         Assert.That(Fixture.Options.NonInteractiveRefund.WithoutReceiver, Is.True);
     }
 
-    private static VHTLCv2Contract MakeContract(bool nonInteractiveRefundWithoutReceiver)
+    private static VHTLCv2Contract MakeContract(bool nineLeaf)
     {
         var o = Fixture.Options;
         return new VHTLCv2Contract(
@@ -173,12 +212,14 @@ public class VHTLCv2NineLeafTests
             unilateralClaimDelay: ToSequence(o.UnilateralClaimDelay),
             unilateralRefundDelay: ToSequence(o.UnilateralRefundDelay),
             unilateralRefundWithoutReceiverDelay: ToSequence(o.UnilateralRefundWithoutReceiverDelay),
-            // Both covenant leaves tweak the same emulator key; the fixture happens to carry it
-            // twice (once per leaf's options block) because that is how VHTLC.Options is shaped.
-            emulatorPubKey: XOnly(o.NonInteractiveRefund.EmulatorPubkey),
-            nonInteractiveClaimPkScript: Convert.FromHexString(o.NonInteractiveClaim.ReceiverPkScript),
-            nonInteractiveRefundPkScript: Convert.FromHexString(o.NonInteractiveRefund.SenderPkScript),
-            nonInteractiveRefundWithoutReceiver: nonInteractiveRefundWithoutReceiver);
+            // The fixture predates the all-or-nothing group and so stores the suite per leaf;
+            // both leaves carry the SAME emulator key by design, which is exactly what the
+            // group's single key encodes.
+            new EmulatorCovenants(
+                XOnly(o.NonInteractiveRefund.EmulatorPubkey),
+                receiverPkScript: Convert.FromHexString(o.NonInteractiveClaim.ReceiverPkScript),
+                senderPkScript: Convert.FromHexString(o.NonInteractiveRefund.SenderPkScript),
+                nineLeaf ? null : EmulatorCovenantsLegacy.PreTimelockedRefund));
     }
 
     private static Sequence ToSequence(FixtureDelay delay) => delay.Type switch

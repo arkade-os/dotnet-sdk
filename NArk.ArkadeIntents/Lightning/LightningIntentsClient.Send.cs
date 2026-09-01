@@ -421,7 +421,13 @@ public sealed partial class LightningIntentsClient
     /// same place.
     /// </remarks>
     public static ArkAddress RefundAddressOf(VHTLCv2Contract contract, NBitcoin.Secp256k1.ECXOnlyPubKey serverKey) =>
-        ArkAddress.FromScriptPubKey(new Script(contract.NonInteractiveRefundPkScript), serverKey);
+        ArkAddress.FromScriptPubKey(
+            new Script(
+                contract.EmulatorCovenants?.SenderPkScript
+                ?? throw new InvalidOperationException(
+                    "the contract carries no emulator covenant suite, so it commits to no refund " +
+                    "destination — this is not a corridor lockup")),
+            serverKey);
 
     // Builds both lockup shapes from the quote's binding fields and the maker's own data. The one
     // value taken from the non-binding half is `receiver_pk_script`, and only because every leaf
@@ -453,10 +459,14 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            LightningCorridor.NormalizeToXOnly(
-                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
-            nonInteractiveClaimPkScript: Convert.FromHexString(receiverPkScript),
-            nonInteractiveRefundPkScript: refundPkScript);
+            // The deployed reference solver funds the pre-timelocked-refund shape; derive that,
+            // since nothing on the wire says otherwise and the quoted address is the agreement.
+            new EmulatorCovenants(
+                LightningCorridor.NormalizeToXOnly(
+                    Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
+                receiverPkScript: Convert.FromHexString(receiverPkScript),
+                senderPkScript: refundPkScript,
+                EmulatorCovenantsLegacy.PreTimelockedRefund));
     }
 
     // The key the covenant's client-side refund leaves are built around, and the one that signs

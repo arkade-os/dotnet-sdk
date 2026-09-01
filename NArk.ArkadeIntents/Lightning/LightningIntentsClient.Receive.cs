@@ -274,7 +274,12 @@ public sealed partial class LightningIntentsClient
         // Reading it back rather than deriving afresh keeps a claim from ever landing somewhere the
         // swap did not name.
         var destination = ArkAddress.FromScriptPubKey(
-            new Script(contract.NonInteractiveClaimPkScript), serverInfo.SignerKey.ToXOnlyPubKey());
+            new Script(
+                contract.EmulatorCovenants?.ReceiverPkScript
+                ?? throw new InvalidOperationException(
+                    $"Swap '{swapId}'s lockup carries no emulator covenant suite, so it commits to " +
+                    "no claim destination — refusing to claim to an address the swap did not name.")),
+            serverInfo.SignerKey.ToXOnlyPubKey());
         var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)total), destination);
 
         var txid = await _spendingService.Spend(intent.WalletId, coins, [output], cancellationToken);
@@ -443,10 +448,14 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
-            LightningCorridor.NormalizeToXOnly(
-                Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
-            nonInteractiveClaimPkScript: payoutPkScript,
-            nonInteractiveRefundPkScript: Convert.FromHexString(solverRefundPkScript));
+            // The deployed reference solver funds the pre-timelocked-refund shape; derive that,
+            // since nothing on the wire says otherwise and the quoted address is the agreement.
+            new EmulatorCovenants(
+                LightningCorridor.NormalizeToXOnly(
+                    Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride))),
+                receiverPkScript: payoutPkScript,
+                senderPkScript: Convert.FromHexString(solverRefundPkScript),
+                EmulatorCovenantsLegacy.PreTimelockedRefund));
     }
 
 }
