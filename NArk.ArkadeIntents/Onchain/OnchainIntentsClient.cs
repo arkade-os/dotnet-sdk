@@ -250,12 +250,12 @@ public sealed class OnchainIntentsClient(
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             // The deployed reference solver funds the pre-timelocked-refund shape; derive that,
             // since nothing on the wire says otherwise and the quoted address is the agreement.
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 LightningCorridor.NormalizeToXOnly(
                     Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, EmulatorPubkeyOverride))),
                 receiverPkScript: Convert.FromHexString(receiverPkScript),
                 senderPkScript: refundPkScript,
-                EmulatorCovenantsLegacy.PreTimelockedRefund)));
+                NonInteractiveParametersLegacy.PreTimelockedRefund)));
     }
 
     /// <summary>The preimage, derived from the wallet so a lost record does not lose the claim.</summary>

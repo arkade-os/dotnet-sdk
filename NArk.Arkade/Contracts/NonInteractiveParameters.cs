@@ -5,7 +5,7 @@ namespace NArk.Arkade.Contracts;
 /// <summary>
 /// Which historical shape of the covenant suite to rebuild. Never for a new lockup.
 /// </summary>
-public enum EmulatorCovenantsLegacy
+public enum NonInteractiveParametersLegacy
 {
     /// <summary>
     /// The suite WITHOUT its timelocked refund leaf: the shape every emulator-covenant lockup
@@ -32,7 +32,7 @@ public enum EmulatorCovenantsLegacy
 /// destination — and BIP-341 tapscript sighashes committing to the tapleaf hash are what keep a
 /// signature for one leaf from replaying against another.
 /// </remarks>
-public sealed class EmulatorCovenants
+public sealed class NonInteractiveParameters
 {
     /// <summary>The emulator service's key, which every leaf in the suite tweaks.</summary>
     public ECXOnlyPubKey EmulatorPubKey { get; }
@@ -47,13 +47,13 @@ public sealed class EmulatorCovenants
     public byte[] SenderPkScript { get; }
 
     /// <summary>Set only to rebuild a lockup funded before the current suite shape shipped.</summary>
-    public EmulatorCovenantsLegacy? Legacy { get; }
+    public NonInteractiveParametersLegacy? Legacy { get; }
 
-    public EmulatorCovenants(
+    public NonInteractiveParameters(
         ECXOnlyPubKey emulatorPubKey,
         byte[] receiverPkScript,
         byte[] senderPkScript,
-        EmulatorCovenantsLegacy? legacy = null)
+        NonInteractiveParametersLegacy? legacy = null)
     {
         ValidateP2trPkScript(receiverPkScript, nameof(receiverPkScript));
         ValidateP2trPkScript(senderPkScript, nameof(senderPkScript));

@@ -82,11 +82,11 @@ public class ArkContractParserRegistrationTests
             new Sequence(TimeSpan.FromSeconds(2048)),
             // Model the shape a deployed solver-quoted lockup actually carries —
             // pre-timelocked-refund, same as every production call site.
-            new EmulatorCovenants(
+            new NonInteractiveParameters(
                 ECXOnlyPubKey.Create(new Key().PubKey.GetTaprootFullPubKey().OutputKey.ToBytes()),
                 pkScript,
                 pkScript,
-                EmulatorCovenantsLegacy.PreTimelockedRefund));
+                NonInteractiveParametersLegacy.PreTimelockedRefund));
     }
 
     private static OutputDescriptor Descriptor() =>
