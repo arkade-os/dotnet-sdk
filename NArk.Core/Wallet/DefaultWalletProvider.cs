@@ -129,7 +129,7 @@ public class DefaultWalletProvider(
             // already encodes — no string-sniff needed.
             return wallet.WalletType switch
             {
-                WalletType.HD => new HierarchicalDeterministicAddressProvider(clientTransport, safetyService, walletStorage, contractStorage, wallet, network, sweepDestination),
+                WalletType.HD => new HierarchicalDeterministicAddressProvider(clientTransport, safetyService, walletStorage, contractStorage, wallet, network),
                 WalletType.SingleKey => new SingleKeyAddressProvider(clientTransport, wallet, network, sweepDestination, logger),
                 _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
             };

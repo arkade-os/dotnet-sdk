@@ -16,8 +16,7 @@ public class HierarchicalDeterministicAddressProvider(
     IWalletStorage walletStorage,
     IContractStorage contractStorage,
     ArkWalletInfo wallet,
-    Network network,
-    ArkAddress? sweepDestination)
+    Network network)
     : IArkadeAddressProvider
 {
     ///<inheritdoc/>
@@ -90,15 +89,7 @@ public class HierarchicalDeterministicAddressProvider(
                 new ArkBoardingContract(
                     info.SignerKey, info.BoardingExit, await GetNextSigningDescriptor(cancellationToken)),
                 activityState),
-
-            // Auto-sweep destination: every send-to-self resolves to this one fixed Arkade
-            // address instead of a derived one, which is what drains the wallet through the
-            // sweeper and the simple intent scheduler. It is not ours to spend, so it is stored
-            // inactive — recorded, never subscribed.
-            NextContractPurpose.SendToSelf when sweepDestination is not null => (
-                new UnknownArkContract(sweepDestination, info.SignerKey, info.Network.ChainName == ChainName.Mainnet),
-                ContractActivityState.Inactive),
-
+            
             NextContractPurpose.SendToSelf =>
                 await SendToSelfContractAsync(info, inputContracts, cancellationToken),
 
