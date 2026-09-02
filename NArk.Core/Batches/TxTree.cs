@@ -74,6 +74,11 @@ public class TxTree : IEnumerable<TxTree>
         return 1 + Children.Values.Sum(child => child.NodeCount());
     }
 
+    /// <summary>
+    /// Validates this node and, recursively, every descendant: one input per node, children
+    /// matching their parent's output index and amount, and a final node — <see cref="LockTime.Zero"/>
+    /// with <see cref="Sequence.Final"/> on its input — so it can be broadcast when needed.
+    /// </summary>
     public void Validate()
     {
         var tx = Root.GetGlobalTransaction();
