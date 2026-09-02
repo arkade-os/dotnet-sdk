@@ -250,9 +250,71 @@ public class LightningReceiveGatesTests
         Assert.DoesNotThrow(() => LightningReceiveGates.AssertReceivable(quote, invoice, expiry - 600));
     }
 
+    // ─── ResolveLockupContract: which shape the solver will actually fund ─────
+
+    [Test]
+    public void ResolveLockupContract_AcceptsTheEightLeafShapeWhenItMatches()
+    {
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: eightLeaf.GetArkAddress().ToString(false));
+
+        var resolved = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(eightLeaf));
+    }
+
+    [Test]
+    public void ResolveLockupContract_AcceptsTheNineLeafShapeWhenItMatches()
+    {
+        // A solver funding the full nine-leaf suite funds an address this client would never have
+        // derived on its own before — the swap must still be recognised.
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: nineLeaf.GetArkAddress().ToString(false));
+
+        var resolved = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(nineLeaf));
+    }
+
+    [Test]
+    public void ResolveLockupContract_ThrowsWhenTheQuoteMatchesNeitherShape()
+    {
+        // The refusal that must never soften: on this corridor the SOLVER funds the lockup, so
+        // accepting an address matching neither derivation would have the client import and watch a
+        // script nothing says the solver will ever pay.
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: "ark1qsomewhere-else");
+
+        var ex = Assert.Throws<LockupAddressMismatchException>(() =>
+            LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(ex!.DerivedEightLeaf, Is.EqualTo(eightLeaf.GetArkAddress().ToString(false)));
+            Assert.That(ex.DerivedNineLeaf, Is.EqualTo(nineLeaf.GetArkAddress().ToString(false)));
+            Assert.That(ex.Quoted, Is.EqualTo("ark1qsomewhere-else"));
+        });
+    }
+
+    [Test]
+    public void ResolveLockupContract_ThrowsWhenTheSolverSentNoneAtAll()
+    {
+        // lockup_address is a REQUIRED field of the RFQ protocol's receive quote — a solver that
+        // omits it is already out of spec. This corridor used to default to its single derived shape
+        // here, which was correct while only one shape existed; now that a second does, defaulting
+        // would mean trusting exactly the solver that broke the contract this check exists to hold it
+        // to. Send and Onchain already refuse the same way — this brings Receive in line.
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
+        var quote = Quote(Invoice, AmountSats, lockupAddress: null);
+
+        Assert.Throws<LockupAddressMismatchException>(() =>
+            LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
+    }
+
     private static RfqQuote<LightningReceiveQuoteProfile> Quote(
         string? invoice, long toAmount, long? fromAmount = null,
-        long validUntil = 1_800_000_900, long refundLocktime = 1_800_605_184) => new()
+        long validUntil = 1_800_000_900, long refundLocktime = 1_800_605_184,
+        string? lockupAddress = null) => new()
     {
         RfqId = new string('9', 64),
         Pair = LightningReceiveProfile.Pair,
@@ -261,7 +323,7 @@ public class LightningReceiveGatesTests
         SolverPubkey = new string('e', 64),
         ValidUntil = validUntil,
         RefundLocktime = refundLocktime,
-        Profile = new LightningReceiveQuoteProfile { Invoice = invoice },
+        Profile = new LightningReceiveQuoteProfile { Invoice = invoice, LockupAddress = lockupAddress },
     };
 
     /// <summary>

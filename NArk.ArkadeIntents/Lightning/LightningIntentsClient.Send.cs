@@ -131,12 +131,15 @@ public sealed partial class LightningIntentsClient
             SolverTerms.AssertFeeWithinAdvertised(solverCard, quote);
         }
 
-        var contract = await DeriveLockupAsync(
+        var (eightLeaf, nineLeaf) = await DeriveLockupAsync(
             quote, decoded, refundPkScript, clientRefund, serverInfo, cancellationToken);
-        var lockupArkAddress = contract.GetArkAddress();
-        var lockupAddress = lockupArkAddress.ToString(serverInfo.Network == Network.Main);
+        var isMainnet = serverInfo.Network == Network.Main;
 
-        LightningSendGates.VerifyLockupAddress(quote, lockupAddress);
+        // Accepts whichever of the two shapes the solver quoted; still refuses to fund when the
+        // quote matches neither. Nothing on the wire says which one this solver has deployed.
+        var contract = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet);
+        var lockupArkAddress = contract.GetArkAddress();
+        var lockupAddress = lockupArkAddress.ToString(isMainnet);
 
         // Checked here, immediately before the irreversible step — not when the quote arrived.
         LightningSendGates.AssertFundable(
@@ -432,7 +435,7 @@ public sealed partial class LightningIntentsClient
     // merkle root: without the solver's own claim destination the address cannot be reproduced at
     // all. Safe to take, because that leaf pays the solver — a wrong value costs it a spending path
     // and the maker nothing.
-    private async Task<VHTLCv2Contract> DeriveLockupAsync(
+    private async Task<(VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf)> DeriveLockupAsync(
         RfqQuote<LightningSendQuoteProfile> quote,
         BOLT11PaymentRequest invoice,
         byte[] refundPkScript,
@@ -450,7 +453,9 @@ public sealed partial class LightningIntentsClient
         var emulatorPubKey = LightningCorridor.NormalizeToXOnly(
             Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride)));
 
-        return new VHTLCv2Contract(
+        // Both suite shapes: which one the solver funded is exactly the question the quoted-address
+        // comparison answers, so neither is guessed here.
+        return LightningCorridor.DeriveBothLockupShapes(
             serverInfo.SignerKey,
             // Roles are positional: on this corridor the maker sends and the solver receives.
             sender: clientRefund,
@@ -462,7 +467,8 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
                 Convert.FromHexString(receiverPkScript), emulatorPubKey),
-            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(refundPkScript, emulatorPubKey));
+            refundPkScript: refundPkScript,
+            refundEmulatorPubKey: emulatorPubKey);
     }
 
     // The key the covenant's client-side refund leaves are built around, and the one that signs

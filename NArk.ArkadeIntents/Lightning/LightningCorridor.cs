@@ -136,6 +136,63 @@ public static class LightningCorridor
         KeyExtensions.ParseOutputDescriptor("02" + xOnlyHex.ToLowerInvariant(), network);
 
     /// <summary>
+    /// Build both lockup shapes the covenant suite can take — without and with the timelocked
+    /// refund leaf — from one shared parameter set.
+    /// </summary>
+    /// <param name="server">The Arkade server's key.</param>
+    /// <param name="sender">The party that funds.</param>
+    /// <param name="receiver">The party that claims.</param>
+    /// <param name="hash">HASH160 of the preimage.</param>
+    /// <param name="refundLocktime">When the sender's timelocked refund path opens.</param>
+    /// <param name="unilateralClaimDelay">The claim CSV delay.</param>
+    /// <param name="unilateralRefundDelay">The refund CSV delay.</param>
+    /// <param name="unilateralRefundWithoutReceiverDelay">The refund-without-receiver CSV delay.</param>
+    /// <param name="nonInteractiveClaim">The covenant claim leaf, identical in both shapes.</param>
+    /// <param name="refundPkScript">Where both shapes' refund covenant must pay.</param>
+    /// <param name="refundEmulatorPubKey">The emulator key both shapes' refund covenant tweaks.</param>
+    /// <returns>
+    /// The eight-leaf and nine-leaf contracts, differing from each other in nothing but that leaf.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Nothing on the wire says which shape a given solver has deployed, so a client cannot know in
+    /// advance which to build. All three corridors derive both here and accept whichever matches the
+    /// solver's quoted address. That stays safe because both shapes pin the refund covenant to the
+    /// SAME destination as each other — whatever <paramref name="refundPkScript"/> names, which is
+    /// the client's own address on the send and onchain-send corridors but the SOLVER's on the
+    /// receive corridor. Either way the two candidates cannot disagree about it.
+    /// </para>
+    /// <para>
+    /// The refund leaf is taken apart — destination and key, not a built
+    /// <see cref="VHTLCv2NonInteractiveRefund"/> — precisely so there is no
+    /// <see cref="VHTLCv2NonInteractiveRefund.WithoutReceiver"/> for this method to override and
+    /// silently discard. A caller cannot pin the flag here, because pinning it is the one thing
+    /// deriving both shapes exists to avoid.
+    /// </para>
+    /// </remarks>
+    public static (VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf) DeriveBothLockupShapes(
+        OutputDescriptor server,
+        OutputDescriptor sender,
+        OutputDescriptor receiver,
+        uint160 hash,
+        LockTime refundLocktime,
+        Sequence unilateralClaimDelay,
+        Sequence unilateralRefundDelay,
+        Sequence unilateralRefundWithoutReceiverDelay,
+        VHTLCv2NonInteractiveClaim nonInteractiveClaim,
+        byte[] refundPkScript,
+        ECXOnlyPubKey refundEmulatorPubKey)
+    {
+        VHTLCv2Contract Build(bool withoutReceiver) => new(
+            server, sender, receiver, hash, refundLocktime,
+            unilateralClaimDelay, unilateralRefundDelay, unilateralRefundWithoutReceiverDelay,
+            nonInteractiveClaim,
+            new VHTLCv2NonInteractiveRefund(refundPkScript, refundEmulatorPubKey, withoutReceiver));
+
+        return (Build(withoutReceiver: false), Build(withoutReceiver: true));
+    }
+
+    /// <summary>
     /// Rebuild a funded lockup from the contract imported before it was funded.
     /// </summary>
     /// <param name="contractStorage">Where the lockup was imported.</param>

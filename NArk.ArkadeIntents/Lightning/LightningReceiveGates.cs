@@ -1,4 +1,5 @@
 using BTCPayServer.Lightning;
+using NArk.Arkade.Contracts;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NBitcoin;
@@ -216,5 +217,57 @@ public static class LightningReceiveGates
         }
 
         return payDeadline;
+    }
+
+    /// <summary>
+    /// Pick which of the client's two derived lockup shapes the solver will actually fund; refuse if
+    /// neither matches, including when the solver sends no address at all.
+    /// </summary>
+    /// <param name="quote">The quote carrying the compare-only address.</param>
+    /// <param name="eightLeaf">The candidate without the timelocked refund leaf.</param>
+    /// <param name="nineLeaf">The candidate with it.</param>
+    /// <param name="isMainnet">Which network's address encoding to compare under.</param>
+    /// <returns>Whichever candidate matched.</returns>
+    /// <remarks>
+    /// <para>
+    /// The solver funds this corridor's lockup, so getting the shape right here is not merely a
+    /// funding gate the way it is on the send leg — a wrong guess would leave the client watching an
+    /// address the solver never pays, and the swap would simply never be seen as funded. Comparing
+    /// against both shapes, rather than one guessed one, is what makes this tolerant of a solver
+    /// either side of the timelocked refund leaf.
+    /// </para>
+    /// <para>
+    /// <c>lockup_address</c> is a REQUIRED field of the RFQ protocol's receive quote (the spec marks
+    /// optional fields explicitly elsewhere — <c>payment_evidence</c>, <c>claim_packet</c> — this one
+    /// is not among them). A solver that omits it is already out of spec, and defaulting to a guessed
+    /// shape would mean trusting exactly the solver that broke the one contract this check exists to
+    /// hold it to. This corridor used to default to its single derived shape here, which was correct
+    /// while only one shape existed; now that a second does, an absent address is refused the same
+    /// way Send and Onchain already refuse it. That is a deliberate tightening of a pre-existing
+    /// lenient path, not a bug fix — anything relying on the old leniency was already out of spec.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="LockupAddressMismatchException">The quoted address matches neither candidate.</exception>
+    public static VHTLCv2Contract ResolveLockupContract(
+        RfqQuote<LightningReceiveQuoteProfile> quote,
+        VHTLCv2Contract eightLeaf,
+        VHTLCv2Contract nineLeaf,
+        bool isMainnet)
+    {
+        var quoted = quote.Profile?.LockupAddress;
+
+        var eightAddress = eightLeaf.GetArkAddress().ToString(isMainnet);
+        if (string.Equals(eightAddress, quoted, StringComparison.Ordinal))
+        {
+            return eightLeaf;
+        }
+
+        var nineAddress = nineLeaf.GetArkAddress().ToString(isMainnet);
+        if (string.Equals(nineAddress, quoted, StringComparison.Ordinal))
+        {
+            return nineLeaf;
+        }
+
+        throw new LockupAddressMismatchException(eightAddress, nineAddress, quoted);
     }
 }
