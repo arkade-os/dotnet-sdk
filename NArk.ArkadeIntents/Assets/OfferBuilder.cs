@@ -43,6 +43,7 @@ public static class OfferBuilder
     public static ArkProgramContract BuildContract(Offer offer, OutputDescriptor server, Network network, OutputDescriptor maker)
     {
         var program = offer.WantAsset is not null ? ArkadeIntentPrograms.BtcToAsset : ArkadeIntentPrograms.AssetToBtc;
+        program = WithExitClosure(program, offer.ExitDelay);
 
         var args = new Dictionary<string, AsmToken>
         {
@@ -64,10 +65,38 @@ public static class OfferBuilder
     }
 
     /// <summary>
+    /// Append the maker's unilateral exit path: a CSV of the maker alone, so once the VTXO is
+    /// unrolled and the delay matures they spend it without the solver or the server. Both other
+    /// paths need <c>$server</c>, so without this leaf a maker whose server goes away cannot get
+    /// the deposit back.
+    /// </summary>
+    /// <remarks>
+    /// Order is load-bearing: the tree is assembled from the leaf list, so <c>exit</c> must stay
+    /// third, after <c>fulfill</c> and <c>cancel</c>. Moving it changes the swap address.
+    /// </remarks>
+    private static ArkadeProgram WithExitClosure(ArkadeProgram program, Sequence? exit)
+    {
+        if (exit is not { } delay) return program;
+
+        var functions = new Dictionary<string, ArkadeFunction>(program.Functions)
+        {
+            ["exit"] = new()
+            {
+                Tapscript = new TapscriptSegment { Signers = [AsmToken.FromText("$user")], Csv = delay },
+            },
+        };
+        return new ArkadeProgram { Version = program.Version, Name = program.Name, Params = program.Params, Functions = functions };
+    }
+
+    /// <summary>
     /// Build a fresh offer: compile the covenant, compute its address + scriptPubKey, and serialize
     /// the wire payload. Exactly one of <paramref name="wantAsset"/> (BTC→asset) or
     /// <paramref name="offerAsset"/> (asset→BTC) must be set.
     /// </summary>
+    /// <param name="exitDelay">
+    /// The maker's unilateral exit delay, from the server's own <c>UnilateralExitDelay</c>. Omitting
+    /// it leaves the maker with no path that does not need the server.
+    /// </param>
     public static CreatedOffer CreateOffer(
         byte[] makerPkScript,
         byte[] makerPublicKey,
@@ -76,7 +105,8 @@ public static class OfferBuilder
         Network network,
         long wantAmount,
         AssetId? wantAsset = null,
-        AssetId? offerAsset = null)
+        AssetId? offerAsset = null,
+        Sequence? exitDelay = null)
     {
         if (wantAsset is null == (offerAsset is null))
         {
@@ -93,6 +123,7 @@ public static class OfferBuilder
             MakerPkScript = makerPkScript,
             MakerPublicKey = makerPublicKey,
             EmulatorPubkey = emulatorPubkey,
+            ExitDelay = exitDelay,
         };
 
         var contract = BuildContract(offer, server, network);
