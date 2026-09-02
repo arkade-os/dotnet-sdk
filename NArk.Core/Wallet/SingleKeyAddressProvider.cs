@@ -15,7 +15,6 @@ public class SingleKeyAddressProvider(
     IClientTransport transport,
     ArkWalletInfo wallet,
     Network network,
-    ArkAddress? sweepingAddress,
     ILogger? logger = null
 ) : IArkadeAddressProvider
 {
@@ -62,11 +61,6 @@ public class SingleKeyAddressProvider(
             NextContractPurpose.Boarding => (
                 (ArkContract)new ArkBoardingContract(info.SignerKey, info.BoardingExit, signingDescriptor),
                 activityState),
-
-            // Collaborative-exit sweep target: a fixed external address, never tracked.
-            NextContractPurpose.SendToSelf when sweepingAddress is not null => (
-                new UnknownArkContract(sweepingAddress, info.SignerKey, info.Network.ChainName == ChainName.Mainnet),
-                ContractActivityState.Inactive),
 
             NextContractPurpose.SendToSelf => (
                 new ArkPaymentContract(info.SignerKey, info.UnilateralExit, signingDescriptor),

@@ -130,7 +130,7 @@ public class DefaultWalletProvider(
             return wallet.WalletType switch
             {
                 WalletType.HD => new HierarchicalDeterministicAddressProvider(clientTransport, safetyService, walletStorage, contractStorage, wallet, network),
-                WalletType.SingleKey => new SingleKeyAddressProvider(clientTransport, wallet, network, sweepDestination, logger),
+                WalletType.SingleKey => new SingleKeyAddressProvider(clientTransport, wallet, network, logger),
                 _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
             };
         }
