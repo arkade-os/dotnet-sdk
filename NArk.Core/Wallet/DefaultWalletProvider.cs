@@ -104,12 +104,6 @@ public class DefaultWalletProvider(
             logger?.LogTrace("[wallet-probe] GetAddressProvider: GetServerInfo={InfoMs}ms LoadWallet={LoadMs}ms",
                 infoMs, swLoad.ElapsedMilliseconds);
 
-            ArkAddress? sweepDestination = null;
-            if (ShouldUseDestination(wallet))
-            {
-                sweepDestination = ArkAddress.Parse(wallet.Destination!);
-            }
-
             // Cross-check the stored descriptor against the one derived from the local nsec —
             // only meaningful when we actually have the secret. Watch-only/remote single-key
             // wallets keep the stored AccountDescriptor verbatim.
