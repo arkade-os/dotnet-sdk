@@ -193,6 +193,44 @@ public static class LightningCorridor
     }
 
     /// <summary>
+    /// Match a solver's quoted address against both derived lockup shapes.
+    /// </summary>
+    /// <param name="eightLeaf">The candidate without the timelocked refund leaf.</param>
+    /// <param name="nineLeaf">The candidate with it.</param>
+    /// <param name="quoted">The address the solver sent for comparison, if it sent one.</param>
+    /// <param name="isMainnet">Which network's address encoding to compare under.</param>
+    /// <returns>
+    /// The candidate that matched, or <c>null</c> if neither did, together with both derived
+    /// addresses — which the caller needs either way, since a refusal has to name them.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The comparison itself, without the refusal: all three corridors decide identically, but each
+    /// refuses in its own exception type, so the decision is shared here and the refusal stays at the
+    /// call site. A fourth lockup shape is then one edit rather than three.
+    /// </para>
+    /// <para>
+    /// A <c>null</c> <paramref name="quoted"/> matches NEITHER candidate — a derived address is never
+    /// null — so a solver that sends no address is refused rather than defaulting to a guessed shape.
+    /// That is the whole point of returning <c>null</c> here rather than a fallback.
+    /// </para>
+    /// </remarks>
+    public static (VHTLCv2Contract? Matched, string EightLeafAddress, string NineLeafAddress)
+        MatchQuotedLockup(
+            VHTLCv2Contract eightLeaf, VHTLCv2Contract nineLeaf, string? quoted, bool isMainnet)
+    {
+        var eightAddress = eightLeaf.GetArkAddress().ToString(isMainnet);
+        var nineAddress = nineLeaf.GetArkAddress().ToString(isMainnet);
+
+        var matched =
+            string.Equals(eightAddress, quoted, StringComparison.Ordinal) ? eightLeaf
+            : string.Equals(nineAddress, quoted, StringComparison.Ordinal) ? nineLeaf
+            : null;
+
+        return (matched, eightAddress, nineAddress);
+    }
+
+    /// <summary>
     /// Rebuild a funded lockup from the contract imported before it was funded.
     /// </summary>
     /// <param name="contractStorage">Where the lockup was imported.</param>

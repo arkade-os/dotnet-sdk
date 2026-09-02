@@ -159,19 +159,9 @@ public static class LightningSendGates
         bool isMainnet)
     {
         var quoted = quote.Profile?.LockupAddress;
+        var (matched, eightAddress, nineAddress) =
+            LightningCorridor.MatchQuotedLockup(eightLeaf, nineLeaf, quoted, isMainnet);
 
-        var eightAddress = eightLeaf.GetArkAddress().ToString(isMainnet);
-        if (string.Equals(eightAddress, quoted, StringComparison.Ordinal))
-        {
-            return eightLeaf;
-        }
-
-        var nineAddress = nineLeaf.GetArkAddress().ToString(isMainnet);
-        if (string.Equals(nineAddress, quoted, StringComparison.Ordinal))
-        {
-            return nineLeaf;
-        }
-
-        throw new LockupAddressMismatchException(eightAddress, nineAddress, quoted);
+        return matched ?? throw new LockupAddressMismatchException(eightAddress, nineAddress, quoted);
     }
 }

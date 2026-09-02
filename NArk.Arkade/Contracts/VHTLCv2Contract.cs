@@ -17,8 +17,9 @@ namespace NArk.Arkade.Contracts;
 
 /// <summary>
 /// The VHTLC the Lightning and off-board swap corridors settle into: the six leaves of the
-/// reference VHTLC construction, plus up to two whose co-signer is an emulator key tweaked by a
-/// covenant that pins where the spend may pay.
+/// reference VHTLC construction, plus up to three whose co-signer is an emulator key tweaked by a
+/// covenant that pins where the spend may pay — a claim leaf, a refund leaf, and that refund's
+/// timelocked twin, the last two sharing one covenant key because they pin one destination.
 /// </summary>
 /// <remarks>
 /// <para>

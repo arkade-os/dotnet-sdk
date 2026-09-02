@@ -247,19 +247,10 @@ public sealed class OnchainIntentsClient(
     internal static VHTLCv2Contract ResolveLockupContract(
         VHTLCv2Contract eightLeaf, VHTLCv2Contract nineLeaf, string? quoted, bool isMainnet)
     {
-        var eightAddress = eightLeaf.GetArkAddress().ToString(isMainnet);
-        if (string.Equals(eightAddress, quoted, StringComparison.Ordinal))
-        {
-            return eightLeaf;
-        }
+        var (matched, eightAddress, nineAddress) =
+            LightningCorridor.MatchQuotedLockup(eightLeaf, nineLeaf, quoted, isMainnet);
 
-        var nineAddress = nineLeaf.GetArkAddress().ToString(isMainnet);
-        if (string.Equals(nineAddress, quoted, StringComparison.Ordinal))
-        {
-            return nineLeaf;
-        }
-
-        throw new OnchainSendNotFundableException(
+        return matched ?? throw new OnchainSendNotFundableException(
             OnchainSendRefusalReason.IncompleteQuote,
             $"our Arkade lockup derivation is {eightAddress} (eight-leaf) or {nineAddress} (nine-leaf), "
             + $"the solver quoted {quoted ?? "(none)"} — refusing to fund an address matching neither");
