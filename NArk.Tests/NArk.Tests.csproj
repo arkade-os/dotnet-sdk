@@ -40,9 +40,10 @@
     <ItemGroup>
       <Content Include="Assets\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
       <!--
-        Arkade fixtures are sourced verbatim from the emulator reference
-        (arkade-os/emulator pkg/arkade/testdata) so cross-SDK divergence
-        fails CI on both sides.
+        Arkade fixtures are sourced verbatim from a reference implementation —
+        the emulator (arkade-os/emulator pkg/arkade/testdata) for the packet
+        vectors, the TypeScript SDK's own vhtlc-vectors.test.ts for the VHTLCv2
+        leaves — so cross-SDK divergence fails CI on both sides.
       -->
       <Content Include="Arkade\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
       <!--

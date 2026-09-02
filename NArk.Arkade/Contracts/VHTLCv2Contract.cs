@@ -31,13 +31,12 @@ namespace NArk.Arkade.Contracts;
 /// what is wrong.
 /// </para>
 /// <para>
-/// The ladder is six leaves, seven or eight, depending on which optional covenant leaves are asked
+/// The ladder is six leaves through nine, depending on which optional covenant leaves are asked
 /// for: <see cref="NonInteractiveClaim"/> and <see cref="NonInteractiveRefund"/> are independently
-/// optional and append in that order. The RFQ corridors ask for both, which is the eight-leaf shape
-/// the fixtures pin — but a contract built with a different set is a different address, not a
-/// variant of the same one, so the set is part of what the two sides must agree on.
-/// <c>VHTLC.Options</c>'s ninth leaf, <c>nonInteractiveRefundWithoutReceiver</c>, is not modelled
-/// here yet; see <see cref="VHTLCv2NonInteractiveRefund"/>.
+/// optional and append in that order, and the refund leaf can carry its timelocked twin as a ninth.
+/// The RFQ corridors ask for both without the twin, which is the eight-leaf shape the fixtures pin
+/// — but a contract built with a different set is a different address, not a variant of the same
+/// one, so the set is part of what the two sides must agree on.
 /// </para>
 /// <para>
 /// Roles are positional, not fixed to a party. On <c>arkade:BTC-&gt;lightning:BTC</c> the trader is
@@ -225,6 +224,10 @@ public class VHTLCv2Contract : ArkContract
         {
             yield return CreateNonInteractiveRefundScript();
         }
+        if (NonInteractiveRefund is { WithoutReceiver: true })
+        {
+            yield return CreateNonInteractiveRefundWithoutReceiverScript();
+        }
     }
 
     /// <summary>Preimage + receiver + server.</summary>
@@ -280,6 +283,29 @@ public class VHTLCv2Contract : ArkContract
         new CollaborativePathArkTapScript(
             NonInteractiveRefundCovenantKey,
             new NofNMultisigTapScript([ServerKey, ReceiverKey]));
+
+    /// <summary>
+    /// Server + the covenant key after <see cref="RefundLocktime"/>, pinned to the sender's own
+    /// payout — the one refund tier needing no participant signature at all.
+    /// </summary>
+    /// <remarks>
+    /// The same covenant key as <see cref="CreateNonInteractiveRefundScript"/>, because both leaves
+    /// pin the same destination. That is a guarantee rather than a coincidence: the key is derived
+    /// once in the constructor and read by both, so the two cannot drift.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// This contract carries no non-interactive refund leaf, or carries one without its timelocked
+    /// twin. Returning a builder for a leaf that is not in the committed merkle root would produce a
+    /// witness rejected on-chain, with nothing at the SDK level saying why.
+    /// </exception>
+    public ScriptBuilder CreateNonInteractiveRefundWithoutReceiverScript() =>
+        NonInteractiveRefund is { WithoutReceiver: true }
+            ? new CollaborativePathArkTapScript(
+                NonInteractiveRefundCovenantKey,
+                new CompositeTapScript(
+                    new LockTimeTapScript(RefundLocktime), new NofNMultisigTapScript([ServerKey])))
+            : throw new InvalidOperationException(
+                "this VHTLC has no non-interactive refund-without-receiver leaf");
 
     /// <summary>
     /// The ArkadeScript the non-interactive claim leaf's key commits to, which the emulator runs
@@ -492,6 +518,14 @@ public class VHTLCv2Contract : ArkContract
         {
             data["niRefundPkScript"] = Convert.ToHexString(refund.SenderPkScript).ToLowerInvariant();
             data["niRefundEmulator"] = Convert.ToHexString(refund.EmulatorPubKey.ToBytes()).ToLowerInvariant();
+            if (refund.WithoutReceiver)
+            {
+                // Key name and the value "1" — not "true" — are ts-sdk's, deliberately, so this one
+                // flag round-trips identically between the two implementations. That is narrower
+                // than "a contract round-trips across SDKs": it does not, starting with the type
+                // discriminator, and the neighbouring keys here are named nothing like ts-sdk's.
+                data["nonInteractiveRefundWithoutReceiver"] = "1";
+            }
         }
 
         if (Asset is { } asset)
@@ -529,6 +563,24 @@ public class VHTLCv2Contract : ArkContract
         var refundPkScript = contractData.GetValueOrDefault("niRefundPkScript");
         var refundEmulator = contractData.GetValueOrDefault("niRefundEmulator");
         RequireBothOrNeither(refundPkScript, refundEmulator, "niRefundPkScript", "niRefundEmulator");
+
+        // Absent means false — every row written before this leaf existed carries no such key, and
+        // those rows are the eight-leaf shape. But PRESENT-AND-WRONG is refused rather than read as
+        // absent: that would silently rebuild the eight-leaf script, a DIFFERENT address, with
+        // nothing saying the row was corrupt. ts-sdk's deserializeParams refuses it for the same
+        // reason, so the two cannot quietly disagree about what a contract's address is.
+        var withoutReceiverFlag = contractData.GetValueOrDefault("nonInteractiveRefundWithoutReceiver");
+        if (withoutReceiverFlag is not null && withoutReceiverFlag != "1")
+        {
+            throw new FormatException(
+                $"'nonInteractiveRefundWithoutReceiver' must be \"1\" when present, got \"{withoutReceiverFlag}\"");
+        }
+        if (withoutReceiverFlag is not null && refundPkScript is null)
+        {
+            throw new FormatException(
+                "'nonInteractiveRefundWithoutReceiver' without the 'niRefund*' keys the leaf it names " +
+                "is built from: reading this as 'not set' would rebuild a script without that leaf");
+        }
 
         var assetTxid = contractData.GetValueOrDefault("assetTxid");
         var assetGroupIndex = contractData.GetValueOrDefault("assetGroupIndex");
@@ -572,7 +624,8 @@ public class VHTLCv2Contract : ArkContract
                 ? null
                 : new VHTLCv2NonInteractiveRefund(
                     Convert.FromHexString(refundPkScript),
-                    ECXOnlyPubKey.Create(Convert.FromHexString(refundEmulator!))),
+                    ECXOnlyPubKey.Create(Convert.FromHexString(refundEmulator!)),
+                    withoutReceiverFlag is not null),
             assetTxid is null
                 ? null
                 : new VHTLCv2Asset(Convert.FromHexString(assetTxid), int.Parse(assetGroupIndex!)),
