@@ -167,14 +167,14 @@ public sealed partial class LightningIntentsClient
         LightningReceiveGates.AssertReceivable(
             quote, invoice, _time.GetUtcNow().ToUnixTimeSeconds(), _maxPayAmountSats);
 
-        var contract = await DeriveLockupAsync(
+        var (eightLeaf, nineLeaf) = await DeriveLockupAsync(
             quote, sealed_.PaymentHash, payoutDescriptor, payoutPkScript, serverInfo, cancellationToken);
-        var lockupAddress = contract.GetArkAddress().ToString(serverInfo.Network == Network.Main);
+        var isMainnet = serverInfo.Network == Network.Main;
 
-        if (quote.Profile?.LockupAddress is { } quoted && quoted != lockupAddress)
-        {
-            throw new LockupAddressMismatchException(lockupAddress, quoted);
-        }
+        // Accepts whichever of the two shapes the solver quoted, and refuses when it quoted neither
+        // — including when it quoted nothing, which is already out of spec on this corridor.
+        var contract = LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet);
+        var lockupAddress = contract.GetArkAddress().ToString(isMainnet);
 
         // Imported and recorded BEFORE the invoice is handed out. Once a payer has it the solver
         // can fund at any moment, and from that point the swap is only claimable by whoever holds
@@ -420,7 +420,7 @@ public sealed partial class LightningIntentsClient
     // invert here relative to the send leg: the solver funds, so it is the covenant's
     // destinations follow them — <c>nonInteractiveClaim</c> pays the client,
     // <c>nonInteractiveRefund</c> pays the solver.
-    private async Task<VHTLCv2Contract> DeriveLockupAsync(
+    private async Task<(VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf)> DeriveLockupAsync(
         RfqQuote<LightningReceiveQuoteProfile> quote,
         string paymentHash,
         OutputDescriptor payoutDescriptor,
@@ -438,7 +438,9 @@ public sealed partial class LightningIntentsClient
         var emulatorPubKey = LightningCorridor.NormalizeToXOnly(
             Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, _emulatorPubkeyOverride)));
 
-        return new VHTLCv2Contract(
+        // Both suite shapes: which one this solver funds is exactly the question the quoted-address
+        // comparison answers, so neither is guessed here.
+        return LightningCorridor.DeriveBothLockupShapes(
             serverInfo.SignerKey,
             sender: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
             receiver: payoutDescriptor,
@@ -448,8 +450,9 @@ public sealed partial class LightningIntentsClient
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(payoutPkScript, emulatorPubKey),
-            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(
-                Convert.FromHexString(solverRefundPkScript), emulatorPubKey));
+            // The solver's own refund destination on this corridor — roles invert relative to send.
+            refundPkScript: Convert.FromHexString(solverRefundPkScript),
+            refundEmulatorPubKey: emulatorPubKey);
     }
 
 }

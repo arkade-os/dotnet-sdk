@@ -64,6 +64,10 @@ public sealed record VHTLCv2NonInteractiveClaim(
 /// </summary>
 /// <param name="SenderPkScript">Where the refund must pay — the sender's P2TR scriptPubKey (34 bytes).</param>
 /// <param name="EmulatorPubKey">The emulator key the covenant tweaks.</param>
+/// <param name="WithoutReceiver">
+/// Also append the timelocked twin, <c>nonInteractiveRefundWithoutReceiver</c>. Defaults to
+/// <c>false</c>, which is the eight-leaf shape every lockup funded so far carries.
+/// </param>
 /// <remarks>
 /// <para>
 /// Every OTHER refund-side leaf requires the sender's own signature, so if the sender permanently
@@ -74,13 +78,21 @@ public sealed record VHTLCv2NonInteractiveClaim(
 /// rather than making the sender wait out the locktime.
 /// </para>
 /// <para>
-/// <c>VHTLC.Options</c> also admits a timelocked twin of this leaf,
-/// <c>nonInteractiveRefundWithoutReceiver</c> — the server plus the same covenant co-signer, after
-/// the refund locktime, needing no participant signature at all. It is deliberately not modelled
-/// here yet: it appends a ninth leaf and so moves the address, no corridor asks for it, and it lands
-/// in its own change rather than riding along with this one.
+/// <see cref="WithoutReceiver"/> adds the one refund tier that needs NO participant signature at
+/// all: the server plus this same covenant co-signer, after <c>RefundLocktime</c>. <c>refund</c> and
+/// <c>refundWithoutReceiver</c> need the sender's key, <c>nonInteractiveRefund</c> needs the
+/// receiver's; a sender who funds a lockup and then vanishes is refundable through this leaf alone,
+/// by anyone, and still only to their pre-committed address.
+/// </para>
+/// <para>
+/// It is opt-in because it APPENDS A NINTH LEAF and so moves the address. The two shapes are
+/// different contracts, not variants of one: a lockup already funded in the eight-leaf shape keeps
+/// it permanently, since a leaf cannot be retrofitted onto an address already committed to. Both
+/// leaves pin the same destination and so share one covenant key, which is why they are one record
+/// rather than two — deriving the key twice would make that agreement a coincidence.
 /// </para>
 /// </remarks>
 public sealed record VHTLCv2NonInteractiveRefund(
     byte[] SenderPkScript,
-    ECXOnlyPubKey EmulatorPubKey);
+    ECXOnlyPubKey EmulatorPubKey,
+    bool WithoutReceiver = false);

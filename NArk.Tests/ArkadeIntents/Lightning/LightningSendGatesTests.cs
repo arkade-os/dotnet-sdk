@@ -121,33 +121,82 @@ public class LightningSendGatesTests
     }
 
     [Test]
-    public void VerifyLockupAddress_ReturnsTheAddressWhenItMatches()
+    public void ResolveLockupContract_AcceptsTheEightLeafShapeWhenItMatches()
     {
-        var quote = Quote(lockupAddress: "ark1qlockup");
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
+        var quote = Quote(lockupAddress: eightLeaf.GetArkAddress().ToString(false));
 
-        Assert.That(LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"), Is.EqualTo("ark1qlockup"));
+        var resolved = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(eightLeaf));
     }
 
     [Test]
-    public void VerifyLockupAddress_ThrowsOnAnyDifference()
+    public void ResolveLockupContract_AcceptsTheNineLeafShapeWhenItMatches()
     {
+        // The whole point: a solver funding the full nine-leaf suite quotes an address this client
+        // would never have derived on its own before, and the swap must still go through rather than
+        // refuse a perfectly good quote.
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
+        var quote = Quote(lockupAddress: nineLeaf.GetArkAddress().ToString(false));
+
+        var resolved = LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false);
+
+        Assert.That(resolved, Is.SameAs(nineLeaf));
+    }
+
+    [Test]
+    public void ResolveLockupContract_ThrowsWhenTheQuoteMatchesNeitherShape()
+    {
+        // The refusal that must never soften: an address matching neither of our own derivations
+        // must never be accepted, or a wrong or malicious solver could walk the maker into funding a
+        // script nobody here can rebuild.
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
         var quote = Quote(lockupAddress: "ark1qsomewhere-else");
 
         var ex = Assert.Throws<LockupAddressMismatchException>(() =>
-            LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"));
+            LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
 
-        Assert.That(ex!.Derived, Is.EqualTo("ark1qlockup"));
-        Assert.That(ex.Quoted, Is.EqualTo("ark1qsomewhere-else"));
+        Assert.Multiple(() =>
+        {
+            Assert.That(ex!.DerivedEightLeaf, Is.EqualTo(eightLeaf.GetArkAddress().ToString(false)));
+            Assert.That(ex.DerivedNineLeaf, Is.EqualTo(nineLeaf.GetArkAddress().ToString(false)));
+            Assert.That(ex.Quoted, Is.EqualTo("ark1qsomewhere-else"));
+        });
     }
 
     [Test]
-    public void VerifyLockupAddress_ThrowsWhenTheSolverSentNoneAtAll()
+    public void ResolveLockupContract_ThrowsWhenTheSolverSentNoneAtAll()
     {
-        // A missing address must not read as "nothing to compare, carry on".
+        // A missing address must not read as "nothing to compare, carry on" — true of one candidate
+        // before, and just as true of two now.
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
         var quote = Quote(lockupAddress: null);
 
         Assert.Throws<LockupAddressMismatchException>(() =>
-            LightningSendGates.VerifyLockupAddress(quote, "ark1qlockup"));
+            LightningSendGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
+    }
+
+    [Test]
+    public void TheTwoCandidates_DifferOnlyInTheTimelockedRefundLeaf()
+    {
+        // What makes accepting either safe. If they could differ anywhere else, "whichever matched"
+        // would be choosing between two genuinely different agreements rather than two encodings of
+        // the same one.
+        var (eightLeaf, nineLeaf) = LockupShapes.Candidates();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(eightLeaf.GetTapScriptList(), Has.Length.EqualTo(8));
+            Assert.That(nineLeaf.GetTapScriptList(), Has.Length.EqualTo(9));
+            Assert.That(
+                eightLeaf.GetTapScriptList().Select(l => l.Script.ToHex()),
+                Is.EqualTo(nineLeaf.GetTapScriptList().Take(8).Select(l => l.Script.ToHex())));
+            // The refund destination especially: both shapes must pay the same place.
+            Assert.That(
+                eightLeaf.NonInteractiveRefund!.SenderPkScript,
+                Is.EqualTo(nineLeaf.NonInteractiveRefund!.SenderPkScript));
+        });
     }
 
     private static RfqQuote<LightningSendQuoteProfile> Quote(

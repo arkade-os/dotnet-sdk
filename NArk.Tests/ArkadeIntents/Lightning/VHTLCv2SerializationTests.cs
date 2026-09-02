@@ -31,6 +31,7 @@ public class VHTLCv2SerializationTests
     [TestCase("asset")]
     [TestCase("strict-sats")]
     [TestCase("strict-asset")]
+    [TestCase("nine-leaf")]
     public void EveryShape_RebuildsTheSameAddress(string shape)
     {
         var contract = Contract(shape);
@@ -46,6 +47,7 @@ public class VHTLCv2SerializationTests
 
     [TestCase("asset")]
     [TestCase("strict-asset")]
+    [TestCase("nine-leaf")]
     public void EveryShape_RebuildsTheSameOptions(string shape)
     {
         // The address above is the assertion that matters, but it collapses every option into 32
@@ -61,6 +63,8 @@ public class VHTLCv2SerializationTests
             Assert.That(parsed.NonInteractiveClaim?.Strict, Is.EqualTo(contract.NonInteractiveClaim?.Strict));
             Assert.That(parsed.NonInteractiveRefund?.SenderPkScript,
                 Is.EqualTo(contract.NonInteractiveRefund?.SenderPkScript));
+            Assert.That(parsed.NonInteractiveRefund?.WithoutReceiver,
+                Is.EqualTo(contract.NonInteractiveRefund?.WithoutReceiver));
             Assert.That(parsed.Asset?.GenesisTxid, Is.EqualTo(contract.Asset?.GenesisTxid));
             Assert.That(parsed.Asset?.GroupIndex, Is.EqualTo(contract.Asset?.GroupIndex));
         });
@@ -141,6 +145,50 @@ public class VHTLCv2SerializationTests
         Assert.Throws<FormatException>(() => VHTLCv2Contract.Parse(row, Network.RegTest));
     }
 
+    [TestCase("true", TestName = "A without-receiver flag written as a boolean")]
+    [TestCase("0", TestName = "A without-receiver flag written as a zero")]
+    [TestCase("", TestName = "A without-receiver flag written empty")]
+    public void AMalformedWithoutReceiverFlag_IsRefused(string value)
+    {
+        // Read as "not set" this rebuilds the EIGHT-leaf ladder — a different merkle root, a
+        // different address — off a row that asked for nine. ts-sdk refuses the same values, so the
+        // two SDKs cannot quietly disagree about what a contract's address is.
+        var row = Row("nine-leaf");
+        row["nonInteractiveRefundWithoutReceiver"] = value;
+
+        Assert.Throws<FormatException>(() => VHTLCv2Contract.Parse(row, Network.RegTest));
+    }
+
+    [Test]
+    public void AWithoutReceiverFlagWithoutTheLeafItExtends_IsRefused()
+    {
+        // The flag adds a timelocked twin to the non-interactive refund leaf. Without that leaf in
+        // the row there is nothing to extend, so the row describes a ladder this class cannot build.
+        var row = Row("nine-leaf");
+        row.Remove("niRefundPkScript");
+        row.Remove("niRefundEmulator");
+
+        Assert.Throws<FormatException>(() => VHTLCv2Contract.Parse(row, Network.RegTest));
+    }
+
+    [Test]
+    public void AnAbsentWithoutReceiverFlag_ReadsAsEightLeavesRatherThanThrowing()
+    {
+        // The negative space of the two checks above. Every covenant row written before this leaf
+        // existed carries no such key, and all of them must keep parsing — as the eight-leaf shape,
+        // not as an error caught by the malformed-value guard.
+        var row = Row("both");
+
+        var parsed = (VHTLCv2Contract)VHTLCv2Contract.Parse(row, Network.RegTest);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(row, Does.Not.ContainKey("nonInteractiveRefundWithoutReceiver"));
+            Assert.That(parsed.NonInteractiveRefund!.WithoutReceiver, Is.False);
+            Assert.That(parsed.GetTapScriptList(), Has.Length.EqualTo(8));
+        });
+    }
+
     private static Dictionary<string, string> Row(string shape) =>
         IArkContractParser.GetContractData(Contract(shape).ToString());
 
@@ -162,7 +210,8 @@ public class VHTLCv2SerializationTests
 
         VHTLCv2NonInteractiveClaim Claim(VHTLCv2StrictClaim? strict = null) =>
             new(claimPkScript, emulator, strict);
-        VHTLCv2NonInteractiveRefund Refund() => new(refundPkScript, emulator);
+        VHTLCv2NonInteractiveRefund Refund(bool withoutReceiver = false) =>
+            new(refundPkScript, emulator, withoutReceiver);
 
         var (claim, refund, denomination) = shape switch
         {
@@ -173,6 +222,7 @@ public class VHTLCv2SerializationTests
             "asset" => (Claim(), Refund(), asset),
             "strict-sats" => (Claim(new VHTLCv2StrictClaim(25_000)), null, null),
             "strict-asset" => (Claim(new VHTLCv2StrictClaim(25_000, 1_234_567)), Refund(), asset),
+            "nine-leaf" => (Claim(), Refund(withoutReceiver: true), null),
             _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "unknown shape"),
         };
 

@@ -137,11 +137,15 @@ public sealed class OnchainIntentsClient(
         var htlc = DeriveHtlc(quote, preimage, clientKey, serverInfo.Network);
         AssertMatches(htlc.Address.ToString(), quote.Profile?.HtlcAddress, "L1 HTLC");
 
-        var contract = await DeriveLockupAsync(
+        var (eightLeaf, nineLeaf) = await DeriveLockupAsync(
             quote, paymentHash, refundArkAddress.ScriptPubKey.ToBytes(), clientKey, serverInfo);
+        var isMainnet = serverInfo.Network == Network.Main;
+
+        // Accepts whichever of the two shapes the solver quoted; refusing to fund is still the
+        // outcome when the quote matches neither.
+        var contract = ResolveLockupContract(eightLeaf, nineLeaf, quote.Profile?.LockupAddress, isMainnet);
         var lockupArkAddress = contract.GetArkAddress();
-        var lockupAddress = lockupArkAddress.ToString(serverInfo.Network == Network.Main);
-        AssertMatches(lockupAddress, quote.Profile?.LockupAddress, "Arkade lockup");
+        var lockupAddress = lockupArkAddress.ToString(isMainnet);
 
         // Imported before funding, recorded before the spend — the same ordering the other corridors
         // keep, and for the same reason: a crash between the money moving and the record existing is
@@ -223,8 +227,37 @@ public sealed class OnchainIntentsClient(
         }
     }
 
-    /// <summary>The Arkade covenant, built exactly as the Lightning send leg builds its own.</summary>
-    private async Task<VHTLCv2Contract> DeriveLockupAsync(
+    /// <summary>
+    /// Accept whichever of the client's two derived lockup shapes matches the solver's quoted
+    /// address; refuse if neither does.
+    /// </summary>
+    /// <param name="eightLeaf">The candidate without the timelocked refund leaf.</param>
+    /// <param name="nineLeaf">The candidate with it.</param>
+    /// <param name="quoted">The address the solver sent for comparison.</param>
+    /// <param name="isMainnet">Which network's address encoding to compare under.</param>
+    /// <returns>Whichever candidate matched.</returns>
+    /// <remarks>
+    /// Unlike <see cref="AssertMatches"/> — which the L1 HTLC has no need of, having only ever had
+    /// one shape — the Arkade lockup is a <see cref="VHTLCv2Contract"/>, whose covenant suite's
+    /// timelocked refund leaf nothing on the wire distinguishes. Accepting either derived shape is
+    /// safe because both pin the refund covenant to the client's own address; what must never happen
+    /// is accepting one that matches neither.
+    /// </remarks>
+    /// <exception cref="OnchainSendNotFundableException">The quoted address matches neither candidate.</exception>
+    internal static VHTLCv2Contract ResolveLockupContract(
+        VHTLCv2Contract eightLeaf, VHTLCv2Contract nineLeaf, string? quoted, bool isMainnet)
+    {
+        var (matched, eightAddress, nineAddress) =
+            LightningCorridor.MatchQuotedLockup(eightLeaf, nineLeaf, quoted, isMainnet);
+
+        return matched ?? throw new OnchainSendNotFundableException(
+            OnchainSendRefusalReason.IncompleteQuote,
+            $"our Arkade lockup derivation is {eightAddress} (eight-leaf) or {nineAddress} (nine-leaf), "
+            + $"the solver quoted {quoted ?? "(none)"} — refusing to fund an address matching neither");
+    }
+
+    /// <summary>Both Arkade covenant shapes, built exactly as the Lightning send leg builds its own.</summary>
+    private async Task<(VHTLCv2Contract EightLeaf, VHTLCv2Contract NineLeaf)> DeriveLockupAsync(
         RfqQuote<OnchainSendQuoteProfile> quote,
         string paymentHash,
         byte[] refundPkScript,
@@ -241,7 +274,9 @@ public sealed class OnchainIntentsClient(
         var emulatorPubKey = LightningCorridor.NormalizeToXOnly(
             Convert.FromHexString(EmulatorPubKeys.Resolve(serverInfo.NetworkName, EmulatorPubkeyOverride)));
 
-        return await Task.FromResult(new VHTLCv2Contract(
+        // Both suite shapes: which one the solver funded is exactly the question the quoted-address
+        // comparison answers, so neither is guessed here.
+        return await Task.FromResult(LightningCorridor.DeriveBothLockupShapes(
             serverInfo.SignerKey,
             sender: clientKey,
             receiver: LightningCorridor.DescriptorForXOnly(quote.SolverPubkey, serverInfo.Network),
@@ -252,7 +287,8 @@ public sealed class OnchainIntentsClient(
             new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
             nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
                 Convert.FromHexString(receiverPkScript), emulatorPubKey),
-            nonInteractiveRefund: new VHTLCv2NonInteractiveRefund(refundPkScript, emulatorPubKey)));
+            refundPkScript: refundPkScript,
+            refundEmulatorPubKey: emulatorPubKey));
     }
 
     /// <summary>The preimage, derived from the wallet so a lost record does not lose the claim.</summary>
