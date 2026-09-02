@@ -83,6 +83,15 @@ public class TxTree : IEnumerable<TxTree>
         if (nbOfInputs != 1)
             throw new InvalidOperationException($"unexpected number of inputs: {nbOfInputs}, expected 1");
 
+        // A pre-signed node has to be broadcastable the moment it is needed: a locktime or a
+        // non-final sequence would let the operator stall an unroll past its own sweep.
+        if (tx.LockTime != LockTime.Zero)
+            throw new InvalidOperationException($"unexpected locktime: {tx.LockTime}, expected 0");
+
+        var sequence = tx.Inputs[0].Sequence;
+        if (sequence != Sequence.Final)
+            throw new InvalidOperationException($"unexpected sequence: {sequence}, expected final");
+
         if (Children.Count > nbOfOutputs - 1)
             throw new InvalidOperationException($"unexpected number of children: {Children.Count}, expected maximum {nbOfOutputs - 1}");
 
