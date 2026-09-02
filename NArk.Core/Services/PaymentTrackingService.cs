@@ -3,13 +3,11 @@ using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Intents;
 using NArk.Abstractions.Payments;
 using NArk.Abstractions.VTXOs;
-using NArk.Swaps.Abstractions;
-using NArk.Swaps.Models;
 
-namespace NArk.Swaps.Services;
+namespace NArk.Core.Services;
 
 /// <summary>
-/// Hosted service that subscribes to protocol events (VTXOs, intents, swaps) and
+/// Hosted service that subscribes to protocol events (VTXOs and intents) and
 /// automatically updates payment and payment request statuses.
 /// Registered via <see cref="NArk.Storage.EfCore.Hosting.StorageServiceCollectionExtensions.AddArkPaymentTracking"/>.
 /// </summary>
@@ -18,11 +16,10 @@ public class PaymentTrackingService(
     IPaymentRequestStorage paymentRequestStorage,
     IVtxoStorage vtxoStorage,
     IIntentStorage intentStorage,
-    ISwapStorage swapStorage,
     ILogger<PaymentTrackingService> logger) : IHostedService, IDisposable
 {
     // Serializes VTXO processing to prevent race conditions when multiple VTXOs
-    // arrive for the same payment request in the same batch round.
+    // arrive for the same payment request in the same batch.
     private readonly SemaphoreSlim _vtxoLock = new(1, 1);
     private bool _disposed;
 
@@ -30,7 +27,6 @@ public class PaymentTrackingService(
     {
         vtxoStorage.VtxosChanged += OnVtxoChanged;
         intentStorage.IntentChanged += OnIntentChanged;
-        swapStorage.SwapsChanged += OnSwapChanged;
         logger.LogInformation("PaymentTrackingService started");
         return Task.CompletedTask;
     }
@@ -164,82 +160,10 @@ public class PaymentTrackingService(
         }
     }
 
-    /// <summary>
-    /// When a swap state changes, update linked outbound payments.
-    /// </summary>
-    private async void OnSwapChanged(object? sender, ArkSwap swap)
-    {
-        try
-        {
-            var payments = await paymentStorage.GetPayments(swapIds: [swap.SwapId]);
-
-            foreach (var payment in payments)
-            {
-                if (payment.Status != ArkPaymentStatus.Pending) continue;
-
-                var newStatus = swap.Status switch
-                {
-                    ArkSwapStatus.Settled => ArkPaymentStatus.Completed,
-                    ArkSwapStatus.Failed => ArkPaymentStatus.Failed,
-                    ArkSwapStatus.Refunded => ArkPaymentStatus.Failed,
-                    _ => ArkPaymentStatus.Pending
-                };
-
-                if (newStatus == ArkPaymentStatus.Pending) continue;
-
-                var failReason = newStatus == ArkPaymentStatus.Failed
-                    ? swap.FailReason ?? $"Swap {swap.Status}"
-                    : null;
-
-                await paymentStorage.UpdatePaymentStatus(
-                    payment.WalletId, payment.PaymentId, newStatus, failReason);
-
-                logger.LogInformation(
-                    "Payment {PaymentId} updated to {Status} from swap {SwapId}",
-                    payment.PaymentId, newStatus, swap.SwapId);
-            }
-
-            if (swap.Status == ArkSwapStatus.Settled &&
-                swap.SwapType == ArkSwapType.ReverseSubmarine)
-            {
-                await HandleReverseSwapSettled(swap);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error processing swap {SwapId} for payment tracking", swap.SwapId);
-        }
-    }
-
-    /// <summary>
-    /// Reverse submarine swaps settle Lightning → Ark. Asset tracking is not applicable here
-    /// because Lightning invoices are BTC-only; the VTXO that arrives will be tracked separately
-    /// via <see cref="OnVtxoChanged"/> which handles assets.
-    /// </summary>
-    private async Task HandleReverseSwapSettled(ArkSwap swap)
-    {
-        var requests = await paymentRequestStorage.GetPaymentRequests(
-            walletIds: [swap.WalletId],
-            statuses: [ArkPaymentRequestStatus.Pending, ArkPaymentRequestStatus.PartiallyPaid]);
-
-        foreach (var request in requests)
-        {
-            if (request.SwapId != swap.SwapId) continue;
-
-            var receivedAmount = request.ReceivedAmount + (ulong)swap.ExpectedAmount;
-            var (newStatus, overpayment) = ResolveRequestStatus(request, receivedAmount);
-
-            await paymentRequestStorage.UpdatePaymentRequestStatus(
-                request.WalletId, request.RequestId, newStatus, receivedAmount, overpayment);
-            break;
-        }
-    }
-
     private void Unsubscribe()
     {
         vtxoStorage.VtxosChanged -= OnVtxoChanged;
         intentStorage.IntentChanged -= OnIntentChanged;
-        swapStorage.SwapsChanged -= OnSwapChanged;
     }
 
     public void Dispose()

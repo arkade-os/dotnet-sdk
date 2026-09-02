@@ -8,7 +8,7 @@ namespace NArk.Core.Services;
 /// Orchestrates VTXO delegation to an external delegator service (e.g. Fulmine).
 /// The client creates a partially signed intent and forfeit transactions,
 /// then sends them to the delegator which registers the intent and participates
-/// in batch rounds on the owner's behalf before VTXOs expire.
+/// in batches on the owner's behalf before VTXOs expire.
 /// </summary>
 public class DelegationService(
     IEnumerable<IDelegationTransformer> transformers,
@@ -29,7 +29,7 @@ public class DelegationService(
 
     /// <summary>
     /// Delegates the refresh of VTXOs by sending a partially signed intent and forfeit transactions
-    /// to the delegator service. The delegator will register the intent and join batch rounds
+    /// to the delegator service. The delegator will register the intent and join batches
     /// on behalf of the owner when the VTXOs approach expiration.
     /// </summary>
     /// <param name="intentMessage">The intent message in plain-text (stringified JSON).</param>

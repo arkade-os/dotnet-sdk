@@ -5,7 +5,6 @@ using NArk.Abstractions.Safety;
 using NArk.Abstractions.VTXOs;
 using NArk.Storage.EfCore;
 using NArk.Storage.EfCore.Hosting;
-using NArk.Swaps.Abstractions;
 
 namespace NArk.Tests.End2End.TestPersistance;
 
@@ -20,7 +19,6 @@ internal class TestStorage : IDisposable
     public IVtxoStorage VtxoStorage { get; }
     public IContractStorage ContractStorage { get; }
     public IIntentStorage IntentStorage { get; }
-    public ISwapStorage SwapStorage { get; }
 
     public TestStorage(ISafetyService safetyService)
     {
@@ -35,7 +33,6 @@ internal class TestStorage : IDisposable
         VtxoStorage = _serviceProvider.GetRequiredService<IVtxoStorage>();
         ContractStorage = _serviceProvider.GetRequiredService<IContractStorage>();
         IntentStorage = _serviceProvider.GetRequiredService<IIntentStorage>();
-        SwapStorage = _serviceProvider.GetRequiredService<ISwapStorage>();
     }
 
     /// <summary>
@@ -51,33 +48,6 @@ internal class TestStorage : IDisposable
         services.AddArkEfCoreStorage<TestDbContext>();
         var sp = services.BuildServiceProvider();
         return sp.GetRequiredService<IIntentStorage>();
-    }
-
-    /// <summary>
-    /// Creates a standalone swap storage backed by its own in-memory database.
-    /// Use when a test needs a swap storage independent of the main storage.
-    /// </summary>
-    public static ISwapStorage CreateSwapStorage()
-    {
-        var dbName = $"Test_{Guid.NewGuid():N}";
-        var services = new ServiceCollection();
-        services.AddDbContextFactory<TestDbContext>(options =>
-            options.UseInMemoryDatabase(dbName));
-        services.AddArkEfCoreStorage<TestDbContext>();
-        var sp = services.BuildServiceProvider();
-        return sp.GetRequiredService<ISwapStorage>();
-    }
-
-    /// <summary>
-    /// Clears all swap records from the database. Used for testing swap restoration.
-    /// </summary>
-    public async Task ClearSwaps()
-    {
-        var factory = _serviceProvider.GetRequiredService<IArkDbContextFactory>();
-        await using var db = await factory.CreateDbContextAsync();
-        var swapEntities = db.Set<Storage.EfCore.Entities.ArkSwapEntity>();
-        swapEntities.RemoveRange(swapEntities);
-        await db.SaveChangesAsync();
     }
 
     public void Dispose() => _serviceProvider.Dispose();

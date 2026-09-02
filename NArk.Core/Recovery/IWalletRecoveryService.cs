@@ -1,17 +1,16 @@
 using NArk.Abstractions.Recovery;
 
-namespace NArk.Swaps.Recovery;
+namespace NArk.Core.Recovery;
 
 /// <summary>
 /// Wallet-type-agnostic recovery entry point. Given a wallet id, rebuilds local
-/// state from on-chain / indexer / boltz sources: contracts (incl. legacy script
-/// variants under deprecated server signers), the HD derivation index, funds
-/// (VTXOs), boltz swap data, and any in-flight Ark transactions.
+/// state from on-chain / indexer sources: contracts (incl. legacy script variants
+/// under deprecated server signers), the HD derivation index, funds (VTXOs), and
+/// any in-flight Arkade transactions.
 /// <para>
-/// Dispatches by wallet type: HD wallets get a gap-limit index scan (which also
-/// restores boltz swaps via the discovery providers); SingleKey wallets — whose
-/// contract set is fixed by their one key — re-derive that contract and restore
-/// swaps directly. Both then finalize pending transactions and sync funds.
+/// Dispatches by wallet type: HD wallets get a gap-limit index scan; SingleKey
+/// wallets — whose contract set is fixed by their one key — re-derive that
+/// contract. Both then finalize pending transactions and sync funds.
 /// </para>
 /// </summary>
 public interface IWalletRecoveryService

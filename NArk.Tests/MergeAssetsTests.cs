@@ -1,5 +1,5 @@
 using NArk.Abstractions.VTXOs;
-using NArk.Swaps.Services;
+using NArk.Core.Services;
 
 namespace NArk.Tests;
 

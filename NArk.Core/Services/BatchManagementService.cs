@@ -172,7 +172,7 @@ public class BatchManagementService(
                 // subscription silently skipped by UpdateTopicsAsync's null-stream
                 // guard, with no retry. Left unsubscribed, the intent never receives
                 // its BatchStartedEvent, never participates in signing, and gets
-                // re-proposed every batch round forever (a permanent settle stall).
+                // re-proposed every batch forever (a permanent settle stall).
                 // Now that the stream is live, reconcile by re-subscribing every
                 // active intent's topics. UpdateStreamTopics add is idempotent, so
                 // re-adding already-subscribed topics is a no-op.

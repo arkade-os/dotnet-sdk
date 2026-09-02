@@ -5,7 +5,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <WarningsAsErrors>nullable</WarningsAsErrors>
-        <PackageDescription>Entity Framework Core storage implementations for the Ark protocol .NET SDK. Provider-agnostic persistence for VTXOs, contracts, intents, swaps, and wallets.</PackageDescription>
+        <PackageDescription>Entity Framework Core storage implementations for the Ark protocol .NET SDK. Provider-agnostic persistence for VTXOs, contracts, intents, and wallets.</PackageDescription>
     </PropertyGroup>
 
     <ItemGroup>
@@ -17,7 +17,6 @@
 
     <ItemGroup>
         <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
-        <ProjectReference Include="..\NArk.Swaps\NArk.Swaps.csproj" />
     </ItemGroup>
 
 </Project>

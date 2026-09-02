@@ -11,6 +11,7 @@ using NBitcoin.Scripting;
 
 namespace NArk.Core.Contracts;
 
+[Obsolete("Use VHTLCv2 from ArkadeIntents package")]
 public class VHTLCContract : ArkContract
 {
     public byte[]? Preimage { get; }

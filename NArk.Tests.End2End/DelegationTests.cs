@@ -178,7 +178,7 @@ public class DelegationTests
         var preBatchBalance = await AssetTestHelpers.GetAssetBalance(wallet.vtxoStorage, assetId);
         Assert.That(preBatchBalance, Is.EqualTo(1000UL), "Pre-batch asset balance should be 1000");
 
-        // Set up batch round services
+        // Set up batch services
         var chainTimeProvider = new NBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
         var intentStorage = TestStorage.CreateIntentStorage();
 
@@ -233,7 +233,7 @@ public class DelegationTests
         await intentSync.StartAsync(CancellationToken.None);
         await newSubmittedIntentTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
 
-        // Step 3: Participate in batch round
+        // Step 3: Participate in a batch
         await using var batchManager = new BatchManagementService(
             intentStorage, wallet.clientTransport, wallet.vtxoStorage,
             wallet.contracts, wallet.walletProvider, coinService,
@@ -502,7 +502,7 @@ public class DelegationTests
                 // settlement) can surface as two different observed txids for the *same* logical
                 // spend, which would false-positive here. arkd's `is_preconfirmed` flag
                 // (ArkVtxo.Preconfirmed) is the actual ground truth: it only flips to false once
-                // the vtxo is settled via a finalized batch round — exactly what auto-renewal is
+                // the vtxo is settled via a finalized batch — exactly what auto-renewal is
                 // supposed to produce. Require both: a new outpoint AND settled-not-preconfirmed.
                 if (current is not null && current.OutPoint != lastOutpoint && !current.Preconfirmed)
                 {
@@ -514,22 +514,22 @@ public class DelegationTests
             }
 
             Assert.That(renewedOutpoint, Is.Not.Null,
-                $"Delegator did not renew the asset VTXO during batch round {round} within 75s " +
+                $"Delegator did not renew the asset VTXO during batch {round} within 75s " +
                 $"(last outpoint was {lastOutpoint})");
 
             var balance = await AssetTestHelpers.GetAssetBalance(wallet.vtxoStorage, assetId);
             Assert.That(balance, Is.EqualTo(1000UL),
-                $"Asset balance should stay at 1000 after batch round {round}");
+                $"Asset balance should stay at 1000 after batch {round}");
 
             TestContext.Progress.WriteLine(
-                $"Batch round {round}: asset VTXO auto-renewed by delegator to outpoint {renewedOutpoint}");
+                $"Batch {round}: asset VTXO auto-renewed by delegator to outpoint {renewedOutpoint}");
 
             lastOutpoint = renewedOutpoint;
             renewalCount++;
         }
 
         Assert.That(renewalCount, Is.EqualTo(2),
-            "Expected the delegator to auto-renew the asset VTXO across 2 consecutive batch rounds");
+            "Expected the delegator to auto-renew the asset VTXO across 2 consecutive batches");
 
         // Still parked at a delegate contract — not swept, not collapsed to a plain payment contract.
         var finalVtxos = await wallet.vtxoStorage.GetVtxos(includeSpent: false);
@@ -540,7 +540,7 @@ public class DelegationTests
             "Asset VTXO should still be at a delegate contract after multiple auto-renewals");
 
         TestContext.Progress.WriteLine(
-            "Delegation monitor kept the asset VTXO alive across 2 consecutive batch rounds without owner intervention");
+            "Delegation monitor kept the asset VTXO alive across 2 consecutive batches without owner intervention");
     }
 
     private static async Task<ArkVtxo?> GetAssetVtxo(IVtxoStorage vtxoStorage, string assetId)

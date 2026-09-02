@@ -5,6 +5,7 @@ using NArk.Core.Sweeper;
 
 namespace NArk.Swaps.Policies;
 
+[Obsolete]
 public class SwapSweepPolicy : ISweepPolicy
 {
     public async IAsyncEnumerable<ArkCoin> SweepAsync(IEnumerable<ArkCoin> coins,

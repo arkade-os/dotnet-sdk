@@ -1,18 +1,18 @@
 using System.Text.Json.Nodes;
+using NArk.Tests.End2End.Core;
 using NBitcoin;
-using NArk.Tests.End2End.Swaps;
 
 namespace NArk.Tests.End2End.Common;
 
 /// <summary>
-/// Ensures Fulmine has settled ARK VTXOs before tests that need Boltz ARK liquidity.
+/// Ensures Fulmine has settled Arkade VTXOs before tests that are funded from it.
 /// </summary>
 public static class FulmineLiquidityHelper
 {
     /// <summary>
-    /// Ensures Fulmine has enough *spendable* ARK VTXOs by settling (which renews
+    /// Ensures Fulmine has enough *spendable* Arkade VTXOs by settling (which renews
     /// expired/recoverable VTXOs) and, when genuinely underfunded, boarding fresh BTC first.
-    /// Call this after Boltz is healthy but before tests that create BTC→ARK or reverse swaps.
+    /// Call this before any test that receives funds from Fulmine.
     /// </summary>
     /// <remarks>
     /// The raw <c>/api/v1/balance</c> amount also counts VTXOs that have passed their
@@ -20,11 +20,11 @@ public static class FulmineLiquidityHelper
     /// fails with <c>{"code":2,"message":"missing vtxos"}</c>. VTXOs on the regtest stack
     /// live only ~50 minutes, so a long-lived stack hits this constantly. Gate on the
     /// spendable subset (from <c>/api/v1/vtxos</c>) instead, and recover via settle:
-    /// a settle round re-anchors the expired funds into a fresh spendable set.
+    /// a settle re-anchors the expired funds into a fresh spendable set.
     /// </remarks>
     public static async Task EnsureArkLiquidity(long minBalance = 200_000, int maxAttempts = 20)
     {
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(SharedSwapInfrastructure.FulmineEndpoint.ToString()) };
+        var fulmineHttp = new HttpClient { BaseAddress = SharedArkInfrastructure.FulmineEndpoint };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -54,7 +54,7 @@ public static class FulmineLiquidityHelper
             // and absorbs any just-boarded UTXO.
             await SettleWithLogging(fulmineHttp);
 
-            // Wait for the arkd batch round to process the settle intent
+            // Wait for the arkd batch to process the settle intent
             await Task.Delay(TimeSpan.FromSeconds(15));
 
             // Mine the batch commitment tx
@@ -76,7 +76,7 @@ public static class FulmineLiquidityHelper
     /// </summary>
     public static async Task<T> RetryWithSettle<T>(Func<Task<T>> action, int maxAttempts = 5)
     {
-        var fulmineHttp = new HttpClient { BaseAddress = new Uri(SharedSwapInfrastructure.FulmineEndpoint.ToString()) };
+        var fulmineHttp = new HttpClient { BaseAddress = SharedArkInfrastructure.FulmineEndpoint };
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {

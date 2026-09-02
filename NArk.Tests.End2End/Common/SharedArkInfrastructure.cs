@@ -11,6 +11,8 @@ public class SharedArkInfrastructure
     // prefix when EsploraBlockchain appends relative paths (e.g. "blocks/tip/hash").
     public static readonly Uri ChopsticksEndpoint = new("http://localhost:3000/api/");
 
+    public static readonly Uri FulmineEndpoint = new("http://localhost:7003");
+
     [OneTimeSetUp]
     public async Task GlobalSetup()
     {

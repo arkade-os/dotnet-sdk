@@ -48,7 +48,7 @@ public record ArkPayment(
 /// </summary>
 public enum ArkPaymentMethod
 {
-    /// <summary>Direct Ark protocol send (intent → batch round).</summary>
+    /// <summary>Direct Arkade protocol send (intent → batch).</summary>
     ArkSend,
     /// <summary>Collaborative exit to an on-chain address.</summary>
     CollaborativeExit,

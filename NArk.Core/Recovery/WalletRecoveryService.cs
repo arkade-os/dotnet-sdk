@@ -1,25 +1,17 @@
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
-using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Recovery;
 using NArk.Abstractions.Wallets;
-using NArk.Core.Contracts;
-using NArk.Core.Recovery;
 using NArk.Core.Services;
-using NArk.Core.Transport;
-using NArk.Swaps.Models;
-using NArk.Swaps.Services;
 
-namespace NArk.Swaps.Recovery;
+namespace NArk.Core.Recovery;
 
 /// <summary>
 /// Unified, wallet-type-agnostic recovery. Composes the existing building blocks
 /// — the HD index scanner (<see cref="HdWalletRecoveryService"/>), the pending-tx
-/// finalizer (<see cref="PendingArkTransactionRecoveryService"/>), boltz swap
-/// restore/audit (<see cref="SwapsManagementService"/>), and the VTXO sync
-/// (<see cref="VtxoSynchronizationService"/>) — behind one <see cref="RecoverAsync"/>
-/// call. Lives in NArk.Swaps because it needs both the Core recovery services and
-/// the swap services (Swaps depends on Core, not the reverse).
+/// finalizer (<see cref="PendingArkTransactionRecoveryService"/>) and the VTXO
+/// sync (<see cref="VtxoSynchronizationService"/>) — behind one
+/// <see cref="RecoverAsync"/> call.
 /// </summary>
 public class WalletRecoveryService(
     IWalletStorage walletStorage,
@@ -27,9 +19,7 @@ public class WalletRecoveryService(
     HdWalletRecoveryService hdRecovery,
     SingleKeyVtxoRecoveryService singleKeyRecovery,
     PendingArkTransactionRecoveryService pendingTxRecovery,
-    SwapsManagementService swaps,
     VtxoSynchronizationService vtxoSync,
-    IClientTransport clientTransport,
     ILogger<WalletRecoveryService>? logger = null) : IWalletRecoveryService
 {
     /// <inheritdoc />
@@ -48,33 +38,27 @@ public class WalletRecoveryService(
             walletIds: [walletId], cancellationToken: cancellationToken)).Count;
 
         RecoveryReport? hdScan = null;
-        var restoredSwaps = new List<ArkSwap>();
 
         if (wallet.WalletType == WalletType.HD)
         {
             // The HD index scan discovers contracts across derivation indices and
-            // server signers (incl. deprecated/legacy), and restores boltz swaps
-            // in-line via the boltz discovery provider.
+            // server signers (incl. deprecated/legacy).
             hdScan = await hdRecovery.ScanAsync(walletId, options, cancellationToken);
         }
         else
         {
             // SingleKey: the contract set is fixed by the single key. Probe deprecated
             // signers once (no index to scan), then ensure the current-signer default
-            // exists (idempotent; mints the new default after rotation). Finally restore
-            // swaps for its descriptor directly.
+            // exists (idempotent; mints the new default after rotation).
             if (string.IsNullOrEmpty(wallet.AccountDescriptor))
                 throw new InvalidOperationException(
                     $"SingleKey wallet '{walletId}' has no AccountDescriptor; cannot recover.");
 
             await singleKeyRecovery.DiscoverAsync(walletId, cancellationToken);
             await singleKeyRecovery.EnsureDefaultAsync(walletId, cancellationToken);
-            var network = (await clientTransport.GetServerInfoAsync(cancellationToken)).Network;
-            var descriptor = KeyExtensions.ParseOutputDescriptor(wallet.AccountDescriptor!, network);
-            restoredSwaps.AddRange(await swaps.RestoreSwaps(walletId, [descriptor], cancellationToken));
         }
 
-        // Finalize any in-flight Ark transactions that were mid-submit.
+        // Finalize any in-flight Arkade transactions that were mid-submit.
         var finalized = await pendingTxRecovery.FinalizePendingArkTransactionsAsync(walletId, cancellationToken);
 
         // Sync funds for every recovered offchain contract so balances repopulate
@@ -90,22 +74,17 @@ public class WalletRecoveryService(
             ? await vtxoSync.PollScriptsForVtxos(offchainScripts, cancellationToken)
             : 0;
 
-        // Audit the post-recovery state of every known swap for the report.
-        var swapAudit = await swaps.ScanRecoverableSwapsAsync(walletId, cancellationToken);
-
         // Contracts NEWLY recovered by this run (not the total in storage).
         var contractsRecovered = Math.Max(0, contracts.Count - contractsBefore);
 
         logger?.LogInformation(
-            "Recovered wallet {WalletId}: {Contracts} new contracts, {Swaps} swaps audited, {Pending} pending finalized, {Vtxos} VTXOs synced",
-            walletId, contractsRecovered, swapAudit.Count, finalized.Count, vtxosSynced);
+            "Recovered wallet {WalletId}: {Contracts} new contracts, {Pending} pending finalized, {Vtxos} VTXOs synced",
+            walletId, contractsRecovered, finalized.Count, vtxosSynced);
 
         return new WalletRecoveryReport(
             wallet.WalletType,
             hdScan,
             contractsRecovered,
-            restoredSwaps,
-            swapAudit,
             finalized,
             vtxosSynced);
     }

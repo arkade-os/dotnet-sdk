@@ -49,7 +49,6 @@ public static class ModelBuilderExtensions
         VtxoEntity.Configure(modelBuilder.Entity<VtxoEntity>(), options);
         ArkIntentEntity.Configure(modelBuilder.Entity<ArkIntentEntity>(), options);
         ArkIntentVtxoEntity.Configure(modelBuilder.Entity<ArkIntentVtxoEntity>(), options);
-        ArkSwapEntity.Configure(modelBuilder.Entity<ArkSwapEntity>(), options);
 
         if (options.StoreDateTimeOffsetAsTicks)
             ApplyDateTimeOffsetTicksConversion(modelBuilder);
@@ -120,7 +119,6 @@ public static class ModelBuilderExtensions
         typeof(VtxoEntity),
         typeof(ArkIntentEntity),
         typeof(ArkIntentVtxoEntity),
-        typeof(ArkSwapEntity),
         typeof(ArkPaymentEntity),
         typeof(ArkPaymentRequestEntity),
         typeof(VirtualTxEntity),

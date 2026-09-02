@@ -28,11 +28,6 @@ jobs:
     needs: build
     uses: ./.github/workflows/e2e-core.yml
 
-# deprecated
-#  e2e-swaps:
-#    needs: build
-#    uses: ./.github/workflows/e2e-swaps.yml
-
   e2e-recovery:
     needs: build
     uses: ./.github/workflows/e2e-recovery.yml
