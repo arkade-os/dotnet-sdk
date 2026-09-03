@@ -313,7 +313,7 @@
             State.SetActiveWallet(wallet.Id);
 
             // Sweep derivation indices through every registered IContractDiscoveryProvider
-            // (arkd indexer, on-chain boarding, Boltz) to rebuild prior contract state.
+            // (arkd indexer, on-chain boarding) to rebuild prior contract state.
             // Only HD wallets are scanned; nsec wallets just return without effect.
             if (wallet.WalletType == NArk.Abstractions.Wallets.WalletType.HD)
             {

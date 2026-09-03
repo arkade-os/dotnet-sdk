@@ -154,10 +154,11 @@ public sealed class ArkadeLightningService(
     /// </para>
     /// <para>
     /// So the daemon is optional, and what it buys is precisely one thing: somebody claims when
-    /// this wallet is closed. Configured, it races our own claim exactly as the Boltz covenant-claim
-    /// path does, and whichever gets there first makes the other a no-op. Unconfigured, the window
-    /// is ours to meet — a couple of hours, after which the solver reclaims its lockup and cancels
-    /// the held invoice, so the payer is refunded and the payment simply never happened.
+    /// this wallet is closed. Configured, it races our own claim, and whichever gets there first
+    /// makes the other a no-op — both spend the same leaf with the same secret, so the loser finds
+    /// the lockup already gone. Unconfigured, the window is ours to meet: a couple of hours, after
+    /// which the solver reclaims its lockup and cancels the held invoice, so the payer is refunded
+    /// and the payment simply never happened.
     /// </para>
     /// </remarks>
     public async Task<PendingLightningReceive> CreateInvoiceAsync(

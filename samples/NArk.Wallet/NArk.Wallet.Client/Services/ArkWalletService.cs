@@ -96,9 +96,14 @@ public class ArkWalletService(
     /// <summary>
     /// Run an HD-wallet gap-limit recovery scan for a freshly imported wallet.
     /// Discovers contracts that were used by a previous instance of the same
-    /// mnemonic — VTXOs (arkd indexer), boarding UTXOs (on-chain), and Boltz
-    /// swaps — and persists them in local storage so balances and history
-    /// reflect the wallet's prior activity.
+    /// mnemonic — VTXOs (arkd indexer) and boarding UTXOs (on-chain) — and
+    /// persists them in local storage so balances and history reflect the
+    /// wallet's prior activity.
+    ///
+    /// Swaps are not among what comes back. The provider that held its own
+    /// record of them went with the swaps package; an intent swap is recorded
+    /// locally against a covenant this wallet derived, so recovering one means
+    /// rebuilding it from the chain rather than asking a counterparty.
     /// </summary>
     /// <remarks>
     /// Only meaningful for HD wallets; SingleKey wallets have no derivation index
