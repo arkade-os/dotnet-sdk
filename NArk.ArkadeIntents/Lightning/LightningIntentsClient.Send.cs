@@ -9,6 +9,7 @@ using NArk.Abstractions;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Models;
+using NArk.ArkadeIntents.Recovery;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.SolverRegistry;
@@ -250,20 +251,146 @@ public sealed partial class LightningIntentsClient
     /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">Nothing live is left at the lockup.</exception>
+    /// <summary>
+    /// Resolve an unfinished send swap: read what the chain says, and push the refund only if
+    /// nothing else already ended it.
+    /// </summary>
+    /// <param name="swapId">The swap.</param>
+    /// <param name="cancellationToken">Cancels before the spend.</param>
+    /// <returns>What was found and what was done about it.</returns>
+    /// <exception cref="InvalidOperationException">No such swap, or the wrong corridor.</exception>
+    /// <remarks>
+    /// <para>
+    /// The recovery entry point, as distinct from <see cref="RefundSwap"/>, which is the action.
+    /// This one asks first. A caller coming back after downtime — or one that never had the row —
+    /// does not know whether the counterparty already claimed, and pushing a refund at a lockup that
+    /// settled is a wasted fee at best; reading the fate is what turns "probably still open" into a
+    /// fact nobody has to be trusted for.
+    /// </para>
+    /// <para>
+    /// Every outcome is returned rather than thrown, because the useful caller is a loop over many
+    /// swaps and the interesting answers — resolved, not due, needs recovery — are not failures.
+    /// </para>
+    /// </remarks>
+    public async Task<RefundOutcome> RefundIfUnresolvedAsync(
+        string swapId, CancellationToken cancellationToken = default)
+    {
+        var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
+                     ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
+
+        if (intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain))
+        {
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' is a {intent.Type}; only a leg that funded an Arkade covenant has "
+                + "one to refund. The on-board's recourse is its L1 HTLC instead.");
+        }
+
+        var fate = intent.PaymentHash is { Length: > 0 } hash
+            ? await LockupFateReader.ReadAsync(
+                _transport, _vtxoStorage, intent.SwapPkScript, hash, cancellationToken)
+            : new LockupFateResult(LockupFate.Unknown);
+
+        switch (fate.Fate)
+        {
+            // Somebody already ended it. Recorded here as well as reported: a caller that learns the
+            // truth and leaves the row saying otherwise has moved the problem rather than solved it.
+            case LockupFate.Claimed:
+            case LockupFate.Returned:
+                var settled = fate.Fate == LockupFate.Claimed
+                    ? ArkadeSwapIntentStatus.Fulfilled
+                    : ArkadeSwapIntentStatus.Cancelled;
+                if (intent.Status != settled)
+                {
+                    intent.Status = settled;
+                    await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+                }
+                return new RefundOutcome(
+                    RefundOutcomeKind.Resolved, fate.Fate,
+                    Detail: fate.Fate == LockupFate.Claimed
+                        ? "the counterparty claimed it, proved by the preimage in the spend"
+                        : "the lockup came back — spent by something that revealed no preimage");
+
+            case LockupFate.Exited:
+            case LockupFate.Swept:
+                return new RefundOutcome(
+                    RefundOutcomeKind.NeedsRecovery, fate.Fate, Stuck: fate.Stuck,
+                    Detail: fate.Fate == LockupFate.Exited
+                        ? "part of the lockup was unilaterally exited and is on-chain under the same script"
+                        : "part of the lockup was swept by the operator");
+
+            case LockupFate.Unknown:
+                return new RefundOutcome(
+                    RefundOutcomeKind.Unknown, fate.Fate,
+                    Detail: "the chain said nothing usable about this lockup — not an answer, ask again");
+        }
+
+        if (intent.RefundLocktime is not { } locktime)
+        {
+            return new RefundOutcome(
+                RefundOutcomeKind.Blocked, fate.Fate, Blocked: RefundBlockedReason.NoLocktime,
+                Detail: "the swap records no refund locktime, so there is no deadline to test against");
+        }
+
+        try
+        {
+            await AssertLocktimeReachedAsync(swapId, locktime, cancellationToken);
+        }
+        catch (InvalidOperationException e)
+        {
+            // Still live and not yet due. The ordinary answer while a swap is running, and the one
+            // a sweep must not mistake for a failure.
+            return new RefundOutcome(RefundOutcomeKind.NotDue, fate.Fate, Detail: e.Message);
+        }
+
+        try
+        {
+            var refunded = await RefundSwap(swapId, cancellationToken);
+            return new RefundOutcome(RefundOutcomeKind.Refunded, fate.Fate, refunded.SpentTxid);
+        }
+        catch (LockupNeedsRecoveryException e)
+        {
+            return new RefundOutcome(
+                RefundOutcomeKind.NeedsRecovery, e.Fate, Stuck: e.Outpoints, Detail: e.Message);
+        }
+        catch (RefundNotLocallyPossibleException e)
+        {
+            return new RefundOutcome(
+                RefundOutcomeKind.Blocked, fate.Fate, Blocked: e.Reason, Detail: e.Message);
+        }
+    }
+
     internal static IReadOnlyList<ArkVtxo> SelectRefundable(
         IReadOnlyCollection<ArkVtxo> vtxos, string swapId)
     {
-        var live = vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
-        if (live.Count > 0) return live;
+        var unspent = vtxos.Where(v => !v.IsSpent()).ToList();
 
-        var swept = vtxos.Where(v => v.Swept && !v.IsSpent()).ToList();
+        // Anything out of the covenant's reach stops the whole push, rather than being quietly left
+        // behind. Refunding the remainder would report success over money that never moved, and a
+        // caller that believes the swap is refunded stops watching the part still sitting there.
+        // Neither cause is recoverable from here: a swept output goes through the wallet's own
+        // recovery path, and an exited one needs its unroll finished and then an on-chain spend.
+        var exited = unspent.Where(v => v.Unrolled && !v.Swept).ToList();
+        if (exited.Count > 0) throw OutOfReach(swapId, LockupFate.Exited, exited,
+            "have been unilaterally exited, so they sit on-chain under the same script where this "
+            + "off-chain leaf cannot reach them");
+
+        var swept = unspent.Where(v => v.Swept).ToList();
+        if (swept.Count > 0) throw OutOfReach(swapId, LockupFate.Swept, swept,
+            "have been swept by the operator, so this leaf can no longer spend them");
+
+        if (unspent.Count > 0) return unspent;
+
         throw new InvalidOperationException(
-            swept.Count == 0
-                ? $"Swap '{swapId}' has no unspent output at its lockup address — there is nothing to refund."
-                : $"Swap '{swapId}' has {swept.Count} output(s) at its lockup address, but the operator "
-                  + "has swept them, so this leaf can no longer spend them: "
-                  + string.Join(", ", swept.Select(v => $"{v.TransactionId}:{v.TransactionOutputIndex}")));
+            $"Swap '{swapId}' has no unspent output at its lockup address — there is nothing to refund.");
     }
+
+    private static LockupNeedsRecoveryException OutOfReach(
+        string swapId, LockupFate fate, IReadOnlyList<ArkVtxo> stuck, string why) =>
+        new(fate,
+            stuck.Select(v => new OutPoint(uint256.Parse(v.TransactionId), v.TransactionOutputIndex)).ToList(),
+            $"Swap '{swapId}' has {stuck.Count} output(s) at its lockup address that {why}: "
+            + string.Join(", ", stuck.Select(v => $"{v.TransactionId}:{v.TransactionOutputIndex}"))
+            + ". Refusing to refund only the rest — that would report success over money that has not moved.");
 
     /// <summary>
     /// Refuses until the chain will actually accept a spend of the CLTV leaf.

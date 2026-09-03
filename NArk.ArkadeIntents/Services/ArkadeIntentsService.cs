@@ -4,6 +4,7 @@ using NArk.ArkadeIntents.Lightning;
 using NArk.Core.Transport;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Onchain;
+using NArk.ArkadeIntents.Recovery;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.SolverRegistry;
 using NBitcoin;
@@ -256,6 +257,57 @@ public sealed class ArkadeIntentsService
     public Task<ArkadeSwapIntent> RefundLightningSendAsync(
         string swapId, CancellationToken cancellationToken = default) =>
         _lightning.RefundSwap(swapId, cancellationToken);
+
+    /// <summary>
+    /// Resolve an unfinished send swap: read what the chain says, and refund only if nothing else
+    /// already ended it.
+    /// </summary>
+    /// <param name="swapId">The swap.</param>
+    /// <param name="cancellationToken">Cancels before the spend.</param>
+    /// <returns>What was found and what was done about it.</returns>
+    /// <remarks>
+    /// <para>
+    /// The recovery entry point, as distinct from <see cref="RefundLightningSendAsync"/>, which is
+    /// the action. Use this one when the local picture may be stale — after downtime, or from a
+    /// wallet whose rows were rebuilt: pushing a refund at a lockup the counterparty already claimed
+    /// is a wasted fee, and reading the fate first is what makes that decidable without trusting
+    /// anyone's account of it.
+    /// </para>
+    /// <para>
+    /// Covers both send legs. The on-board is not among them and cannot be — it never funded an
+    /// Arkade covenant, so its recourse is <see cref="RefundOnchainReceiveAsync"/> on L1.
+    /// </para>
+    /// </remarks>
+    public Task<RefundOutcome> RefundIfUnresolvedAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        _lightning.RefundIfUnresolvedAsync(swapId, cancellationToken);
+
+    /// <summary>
+    /// Read what the chain says became of a swap's lockup, without acting on it.
+    /// </summary>
+    /// <param name="swapId">The swap.</param>
+    /// <param name="cancellationToken">Cancels the lookups.</param>
+    /// <returns>The verdict, with its proof or its stuck outputs.</returns>
+    /// <exception cref="InvalidOperationException">No such swap, or it records no payment hash.</exception>
+    /// <remarks>
+    /// Corridor-neutral: all four HTLC corridors settle into the same covenant, so what a spend of it
+    /// means does not depend on which one negotiated the swap.
+    /// </remarks>
+    public async Task<LockupFateResult> ReadLockupFateAsync(
+        string swapId, CancellationToken cancellationToken = default)
+    {
+        var intent = await GetAsync(swapId, cancellationToken)
+            ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
+
+        if (intent.PaymentHash is not { Length: > 0 } hash)
+        {
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' records no payment hash, so a claim cannot be told from a refund.");
+        }
+
+        return await LockupFateReader.ReadAsync(
+            _transport, _vtxoStorage, intent.SwapPkScript, hash, cancellationToken);
+    }
 
     /// <summary>
     /// Claim a funded Lightning receive swap, publishing the preimage.
