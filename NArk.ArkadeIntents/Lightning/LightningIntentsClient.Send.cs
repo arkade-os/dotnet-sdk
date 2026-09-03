@@ -350,8 +350,14 @@ public sealed partial class LightningIntentsClient
         var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
                      ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
 
-        if (intent.Type != ArkadeSwapIntentType.BtcToLightning)
-            throw new InvalidOperationException($"Swap '{swapId}' is not a Lightning swap ({intent.Type}).");
+        // Both send legs, because from here they are the same swap: one VHTLCv2 covenant, one
+        // `refundWithoutReceiver` leaf, one destination read back off the contract. Nothing below
+        // this line reads a Lightning field. The off-board used to reach here and be turned away by
+        // this check, which left its Arkade refund — the only recourse it has once the L1 window
+        // shuts — unreachable through the very action the policy routes to it.
+        if (intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain))
+            throw new InvalidOperationException(
+                $"Swap '{swapId}' is not a corridor swap this refund applies to ({intent.Type}).");
         if (intent.Status is not (ArkadeSwapIntentStatus.Refundable or ArkadeSwapIntentStatus.Pending))
             throw new InvalidOperationException($"Swap '{swapId}' is not awaiting a refund (status {intent.Status}).");
         if (intent.RefundLocktime is not { } locktime)
@@ -394,7 +400,7 @@ public sealed partial class LightningIntentsClient
             intent.SpentTxid = txid.ToString();
             await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
-            _logger?.LogInformation("Refunded Lightning swap {SwapId} in {Txid}", swapId, txid);
+            _logger?.LogInformation("Refunded {Type} swap {SwapId} in {Txid}", intent.Type, swapId, txid);
             return intent;
         }
         catch
