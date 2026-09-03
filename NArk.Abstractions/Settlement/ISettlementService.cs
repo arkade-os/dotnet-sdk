@@ -5,7 +5,7 @@ namespace NArk.Abstractions.Settlement;
 /// <see cref="SettlementDestination"/>.
 /// <para>
 /// One implementation per rail. The SDK ships a destination sweep (Arkade address or
-/// collaborative exit) in <c>NArk.Core</c> and a BTC chain swap in <c>NArk.Swaps</c>;
+/// collaborative exit) in <c>NArk.Core</c> and a BTC chain swap in a swap package;
 /// applications add their own — a stablecoin transfer, an exchange deposit — by
 /// registering another implementation whose <see cref="CanSettle"/> accepts that
 /// network and asset. <c>CompositeSettlementService</c> routes between them.

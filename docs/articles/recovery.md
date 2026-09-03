@@ -12,7 +12,6 @@ When a user re-imports an HD wallet from its mnemonic, the SDK has no local reco
    |---|---|---|
    | `IndexerVtxoDiscoveryProvider` | arkd indexer | Any VTXO ever recorded against the index's `ArkPaymentContract` |
    | `BoardingUtxoDiscoveryProvider` | NBXplorer / Esplora (whichever `IBitcoinBlockchain` is registered, provided its `GetUtxosAsync` is implemented) | Any historical UTXO at the index's `ArkBoardingContract` on-chain address |
-   | `BoltzSwapDiscoveryProvider` | Boltz `/v2/swap/restore` | Any swap (submarine or reverse) involving the index's user pubkey |
 
 4. If **any** provider reports usage, the index counts as used: the gap counter resets, the scanner records every contract the providers reconstructed, and continues to the next index.
 5. The scan stops once `GapLimit` consecutive unused indices are seen, or once `MaxIndex` is reached.
@@ -20,11 +19,10 @@ When a user re-imports an HD wallet from its mnemonic, the SDK has no local reco
 
 ## Setup
 
-`AddArkCoreServices` registers `HdWalletRecoveryService`, the indexer provider, and a conditional boarding provider (active only when an `IBitcoinBlockchain` whose `GetUtxosAsync` is implemented — i.e., NBXplorer or Esplora — is also registered). `AddArkSwapServices` adds the Boltz provider. So the recovery surface is ready as long as the application opted into core + swaps:
+`AddArkCoreServices` registers `HdWalletRecoveryService`, the indexer provider, and a conditional boarding provider (active only when an `IBitcoinBlockchain` whose `GetUtxosAsync` is implemented — i.e., NBXplorer or Esplora — is also registered). So the recovery surface is ready as soon as the application opts into core:
 
 ```csharp
 services.AddArkCoreServices();
-services.AddArkSwapServices();
 services.AddNBXplorerBlockchain(network, new Uri("http://localhost:32838")); // or AddEsploraBlockchain
 ```
 
@@ -77,7 +75,7 @@ public class MyCustomDiscoveryProvider : IContractDiscoveryProvider
 services.AddSingleton<IContractDiscoveryProvider, MyCustomDiscoveryProvider>();
 ```
 
-Providers are queried sequentially per index; aggregate results use OR semantics — any hit counts. They MUST NOT mutate `IWalletStorage` or `IContractStorage` directly: return contracts via `DiscoveryResult.Contracts` and the orchestrator will persist them with `Source=recovery:<provider-name>` metadata. The exception is `BoltzSwapDiscoveryProvider`, which delegates to the existing `SwapsManagementService.RestoreSwaps` — that path imports VHTLC contracts itself with the canonical `Source=swap:<id>` metadata and the swap record, so the provider returns an empty contract list to avoid double-imports.
+Providers are queried sequentially per index; aggregate results use OR semantics — any hit counts. They MUST NOT mutate `IWalletStorage` or `IContractStorage` directly: return contracts via `DiscoveryResult.Contracts` and the orchestrator will persist them with `Source=recovery:<provider-name>` metadata.
 
 ## Tuning notes
 

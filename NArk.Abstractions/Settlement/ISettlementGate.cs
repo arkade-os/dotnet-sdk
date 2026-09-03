@@ -6,7 +6,7 @@ namespace NArk.Abstractions.Settlement;
 /// activity or heartbeat tick.
 /// <para>
 /// This is how a subsystem the settlement engine knows nothing about protects funds it
-/// has already committed — <c>NArk.Swaps</c> uses it to hold settlement off while a
+/// has already committed — a swap package uses it to hold settlement off while a
 /// freshly created swap is still being funded, so the same VTXOs are not spent twice.
 /// </para>
 /// </summary>

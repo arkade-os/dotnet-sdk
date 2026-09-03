@@ -130,7 +130,7 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Registers all NArk core services including VTXO polling event handlers.
     /// Caller must still register: IVtxoStorage, IContractStorage, IIntentStorage, IWalletStorage,
-    /// ISwapStorage, IWallet, ISafetyService, IBitcoinBlockchain, and IClientTransport.
+    /// IWallet, ISafetyService, IBitcoinBlockchain, and IClientTransport.
     /// </summary>
     public static IServiceCollection AddArkCoreServices(this IServiceCollection services)
     {

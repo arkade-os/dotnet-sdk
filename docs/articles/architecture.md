@@ -10,7 +10,6 @@ NArk (meta-package)
  │    ├── Hosting (DI extensions, ArkApplicationBuilder)
  │    └── Transport (gRPC client for Arkade server communication)
  │
- ├── NArk.Swaps
  │    ├── Boltz client (submarine & chain swaps)
  │    └── Swap management service
  │
@@ -26,7 +25,6 @@ NArk.Storage.EfCore (optional, provider-agnostic persistence)
 
 - **NArk.Abstractions** has no SDK dependencies (only NBitcoin)
 - **NArk.Core** depends on Abstractions
-- **NArk.Swaps** depends on Core
 - **NArk.Storage.EfCore** depends on Core + Swaps (implements all storage interfaces)
 
 ## Extensibility Points
@@ -38,7 +36,6 @@ The SDK is built around pluggable interfaces. Provide your own implementations o
 | `IVtxoStorage` | VTXO persistence | `EfCoreVtxoStorage` |
 | `IContractStorage` | Contract persistence | `EfCoreContractStorage` |
 | `IIntentStorage` | Intent persistence | `EfCoreIntentStorage` |
-| `ISwapStorage` | Swap persistence | `EfCoreSwapStorage` |
 | `IWalletProvider` | Wallet creation/retrieval | `DefaultWalletProvider` |
 | `IArkadeWalletSigner` | Transaction signing | HD/SingleKey signers |
 | `ICoinSelector` | UTXO selection strategy | `DefaultCoinSelector` |
@@ -79,7 +76,6 @@ A few subsystems are intentionally not registered by `AddArkCoreServices` becaus
 
 - **Delegation** — `AddArkDelegation(delegatorUri)` registers `IDelegatorProvider`, `DelegationService`, `DelegateContractTransformer`, and `DelegationMonitorService` (hosted). Wraps `IWalletProvider` to produce `ArkDelegateContract`s for HD wallets. The monitor skips VTXOs that cannot cover the intent fee above the server dust threshold, and cancels in-flight delegations on host shutdown.
 - **Payment tracking** — `AddArkPaymentTracking()` registers `IPaymentStorage`, `IPaymentRequestStorage`, and `PaymentTrackingService` (hosted). Requires `modelBuilder.ConfigureArkPaymentEntities()` in your `DbContext`.
-- **Swaps** — `AddArkSwapServices()` registers `SwapsManagementService` and the Boltz client. Configured via `ArkNetworkConfig.BoltzUri`.
 
 Skipping any of these keeps the dependency graph and schema minimal for plugins that don't need them.
 
