@@ -130,16 +130,40 @@ run with no inbound port and no DNS name — and it is the only way to use a reg
 card carries a discovery pubkey and relays rather than an address.
 
 ```csharp
-using var transport = new NostrRfqTransport(new Uri("wss://relay.example"), solverPubkey);
+using var transport = NostrRfqTransport.ForCard(card);
 ```
+
+**Build it from the card, and it dials the whole relay set.** A card advertises a list, and every
+entry is dialled at once with the first valid reply winning. That is the point of a set rather than
+an optimisation: a rendezvous is a place both parties happen to be, and neither side controls which
+entry the other is connected to at this moment — so dialling one and waiting is a coin flip dressed
+up as a protocol. The same signed event goes to all of them, which a solver connected to several
+sees as duplicates of one request, idempotent by negotiation id.
+
+Non-`wss://` entries are dropped rather than dialled. The registry schema admits only `wss://`, so a
+plaintext entry is either a malformed card or a downgrade someone wants accepted — and while this
+traffic is sealed to the solver's key, it is not sealed to the relay's, so who carries it still
+matters. Duplicates collapse to one connection.
 
 Each negotiation uses a fresh identity key by default, so separate swaps are unlinkable to the relay
 operator and a stale archive can never be replayed at us. Pass a stable key when talking to one
 solver repeatedly — the ECDH it saves is the dominant per-message cost.
 
-Relay-level faults surface as `NostrRelayException` rather than as silence. "The relay refused my
-event" and "the solver declined" are different problems, and a transport that reports both as
-nothing to see is how the reference deployment's own outage stayed invisible for days.
+### Three silences, not one
+
+A negotiation that produces no quote has three quite different causes, and a transport that reports
+them all as a timeout blames the counterparty for two of them:
+
+| | meaning | who to look at |
+|---|---|---|
+| `NostrRelayException` | a relay refused the event, tore the subscription down, or nobody answered in time | the solver, or that relay |
+| `RelayUnavailableException` | no relay was ever listening | our own side of the wire |
+| `TransportClosedException` | the transport was disposed mid-negotiation | our own caller |
+
+The middle one carries `Reasons`, one entry per relay, so an operator can see which member of the
+set was actually broken. Without that distinction a client waits out the full timeout and then files
+a bug against a solver that was never asked — which is how the reference deployment's own outage
+stayed invisible for days.
 
 ## The covenant contract
 
