@@ -1574,6 +1574,65 @@ var kind = OfferRestore.ClassifySpend(offer, serverKey, network, spendPsbt, depo
 records. A server key rotated since funding rebuilds a different tree and answers `Indeterminate`
 too, rather than describing somebody else's script with confidence.
 
+### Deciding what became of a lockup
+
+```csharp
+var fate = await intents.ReadLockupFateAsync(swapId);
+// Unknown | Open | Claimed | Returned | Exited | Swept
+```
+
+Decidable without asking the counterparty anything. The claim leaf can only be spent by revealing
+the preimage, and every other leaf is a refund — the covenant's non-interactive one is pinned to
+your own address, and the rest need your own signature. So "spent, but not by a hash-verified claim"
+means the money came back, and `Claimed` carries the preimage as proof rather than as a hint.
+
+Three readings are deliberately not verdicts:
+
+- **`Unknown` is not `Returned`.** No outputs visible, or a spend the indexer cannot produce. An
+  outage and a genuine refund are the same silence, and reading it as a refund reports the money
+  home while it may have been claimed.
+- **`Exited` outranks `Open`.** A unilaterally exited output is unspent, so a naive read calls the
+  swap "still running" — but it sits on-chain under the same script, where no off-chain claim or
+  refund reaches it. It is not a loss: the leaves are unchanged, so finishing the unroll and
+  spending on-chain still ends the swap.
+- **`Swept` outranks `Open` too**, for the same reason on the other cause.
+
+### Refunding what is actually still open
+
+```csharp
+var outcome = await intents.RefundIfUnresolvedAsync(swapId);
+// Resolved | NotDue | Refunded | NeedsRecovery | Blocked | Unknown
+```
+
+The recovery entry point, as distinct from `RefundLightningSendAsync`, which is the action. This one
+reads the fate first — a caller coming back after downtime does not know whether the counterparty
+already claimed, and pushing a refund at a lockup that settled is a wasted fee. Every outcome is
+returned rather than thrown, because the useful caller is a loop and "resolved", "not due" and
+"needs recovery" are not failures.
+
+Covers both send legs. The on-board is not among them and cannot be — it never funded an Arkade
+covenant, so its recourse is `RefundOnchainReceiveAsync` on L1.
+
+**A partial lockup stops the whole push.** If any output is swept or exited, the refund is refused
+with `LockupNeedsRecoveryException` naming the outpoints, rather than refunding the rest:
+
+```csharp
+catch (LockupNeedsRecoveryException e)
+{
+    // e.Fate is Swept or Exited; e.Outpoints is what must be dealt with first.
+}
+```
+
+Refunding the remainder would report success over money that never moved, and a caller who believes
+the swap is refunded stops watching the part still sitting there. Neither cause is recoverable at
+this layer: a swept output goes through the wallet's own recovery path, an exited one needs its
+unroll finished and then an on-chain spend of the same leaves.
+
+`Blocked` is the other non-answer worth branching on — the refund is not this wallet's to push at
+all (`NoSigner`, `ContractMissing`, `ContractMismatch`, `NoLocktime`), which does not resolve by
+waiting the way `NotDue` does. Both recovery exceptions derive from `InvalidOperationException`, so
+an advance loop that already catches that type keeps sweeping the other swaps instead of dying.
+
 ### Reading an L1 HTLC back off the chain
 
 ```csharp
