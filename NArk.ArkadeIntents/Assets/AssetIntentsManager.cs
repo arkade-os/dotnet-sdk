@@ -95,7 +95,10 @@ public sealed class AssetIntentsManager
             makerPkScript, makerPublicKey, emulatorPubkey, serverInfo.SignerKey, serverInfo.Network,
             request.WantAmount,
             wantAsset: isBtcToAsset ? request.Asset : null,
-            offerAsset: isBtcToAsset ? null : request.Asset);
+            offerAsset: isBtcToAsset ? null : request.Asset,
+            // On by default: without it both remaining paths need the server, so a server that
+            // goes away strands the deposit.
+            exitDelay: serverInfo.UnilateralExit);
 
         var swapAddress = created.Contract.GetArkAddress();
         var deposit = isBtcToAsset

@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using NArk.Core.Assets;
 using NArk.ArkadeIntents.Models;
+using NBitcoin;
 
 namespace NArk.ArkadeIntents.Assets;
 
@@ -20,12 +21,19 @@ public static class OfferCodec
     private const byte TMakerPkScript = 0x05;
     private const byte TMakerPublicKey = 0x07;
     private const byte TEmulatorPubkey = 0x08;
+    private const byte TRatioNum = 0x09;
+    private const byte TRatioDen = 0x0a;
     private const byte TOfferAsset = 0x0b;
+    private const byte TExitTimelock = 0x0c;
 
     private static readonly IReadOnlySet<byte> KnownTypes = new HashSet<byte>
     {
         TSwapPkScript, TWantAmount, TWantAsset, TMakerPkScript, TMakerPublicKey, TEmulatorPubkey, TOfferAsset,
+        TRatioNum, TRatioDen, TExitTimelock,
     };
+
+    private const int ExitBlocks = 0;
+    private const int ExitSeconds = 1;
 
     /// <summary>Serialize an offer to its TLV packet payload.</summary>
     public static byte[] Encode(Offer offer)
@@ -39,10 +47,15 @@ public static class OfferCodec
             Tlv(TWantAmount, amount),
         };
         if (offer.WantAsset is { } wantAsset) records.Add(Tlv(TWantAsset, wantAsset.Serialize()));
+        if ((offer.RatioNum is null) != (offer.RatioDen is null))
+            throw new ArgumentException("an offer carries both ratioNum and ratioDen, or neither");
+        if (offer.RatioNum is { } num) records.Add(Tlv(TRatioNum, U64(num)));
+        if (offer.RatioDen is { } den) records.Add(Tlv(TRatioDen, U64(den)));
         if (offer.OfferAsset is { } offerAsset) records.Add(Tlv(TOfferAsset, offerAsset.Serialize()));
         records.Add(Tlv(TMakerPkScript, offer.MakerPkScript));
         records.Add(Tlv(TMakerPublicKey, offer.MakerPublicKey));
         records.Add(Tlv(TEmulatorPubkey, offer.EmulatorPubkey));
+        if (offer.ExitDelay is { } exit) records.Add(Tlv(TExitTimelock, EncodeExitDelay(exit)));
 
         return records.SelectMany(r => r).ToArray();
     }
@@ -87,6 +100,50 @@ public static class OfferCodec
             MakerPkScript = Need(TMakerPkScript),
             MakerPublicKey = Need(TMakerPublicKey),
             EmulatorPubkey = Need(TEmulatorPubkey),
+            RatioNum = fields.TryGetValue(TRatioNum, out var rn)
+                ? BinaryPrimitives.ReadUInt64BigEndian(Need(TRatioNum, 8))
+                : null,
+            RatioDen = fields.TryGetValue(TRatioDen, out _)
+                ? BinaryPrimitives.ReadUInt64BigEndian(Need(TRatioDen, 8))
+                : null,
+            ExitDelay = fields.TryGetValue(TExitTimelock, out _)
+                ? DecodeExitDelay(Need(TExitTimelock, 9))
+                : null,
+        };
+    }
+
+    private static byte[] U64(ulong value)
+    {
+        var buffer = new byte[8];
+        BinaryPrimitives.WriteUInt64BigEndian(buffer, value);
+        return buffer;
+    }
+
+    /// <summary><c>[type:1B][value:u64 BE]</c>.</summary>
+    private static byte[] EncodeExitDelay(Sequence exit)
+    {
+        if (!exit.IsRelativeLock)
+            throw new ArgumentException("exit delay must be a relative timelock");
+        var seconds = exit.LockType == SequenceLockType.Time;
+        var value = seconds ? (ulong)exit.LockPeriod.TotalSeconds : (ulong)exit.LockHeight;
+        // A zero delay is an exit in name only: the leaf exists, so the offer reads as recoverable,
+        // and it is spendable the moment the VTXO is unrolled.
+        if (value == 0)
+            throw new ArgumentException("exit delay must be greater than 0");
+        return [(byte)(seconds ? ExitSeconds : ExitBlocks), .. U64(value)];
+    }
+
+    private static Sequence DecodeExitDelay(byte[] value)
+    {
+        var delay = BinaryPrimitives.ReadUInt64BigEndian(value.AsSpan(1));
+        if (delay == 0)
+            throw new FormatException("exit delay must be greater than 0");
+        return value[0] switch
+        {
+            ExitBlocks => new Sequence((int)delay),
+            ExitSeconds => new Sequence(TimeSpan.FromSeconds(delay)),
+            // Reading an unassigned type as blocks would derive an address its emitter never meant.
+            _ => throw new FormatException($"unknown exit delay locktime type {value[0]}"),
         };
     }
 

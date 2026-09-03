@@ -1,4 +1,5 @@
 using NArk.Core.Assets;
+using NBitcoin;
 
 namespace NArk.ArkadeIntents.Assets;
 
@@ -29,4 +30,16 @@ public sealed class Offer
 
     /// <summary>Covenant co-signer (emulator) x-only key (32 bytes).</summary>
     public required byte[] EmulatorPubkey { get; set; }
+
+    /// <summary>Partial-fill numerator. Set with <see cref="RatioDen"/> or not at all.</summary>
+    public ulong? RatioNum { get; set; }
+
+    /// <summary>Partial-fill denominator. Set with <see cref="RatioNum"/> or not at all.</summary>
+    public ulong? RatioDen { get; set; }
+
+    /// <summary>
+    /// The maker's unilateral exit delay. When set, the covenant carries a third leaf spendable by
+    /// the maker alone once it matures — the only path needing neither solver nor server.
+    /// </summary>
+    public Sequence? ExitDelay { get; set; }
 }
