@@ -1222,8 +1222,9 @@ var funded = await intents.SendToLightningAsync(
     invoice: "lnbcrt500000n1p...",
     rfqTransport: new HttpRfqTransport(httpClient, new Uri("http://localhost:3000")));
 
-// Or reach a solver that has no inbound port at all, which is how they run in production:
-//   using var relay = new NostrRfqTransport(new Uri("wss://relay.example"), solverPubkey);
+// Or reach a solver that has no inbound port at all, which is how they run in production. Build it
+// from the card, so the whole advertised relay set is dialled rather than one entry of it:
+//   using var relay = NostrRfqTransport.ForCard(card);
 
 // Refund once the locktime passes, if it never filled. Yours to call whenever you want it
 // back — `AdvanceAllAsync` will also sweep it, but it is not the only way in:
@@ -1277,6 +1278,37 @@ foreach (var m in ranked)
 
 Ranking is by the total fee **at the size being traded**, never by `fee_bps` alone: a market with a
 lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
+
+### Reaching a solver over its relay set
+
+A corridor card carries `discovery_pubkey` and a **list** of relays, and both halves are required —
+its rendezvous is live data a maker will actually contact. `ForCard` uses all of it:
+
+```csharp
+using var rfq = NostrRfqTransport.ForCard(card);
+// or explicitly:
+using var rfq = new NostrRfqTransport(relayUris, card.DiscoveryPubkey!);
+```
+
+Every relay is dialled at once and the first valid reply wins. That is the point of a relay *set*
+rather than an optimisation: a rendezvous is a place both parties happen to be, and neither side
+controls which entry the other is connected to at this moment, so dialling one is a coin flip. The
+same signed event goes to all of them, which a solver connected to several sees as duplicates of one
+request — idempotent by negotiation id.
+
+Non-`wss://` entries are dropped rather than dialled, and duplicates collapse to one connection.
+
+**Three different silences**, which a transport reporting only timeouts would flatten into one:
+
+| | meaning |
+|---|---|
+| `NostrRelayException` (timeout text) | somebody was listening and the solver did not answer |
+| `RelayUnavailableException` | no relay was listening, so the silence says nothing about the solver |
+| `TransportClosedException` | we hung up ourselves — a user left the screen, a flow was abandoned |
+
+The middle one is why this matters. Without it a client waits out the full timeout and then blames
+the counterparty for an outage on its own side of the wire. `RelayUnavailableException.Reasons`
+keeps each relay's own failure, so an operator can see which of them was actually broken.
 
 Indexes are cached in the service for 10 minutes, keyed by registry URL, so register it as a
 singleton — `AddArkadeIntentsServices()` does. An index older than a week is still used, with a
