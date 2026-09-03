@@ -507,6 +507,36 @@ public sealed class ArkadeIntentsService
     }
 
     /// <summary>
+    /// Rebuild asset-swap rows from the chain after the store that held them is gone.
+    /// </summary>
+    /// <param name="walletId">The wallet the rebuilt rows belong to.</param>
+    /// <param name="candidateTxids">
+    /// Transactions worth looking at — a wallet's sent history, minus whatever an earlier pass
+    /// already answered.
+    /// </param>
+    /// <param name="cancellationToken">Cancels between transactions.</param>
+    /// <returns>What was rebuilt, what was answered, and what still has no outcome.</returns>
+    /// <remarks>
+    /// <para>
+    /// The companion to <see cref="ReconcileAsync"/> and not a substitute for it: reconciliation
+    /// corrects rows that exist, and this one exists for when they do not. Run it after a wallet
+    /// restore, then reconcile.
+    /// </para>
+    /// <para>
+    /// A restored swap can be watched and filled but <b>not cancelled</b> — the wire offer carries
+    /// the maker's x-only key, which rebuilds the address and cannot sign. See
+    /// <see cref="OfferRestore"/>.
+    /// </para>
+    /// </remarks>
+    public async Task<OfferRestoreResult> RestoreAssetSwapsAsync(
+        string walletId,
+        IReadOnlyCollection<string> candidateTxids,
+        CancellationToken cancellationToken = default) =>
+        await OfferRestore.RestoreAsync(
+            _transport, _intentStorage, _vtxoStorage, walletId, candidateTxids,
+            await _transport.GetServerInfoAsync(cancellationToken), _logger, cancellationToken);
+
+    /// <summary>
     /// Re-derive every open swap's status from the chain, and report what was behind.
     /// </summary>
     /// <param name="walletId">Narrow to one wallet.</param>
