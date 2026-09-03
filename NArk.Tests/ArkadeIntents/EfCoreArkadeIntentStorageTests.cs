@@ -72,14 +72,59 @@ public class EfCoreArkadeIntentStorageTests
     }
 
     [Test]
-    public async Task GetActiveScripts_ReturnsOnlyPendingScripts()
+    public async Task GetActiveScripts_DropsSwapsWhoseMoneyHasMoved()
     {
         await _storage.SaveArkadeSwapIntent(Intent("tx1", "pending-script"));
         await _storage.SaveArkadeSwapIntent(Intent("tx2", "done-script", status: ArkadeSwapIntentStatus.Fulfilled));
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx3", "cancelled-script", status: ArkadeSwapIntentStatus.Cancelled));
 
         var scripts = await ((NArk.Abstractions.Scripts.IActiveScriptsProvider)_storage).GetActiveScripts();
 
         Assert.That(scripts, Is.EquivalentTo(new[] { "pending-script" }));
+    }
+
+    [Test]
+    public async Task GetActiveScripts_KeepsWatchingASweptLockup()
+    {
+        // Recoverable is TERMINAL, and watching it anyway is the point: terminal describes the
+        // negotiation, not the funds. A swept deposit is still the maker's money sitting at that
+        // script, and dropping the script is how it stops appearing in the wallet at all — a silent
+        // loss, since nothing reports a script nobody is looking at.
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx1", "swept-script", status: ArkadeSwapIntentStatus.Recoverable));
+
+        var scripts = await ((NArk.Abstractions.Scripts.IActiveScriptsProvider)_storage).GetActiveScripts();
+
+        Assert.That(scripts, Is.EquivalentTo(new[] { "swept-script" }));
+    }
+
+    [Test]
+    public async Task GetActiveScripts_CoversEveryStateWhereFundsCanStillBeAtTheScript()
+    {
+        await _storage.SaveArkadeSwapIntent(Intent("tx1", "pending", status: ArkadeSwapIntentStatus.Pending));
+        await _storage.SaveArkadeSwapIntent(Intent("tx2", "refundable", status: ArkadeSwapIntentStatus.Refundable));
+        await _storage.SaveArkadeSwapIntent(Intent("tx3", "claimable", status: ArkadeSwapIntentStatus.Claimable));
+        await _storage.SaveArkadeSwapIntent(Intent("tx4", "recoverable", status: ArkadeSwapIntentStatus.Recoverable));
+
+        var scripts = await ((NArk.Abstractions.Scripts.IActiveScriptsProvider)_storage).GetActiveScripts();
+
+        Assert.That(scripts, Is.EquivalentTo(new[] { "pending", "refundable", "claimable", "recoverable" }));
+    }
+
+    [Test]
+    public async Task GetActiveScripts_DeduplicatesASharedScript()
+    {
+        // Identical offers derive identical addresses, so two rows can name one script. It is one
+        // subscription either way, and handing the sync service a duplicate makes it poll twice for
+        // the same answer.
+        await _storage.SaveArkadeSwapIntent(Intent("tx1", "shared"));
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx2", "shared", status: ArkadeSwapIntentStatus.Refundable));
+
+        var scripts = await ((NArk.Abstractions.Scripts.IActiveScriptsProvider)_storage).GetActiveScripts();
+
+        Assert.That(scripts, Is.EquivalentTo(new[] { "shared" }));
     }
 
     [Test]

@@ -1310,6 +1310,20 @@ The middle one is why this matters. Without it a client waits out the full timeo
 the counterparty for an outage on its own side of the wire. `RelayUnavailableException.Reasons`
 keeps each relay's own failure, so an operator can see which of them was actually broken.
 
+### What stays watched
+
+The swap store doubles as the `IActiveScriptsProvider` that tells the shared VTXO sync which
+covenant scripts to poll. A script stays in that set while funds can still be at it — `Pending`,
+`Refundable`, `Claimable`, and **`Recoverable`**.
+
+That last one is terminal, and watching it anyway is the point: terminal describes the negotiation,
+not the funds. A swept deposit is still your money sitting at that script, and dropping the script is
+how it stops appearing in the wallet at all — a silent loss, since nothing reports a script nobody is
+looking at.
+
+Funding is deliberately left out: its lockup may not exist yet, so polling would watch a script that
+may never be funded. Reconciliation covers that window instead.
+
 Indexes are cached in the service for 10 minutes, keyed by registry URL, so register it as a
 singleton — `AddArkadeIntentsServices()` does. An index older than a week is still used, with a
 warning: a stale registry is worse than a fresh one and better than none.
