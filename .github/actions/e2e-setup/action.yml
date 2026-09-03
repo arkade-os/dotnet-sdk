@@ -3,9 +3,14 @@ description: Configure .NET + Node, start regtest infrastructure, build. Require
 
 inputs:
   profile:
-    description: regtest compose profile(s) to start, comma-separated (e.g. "boltz,delegate" or "solver,boltz").
+    description: >-
+      regtest compose profile(s) to start, comma-separated (e.g. "delegate" or "emulator").
+      `delegate` is the default because the delegation suite needs fulmine-delegator; every
+      other suite needs nothing beyond `ark`, which `delegate` pulls in. Funding no longer
+      costs a profile: ArkadeFaucet draws on the ark CLI wallet the stack seeds inside the
+      arkd container, so `boltz` is only worth starting for Boltz or Lightning itself.
     required: false
-    default: boltz,delegate
+    default: delegate
   fulmine-image:
     description: >-
       Overrides regtest/.env.defaults' FULMINE_IMAGE. Pinned here because the delegate service's

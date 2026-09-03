@@ -134,7 +134,7 @@ public class SubdustRejectionTests
         await vtxoSync.StartAsync(CancellationToken.None);
 
         // Fund Bob with exactly 100 sats — below dust
-        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), 100);
+        await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), 100);
 
         await TestWaiter.WaitFor(
             async () => (await storage.VtxoStorage.GetVtxos(walletIds: [walletId], includeSpent: false))

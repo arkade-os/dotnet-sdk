@@ -128,7 +128,7 @@ public class ArkadeCashTests
             "tarkadecash");
 
         var cashAddress = cash.GetAddress(serverInfo.Network);
-        await DockerHelper.SendArkdNoteTo(cashAddress.ToString(false), amount);
+        await ArkadeFaucet.Fund(cashAddress.ToString(false), amount);
         return cash;
     }
 

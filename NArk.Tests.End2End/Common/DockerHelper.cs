@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CliWrap;
@@ -120,30 +119,6 @@ public static class DockerHelper
                           ?.GetValue<string>()
                       ?? throw new InvalidOperationException($"Invoice creation on LND failed. Output: {output}");
         return invoice.Trim();
-    }
-
-    /// <summary>
-    /// Not really a Docker helper, but a http fulmine endpoint one.
-    /// Sends <paramref name="amountSats"/> sats as an Arkade VTXO to <paramref name="arkAddress"/>
-    /// via Fulmine's offchain send API. Ensures Fulmine has sufficient balance before sending.
-    /// </summary>
-    public static async Task SendArkdNoteTo(string arkAddress, long amountSats,
-        CancellationToken ct = default)
-    {
-        await FulmineLiquidityHelper.EnsureArkLiquidity(minBalance: amountSats, maxAttempts: 5);
-        using var http = new HttpClient { BaseAddress = new Uri("http://localhost:7003") };
-        var response = await http.PostAsJsonAsync(
-            "/api/v1/send/offchain",
-            new { address = arkAddress, amount = amountSats },
-            ct);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var body = await response.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException(
-                $"Fulmine send offchain to {arkAddress} for {amountSats} sats failed " +
-                $"({response.StatusCode}): {body}");
-        }
     }
 
     /// <summary>
@@ -325,7 +300,6 @@ public static class DockerHelper
         public const string Lnd = "lnd";
         public const string BoltzLnd = "boltz-lnd";
         public const string Arkd = "arkd";
-        public const string Fulmine = "boltz-fulmine";
         public const string Postgres = "postgres";
     }
 }

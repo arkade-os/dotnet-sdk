@@ -13,11 +13,12 @@ jobs:
           submodules: true
           fetch-depth: 0
       # `emulator` pulls in `ark` (arkd) and starts the emulator co-signing overlay on :7073.
-      # `boltz` adds fulmine (:7003) — the funding endpoint the shared test harness uses to top up
-      # wallets. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
+      # That is the whole stack this suite needs: ArkadeFaucet tops wallets up from the ark CLI
+      # wallet inside the arkd container, so funding no longer costs a `boltz` profile.
+      # EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
       - uses: ./.github/actions/e2e-setup
         with:
-          profile: emulator,boltz
+          profile: emulator
       - name: Run Arkade E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=ArkadeScript"
         timeout-minutes: 15

@@ -67,7 +67,7 @@ internal static class FundedWalletHelper
         // so concurrent tests that need parallel coin selection don't race
         // on a shared input.
         for (var i = 0; i < vtxoCount; i++)
-            await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSatsPerVtxo);
+            await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), amountSatsPerVtxo);
 
         await receivedAllVtxosTcs.Task.WaitAsync(TimeSpan.FromSeconds(15 * vtxoCount));
 
@@ -126,7 +126,7 @@ internal static class FundedWalletHelper
         var delegateContract = (ArkDelegateContract)contract;
 
         const int randomAmount = 500000;
-        await DockerHelper.SendArkdNoteTo(delegateContract.GetArkAddress().ToString(false), randomAmount);
+        await ArkadeFaucet.Fund(delegateContract.GetArkAddress().ToString(false), randomAmount);
 
         await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
