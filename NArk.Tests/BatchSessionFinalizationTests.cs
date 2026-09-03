@@ -29,6 +29,9 @@ namespace NArk.Tests;
 public class BatchSessionFinalizationTests
 {
     private static readonly Network Net = Network.RegTest;
+
+    /// <summary>Batch expiry as the operator declares it: a block count, well over the regtest minimum.</summary>
+    private const long DeclaredExpiry = 144;
     private static readonly Script OnchainScript =
         BitcoinAddress.Create("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", Net).ScriptPubKey;
 
@@ -162,7 +165,8 @@ public class BatchSessionFinalizationTests
             Net,
             Intent(offchainOutput, registerProof),
             ins,
-            new BatchStartedEvent("batch-1", new Sequence(144), []));
+            new BatchStartedEvent(
+                "batch-1", BatchExpiryPolicy.Encode(DeclaredExpiry), [], DeclaredExpiry));
 
     /// <summary>An intent paying a single output, declared either offchain or onchain.</summary>
     private static ArkIntent Intent(bool offchainOutput, string? registerProof = null)

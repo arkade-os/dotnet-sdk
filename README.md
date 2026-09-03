@@ -1147,6 +1147,32 @@ services.AddArkNetwork(new ArkNetworkConfig(
     BoltzUri: "http://my-boltz:9069/"));
 ```
 
+## Batch Expiry Validation
+
+The batch expiry an Arkade server declares becomes the timelock on the sweep leaf — the operator's
+only unilateral path out of the batch output. Tree validation can't vouch for it, since the sweep root
+it checks against is derived from that same expiry. The SDK bounds it directly, **on by default**,
+before confirming registration; a rejected batch fails the intent with `InvalidBatchExpiryException`.
+
+| | Mainnet / testnet / signet | Regtest |
+| --- | --- | --- |
+| Block-typed expiry | rejected | allowed, minimum 10 blocks |
+| Seconds-typed expiry | minimum 24 hours | minimum 512 seconds |
+
+Configure only if a server's expiry is legitimately below these:
+
+```csharp
+builder.AddArk().ConfigureBatchExpiry(options =>
+{
+    options.MinimumExpiry = TimeSpan.FromHours(6);
+});
+```
+
+Floors can be lowered but not disabled — zero or less throws at startup, as does a `MinimumExpiry`
+below 512 seconds, which would round down to zero and accept anything. See
+[Batch Expiry Validation](docs/articles/batch-expiry.md) for the attack it prevents, the
+`AllowBlockTypedExpiry` escape hatch, and BIP-68 granularity.
+
 ## Swaps
 
 The swap framework is **multi-provider** — swap providers are pluggable via DI and the `SwapsManagementService` routes operations to the right provider based on the requested asset pair.
