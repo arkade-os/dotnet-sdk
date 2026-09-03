@@ -24,7 +24,6 @@ var builder = Host.CreateDefaultBuilder(args)
     .WithSafetyService<YourSafetyService>()
     .WithBlockchain<NBXplorerBlockchain>()
     .OnMainnet()
-    .EnableSwaps();
 
 builder.ConfigureServices((_, services) =>
 {
@@ -49,7 +48,6 @@ using NArk.Storage.EfCore.Hosting;
 
 services.AddArkCoreServices();
 services.AddArkNetwork(ArkNetworkConfig.Mainnet);
-services.AddArkSwapServices();
 
 services.AddDbContextFactory<YourDbContext>(opts =>
     opts.UseNpgsql(connectionString));

@@ -15,7 +15,6 @@ NArk gives .NET applications everything they need to build on Arkade: wallet man
 | **[NArk](https://www.nuget.org/packages/NArk)** | Meta-package — pulls in Core + Swaps |
 | **[NArk.Abstractions](https://www.nuget.org/packages/NArk.Abstractions)** | Interfaces and domain types |
 | **[NArk.Core](https://www.nuget.org/packages/NArk.Core)** | Wallet, virtual output, intent, batch, and asset logic |
-| **[NArk.Swaps](https://www.nuget.org/packages/NArk.Swaps)** | Boltz submarine/reverse/chain swap client |
 | **[NArk.Storage.EfCore](https://www.nuget.org/packages/NArk.Storage.EfCore)** | EF Core persistence for all Arkade state |
 
 ## Quick Links

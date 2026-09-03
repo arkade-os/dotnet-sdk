@@ -12,8 +12,6 @@
   href: assets.md
 - name: ArkadeCash
   href: arkade-cash.md
-- name: Swaps
-  href: swaps.md
 - name: Settlement
   href: settlement.md
 - name: ArkadeScript & Emulator

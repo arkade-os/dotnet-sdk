@@ -3,7 +3,7 @@ namespace NArk.Abstractions.Settlement;
 /// <summary>
 /// Feeds wallet activity into the settlement engine from outside <c>NArk.Core</c>.
 /// The engine already reacts to VTXO and intent changes; register a trigger source to
-/// add another signal — <c>NArk.Swaps</c> uses one to re-evaluate a wallet whenever a
+/// add another signal — a swap package uses one to re-evaluate a wallet whenever a
 /// swap changes state.
 /// </summary>
 public interface ISettlementTriggerSource

@@ -52,7 +52,6 @@ Useful flags:
 dotnet-sdk/
 ├── NArk.Abstractions/     # Interfaces, domain types, vendored NBitcoin.Scripting
 ├── NArk.Core/             # Core services and transport
-├── NArk.Swaps/            # Boltz swap integration
 ├── NArk.Storage.EfCore/   # EF Core persistence (opt-in payment tracking)
 ├── NArk/                  # Meta-package
 ├── NArk.Tests/            # Unit tests
