@@ -193,7 +193,7 @@ public static class ArkadeSwapStateMachine
             // back. A fill cannot happen without the preimage being revealed, and the preimage is
             // checkable against the payment hash, so this is provable rather than inferred.
             ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc
-                or ArkadeSwapIntentType.BtcToOnchain =>
+                or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc =>
                 o.PreimageRevealed ? ArkadeSwapIntentStatus.Fulfilled : ArkadeSwapIntentStatus.Resolved,
 
             // The asset corridors have no such leaf: a spend can only be the fill.
@@ -222,10 +222,15 @@ public static class ArkadeSwapStateMachine
             // path opens. Past that it is over, not claimable: the claim refuses to race the
             // reclaim, so the only honest terminal reading of an unspendable lockup is that the
             // window closed.
-            ArkadeSwapIntentType.LightningToBtc when o.PastLocktime =>
+            //
+            // The on-board reads identically, because on the Arkade side it IS identical: a lockup
+            // somebody else funded, ours while the clock runs. Its L1 leg is a separate matter and
+            // no VTXO reports on it — see ActionFor.
+            (ArkadeSwapIntentType.LightningToBtc or ArkadeSwapIntentType.OnchainToBtc)
+                when o.PastLocktime =>
                 Changed(current, ArkadeSwapIntentStatus.Resolved),
 
-            ArkadeSwapIntentType.LightningToBtc when !o.PastLocktime =>
+            ArkadeSwapIntentType.LightningToBtc or ArkadeSwapIntentType.OnchainToBtc =>
                 Changed(current, ArkadeSwapIntentStatus.Claimable),
 
             _ => null,
@@ -258,9 +263,16 @@ public static class ArkadeSwapStateMachine
             (ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending) =>
                 ArkadeSwapIntentStatus.Refundable,
 
+            // Our deposit again, on the other onchain leg's Arkade side.
+            (ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentStatus.Pending) =>
+                ArkadeSwapIntentStatus.Refundable,
+
             // The claim window is closed and the claim itself refuses to race the reclaim, so
-            // keeping the swap actionable would just retry a spend that throws, forever.
-            (ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Claimable) =>
+            // keeping the swap actionable would just retry a spend that throws, forever. The
+            // on-board's L1 sats are NOT written off with it: nothing here is terminal for that
+            // leg, and ActionFor keeps proposing its refund.
+            (ArkadeSwapIntentType.LightningToBtc or ArkadeSwapIntentType.OnchainToBtc,
+                ArkadeSwapIntentStatus.Claimable) =>
                 ArkadeSwapIntentStatus.Resolved,
 
             _ => null,
@@ -293,7 +305,8 @@ public static class ArkadeSwapStateMachine
     public static ArkadeIntentAction ActionFor(
         ArkadeSwapIntentType type, ArkadeSwapIntentStatus status) => (type, status) switch
     {
-        (ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Claimable) =>
+        (ArkadeSwapIntentType.LightningToBtc or ArkadeSwapIntentType.OnchainToBtc,
+            ArkadeSwapIntentStatus.Claimable) =>
             ArkadeIntentAction.ClaimReceive,
         (ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Refundable) =>
             ArkadeIntentAction.RefundSend,
@@ -301,6 +314,17 @@ public static class ArkadeSwapStateMachine
             ArkadeIntentAction.ClaimOnchain,
         (ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentStatus.Refundable) =>
             ArkadeIntentAction.RefundSend,
+
+        // The on-board's L1 recourse, proposed from every state in which those sats can still be
+        // sitting in the HTLC. Resolved is among them ON PURPOSE, terminal though it is for the
+        // Arkade side: it means our claim window closed unused, which is exactly the case where the
+        // solver never learns the preimage, never claims on L1, and our funding is waiting there for
+        // us. Treating a terminal Arkade status as terminal for both rails would abandon it.
+        (ArkadeSwapIntentType.OnchainToBtc,
+            ArkadeSwapIntentStatus.Pending or ArkadeSwapIntentStatus.Claimable
+                or ArkadeSwapIntentStatus.Resolved) =>
+            ArkadeIntentAction.RefundOnchain,
+
         _ => ArkadeIntentAction.None,
     };
 
@@ -340,6 +364,39 @@ public static class ArkadeSwapStateMachine
             new(6, SwapStepKind.PublishInvoice, SwapTrigger.Client, null),
             new(7, SwapStepKind.CounterpartyFunds, SwapTrigger.Solver, ArkadeSwapIntentStatus.Claimable),
             new(8, SwapStepKind.Claim, SwapTrigger.Client, ArkadeSwapIntentStatus.Fulfilled),
+        ],
+
+        ArkadeSwapIntentType.BtcToOnchain =>
+        [
+            new(1, SwapStepKind.Negotiate, SwapTrigger.Client, null),
+            new(2, SwapStepKind.DeriveAndVerifyAddress, SwapTrigger.Client, null),
+            new(3, SwapStepKind.Gate, SwapTrigger.Client, null),
+            new(4, SwapStepKind.ImportContract, SwapTrigger.Client, ArkadeSwapIntentStatus.Funding),
+            new(5, SwapStepKind.FundLockup, SwapTrigger.Client, ArkadeSwapIntentStatus.Pending),
+            new(6, SwapStepKind.CounterpartyFunds, SwapTrigger.Solver, null),
+            new(7, SwapStepKind.AwaitConfirmations, SwapTrigger.Time, null),
+            new(8, SwapStepKind.Claim, SwapTrigger.Client, null),
+            new(9, SwapStepKind.CounterpartyClaims, SwapTrigger.Solver, ArkadeSwapIntentStatus.Fulfilled),
+            new(10, SwapStepKind.AwaitRefundLocktime, SwapTrigger.Time, ArkadeSwapIntentStatus.Refundable),
+            new(11, SwapStepKind.Refund, SwapTrigger.Client, ArkadeSwapIntentStatus.Cancelled),
+        ],
+
+        ArkadeSwapIntentType.OnchainToBtc =>
+        [
+            new(1, SwapStepKind.SealPreimage, SwapTrigger.Client, null),
+            new(2, SwapStepKind.Negotiate, SwapTrigger.Client, null),
+            new(3, SwapStepKind.DeriveAndVerifyAddress, SwapTrigger.Client, null),
+            new(4, SwapStepKind.Gate, SwapTrigger.Client, null),
+            new(5, SwapStepKind.ImportContract, SwapTrigger.Client, ArkadeSwapIntentStatus.Pending),
+            // Ours, and on L1 — the one step no other corridor has, because this is the only leg
+            // where the client's own funding lands on a chain rather than on Arkade.
+            new(6, SwapStepKind.FundLockup, SwapTrigger.Client, null),
+            new(7, SwapStepKind.AwaitConfirmations, SwapTrigger.Time, null),
+            new(8, SwapStepKind.CounterpartyFunds, SwapTrigger.Solver, ArkadeSwapIntentStatus.Claimable),
+            new(9, SwapStepKind.Claim, SwapTrigger.Client, ArkadeSwapIntentStatus.Fulfilled),
+            // The alternative ending, not a later one: reached when step 8 never happens.
+            new(10, SwapStepKind.AwaitRefundLocktime, SwapTrigger.Time, null),
+            new(11, SwapStepKind.Refund, SwapTrigger.Client, ArkadeSwapIntentStatus.Cancelled),
         ],
 
         _ =>

@@ -24,6 +24,17 @@ public enum ArkadeIntentAction
 
     /// <summary>A send swap's refund path opened and nobody else will push it.</summary>
     RefundSend,
+
+    /// <summary>
+    /// An on-board's L1 HTLC may be ours to take back — the check is the corridor's, not the status's.
+    /// </summary>
+    /// <remarks>
+    /// Proposed on every pass for the same reason <see cref="ClaimOnchain"/> is: what it waits for is
+    /// a median-time-past on a chain no VTXO event reports. It is also the on-board's ONLY recourse,
+    /// because on that leg we never funded the Arkade side and so have nothing to refund there — the
+    /// sats are on L1, behind a leaf no counterparty signature reaches.
+    /// </remarks>
+    RefundOnchain,
 }
 
 /// <summary>

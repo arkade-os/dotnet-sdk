@@ -6,6 +6,7 @@ using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Onchain;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.SolverRegistry;
+using NBitcoin;
 
 using NArk.ArkadeIntents.Assets;
 namespace NArk.ArkadeIntents.Services;
@@ -272,6 +273,113 @@ public sealed class ArkadeIntentsService
         _lightning.ClaimAsync(swapId, cancellationToken);
 
     /// <summary>
+    /// Off-board an Arkade balance to Bitcoin L1.
+    /// </summary>
+    /// <param name="walletId">The wallet paying, and receiving any refund.</param>
+    /// <param name="payoutAddress">The Bitcoin L1 address the off-board pays out to.</param>
+    /// <param name="amountSats">The size, on the leg <paramref name="amountSide"/> names.</param>
+    /// <param name="rfqTransport">How to reach a solver.</param>
+    /// <param name="amountSide">
+    /// Which leg <paramref name="amountSats"/> pins, and so who absorbs the solver's spread — what
+    /// lands on L1 (<see cref="RfqAmountSide.To"/>, the default) or what leaves the Arkade balance.
+    /// </param>
+    /// <param name="solverCard">The solver's published card, when there is one.</param>
+    /// <param name="cancellationToken">Cancels before funding.</param>
+    /// <returns>The funded swap.</returns>
+    /// <exception cref="InvalidOperationException">No onchain corridor is registered.</exception>
+    /// <remarks>
+    /// The corridor's own entry point was reachable only by resolving <see cref="OnchainIntentsClient"/>
+    /// directly, while its claim and refund were already driven through here — so the one facade that
+    /// exists to spare callers knowing which class owns a swap could start every corridor but this one.
+    /// </remarks>
+    public Task<FundedOnchainSend> SendToOnchainAsync(
+        string walletId,
+        BitcoinAddress payoutAddress,
+        long amountSats,
+        IRfqTransport rfqTransport,
+        RfqAmountSide amountSide = RfqAmountSide.To,
+        SolverCard? solverCard = null,
+        CancellationToken cancellationToken = default) =>
+        RequireOnchain().SendToOnchainAsync(
+            walletId, payoutAddress, amountSats, amountSide, rfqTransport, solverCard, cancellationToken);
+
+    /// <summary>
+    /// On-board Bitcoin L1 sats into an Arkade balance.
+    /// </summary>
+    /// <param name="walletId">The wallet taking delivery.</param>
+    /// <param name="amountSats">The size to ask for, on the leg <paramref name="amountSide"/> names.</param>
+    /// <param name="rfqTransport">How to reach a solver.</param>
+    /// <param name="covclaimdPubKey">covclaimd's key, read live.</param>
+    /// <param name="l1RefundAddress">Where the L1 HTLC pays if it has to be taken back.</param>
+    /// <param name="amountSide">
+    /// Which leg <paramref name="amountSats"/> pins, and so who absorbs the solver's spread — what we
+    /// send on L1 (<see cref="RfqAmountSide.From"/>, the default) or what lands on Arkade.
+    /// </param>
+    /// <param name="solverCard">The solver's published card, when there is one.</param>
+    /// <param name="cancellationToken">Cancels the negotiation.</param>
+    /// <returns>The L1 address to fund, and what is needed to claim afterwards.</returns>
+    /// <exception cref="InvalidOperationException">No onchain corridor is registered.</exception>
+    /// <remarks>
+    /// Funds nothing itself: the L1 funding transaction belongs to the caller's own Bitcoin wallet,
+    /// since the sats being on-boarded are by definition not on Arkade yet.
+    /// </remarks>
+    public Task<PendingOnchainReceive> ReceiveFromOnchainAsync(
+        string walletId,
+        long amountSats,
+        IRfqTransport rfqTransport,
+        string covclaimdPubKey,
+        BitcoinAddress l1RefundAddress,
+        RfqAmountSide amountSide = RfqAmountSide.From,
+        SolverCard? solverCard = null,
+        CancellationToken cancellationToken = default) =>
+        RequireOnchain().ReceiveFromOnchainAsync(
+            walletId, amountSats, rfqTransport, covclaimdPubKey, l1RefundAddress,
+            amountSide, solverCard, cancellationToken);
+
+    /// <summary>
+    /// Claim a funded on-board, publishing the preimage.
+    /// </summary>
+    /// <param name="swapId">The swap to claim.</param>
+    /// <param name="cancellationToken">Cancels before the spend.</param>
+    /// <returns>The updated intent.</returns>
+    /// <remarks>
+    /// Exposed directly for the same reason the Lightning claim is, and with the same urgency: the
+    /// window closes when the solver's own reclaim opens.
+    /// </remarks>
+    public Task<ArkadeSwapIntent> ClaimOnchainReceiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        RequireOnchain().ClaimOnchainReceiveAsync(swapId, cancellationToken);
+
+    /// <summary>
+    /// Take back an on-board's L1 funding once its refund leaf has matured.
+    /// </summary>
+    /// <param name="swapId">The swap to refund.</param>
+    /// <param name="refundAddress">Where to pay, overriding the address recorded at negotiation.</param>
+    /// <param name="cancellationToken">Cancels before the broadcast.</param>
+    /// <returns>What the attempt found; not refunding yet is an ordinary answer.</returns>
+    /// <remarks>
+    /// The on-board's only recourse. Unlike the send corridors there is no Arkade covenant to refund
+    /// — nothing of ours was ever funded there — so if the solver never delivers, this is the way the
+    /// sats come home.
+    /// </remarks>
+    public Task<OnchainRefundOutcome> RefundOnchainReceiveAsync(
+        string swapId,
+        BitcoinAddress? refundAddress = null,
+        CancellationToken cancellationToken = default) =>
+        RequireOnchain().RefundOnchainReceiveAsync(swapId, refundAddress, cancellationToken);
+
+    /// <summary>The onchain corridor, or a refusal naming what is missing.</summary>
+    /// <remarks>
+    /// The corridor is optional in the container because it needs L1 access a Lightning-only
+    /// deployment has no reason to wire up. A caller reaching for it anyway should be told that,
+    /// rather than handed a <c>NullReferenceException</c> from inside a facade.
+    /// </remarks>
+    private OnchainIntentsClient RequireOnchain() =>
+        _onchain ?? throw new InvalidOperationException(
+            "no onchain corridor is registered — it needs an IBitcoinBlockchain, which this "
+            + "deployment has not supplied");
+
+    /// <summary>
     /// Do whatever this swap's kind and status call for, if anything.
     /// </summary>
     /// <param name="swapId">The swap.</param>
@@ -318,8 +426,38 @@ public sealed class ArkadeIntentsService
                 return new ArkadeIntentAdvance(swapId, action, outcome.Claimed, outcome.Txid, outcome.Detail);
             }
 
+            // Same shape as the off-board's claim, and for the same reason: the L1 median time past
+            // it waits on produces no event, so this is proposed on every pass and most passes find
+            // nothing due. Also the on-board's ONLY recourse — it funded nothing on Arkade, so there
+            // is no covenant refund to fall back to.
+            if (action == ArkadeIntentAction.RefundOnchain)
+            {
+                if (_onchain is null)
+                {
+                    return new ArkadeIntentAdvance(
+                        swapId, action, Acted: false,
+                        Error: "no onchain corridor is registered to act on this swap");
+                }
+
+                var refund = await _onchain.RefundOnchainReceiveAsync(
+                    swapId, cancellationToken: cancellationToken);
+                if (refund.Refunded)
+                {
+                    _logger?.LogInformation("Swap {SwapId}: refunded on L1 in {Txid}", swapId, refund.Txid);
+                }
+                return new ArkadeIntentAdvance(swapId, action, refund.Refunded, refund.Txid, refund.Detail);
+            }
+
             var updated = action switch
             {
+                // One action, two corridors. Both receive legs claim the same covenant with the same
+                // preimage; which client owns the row is bookkeeping, not a difference in what the
+                // caller asked for.
+                ArkadeIntentAction.ClaimReceive when intent.Type == ArkadeSwapIntentType.OnchainToBtc =>
+                    _onchain is not null
+                        ? await _onchain.ClaimOnchainReceiveAsync(swapId, cancellationToken)
+                        : throw new InvalidOperationException(
+                            "no onchain corridor is registered to claim this swap"),
                 ArkadeIntentAction.ClaimReceive =>
                     await _lightning.ClaimAsync(swapId, cancellationToken),
                 ArkadeIntentAction.RefundSend =>
@@ -350,9 +488,14 @@ public sealed class ArkadeIntentsService
     private async Task<byte[]?> RevealedPreimageAsync(
         ArkadeSwapIntent intent, ArkVtxo lockup, CancellationToken cancellationToken)
     {
+        // Every HTLC-class corridor, not only the Lightning pair. The onchain legs settle against
+        // the same covenant and their fill is proved the same way, so leaving them out meant a
+        // solver's claim of an off-board lockup read back as `Resolved` — "the script moved, we
+        // cannot say why" — when the witness in front of us said exactly why.
         if (!lockup.IsSpent()
             || intent.PaymentHash is not { Length: > 0 } hash
-            || intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc))
+            || intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc
+                or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc))
         {
             return null;
         }

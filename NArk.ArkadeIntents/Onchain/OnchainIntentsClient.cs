@@ -29,6 +29,11 @@ namespace NArk.ArkadeIntents.Onchain;
 /// <param name="RfqId">The negotiation, and the swap's id.</param>
 /// <param name="Quote">The terms funded against.</param>
 /// <param name="LockupAddress">The Arkade covenant the client funded.</param>
+/// <param name="LockupPkScript">
+/// That covenant's scriptPubKey, hex — the script to watch for the solver's claim. Carried for the
+/// reason <see cref="NArk.ArkadeIntents.Lightning.FundedLightningSend"/> carries it: the address is
+/// for showing a person, and every lookup that follows a funded swap keys on the script.
+/// </param>
 /// <param name="HtlcAddress">The L1 address the solver must fund, and the client then claims.</param>
 /// <param name="PaymentHash">The hash both legs turn on.</param>
 /// <param name="FundedSats">What left the Arkade balance.</param>
@@ -37,6 +42,7 @@ public sealed record FundedOnchainSend(
     string RfqId,
     RfqQuote<OnchainSendQuoteProfile> Quote,
     string LockupAddress,
+    string LockupPkScript,
     string HtlcAddress,
     string PaymentHash,
     long FundedSats,
@@ -58,7 +64,7 @@ public sealed record FundedOnchainSend(
 /// the claim.
 /// </para>
 /// </remarks>
-public sealed class OnchainIntentsClient(
+public sealed partial class OnchainIntentsClient(
     IClientTransport transport,
     IContractService contractService,
     ISpendingService spendingService,
@@ -67,12 +73,16 @@ public sealed class OnchainIntentsClient(
     IVtxoStorage vtxoStorage,
     IWalletProvider walletProvider,
     IBitcoinBlockchain blockchain,
+    IAesGcmCipher? cipher = null,
     IOptions<ArkadeIntentsOptions>? options = null,
     TimeProvider? time = null,
     ILogger<OnchainIntentsClient>? logger = null)
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ArkadeIntentsOptions _options = options?.Value ?? new ArkadeIntentsOptions();
+
+    /// <summary>Supplies AES-GCM for the on-board corridor's claim packet.</summary>
+    private readonly IAesGcmCipher _cipher = cipher ?? new AesGcmCipher();
 
     private string? EmulatorPubkeyOverride => _options.EmulatorPubkeyOverride;
 
@@ -188,7 +198,7 @@ public sealed class OnchainIntentsClient(
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         return new FundedOnchainSend(
-            rfqId, quote, lockupAddress, htlc.Address.ToString(), paymentHash,
+            rfqId, quote, lockupAddress, intent.SwapPkScript, htlc.Address.ToString(), paymentHash,
             quote.FromAmount, txid.ToString());
     }
 
