@@ -39,18 +39,6 @@ builder.Services.AddArkPaymentTracking();
 builder.Services.AddArkCoreServices();
 builder.Services.AddArkRestTransport(networkConfig);
 
-// ── NArk SDK swap services ──
-builder.Services.AddArkSwapServices();
-// In full ASP.NET hosts, AddHttpClient<BoltzClient>() provides the HttpClient. In WASM we must
-// register CachedBoltzClient (and its BoltzClient base) with a plain HttpClient ourselves.
-builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.CachedBoltzClient>(sp =>
-{
-    var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<NArk.Swaps.Boltz.Models.BoltzClientOptions>>();
-    return new NArk.Swaps.Boltz.Client.CachedBoltzClient(new HttpClient(), opts);
-});
-builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.BoltzClient>(sp =>
-    sp.GetRequiredService<NArk.Swaps.Boltz.Client.CachedBoltzClient>());
-
 // ── Arkade asset swaps (covenant-based BTC⇄asset via the solver market) ──
 // The maker funds a covenant offer (TLV offer packet in the funding tx); a solver on the
 // public market fulfils it. Needs the network emulator (covenant co-signer whose key the
@@ -63,13 +51,13 @@ builder.Services.AddEmulatorClient(opts =>
 // the browser runtime has no sockets to pool, and merely setting PooledConnectionLifetime throws
 // PlatformNotSupportedException from inside the DI factory — surfacing as a component that fails
 // to render rather than as anything naming this line. Overriding the registration afterwards is
-// the same move already made above for CachedBoltzClient and below for SolverDiscoveryService;
-// the browser owns the connections, so the default handler is the correct one.
+// the same move made below for SolverDiscoveryService; the browser owns the connections, so the
+// default handler is the correct one.
 builder.Services.AddSingleton(sp => new NArk.Arkade.Emulator.EmulatorClient(
     new HttpClient(),
     sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<NArk.Arkade.Emulator.EmulatorClientOptions>>()));
 // SolverDiscoveryService has multiple ctors, so ActivatorUtilities (AddHttpClient<T>) can't pick one
-// in WASM — register explicitly with a plain HttpClient, mirroring the CachedBoltzClient registration.
+// in WASM — register explicitly with a plain HttpClient.
 builder.Services.AddSingleton(sp => new NArk.ArkadeIntents.Services.SolverDiscoveryService(
     new HttpClient(),
     sp.GetService<ILogger<NArk.ArkadeIntents.Services.SolverDiscoveryService>>()));
@@ -78,10 +66,10 @@ builder.Services.AddSingleton<NArk.ArkadeIntents.Assets.AssetIntentsManager>();
 builder.Services.AddSingleton<NArk.ArkadeIntents.Services.ArkadeSwapIntentMonitoringService>();
 
 // ── Arkade Lightning corridors (arkade:BTC⇄lightning:BTC) ──
-// These replace the Boltz submarine/reverse swaps this sample used to run. Same job — pay an
+// These replaced the Boltz submarine/reverse swaps this sample used to run. Same job — pay an
 // invoice out of Arkade, or be paid over Lightning into it — but the counterparty is a solver
 // reached per swap over RFQ, and a swap is settled by a covenant rather than by an account.
-// Boltz stays wired below for the chain swaps, which have no intent corridor yet.
+// Chain swaps went with the Boltz package and have no intent corridor yet.
 builder.Services.AddSingleton<NArk.ArkadeIntents.Lightning.LightningIntentsClient>();
 // The receive corridor seals the swap preimage with AES-256-GCM, which the browser's .NET runtime
 // does not implement — so the browser's own is handed in. Everything else in the packet (ECDH,

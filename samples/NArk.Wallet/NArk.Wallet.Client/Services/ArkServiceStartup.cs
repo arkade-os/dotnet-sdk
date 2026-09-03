@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Logging;
 using NArk.Core.Services;
-using NArk.Swaps.Services;
 
 namespace NArk.Wallet.Client.Services;
 
@@ -36,15 +35,6 @@ public static class ArkServiceStartup
             await vtxoSync.StartAsync(cts.Token);
         }
         catch (Exception ex) { logger.LogWarning(ex, "VtxoSynchronizationService failed to start — falling back to polling"); }
-
-        // Start swap management (monitors swap status, handles claims).
-        // Non-fatal if Boltz is unreachable — swaps just won't be monitored until next app load.
-        try
-        {
-            var swapMgr = services.GetRequiredService<SwapsManagementService>();
-            await swapMgr.StartAsync(cts.Token);
-        }
-        catch (Exception ex) { logger.LogWarning(ex, "SwapsManagementService failed to start"); }
 
         // Start Arkade asset-swap monitoring (transitions covenant swaps: filled by a solver / cancelled).
         try

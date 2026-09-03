@@ -65,13 +65,6 @@
                 </div>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-tertiary);flex-shrink:0;"><path d="M9 18l6-6-6-6"/></svg>
             </a>
-            <a href="./swaps" class="glass-card" style="display:flex;align-items:center;justify-content:space-between;text-decoration:none;color:inherit;padding:14px 16px;">
-                <div>
-                    <p style="font-size:14px;font-weight:600;">Swaps</p>
-                    <p class="text-secondary" style="font-size:12px;">@(_swapCount) swaps</p>
-                </div>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-tertiary);flex-shrink:0;"><path d="M9 18l6-6-6-6"/></svg>
-            </a>
             <a href="./intents" class="glass-card" style="display:flex;align-items:center;justify-content:space-between;text-decoration:none;color:inherit;padding:14px 16px;">
                 <div>
                     <p style="font-size:14px;font-weight:600;">Intents</p>
@@ -187,7 +180,6 @@
     private int _contractCount;
     private int _vtxoCount;
     private long _liveBalance;
-    private int _swapCount;
     private int _intentCount;
     private string? _copiedField;
     private bool _confirmDelete;
@@ -205,16 +197,14 @@
                 var vtxoTask = Ark.GetVtxos(State.ActiveWalletId, take: 500);
                 var serverTask = Ark.GetServerInfo();
                 var contractsTask = Ark.GetContracts(State.ActiveWalletId, take: 500);
-                var swapsTask = Ark.GetSwaps(State.ActiveWalletId);
                 var intentsTask = Ark.GetIntents(State.ActiveWalletId, take: 500);
 
-                await Task.WhenAll(vtxoTask, serverTask, contractsTask, swapsTask, intentsTask);
+                await Task.WhenAll(vtxoTask, serverTask, contractsTask, intentsTask);
 
                 var vtxos = vtxoTask.Result;
                 _vtxoCount = vtxos.Count;
                 _liveBalance = (long)vtxos.Where(v => !v.IsSpent()).Aggregate(0UL, (sum, v) => sum + v.Amount);
                 _contractCount = contractsTask.Result.Count;
-                _swapCount = swapsTask.Result.Count;
                 _intentCount = intentsTask.Result.Count;
 
                 var info = serverTask.Result;

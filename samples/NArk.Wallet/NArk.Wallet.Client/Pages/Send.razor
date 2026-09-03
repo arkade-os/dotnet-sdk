@@ -7,7 +7,6 @@
 @using NArk.Wallet.Client.Services
 @using NArk.Abstractions.Payments
 @using NArk.Core.Payments
-@using NArk.Swaps.Boltz
 
 <div class="page-header">
     <a href="./" class="back-btn">
@@ -145,20 +144,6 @@
                         </div>
                     </div>
 
-                    @if (EffectiveAmount > 0 && IsWithinChainSwapLimits())
-                    {
-                        <!-- Chain swap option -->
-                        <div class="method-card lightning" @onclick="@(() => DoSend("chainswap"))">
-                            <div class="method-icon onchain">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
-                            </div>
-                            <div class="method-info">
-                                <div class="method-name">Chain Swap (Boltz)</div>
-                                <div class="method-desc">Send on-chain via Boltz ARK→BTC swap</div>
-                            </div>
-                            <span class="pill pill-info" style="font-size:9px;">BOLTZ</span>
-                        </div>
-                    }
                 }
             </div>
         }
@@ -222,7 +207,6 @@
     private string? _txId;
     private string? _error;
     private string _sendMethodLabel = "";
-    private BoltzAllLimits? _boltzLimits;
     private LnurlHelper.LnurlPayParams? _lnurlParams;
     private bool _resolvingLnurl;
 
@@ -230,7 +214,6 @@
 
     protected override async Task OnInitializedAsync()
     {
-        try { _boltzLimits = await Ark.GetBoltzLimits(); } catch { }
     }
 
     private void OnInputChanged() => ParseInput(_rawInput);
@@ -310,12 +293,6 @@
             _parseError = "Could not extract a recipient from the payment string";
     }
 
-    private bool IsWithinChainSwapLimits()
-    {
-        if (_boltzLimits?.ChainBtcToArkMinAmount is null) return false;
-        var amt = EffectiveAmount;
-        return amt >= _boltzLimits.ChainBtcToArkMinAmount && amt <= _boltzLimits.ChainBtcToArkMaxAmount;
-    }
 
     private async Task ResolveLnurl(string input)
     {
@@ -357,7 +334,6 @@
             "ark" => "Sending via Ark...",
             "lightning" => "Locking sats for the solver to claim...",
             "collabexit" => "Collaborative exit to on-chain...",
-            "chainswap" => "Sending via Boltz ARK→BTC chain swap...",
             _ => "Sending..."
         };
         StateHasChanged();
@@ -377,7 +353,6 @@
                     "ark" => await Ark.Send(State.ActiveWalletId, _parsedAddress, amount),
                     "lightning" => await Ark.PayLightningInvoice(State.ActiveWalletId, _parsedAddress),
                     "collabexit" => await Ark.CollaborativeExit(State.ActiveWalletId, _parsedAddress, amount),
-                    "chainswap" => await Ark.SendArkToBtcChainSwap(State.ActiveWalletId, amount, _parsedAddress),
                     _ => throw new InvalidOperationException("Unknown method")
                 };
             }
