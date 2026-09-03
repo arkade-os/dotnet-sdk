@@ -16,8 +16,7 @@ public class HierarchicalDeterministicAddressProvider(
     IWalletStorage walletStorage,
     IContractStorage contractStorage,
     ArkWalletInfo wallet,
-    Network network,
-    ArkAddress? sweepDestination)
+    Network network)
     : IArkadeAddressProvider
 {
     ///<inheritdoc/>
@@ -90,12 +89,7 @@ public class HierarchicalDeterministicAddressProvider(
                 new ArkBoardingContract(
                     info.SignerKey, info.BoardingExit, await GetNextSigningDescriptor(cancellationToken)),
                 activityState),
-
-            // Collaborative-exit sweep target: a fixed external address, never tracked.
-            NextContractPurpose.SendToSelf when sweepDestination is not null => (
-                new UnknownArkContract(sweepDestination, info.SignerKey, info.Network.ChainName == ChainName.Mainnet),
-                ContractActivityState.Inactive),
-
+            
             NextContractPurpose.SendToSelf =>
                 await SendToSelfContractAsync(info, inputContracts, cancellationToken),
 

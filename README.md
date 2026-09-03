@@ -494,6 +494,104 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
     new ArkTxOut(bitcoinAddress, Money.Satoshis(50_000)));
 ```
 
+## Settlement (Threshold-Based Payouts)
+
+Settlement moves value **out** of a wallet once its balance reaches a configured threshold — to an Arkade address, to on-chain Bitcoin, or to a rail you plug in yourself. It is separate from `SweeperService`, which consolidates VTXOs back into the same wallet.
+
+Three layers, each replaceable on its own: `ISettlementPolicy` instances yield plans (*when and how much*) the way `ISweepPolicy` yields coins, `CompositeSettlementService` routes each plan to the first `ISettlementService` that accepts the destination, and that rail moves the funds. The background `SettlementService` joins them, re-evaluating a wallet on VTXO changes, intent transitions, and a periodic heartbeat.
+
+```csharp
+services.AddArkSettlement();
+
+// Optional: also settle to on-chain Bitcoin addresses via a collaborative exit.
+services.AddArkSettlement(options => options.EnableCollaborativeExit = true);
+```
+
+The engine stays inert until you supply the rules — the SDK persists none of its own:
+
+```csharp
+public class MySettlementConfigProvider(IMySettingsStore store) : ISettlementConfigProvider
+{
+    public async Task<IReadOnlyCollection<SettlementConfig>> GetConfigs(
+        string? walletId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await store.GetPayoutSettings(walletId, cancellationToken);
+
+        return settings
+            .Select(setting => new SettlementConfig(
+                setting.WalletId,
+                SettlementDestination.Ark(setting.PayoutAddress),
+                Threshold: 100_000))
+            .ToArray();
+    }
+}
+
+services.AddSingleton<ISettlementConfigProvider, MySettlementConfigProvider>();
+```
+
+The threshold gates *when* a settlement fires, not *how much* moves: a wallet configured at 100 000 sats that reaches 250 000 settles all 250 000. Cap a single settlement with `SettlementConfig.MaxAmount`.
+
+### Settling an Arkade asset
+
+A rule settles one denomination, named by `SourceAsset`: satoshis for BTC (the default), atomic units for an Arkade-issued asset. Both are measured independently — an asset rule never fires on the wallet's satoshi balance, and the dust an asset VTXO carries never counts towards a BTC rule:
+
+```csharp
+// Pay out USDT0 once the wallet holds 500 000 units of it, whatever its BTC balance is.
+new SettlementConfig(
+    walletId,
+    SettlementDestination.ArkAsset(payoutAddress, usdt0AssetId),
+    Threshold: 500_000,
+    SourceAsset: usdt0AssetId);
+```
+
+`ArkAssetSettlementService`, registered by `AddArkSettlement()`, moves the asset to another Arkade address (or consolidates it onto a fresh address of the same wallet when the destination has none), returning the remainder as asset change and topping up the dust carriers from the wallet's BTC coins. The wallet's auto-sweep destination is not applied to asset outputs — they stay where the rule points.
+
+That rail transfers, it does not convert. Settling USDT0 *into a different asset* is a conversion: register a rail whose `CanSettle` accepts the destination and read `SettlementRequest.SourceAsset` for what it is handed.
+
+```csharp
+public class Usdt0ToUsdcSettlementService : ISettlementService
+{
+    public bool CanSettle(SettlementDestination destination) => destination.Is("base", "USDC");
+
+    public async Task<SettlementResult> SettleAsync(
+        SettlementRequest request, CancellationToken cancellationToken = default)
+    {
+        // request.SourceAsset is the Arkade asset leaving the wallet,
+        // request.Amount its atomic units.
+        var quote = await broker.Convert(request.SourceAsset, request.Amount, cancellationToken);
+
+        return new SettlementResult(
+            quote.Id, request.Amount, 0, quote.FeeSats,
+            DestinationAtomicAmount: quote.DeliveredUnits);
+    }
+}
+```
+
+A destination is just a network, an asset, and an address — all free-form strings. The SDK defines only the two it settles itself (`ark`, `bitcoin`); anything else is a rail you register, and the SDK never has to learn about it:
+
+```csharp
+// A destination the SDK knows nothing about
+var destination = new SettlementDestination("base", "USDC", "0x…");
+
+public class UsdcSettlementService : ISettlementService
+{
+    public bool Available => true;
+    public string? UnavailableReason => null;
+
+    public bool CanSettle(SettlementDestination destination) => destination.Is("base", "USDC");
+
+    public Task<SettlementResult> SettleAsync(
+        SettlementRequest request, CancellationToken cancellationToken = default) => /* … */;
+}
+
+services.AddSingleton<ISettlementService, UsdcSettlementService>();
+```
+
+The engine serialises settlements per wallet, but does not deduplicate across retries: a settlement broadcast without its result coming back looks the same as one that never ran, and the heartbeat will fire the rule again. Record attempts from `PostSettlementActionEvent` and gate the wallet with an `ISettlementGate` while one is in flight — the SDK persists nothing itself.
+
+`PostSettlementActionEvent` is raised for every attempt. See [docs/articles/settlement.md](docs/articles/settlement.md) for policies, gates, trigger sources, and options.
+
 ## Querying Intents by Proof
 
 Retrieve registered intents by proving ownership of any input coin via a BIP-322-style proof:

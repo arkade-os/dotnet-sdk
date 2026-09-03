@@ -104,12 +104,6 @@ public class DefaultWalletProvider(
             logger?.LogTrace("[wallet-probe] GetAddressProvider: GetServerInfo={InfoMs}ms LoadWallet={LoadMs}ms",
                 infoMs, swLoad.ElapsedMilliseconds);
 
-            ArkAddress? sweepDestination = null;
-            if (ShouldUseDestination(wallet))
-            {
-                sweepDestination = ArkAddress.Parse(wallet.Destination!);
-            }
-
             // Cross-check the stored descriptor against the one derived from the local nsec —
             // only meaningful when we actually have the secret. Watch-only/remote single-key
             // wallets keep the stored AccountDescriptor verbatim.
@@ -129,8 +123,8 @@ public class DefaultWalletProvider(
             // already encodes — no string-sniff needed.
             return wallet.WalletType switch
             {
-                WalletType.HD => new HierarchicalDeterministicAddressProvider(clientTransport, safetyService, walletStorage, contractStorage, wallet, network, sweepDestination),
-                WalletType.SingleKey => new SingleKeyAddressProvider(clientTransport, wallet, network, sweepDestination, logger),
+                WalletType.HD => new HierarchicalDeterministicAddressProvider(clientTransport, safetyService, walletStorage, contractStorage, wallet, network),
+                WalletType.SingleKey => new SingleKeyAddressProvider(clientTransport, wallet, network, logger),
                 _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
             };
         }

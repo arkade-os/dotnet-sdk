@@ -1,10 +1,11 @@
-namespace NArk.Tests.End2End.Common;
+namespace NArk.Tests.Common;
 
 /// <summary>
-/// Polling helpers that replace ad-hoc <c>Task.Delay</c> / deadline-loop
-/// combinations scattered across E2E tests.
+/// Polling helpers that replace ad-hoc <c>Task.Delay</c> / deadline-loop combinations in
+/// tests that drive background work. Lives here rather than in the E2E project so unit
+/// tests can use it too.
 /// </summary>
-internal static class TestWaiter
+public static class TestWaiter
 {
     /// <summary>
     /// Polls <paramref name="predicate"/> every <paramref name="pollInterval"/> until it
@@ -13,7 +14,7 @@ internal static class TestWaiter
     /// so it is guaranteed to run at the deadline boundary.
     /// Throws <see cref="TimeoutException"/> when the deadline is exceeded.
     /// </summary>
-    internal static async Task WaitFor(
+    public static async Task WaitFor(
         Func<Task<bool>> predicate,
         TimeSpan timeout,
         TimeSpan? pollInterval = null,
@@ -38,7 +39,7 @@ internal static class TestWaiter
     /// <summary>
     /// Synchronous-predicate overload.
     /// </summary>
-    internal static Task WaitFor(
+    public static Task WaitFor(
         Func<bool> predicate,
         TimeSpan timeout,
         TimeSpan? pollInterval = null,
@@ -46,34 +47,21 @@ internal static class TestWaiter
         => WaitFor(() => Task.FromResult(predicate()), timeout, pollInterval, ct);
 
     /// <summary>
-    /// Waits for <paramref name="task"/> to complete, mining regtest blocks every
-    /// <paramref name="mineInterval"/> while waiting. Useful for swap / batch tests
-    /// that need on-chain progression to advance.
-    /// Throws <see cref="TimeoutException"/> if <paramref name="timeout"/> elapses.
-    /// Any exception carried by <paramref name="task"/> is re-thrown after it completes.
+    /// As <see cref="WaitFor(Func{bool}, TimeSpan, TimeSpan?, CancellationToken)"/>, but
+    /// returns instead of throwing when the deadline passes. Use it before an assertion that
+    /// reports the failure better than a <see cref="TimeoutException"/> would — a mock's
+    /// "expected this call, received these" beats "condition not met within 10s".
     /// </summary>
-    internal static async Task WaitForWithMining(
-        Task task,
-        TimeSpan timeout,
-        int blocksPerTick = 1,
-        TimeSpan? mineInterval = null,
-        CancellationToken ct = default)
+    public static async Task TryWaitFor(Func<bool> predicate, TimeSpan timeout, TimeSpan? pollInterval = null)
     {
-        var interval = mineInterval ?? TimeSpan.FromSeconds(3);
+        var interval = pollInterval ?? TimeSpan.FromMilliseconds(20);
         var deadline = DateTimeOffset.UtcNow + timeout;
 
-        while (!task.IsCompleted)
+        while (DateTimeOffset.UtcNow < deadline)
         {
-            ct.ThrowIfCancellationRequested();
-
-            if (DateTimeOffset.UtcNow >= deadline)
-                throw new TimeoutException($"Task did not complete within {timeout.TotalSeconds:0}s");
-
-            await DockerHelper.MineBlocks(blocksPerTick, ct);
-            await Task.WhenAny(task, Task.Delay(interval, ct));
+            if (predicate())
+                return;
+            await Task.Delay(interval);
         }
-
-        // Propagate any exception the task carries.
-        await task;
     }
 }
