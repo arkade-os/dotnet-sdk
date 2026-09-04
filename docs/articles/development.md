@@ -29,13 +29,16 @@ E2E tests require a running regtest stack (bitcoin core + nbxplorer + mempool + 
 
 ```bash
 # From the repo root:
-node regtest/regtest.mjs start --profile delegate --clean
+node regtest/regtest.mjs start --profile ark --clean
 dotnet test NArk.Tests.End2End
 node regtest/regtest.mjs clean     # tear down containers and volumes when done
 ```
 
-Profiles let you start only the tier a suite needs. `delegate` covers everything except:
+Profiles let you start only the tier a suite needs. `ark` (bitcoind + nbxplorer + mempool +
+arkd) is enough for most of the suite, because that is where the faucet lives. Add a profile
+only for the service you are actually exercising:
 
+- `delegate` — fulmine-delegator, for `DelegationTests`
 - `emulator` — the covenant (`ArkadeScript`) suite co-signs against the emulator
 - `boltz` — Boltz and the Lightning corridors; nothing else needs it
 

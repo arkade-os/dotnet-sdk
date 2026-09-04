@@ -27,8 +27,6 @@ jobs:
       - name: Unpin operator signer so rotate-signer can manage it
         run: sed -i -E '/^ARKD_WALLET_(SIGNER_KEY|DEPRECATED_SIGNER_KEYS)=/d' .env.regtest
       - uses: ./.github/actions/e2e-setup
-        with:
-          profile: delegate
       - name: Run signer-rotation E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=RealRotation"
         timeout-minutes: 15

@@ -5,12 +5,13 @@ inputs:
   profile:
     description: >-
       regtest compose profile(s) to start, comma-separated (e.g. "delegate" or "emulator").
-      `delegate` is the default because the delegation suite needs fulmine-delegator; every
-      other suite needs nothing beyond `ark`, which `delegate` pulls in. Funding no longer
-      costs a profile: ArkadeFaucet draws on the ark CLI wallet the stack seeds inside the
-      arkd container, so `boltz` is only worth starting for Boltz or Lightning itself.
+      `ark` is the default — bitcoind, nbxplorer, mempool and arkd — because that is all a
+      suite needs to fund itself now: ArkadeFaucet draws on the ark CLI wallet the stack
+      seeds inside the arkd container. Name a bigger profile only for the service you are
+      actually exercising: `delegate` for fulmine-delegator, `emulator` for covenant
+      co-signing, `boltz` for Boltz and the Lightning corridors.
     required: false
-    default: delegate
+    default: ark
   fulmine-image:
     description: >-
       Overrides regtest/.env.defaults' FULMINE_IMAGE. Pinned here because the delegate service's

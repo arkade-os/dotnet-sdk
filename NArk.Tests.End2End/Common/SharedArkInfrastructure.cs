@@ -26,7 +26,7 @@ public class SharedArkInfrastructure
         {
             Assert.Fail(
                 "Ark infrastructure not running. Start it with:\n" +
-                "  node regtest/regtest.mjs start --profile delegate\n\n" +
+                "  node regtest/regtest.mjs start --profile ark\n\n" +
                 $"Health check failed: {ex.Message}");
         }
     }
