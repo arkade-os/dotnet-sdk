@@ -12,15 +12,6 @@ inputs:
       co-signing, `boltz` for Boltz and the Lightning corridors.
     required: false
     default: ark
-  fulmine-image:
-    description: >-
-      Overrides regtest/.env.defaults' FULMINE_IMAGE. Pinned here because the delegate service's
-      proto package is part of its gRPC path, and upstream has moved it more than once:
-      v0.3.25 and v0.4.0-rc.5 serve fulmine.v1.DelegateService, v0.4.0-rc.4 and master serve
-      delegate.v1.DelegateService. The vendored proto follows master, so the image has to be one
-      that answers on the same path or every delegation call comes back Unimplemented.
-    required: false
-    default: ghcr.io/arklabshq/fulmine:v0.4.0-rc.4
   start-attempts:
     description: >-
       How many times to try bringing the regtest stack up before failing the job. Docker on hosted
@@ -43,7 +34,6 @@ runs:
       env:
         PROFILE: ${{ inputs.profile }}
         ATTEMPTS: ${{ inputs.start-attempts }}
-        FULMINE_IMAGE: ${{ inputs.fulmine-image }}
       run: |
         set -uo pipefail
         for attempt in $(seq 1 "$ATTEMPTS"); do
