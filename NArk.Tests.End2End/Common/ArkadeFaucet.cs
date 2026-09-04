@@ -194,20 +194,17 @@ public static class ArkadeFaucet
         if (!result.IsSuccess) return -1;
         try
         {
+            var now = DateTimeOffset.UtcNow;
             var total = 0L;
             foreach (var vtxo in JsonDocument.Parse(result.StandardOutput).RootElement.EnumerateArray())
             {
-                // Printed from a Go struct with no json tags, so the names come out PascalCase.
-                // Matched case-insensitively anyway: a tag added upstream would otherwise turn
-                // this into a silent zero, which reads exactly like an empty wallet.
-                foreach (var field in vtxo.EnumerateObject())
-                {
-                    if (field.NameEquals("Amount") || field.Name.Equals("amount", StringComparison.OrdinalIgnoreCase))
-                    {
-                        total += field.Value.GetInt64();
-                        break;
-                    }
-                }
+                if (Flag(vtxo, "Spent") || Flag(vtxo, "Unrolled") || Flag(vtxo, "Swept")) continue;
+
+                // The expiry test the CLI does not do for us. Anything past it is what arkd calls
+                // recoverable, and an offchain send cannot touch it.
+                if (Expiry(vtxo) is { } expiresAt && expiresAt <= now) continue;
+
+                if (Amount(vtxo) is { } amount) total += amount;
             }
             return total;
         }
@@ -215,6 +212,56 @@ public static class ArkadeFaucet
         {
             return -1;
         }
+    }
+
+    /// <summary>Reads a bool field, defaulting to false when the CLI does not print it.</summary>
+    private static bool Flag(JsonElement vtxo, string name)
+        => Field(vtxo, name) is { ValueKind: JsonValueKind.True };
+
+    private static long? Amount(JsonElement vtxo)
+        => Field(vtxo, "Amount") is { ValueKind: JsonValueKind.Number } value ? value.GetInt64() : null;
+
+    /// <summary>When this VTXO stops being spendable, or <c>null</c> when the CLI gives no expiry.</summary>
+    /// <remarks>
+    /// Absent is treated as "does not expire" rather than "expired": the pessimistic reading would
+    /// discard a healthy wallet's entire balance the first time upstream renames the field, and the
+    /// send is still the thing that decides. Accepts both the RFC3339 string a Go <c>time.Time</c>
+    /// marshals to and a raw unix number, since the two arkd layers print it differently.
+    /// </remarks>
+    private static DateTimeOffset? Expiry(JsonElement vtxo)
+    {
+        if (Field(vtxo, "ExpiresAt") is not { } field) return null;
+
+        if (field.ValueKind == JsonValueKind.Number)
+        {
+            var seconds = field.GetInt64();
+            return seconds <= 0 ? null : DateTimeOffset.FromUnixTimeSeconds(seconds);
+        }
+
+        if (field.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(
+                field.GetString(), CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal, out var parsed))
+        {
+            // Go marshals a zero time.Time as year 1, which means "no expiry", not "long expired".
+            return parsed.Year <= 1 ? null : parsed;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Case-insensitive field lookup. The CLI prints a Go struct with no json tags, so the names
+    /// arrive PascalCase — but a tag added upstream would silently turn every read into a default,
+    /// and a faucet that reads every wallet as empty fails in a way that looks like the stack.
+    /// </summary>
+    private static JsonElement? Field(JsonElement vtxo, string name)
+    {
+        foreach (var property in vtxo.EnumerateObject())
+        {
+            if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return property.Value;
+        }
+        return null;
     }
 
     /// <summary>
