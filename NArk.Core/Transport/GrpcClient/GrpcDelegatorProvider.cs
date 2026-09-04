@@ -1,4 +1,4 @@
-using Delegate.V1;
+using Fulmine.V1;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using NArk.Abstractions.Services;
