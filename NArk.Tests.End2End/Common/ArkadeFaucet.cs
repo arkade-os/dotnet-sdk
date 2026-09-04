@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using CliWrap;
 using CliWrap.Buffered;
@@ -56,6 +57,21 @@ public static class ArkadeFaucet
     private static readonly TimeSpan SettleTimeout = TimeSpan.FromMinutes(3);
 
     /// <summary>
+    /// The longest this will sit out an arkd ban before giving up and reporting it.
+    /// </summary>
+    /// <remarks>
+    /// Bounded rather than open-ended, but sized from what arkd actually hands out rather than
+    /// from a round number: the convictions that took a suite down ran to roughly four minutes
+    /// past the failure (three of them, the last at +3m47s). A cap under that would have been a
+    /// wait that always expires unused, which is worse than no wait at all — it costs the time
+    /// and still fails.
+    ///
+    /// Beyond this the wallet is in a state waiting will not fix, and burning the suite's clock
+    /// on it turns one legible failure into a timeout somewhere less obvious.
+    /// </remarks>
+    private static readonly TimeSpan MaxBanWait = TimeSpan.FromMinutes(5);
+
+    /// <summary>
     /// Sends <paramref name="amountSats"/> sats to <paramref name="arkadeAddress"/> as an
     /// offchain Arkade transaction, so the VTXO lands without waiting for a batch.
     /// </summary>
@@ -77,28 +93,34 @@ public static class ArkadeFaucet
             var first = await TrySend(arkadeAddress, amountSats, ct);
             if (first.IsSuccess) return TxidOf(first.StandardOutput);
 
-            // A send fails for two reasons that are both recoverable, and telling them apart
-            // costs a round trip we would spend on the fix anyway. Either the wallet's VTXOs
-            // have passed their renewal deadline (settle re-anchors them into a fresh
-            // spendable set), or it has actually been drained (boarding adds new value, and
-            // the settle that follows absorbs it). So try the cheap fix, then the thorough one.
-            var settle = await TrySettle(ct);
+            // Every rung below keys off SPENDABLE sats, never the balance. The distinction is
+            // the whole reason this ladder exists: a wallet can hold plenty and spend none.
+            var spendable = await SpendableSats(ct);
+
+            // Settling is the expensive rung, and not because it is slow. It registers an
+            // intent in a batch, and a batch that finalises with our forfeit unsigned gets the
+            // wallet's script BANNED for minutes — after which nothing here works at all. So it
+            // runs when the wallet genuinely cannot cover the ask, not as a reflex after any
+            // failed send.
+            //
+            // A send failing while the spendable set covers the amount is not a liquidity
+            // problem, and settling at it would buy nothing while taking on the ban risk.
+            var settle = spendable >= 0 && spendable >= amountSats
+                ? Skipped($"spendable {spendable} sats already covers {amountSats}")
+                : Describe(await TrySettle(ct));
 
             var second = await TrySend(arkadeAddress, amountSats, ct);
             if (second.IsSuccess) return TxidOf(second.StandardOutput);
 
-            // Boarding buries 6 blocks to confirm the UTXO, and block height is not ours to
-            // move on a whim — the timelock suites read it. So only board once the wallet is
-            // demonstrably short. The balance over-reports (it counts recoverable VTXOs), and
-            // the settle above has just renewed those, so falling below the ask here means
-            // genuinely out of money rather than out of *spendable* money. A send that keeps
-            // failing on a wallet that can afford it is not a liquidity problem, and mining
-            // at it would only corrupt the chain state for whatever runs next.
-            var balance = await OffchainBalance(ct);
+            // Boarding buries 6 blocks to confirm the UTXO, and block height is not ours to move
+            // on a whim — the timelock suites read it. So it is the last rung, and it is gated on
+            // the spendable figure re-read AFTER the settle above: that is the only number that
+            // can say whether the wallet is out of money or merely out of spendable money.
+            var spendableNow = await SpendableSats(ct);
             string board;
-            if (balance >= 0 && balance >= amountSats)
+            if (spendableNow >= 0 && spendableNow >= amountSats)
             {
-                board = $"skipped — wallet reports {balance} sats, enough to cover {amountSats}";
+                board = $"skipped — {spendableNow} spendable sats already cover {amountSats}";
             }
             else
             {
@@ -111,11 +133,13 @@ public static class ArkadeFaucet
 
             throw new InvalidOperationException(
                 $"Arkade faucet could not send {amountSats} sats to {arkadeAddress}.\n" +
-                $"  send:     {Describe(first)}\n" +
-                $"  settle:   {Describe(settle)}\n" +
-                $"  retry:    {Describe(second)}\n" +
-                $"  boarding: {board}\n" +
-                $"  balance:  {await ReadBalance(ct)}\n" +
+                $"  send:      {Describe(first)}\n" +
+                $"  spendable: {spendable} sats (before settle)\n" +
+                $"  settle:    {settle}\n" +
+                $"  retry:     {Describe(second)}\n" +
+                $"  spendable: {spendableNow} sats (after settle)\n" +
+                $"  boarding:  {board}\n" +
+                $"  balance:   {await ReadBalance(ct)}\n" +
                 "The stack's ark CLI wallet is seeded once at `regtest.mjs start`; if it cannot be " +
                 "recovered, restart the stack (`node regtest/regtest.mjs clean && node regtest/regtest.mjs start`).");
         }
@@ -146,11 +170,59 @@ public static class ArkadeFaucet
     }
 
     /// <summary>
+    /// What the CLI wallet can actually spend right now, in sats, or <c>-1</c> when unreadable.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>ark vtxos</c> lists the SPENDABLE set by default; <c>ark balance</c> does not — it
+    /// counts recoverable and past-renewal VTXOs an offchain send cannot touch, so it reads
+    /// healthy on a wallet that cannot spend a satoshi. Every decision here keys off this,
+    /// never off the balance.
+    /// </para>
+    /// <para>
+    /// The helper this replaced knew the same thing about Fulmine and said so: its balance
+    /// counted VTXOs past their renewal deadline while a plain offchain send failed with
+    /// "missing vtxos", so it gated on the spendable subset from <c>/api/v1/vtxos</c>. Reading
+    /// the aggregate instead is what let a wallet reporting 93,600,000 sats fail every send for
+    /// want of 500,000 — and, worse, convinced the ladder it was rich enough to skip the rung
+    /// that would have fixed it.
+    /// </para>
+    /// </remarks>
+    public static async Task<long> SpendableSats(CancellationToken ct = default)
+    {
+        var result = await ArkCli(["vtxos"], ct);
+        if (!result.IsSuccess) return -1;
+        try
+        {
+            var total = 0L;
+            foreach (var vtxo in JsonDocument.Parse(result.StandardOutput).RootElement.EnumerateArray())
+            {
+                // Printed from a Go struct with no json tags, so the names come out PascalCase.
+                // Matched case-insensitively anyway: a tag added upstream would otherwise turn
+                // this into a silent zero, which reads exactly like an empty wallet.
+                foreach (var field in vtxo.EnumerateObject())
+                {
+                    if (field.NameEquals("Amount") || field.Name.Equals("amount", StringComparison.OrdinalIgnoreCase))
+                    {
+                        total += field.Value.GetInt64();
+                        break;
+                    }
+                }
+            }
+            return total;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    /// <summary>
     /// The CLI wallet's offchain balance in sats, as arkd's client library reports it.
     /// <para>
-    /// Diagnostics only — never gate a send on this. The figure counts recoverable (swept
-    /// but unspent) VTXOs, which a plain offchain send cannot touch, so it can read healthy
-    /// on a wallet that cannot spend a satoshi. The send itself is the only honest probe.
+    /// Diagnostics only — never gate anything on this; see <see cref="SpendableSats"/> for why
+    /// and for what to use instead. Kept because it is the number a human reads in a failure
+    /// message, and the gap between it and the spendable figure is itself the diagnosis.
     /// </para>
     /// </summary>
     public static async Task<long> OffchainBalance(CancellationToken ct = default)
@@ -178,9 +250,61 @@ public static class ArkadeFaucet
 
     private static async Task<BufferedCommandResult> TrySettle(CancellationToken ct)
     {
+        var first = await SettleOnce(ct);
+        if (first.IsSuccess) return first;
+
+        // A ban is the one settle failure that fixes itself. arkd bans a VtxoScript for a
+        // period after a batch it joined went wrong — a forfeit signature that never arrived,
+        // typically — and refuses to register any intent spending it until the period is up.
+        // It also says exactly when, so there is nothing to guess: wait out the latest
+        // conviction and try once more.
+        //
+        // Worth handling rather than surfacing, because the wallet is otherwise healthy and
+        // every rung above and below this one depends on the settle. Left unhandled it took a
+        // whole suite down: the wallet held 93,600,000 sats, none of them spendable until the
+        // renewal that the ban was blocking.
+        if (BannedUntil(first) is not { } until) return first;
+
+        var wait = until - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
+        if (wait <= TimeSpan.Zero || wait > MaxBanWait) return first;
+
+        await Task.Delay(wait, ct);
+        return await SettleOnce(ct);
+    }
+
+    private static async Task<BufferedCommandResult> SettleOnce(CancellationToken ct)
+    {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(SettleTimeout);
         return await ArkCli(["settle", "--password", Password], timeout.Token);
+    }
+
+    /// <summary>
+    /// When the wallet's ban lifts, or <c>null</c> when this failure is not a ban.
+    /// </summary>
+    /// <remarks>
+    /// arkd reports one conviction per offence and each carries its own expiry; the wallet is
+    /// usable again only after the LAST of them, so this takes the maximum rather than the
+    /// first match. Parsed from the message because that is where arkd puts it — there is no
+    /// structured field on the CLI's error path.
+    /// </remarks>
+    private static DateTimeOffset? BannedUntil(BufferedCommandResult result)
+    {
+        var text = result.StandardError + result.StandardOutput;
+        if (!text.Contains("VTXO_BANNED", StringComparison.Ordinal)) return null;
+
+        DateTimeOffset? latest = null;
+        foreach (Match match in Regex.Matches(text, @"banned until (\S+?)(?:,|\s|$)"))
+        {
+            if (DateTimeOffset.TryParse(
+                    match.Groups[1].Value, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AdjustToUniversal, out var parsed)
+                && (latest is null || parsed > latest))
+            {
+                latest = parsed;
+            }
+        }
+        return latest;
     }
 
     /// <summary>
@@ -229,6 +353,9 @@ public static class ArkadeFaucet
             .WithArguments(["exec", DockerHelper.Container.Arkd, "ark", .. args])
             .WithValidation(CommandResultValidation.None)
             .ExecuteBufferedAsync(ct);
+
+    /// <summary>Renders a rung that was deliberately not run, so the ladder reads the same either way.</summary>
+    private static string Skipped(string why) => $"skipped — {why}";
 
     private static string Describe(BufferedCommandResult result)
         => result.IsSuccess
