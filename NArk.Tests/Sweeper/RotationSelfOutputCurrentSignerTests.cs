@@ -108,7 +108,7 @@ public class RotationSelfOutputCurrentSignerTests
             Dust: Money.Satoshis(546),
             SignerKey: CurrentServerKey,
             // The deprecated key is in the rotation map; the self-output must still use SignerKey.
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance)
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>()
             {
                 { DeprecatedServerKey.ToXOnlyPubKey(), 0 }
             },

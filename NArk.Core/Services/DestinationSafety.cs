@@ -19,7 +19,7 @@ public static class DestinationSafety
     {
         if (destination is null || serverInfo.DeprecatedSigners.Count == 0) return false;
         foreach (var deprecated in serverInfo.DeprecatedSigners.Keys)
-            if (ECXOnlyPubKeyComparer.Instance.Equals(deprecated, destination.ServerKey)) return true;
+            if (deprecated == destination.ServerKey) return true;
         return false;
     }
 }

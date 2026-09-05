@@ -308,7 +308,7 @@ public class CachingClientTransportTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: serverKey,
-            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+            DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),
