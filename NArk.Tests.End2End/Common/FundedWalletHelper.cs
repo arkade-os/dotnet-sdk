@@ -128,7 +128,10 @@ internal static class FundedWalletHelper
         const int randomAmount = 500000;
         await ArkadeFaucet.Fund(delegateContract.GetArkAddress().ToString(false), randomAmount);
 
-        await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Same budget the non-delegate path allows per VTXO: 5s is not enough for the sync service
+        // to observe the funding VTXO on a loaded stack, and the shortfall reads as a delegator
+        // failure rather than the timing artefact it is.
+        await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
         return (safetyService, walletProvider, walletId, storage.VtxoStorage, contractService, storage.ContractStorage,
             clientTransport, vtxoSync, delegateContract);
