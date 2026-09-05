@@ -146,8 +146,8 @@ public static class LockupFateReader
         var sawASpend = false;
         foreach (var vtxo in vtxos)
         {
-            var spender = vtxo.SpentByTransactionId ?? vtxo.SettledByTransactionId ?? vtxo.ArkTxid;
-            if (spender is not { Length: > 0 }) continue;
+            var spender = SpenderOf(vtxo);
+            if (spender is null) continue;
 
             // Fetched here as well as inside the preimage search, because the two silences differ
             // and only one of them is an answer. `FindAsync` returns null both for "carried no
@@ -169,6 +169,24 @@ public static class LockupFateReader
             ? new LockupFateResult(LockupFate.Returned)
             : new LockupFateResult(LockupFate.Unknown);
     }
+
+    /// <summary>The transaction that spent this output, by the same rule <see cref="ArkVtxo.IsSpent"/> uses.</summary>
+    /// <remarks>
+    /// Written to match <see cref="ArkVtxo.IsSpent"/> rather than as a <c>??</c> chain. That method
+    /// treats an empty string as absent, so <c>??</c> would hand back an empty
+    /// <see cref="ArkVtxo.SpentByTransactionId"/> in preference to a real settlement id — and the
+    /// spend would then be skipped, which turns a <see cref="LockupFate.Returned"/> verdict into
+    /// <see cref="LockupFate.Unknown"/> over a lockup that plainly came back.
+    /// <para>
+    /// <see cref="ArkVtxo.ArkTxid"/> is deliberately not consulted. This runs only once every output
+    /// is spent, so one of the two ids above is always present; offering a third suggests it fills a
+    /// gap that the type shows it cannot.
+    /// </para>
+    /// </remarks>
+    private static string? SpenderOf(ArkVtxo vtxo) =>
+        !string.IsNullOrEmpty(vtxo.SpentByTransactionId) ? vtxo.SpentByTransactionId
+        : !string.IsNullOrEmpty(vtxo.SettledByTransactionId) ? vtxo.SettledByTransactionId
+        : null;
 
     /// <summary>Whether the indexer can actually produce the transaction that spent this lockup.</summary>
     private static async Task<bool> SpendIsVisibleAsync(
