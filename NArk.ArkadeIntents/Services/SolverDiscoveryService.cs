@@ -76,6 +76,23 @@ public sealed class SolverDiscoveryService
     };
 
     /// <summary>Fetch a per-network index, cached for <see cref="_cacheTtl"/>.</summary>
+    /// <param name="registryUrl">The index to fetch.</param>
+    /// <param name="cancellationToken">Cancels the fetch.</param>
+    /// <returns>The index, freshly fetched or from cache.</returns>
+    /// <exception cref="HttpRequestException">The fetch failed and nothing was cached.</exception>
+    /// <remarks>
+    /// <para>
+    /// An expired entry is refreshed, but a refresh that fails falls back to it rather than
+    /// propagating. A registry is a static file that changes when someone opens a pull request, so
+    /// yesterday's copy is very nearly today's — while treating an unreachable host as "no solvers
+    /// exist" turns a blip in someone else's CDN into a merchant who cannot be paid.
+    /// </para>
+    /// <para>
+    /// The fallback is bounded by what the caller does with <see cref="GetSolverRegistryResponse.GeneratedAt"/>:
+    /// <see cref="DiscoverMarketsAsync"/> warns past its staleness threshold. Failing with nothing
+    /// cached still throws, because there is no answer to give.
+    /// </para>
+    /// </remarks>
     public async Task<GetSolverRegistryResponse> FetchIndexAsync(Uri registryUrl, CancellationToken cancellationToken = default)
     {
         lock (_cacheLock)
@@ -87,15 +104,32 @@ public sealed class SolverDiscoveryService
             }
         }
 
-        var json = await _http.GetStringAsync(registryUrl, cancellationToken);
-        var index = JsonSerializer.Deserialize<GetSolverRegistryResponse>(json, JsonOptions)
-                    ?? throw new InvalidOperationException($"Empty registry index at {registryUrl}.");
-
-        lock (_cacheLock)
+        try
         {
-            _cache[registryUrl] = (DateTimeOffset.UtcNow, index);
+            var json = await _http.GetStringAsync(registryUrl, cancellationToken);
+            var index = JsonSerializer.Deserialize<GetSolverRegistryResponse>(json, JsonOptions)
+                        ?? throw new InvalidOperationException($"Empty registry index at {registryUrl}.");
+
+            lock (_cacheLock)
+            {
+                _cache[registryUrl] = (DateTimeOffset.UtcNow, index);
+            }
+            return index;
         }
-        return index;
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            lock (_cacheLock)
+            {
+                if (_cache.TryGetValue(registryUrl, out var stale))
+                {
+                    _logger?.LogWarning(ex,
+                        "Registry {Registry} could not be refreshed; serving the copy fetched {Age} ago",
+                        registryUrl, DateTimeOffset.UtcNow - stale.FetchedAt);
+                    return stale.Index;
+                }
+            }
+            throw;
+        }
     }
 
     /// <summary>

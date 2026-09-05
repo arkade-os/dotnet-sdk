@@ -337,6 +337,37 @@ public class SolverDiscoveryServiceTests
     }
 
     [Test]
+    public async Task FetchIndexAsync_ServesTheLastGoodIndex_WhenARefreshFails()
+    {
+        // A registry is a static file behind someone else's CDN. Treating an unreachable one as
+        // "no solvers exist" turns their blip into a merchant who cannot be paid.
+        var calls = 0;
+        var handler = new StubHandler(_ => ++calls == 1
+            ? (HttpStatusCode.OK, SpecIndexJson)
+            : (HttpStatusCode.ServiceUnavailable, "down"));
+
+        // Zero TTL so the second read is a refresh rather than a cache hit.
+        var svc = new SolverDiscoveryService(new HttpClient(handler), TimeSpan.Zero, TimeSpan.FromDays(7));
+        var url = SolverDiscoveryService.MainnetRegistry;
+
+        var first = await svc.FetchIndexAsync(url);
+        var second = await svc.FetchIndexAsync(url);
+
+        Assert.That(second, Is.SameAs(first));
+        Assert.That(calls, Is.EqualTo(2), "the refresh was attempted, not skipped");
+    }
+
+    [Test]
+    public void FetchIndexAsync_StillThrows_WhenNothingWasEverCached()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.ServiceUnavailable, "down"));
+        var svc = new SolverDiscoveryService(new HttpClient(handler));
+
+        Assert.That(async () => await svc.FetchIndexAsync(SolverDiscoveryService.MainnetRegistry),
+            Throws.InstanceOf<HttpRequestException>());
+    }
+
+    [Test]
     public async Task FetchPriceAsync_ExtractsAndNormalizes()
     {
         var handler = new StubHandler(_ => (HttpStatusCode.OK, """{ "price": 100020000 }"""));
