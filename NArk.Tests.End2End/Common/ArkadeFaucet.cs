@@ -1,428 +1,312 @@
-using System.Globalization;
-using System.Text.RegularExpressions;
-using System.Text.Json;
-using CliWrap;
-using CliWrap.Buffered;
+using Grpc.Core;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
+using NArk.Abstractions;
+using NArk.Core;
+using NArk.Core.Contracts;
+using NArk.Core.Models.Options;
+using NArk.Core.Services;
+using NArk.Hosting;
+using NArk.Safety.AsyncKeyedLock;
+using NArk.Storage.EfCore.Hosting;
+using NArk.Tests.Common;
+using NArk.Tests.End2End.Core;
+using NArk.Tests.End2End.TestPersistance;
 using NBitcoin;
 
 namespace NArk.Tests.End2End.Common;
 
 /// <summary>
 /// Funds arbitrary Arkade addresses on the regtest stack. This is the single funding
-/// entry point for the E2E suite — call it whenever a test needs spendable VTXOs at an
-/// address it controls.
+/// entry point for the E2E suite — call <see cref="Fund"/> whenever a test needs spendable
+/// VTXOs at an address it controls.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The source of funds is the stack's own wallet, not a service of ours: arkade-regtest's
-/// <c>setupArkd</c> initializes the <c>ark</c> client CLI inside the arkd container and
-/// credits it with 1 BTC offchain from a server-issued note, while intent fees are still
-/// zeroed. Every profile that starts arkd gets it, so any stack that can run an E2E test
-/// can also fund one.
+/// The faucet is an Arkade host of our own, built on this SDK and started once per test
+/// session. It owns an in-memory wallet, mints its own balance from server-issued notes
+/// (<c>arkd note</c>), and serves each request as an ordinary offchain spend — so funding a
+/// test costs no batch and adds no measurable time to it.
 /// </para>
 /// <para>
-/// This replaced funding through Fulmine's <c>/api/v1/send/offchain</c>. Fulmine is still
-/// part of the stack, but only in the role the delegation suite genuinely needs it for —
-/// the <c>delegate</c> profile's delegator. Funding used to drag in the whole <c>boltz</c>
-/// profile just to get a second Fulmine to draw from.
+/// It is a service rather than a CLI call because the stack expires VTXOs aggressively (a
+/// VTXO lives ~69s here, which is deliberate — it is what the expiry suite exercises). A
+/// long-lived host runs <see cref="SimpleIntentScheduler"/>, which renews coins as they
+/// approach expiry, so the faucet's balance stays continuously spendable instead of decaying
+/// between tests.
+/// </para>
+/// <para>
+/// This replaced funding through the in-container <c>ark</c> CLI wallet, which could not keep
+/// itself alive: that client skips forfeits for coins it considers recoverable
+/// (<c>Swept || expired</c>) while arkd demands a forfeit for every coin that is merely
+/// <c>!Swept &amp;&amp; !Unrolled</c>. An expired-but-unswept coin therefore lands the wallet in a
+/// permanent <c>missing forfeit transactions</c> ban. This SDK forfeits on the server's own
+/// predicate (<see cref="ArkCoin.RequiresForfeit"/>), so the faucet is not exposed to that
+/// mismatch even if renewal falls behind. Funding before that ran through Fulmine, which is
+/// still in the stack — but only as the <c>delegate</c> profile's delegator, the one role the
+/// delegation suite genuinely needs it for.
 /// </para>
 /// </remarks>
 public static class ArkadeFaucet
 {
-    /// <summary>
-    /// arkd's admin password, which is also what unlocks the CLI wallet living beside it.
-    /// Matches arkade-regtest's <c>ARKD_PASSWORD</c> default; override it here if a stack
-    /// is started with a different one.
-    /// </summary>
-    private static string Password =>
-        Environment.GetEnvironmentVariable("ARKD_PASSWORD") ?? "secret";
+    /// <summary>Sats minted per note when the faucet tops itself up.</summary>
+    private const long NoteSats = 10_000_000;
 
     /// <summary>
-    /// A settle or a boarding cycle mutates the one CLI wallet everything draws from, so
-    /// two callers racing through the recovery ladder would double-board and double-settle.
-    /// The E2E assembly is <c>NonParallelizable</c>, but the faucet does not rely on that.
+    /// How many notes the faucet may mint for one request before giving up. A request larger
+    /// than this is a test bug, not a funding shortfall.
     /// </summary>
+    private const int MaxTopUps = 4;
+
+    /// <summary>
+    /// Renew a coin once it is this close to expiry. A batch session is 30s and a VTXO lives
+    /// ~69s here, so 45s leaves renewal a full session plus margin to land.
+    /// </summary>
+    private static readonly TimeSpan RenewalThreshold = TimeSpan.FromSeconds(45);
+
+    /// <summary>
+    /// Refuse to spend a coin this close to expiry. arkd rejects an offchain spend of a coin it
+    /// already considers recoverable, and a coin can cross that line between selection and submit.
+    /// </summary>
+    private static readonly TimeSpan ExpirySafetyWindow = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// Attempts per request. Renewal runs continuously against a ~69s VTXO lifetime, so at any
+    /// moment some of the faucet's coins are locked in an in-flight intent — a collision is normal
+    /// and transient, not a failure.
+    /// </summary>
+    private const int MaxSendAttempts = 6;
+
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
+
+    /// <summary>Deadline for a top-up to settle and show up as spendable.</summary>
+    private static readonly TimeSpan TopUpTimeout = TimeSpan.FromMinutes(3);
+
     private static readonly SemaphoreSlim Gate = new(1, 1);
+    private static Task<Faucet>? _faucet;
 
     /// <summary>
-    /// Amount boarded when the CLI wallet has genuinely run dry. Large enough that a whole
-    /// suite fits in one boarding cycle — each one costs ~6 blocks and a batch.
+    /// Sends <paramref name="amountSats"/> to <paramref name="arkadeAddress"/> offchain and
+    /// returns the Arkade transaction id. Starts the faucet host on first use and tops its
+    /// balance up from a note when the request exceeds what it currently holds.
     /// </summary>
-    private static readonly Money BoardingTopUp = Money.Coins(1);
-
-    /// <summary>
-    /// A settle joins the next batch, so it is bounded by the batch interval rather than
-    /// by anything the CLI does locally.
-    /// </summary>
-    private static readonly TimeSpan SettleTimeout = TimeSpan.FromMinutes(3);
-
-    /// <summary>
-    /// The longest this will sit out an arkd ban before giving up and reporting it.
-    /// </summary>
-    /// <remarks>
-    /// Bounded rather than open-ended, but sized from what arkd actually hands out rather than
-    /// from a round number: the convictions that took a suite down ran to roughly four minutes
-    /// past the failure (three of them, the last at +3m47s). A cap under that would have been a
-    /// wait that always expires unused, which is worse than no wait at all — it costs the time
-    /// and still fails.
-    ///
-    /// Beyond this the wallet is in a state waiting will not fix, and burning the suite's clock
-    /// on it turns one legible failure into a timeout somewhere less obvious.
-    /// </remarks>
-    private static readonly TimeSpan MaxBanWait = TimeSpan.FromMinutes(5);
-
-    /// <summary>
-    /// Sends <paramref name="amountSats"/> sats to <paramref name="arkadeAddress"/> as an
-    /// offchain Arkade transaction, so the VTXO lands without waiting for a batch.
-    /// </summary>
-    /// <param name="arkadeAddress">Destination Arkade address, bech32m-encoded.</param>
-    /// <param name="amountSats">
-    /// Amount in satoshis. Sub-dust amounts are allowed — the protocol carries them as an
-    /// OP_RETURN-scripted VTXO — which is what lets the sub-dust suite fund itself.
-    /// </param>
+    /// <param name="arkadeAddress">Bech32m Arkade address to credit.</param>
+    /// <param name="amountSats">Amount to send, in satoshis.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>The Arkade transaction id of the send.</returns>
-    /// <exception cref="InvalidOperationException">
-    /// The send failed and neither renewing nor re-boarding the CLI wallet fixed it.
-    /// </exception>
     public static async Task<string> Fund(string arkadeAddress, long amountSats, CancellationToken ct = default)
     {
+        if (amountSats <= 0) throw new ArgumentOutOfRangeException(nameof(amountSats), "must be > 0");
+        if (!ArkAddress.TryParse(arkadeAddress, out var destination) || destination is null)
+            throw new ArgumentException($"Not a valid Arkade address: '{arkadeAddress}'", nameof(arkadeAddress));
+
+        var faucet = await Instance(ct);
+
+        // Serialize the whole request: coin selection and the spend that consumes it have to be
+        // one step, or two concurrent tests select the same coins and one of them loses a race
+        // it never knew it was in.
         await Gate.WaitAsync(ct);
         try
         {
-            var first = await TrySend(arkadeAddress, amountSats, ct);
-            if (first.IsSuccess) return TxidOf(first.StandardOutput);
+            var txid = await faucet.Send(destination, amountSats, ct);
+            return txid.ToString();
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
 
-            // Every rung below keys off SPENDABLE sats, never the balance. The distinction is
-            // the whole reason this ladder exists: a wallet can hold plenty and spend none.
-            var spendable = await SpendableSats(ct);
+    private static Task<Faucet> Instance(CancellationToken ct)
+    {
+        // Double-checked so the host is built once per session; the build itself is awaited by
+        // every caller that arrives while it is still starting.
+        if (_faucet is { } running) return running;
+        lock (Gate)
+        {
+            return _faucet ??= Faucet.Start(ct);
+        }
+    }
 
-            // Settling is the expensive rung, and not because it is slow. It registers an
-            // intent in a batch, and a batch that finalises with our forfeit unsigned gets the
-            // wallet's script BANNED for minutes — after which nothing here works at all. So it
-            // runs when the wallet genuinely cannot cover the ask, not as a reflex after any
-            // failed send.
-            //
-            // A send failing while the spendable set covers the amount is not a liquidity
-            // problem, and settling at it would buy nothing while taking on the ban risk.
-            var settle = spendable >= 0 && spendable >= amountSats
-                ? Skipped($"spendable {spendable} sats already covers {amountSats}")
-                : Describe(await TrySettle(ct));
+    private sealed class Faucet(string walletId, IContractService contracts, ISpendingService spending)
+    {
+        public string WalletId { get; } = walletId;
+        public ISpendingService Spending { get; } = spending;
 
-            var second = await TrySend(arkadeAddress, amountSats, ct);
-            if (second.IsSuccess) return TxidOf(second.StandardOutput);
+        public static async Task<Faucet> Start(CancellationToken ct)
+        {
+            var host = Host.CreateDefaultBuilder([])
+                .AddArk()
+                .OnCustomGrpcArk(SharedArkInfrastructure.ArkdEndpoint.ToString())
+                .WithSafetyService<AsyncSafetyService>()
+                .WithIntentScheduler<SimpleIntentScheduler>()
+                .WithWalletProvider<InMemoryWalletProvider>()
+                .ConfigureServices((_, s) =>
+                {
+                    s.AddDbContextFactory<TestDbContext>(options =>
+                        options.UseInMemoryDatabase($"Faucet_{Guid.NewGuid():N}"));
+                    s.AddArkEfCoreStorage<TestDbContext>();
+                    s.AddNBXplorerBlockchain(Network.RegTest, SharedArkInfrastructure.NbxplorerEndpoint);
+                })
+                .ConfigureServices(s => s.Configure<SimpleIntentSchedulerOptions>(o =>
+                {
+                    o.Threshold = RenewalThreshold;
+                    // Expiry is also height-bounded on this stack, and regtest mines fast enough
+                    // that the height bound can bite first.
+                    o.ThresholdHeight = 60;
+                }))
+                .ConfigureServices(s => s.Configure<IntentGenerationServiceOptions>(
+                    o => o.PollInterval = TimeSpan.FromSeconds(5)))
+                .Build();
 
-            // Boarding buries 6 blocks to confirm the UTXO, and block height is not ours to move
-            // on a whim — the timelock suites read it. So it is the last rung, and it is gated on
-            // the spendable figure re-read AFTER the settle above: that is the only number that
-            // can say whether the wallet is out of money or merely out of spendable money.
-            var spendableNow = await SpendableSats(ct);
-            string board;
-            if (spendableNow >= 0 && spendableNow >= amountSats)
+            await host.StartAsync(ct);
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => host.StopAsync().GetAwaiter().GetResult();
+
+            var wallets = host.Services.GetRequiredService<InMemoryWalletProvider>();
+            var walletId = await wallets.CreateTestWallet();
+
+            var faucet = new Faucet(
+
+                walletId,
+                host.Services.GetRequiredService<IContractService>(),
+                host.Services.GetRequiredService<ISpendingService>());
+
+            await faucet.TopUp(ct);
+            return faucet;
+        }
+
+        /// <summary>
+        /// Sends <paramref name="amountSats"/> to <paramref name="destination"/>, minting notes when
+        /// the balance is short and retrying when a coin is unusable for a reason that passes.
+        /// </summary>
+        /// <remarks>
+        /// Coins are chosen here rather than left to automatic selection because two of this stack's
+        /// states are invisible to it: a coin locked by an in-flight renewal intent, and a coin close
+        /// enough to expiry that arkd will call it recoverable and refuse the spend. Both are normal
+        /// under a ~69s VTXO lifetime with renewal always running, so both are retried rather than
+        /// surfaced — by then the lock has cleared or renewal has produced a fresh coin.
+        /// </remarks>
+        public async Task<uint256> Send(IDestination destination, long amountSats, CancellationToken ct)
+        {
+            // The spend pays an input fee, so cover the request with headroom rather than exactly.
+            var needed = amountSats + Math.Max(amountSats / 10, 10_000);
+            ArkTxOut[] outputs = [new(ArkTxOutType.Vtxo, Money.Satoshis(amountSats), destination)];
+            var topUps = 0;
+
+            for (var attempt = 1; attempt <= MaxSendAttempts; attempt++)
             {
-                board = $"skipped — {spendableNow} spendable sats already cover {amountSats}";
-            }
-            else
-            {
-                board = $"{await BoardTopUp(ct)}; re-settle: {Describe(await TrySettle(ct))}";
+                var coins = await PickCoins(needed, ct);
+                if (coins is null)
+                {
+                    if (topUps++ >= MaxTopUps)
+                        throw new InvalidOperationException(
+                            $"Faucet could not cover {needed} sats after {MaxTopUps} top-ups of {NoteSats} sats " +
+                            $"(request {amountSats} sats). Either the request is larger than the faucet is " +
+                            "sized for, or notes are not settling.");
 
-                var third = await TrySend(arkadeAddress, amountSats, ct);
-                if (third.IsSuccess) return TxidOf(third.StandardOutput);
-                board += $"; retry: {Describe(third)}";
+                    await TopUp(ct);
+                    continue;
+                }
+
+                try
+                {
+                    return await Spending.Spend(WalletId, coins, outputs, ct);
+                }
+                catch (Exception e) when (IsTransient(e) && attempt < MaxSendAttempts)
+                {
+                    await Task.Delay(RetryDelay, ct);
+                }
             }
 
             throw new InvalidOperationException(
-                $"Arkade faucet could not send {amountSats} sats to {arkadeAddress}.\n" +
-                $"  send:      {Describe(first)}\n" +
-                $"  spendable: {spendable} sats (before settle)\n" +
-                $"  settle:    {settle}\n" +
-                $"  retry:     {Describe(second)}\n" +
-                $"  spendable: {spendableNow} sats (after settle)\n" +
-                $"  boarding:  {board}\n" +
-                $"  balance:   {await ReadBalance(ct)}\n" +
-                "The stack's ark CLI wallet is seeded once at `regtest.mjs start`; if it cannot be " +
-                "recovered, restart the stack (`node regtest/regtest.mjs clean && node regtest/regtest.mjs start`).");
+                $"Faucet could not send {amountSats} sats in {MaxSendAttempts} attempts: every attempt hit " +
+                "a locked or already-recoverable coin. Renewal is not keeping ahead of VTXO expiry.");
         }
-        finally
-        {
-            Gate.Release();
-        }
-    }
 
-    /// <summary>
-    /// Settles the CLI wallet: renews VTXOs that are past their renewal deadline and absorbs
-    /// any confirmed boarding UTXO. Exposed for tests that want the wallet renewed up front
-    /// rather than on a failed send.
-    /// </summary>
-    public static async Task Settle(CancellationToken ct = default)
-    {
-        await Gate.WaitAsync(ct);
-        try
-        {
-            var result = await TrySettle(ct);
-            if (!result.IsSuccess)
-                throw new InvalidOperationException($"Arkade faucet settle failed: {Describe(result)}");
-        }
-        finally
-        {
-            Gate.Release();
-        }
-    }
+        /// <summary>
+        /// A coin is unusable for a reason that passes: it is locked by an in-flight spend or
+        /// renewal, or arkd has already declared it recoverable. Retrying with a fresh selection is
+        /// the correct response to both.
+        /// </summary>
+        private static bool IsTransient(Exception e) =>
+            e is AlreadyLockedVtxoException ||
+            (e is RpcException rpc && rpc.Status.Detail.Contains("VTXO_RECOVERABLE", StringComparison.Ordinal));
 
-    /// <summary>
-    /// What the CLI wallet can actually spend right now, in sats, or <c>-1</c> when unreadable.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <c>ark vtxos</c> lists the SPENDABLE set by default; <c>ark balance</c> does not — it
-    /// counts recoverable and past-renewal VTXOs an offchain send cannot touch, so it reads
-    /// healthy on a wallet that cannot spend a satoshi. Every decision here keys off this,
-    /// never off the balance.
-    /// </para>
-    /// <para>
-    /// The helper this replaced knew the same thing about Fulmine and said so: its balance
-    /// counted VTXOs past their renewal deadline while a plain offchain send failed with
-    /// "missing vtxos", so it gated on the spendable subset from <c>/api/v1/vtxos</c>. Reading
-    /// the aggregate instead is what let a wallet reporting 93,600,000 sats fail every send for
-    /// want of 500,000 — and, worse, convinced the ladder it was rich enough to skip the rung
-    /// that would have fixed it.
-    /// </para>
-    /// </remarks>
-    public static async Task<long> SpendableSats(CancellationToken ct = default)
-    {
-        var result = await ArkCli(["vtxos"], ct);
-        if (!result.IsSuccess) return -1;
-        try
+        /// <summary>
+        /// Selects coins covering <paramref name="needed"/> sats, or null when the spendable set
+        /// cannot cover it and the faucet has to mint.
+        /// </summary>
+        private async Task<ArkCoin[]?> PickCoins(long needed, CancellationToken ct)
         {
-            var now = DateTimeOffset.UtcNow;
+            var usable = (await Spending.GetAvailableCoins(WalletId, ct))
+                .Where(IsSpendable)
+                .OrderByDescending(c => c.Amount.Satoshi)
+                .ToArray();
+
+            var picked = new List<ArkCoin>();
             var total = 0L;
-            foreach (var vtxo in JsonDocument.Parse(result.StandardOutput).RootElement.EnumerateArray())
+            foreach (var coin in usable)
             {
-                if (Flag(vtxo, "Spent") || Flag(vtxo, "Unrolled") || Flag(vtxo, "Swept")) continue;
-
-                // The expiry test the CLI does not do for us. Anything past it is what arkd calls
-                // recoverable, and an offchain send cannot touch it.
-                if (Expiry(vtxo) is { } expiresAt && expiresAt <= now) continue;
-
-                if (Amount(vtxo) is { } amount) total += amount;
+                picked.Add(coin);
+                total += coin.Amount.Satoshi;
+                if (total >= needed) return picked.ToArray();
             }
-            return total;
-        }
-        catch
-        {
-            return -1;
-        }
-    }
 
-    /// <summary>Reads a bool field, defaulting to false when the CLI does not print it.</summary>
-    private static bool Flag(JsonElement vtxo, string name)
-        => Field(vtxo, name) is { ValueKind: JsonValueKind.True };
-
-    private static long? Amount(JsonElement vtxo)
-        => Field(vtxo, "Amount") is { ValueKind: JsonValueKind.Number } value ? value.GetInt64() : null;
-
-    /// <summary>When this VTXO stops being spendable, or <c>null</c> when the CLI gives no expiry.</summary>
-    /// <remarks>
-    /// Absent is treated as "does not expire" rather than "expired": the pessimistic reading would
-    /// discard a healthy wallet's entire balance the first time upstream renames the field, and the
-    /// send is still the thing that decides. Accepts both the RFC3339 string a Go <c>time.Time</c>
-    /// marshals to and a raw unix number, since the two arkd layers print it differently.
-    /// </remarks>
-    private static DateTimeOffset? Expiry(JsonElement vtxo)
-    {
-        if (Field(vtxo, "ExpiresAt") is not { } field) return null;
-
-        if (field.ValueKind == JsonValueKind.Number)
-        {
-            var seconds = field.GetInt64();
-            return seconds <= 0 ? null : DateTimeOffset.FromUnixTimeSeconds(seconds);
+            return null;
         }
 
-        if (field.ValueKind == JsonValueKind.String
-            && DateTimeOffset.TryParse(
-                field.GetString(), CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal, out var parsed))
+        /// <summary>
+        /// Redeems one server-issued note into the wallet and waits for it to become spendable.
+        /// The note lands via a batch, which the scheduler drives; polling the spendable set is
+        /// what tells us the funds are actually usable, rather than merely settled.
+        /// </summary>
+        private async Task TopUp(CancellationToken ct)
         {
-            // Go marshals a zero time.Time as year 1, which means "no expiry", not "long expired".
-            return parsed.Year <= 1 ? null : parsed;
-        }
+            var before = await Balance(ct);
 
-        return null;
-    }
+            var note = await DockerHelper.CreateArkNote(NoteSats, ct);
+            if (string.IsNullOrEmpty(note))
+                throw new InvalidOperationException("arkd refused to issue a note for the faucet");
 
-    /// <summary>
-    /// Case-insensitive field lookup. The CLI prints a Go struct with no json tags, so the names
-    /// arrive PascalCase — but a tag added upstream would silently turn every read into a default,
-    /// and a faucet that reads every wallet as empty fails in a way that looks like the stack.
-    /// </summary>
-    private static JsonElement? Field(JsonElement vtxo, string name)
-    {
-        foreach (var property in vtxo.EnumerateObject())
-        {
-            if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return property.Value;
-        }
-        return null;
-    }
+            await contracts.ImportContract(WalletId, ArkNoteContract.Parse(note));
 
-    /// <summary>
-    /// The CLI wallet's offchain balance in sats, as arkd's client library reports it.
-    /// <para>
-    /// Diagnostics only — never gate anything on this; see <see cref="SpendableSats"/> for why
-    /// and for what to use instead. Kept because it is the number a human reads in a failure
-    /// message, and the gap between it and the spendable figure is itself the diagnosis.
-    /// </para>
-    /// </summary>
-    public static async Task<long> OffchainBalance(CancellationToken ct = default)
-    {
-        var result = await ArkCli(["balance"], ct);
-        if (!result.IsSuccess) return -1;
-        try
-        {
-            return JsonDocument.Parse(result.StandardOutput)
-                .RootElement.GetProperty("offchain_balance").GetProperty("total").GetInt64();
-        }
-        catch
-        {
-            return -1;
-        }
-    }
-
-    private static Task<BufferedCommandResult> TrySend(string arkadeAddress, long amountSats, CancellationToken ct)
-        => ArkCli([
-            "send",
-            "--to", arkadeAddress,
-            "--amount", amountSats.ToString(CultureInfo.InvariantCulture),
-            "--password", Password
-        ], ct);
-
-    private static async Task<BufferedCommandResult> TrySettle(CancellationToken ct)
-    {
-        var first = await SettleOnce(ct);
-        if (first.IsSuccess) return first;
-
-        // A ban is the one settle failure that fixes itself. arkd bans a VtxoScript for a
-        // period after a batch it joined went wrong — a forfeit signature that never arrived,
-        // typically — and refuses to register any intent spending it until the period is up.
-        // It also says exactly when, so there is nothing to guess: wait out the latest
-        // conviction and try once more.
-        //
-        // Worth handling rather than surfacing, because the wallet is otherwise healthy and
-        // every rung above and below this one depends on the settle. Left unhandled it took a
-        // whole suite down: the wallet held 93,600,000 sats, none of them spendable until the
-        // renewal that the ban was blocking.
-        if (BannedUntil(first) is not { } until) return first;
-
-        var wait = until - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
-        if (wait <= TimeSpan.Zero || wait > MaxBanWait) return first;
-
-        await Task.Delay(wait, ct);
-        return await SettleOnce(ct);
-    }
-
-    private static async Task<BufferedCommandResult> SettleOnce(CancellationToken ct)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(SettleTimeout);
-        return await ArkCli(["settle", "--password", Password], timeout.Token);
-    }
-
-    /// <summary>
-    /// When the wallet's ban lifts, or <c>null</c> when this failure is not a ban.
-    /// </summary>
-    /// <remarks>
-    /// arkd reports one conviction per offence and each carries its own expiry; the wallet is
-    /// usable again only after the LAST of them, so this takes the maximum rather than the
-    /// first match. Parsed from the message because that is where arkd puts it — there is no
-    /// structured field on the CLI's error path.
-    /// </remarks>
-    private static DateTimeOffset? BannedUntil(BufferedCommandResult result)
-    {
-        var text = result.StandardError + result.StandardOutput;
-        if (!text.Contains("VTXO_BANNED", StringComparison.Ordinal)) return null;
-
-        DateTimeOffset? latest = null;
-        foreach (Match match in Regex.Matches(text, @"banned until (\S+?)(?:,|\s|$)"))
-        {
-            if (DateTimeOffset.TryParse(
-                    match.Groups[1].Value, CultureInfo.InvariantCulture,
-                    DateTimeStyles.AdjustToUniversal, out var parsed)
-                && (latest is null || parsed > latest))
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TopUpTimeout);
+            try
             {
-                latest = parsed;
+                while (await Balance(deadline.Token) <= before)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token);
+                }
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Faucet note of {NoteSats} sats did not become spendable within {TopUpTimeout.TotalSeconds:0}s " +
+                    $"(balance still {await Balance(CancellationToken.None)} sats). " +
+                    "The note redemption batch did not land — check arkd's batch log.");
             }
         }
-        return latest;
-    }
 
-    /// <summary>
-    /// Sends on-chain BTC to the CLI wallet's boarding address and confirms it. The caller
-    /// must settle afterwards — boarding only puts the value in front of the wallet, the
-    /// settle is what turns it into VTXOs. Returns a description for the failure message.
-    /// </summary>
-    private static async Task<string> BoardTopUp(CancellationToken ct)
-    {
-        var receive = await ArkCli(["receive"], ct);
-        if (!receive.IsSuccess)
-            return $"could not read the boarding address: {Describe(receive)}";
-
-        string boardingAddress;
-        try
+        /// <summary>
+        /// Sats the faucet can actually send right now. A freshly imported note shows up as an
+        /// available coin immediately, but it carries no server key and so has no checkpoint
+        /// contract — it is only redeemable through a batch, never through an offchain spend.
+        /// Counting it would end the top-up wait early over a coin that cannot be spent at all.
+        /// </summary>
+        private async Task<long> Balance(CancellationToken ct)
         {
-            boardingAddress = JsonDocument.Parse(receive.StandardOutput)
-                .RootElement.GetProperty("boarding_address").GetString()!;
-        }
-        catch (Exception ex)
-        {
-            return $"could not parse `ark receive` output ({ex.Message}): {receive.StandardOutput.Trim()}";
+            var coins = await Spending.GetAvailableCoins(WalletId, ct);
+            return coins.Where(IsSpendable).Sum(c => c.Amount.Satoshi);
         }
 
-        var txid = await DockerHelper.BitcoinSendToAddress(boardingAddress, BoardingTopUp, ct);
+        /// <summary>
+        /// A coin the faucet can actually send right now: it carries a server key, so it has a
+        /// checkpoint contract, and it is far enough from expiry that arkd will not have declared
+        /// it recoverable by the time the spend is submitted.
+        /// </summary>
+        private static bool IsSpendable(ArkCoin coin) =>
+            coin.Contract.Server is not null &&
+            (coin.ExpiresAt is not { } expiry || expiry - ExpirySafetyWindow > DateTimeOffset.UtcNow);
 
-        // arkd will not take an unconfirmed boarding input, so bury it before settling.
-        await DockerHelper.MineBlocks(6, ct);
-
-        return $"boarded {BoardingTopUp} to {boardingAddress} (txid {txid})";
-    }
-
-    private static async Task<string> ReadBalance(CancellationToken ct)
-    {
-        var balance = await OffchainBalance(ct);
-        return balance < 0 ? "unavailable" : $"{balance} sats offchain (includes unspendable recoverable VTXOs)";
-    }
-
-    /// <summary>
-    /// Runs the <c>ark</c> client CLI inside the arkd container. The password is always
-    /// passed explicitly: without it the CLI prompts on the terminal, and `docker exec`
-    /// has no TTY here, so the command would hang instead of failing.
-    /// </summary>
-    private static async Task<BufferedCommandResult> ArkCli(string[] args, CancellationToken ct)
-        => await Cli.Wrap("docker")
-            .WithArguments(["exec", DockerHelper.Container.Arkd, "ark", .. args])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync(ct);
-
-    /// <summary>Renders a rung that was deliberately not run, so the ladder reads the same either way.</summary>
-    private static string Skipped(string why) => $"skipped — {why}";
-
-    private static string Describe(BufferedCommandResult result)
-        => result.IsSuccess
-            ? "ok"
-            : $"exit={result.ExitCode} {result.StandardError.Trim()} {result.StandardOutput.Trim()}".Trim();
-
-    /// <summary>
-    /// <c>ark send</c> prints <c>{"txid": "..."}</c>. Falls back to the raw output rather
-    /// than throwing: the send has already succeeded by this point, and no caller depends
-    /// on the id beyond logging it.
-    /// </summary>
-    private static string TxidOf(string stdout)
-    {
-        try
-        {
-            return JsonDocument.Parse(stdout).RootElement.GetProperty("txid").GetString() ?? stdout.Trim();
-        }
-        catch
-        {
-            return stdout.Trim();
-        }
     }
 }
