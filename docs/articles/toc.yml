@@ -6,16 +6,18 @@
   href: wallets.md
 - name: Spending
   href: spending.md
+- name: Batch Expiry Validation
+  href: batch-expiry.md
 - name: Assets
   href: assets.md
 - name: ArkadeCash
   href: arkade-cash.md
-- name: Swaps
-  href: swaps.md
 - name: Lightning Corridors
   href: lightning-corridors.md
 - name: Onchain Corridors
   href: onchain-corridors.md
+- name: Settlement
+  href: settlement.md
 - name: ArkadeScript & Emulator
   href: arkade-script.md
 - name: Storage

@@ -20,11 +20,13 @@ jobs:
           fetch-depth: 0
       # `solver` pulls in `ark` (arkd) + `emulator`, brings up the mock pricefeed + solver, and runs
       # solver-init (fund + mint asset + register pairs) so the swap fulfill E2E has a live market.
-      # `boltz` adds fulmine (:7003) — the funding endpoint the shared test harness uses to top up
-      # wallets. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
+      # That is more than master's `emulator` because this suite negotiates against a real solver.
+      # `boltz` is gone with the fulmine funding it existed for: ArkadeFaucet tops wallets up from
+      # the ark CLI wallet inside the arkd container, so this suite no longer pays for a profile it
+      # used only as a faucet. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
       - uses: ./.github/actions/e2e-setup
         with:
-          profile: solver,boltz
+          profile: solver
       - name: Run Arkade E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=ArkadeScript"
         # Headroom for the solver-fill polls: a fill normally lands in ~1-3s, but each of the

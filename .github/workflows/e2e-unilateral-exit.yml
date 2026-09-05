@@ -20,11 +20,8 @@ jobs:
         if: failure()
         run: |
           docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
-          docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
           docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
-          docker logs boltz-lnd > /tmp/boltz-lnd-logs.txt 2>&1 || true
-          docker logs boltz-fulmine > /tmp/fulmine-logs.txt 2>&1 || true
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4

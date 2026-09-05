@@ -25,26 +25,35 @@ dotnet test NArk.Tests
 
 ### End-to-End Tests
 
-E2E tests require a running regtest stack (bitcoin core + arkd + wallet + boltz + fulmine + nigiri). The stack is managed by scripts under `regtest/`:
+E2E tests require a running regtest stack (bitcoin core + nbxplorer + mempool + arkd). The stack lives in the `regtest/` submodule ([ArkLabsHQ/arkade-regtest](https://github.com/ArkLabsHQ/arkade-regtest)) and is driven by its Node CLI:
 
 ```bash
 # From the repo root:
-./regtest/start-env.sh --clean     # tear down + build + start everything fresh
+node regtest/regtest.mjs start --profile ark --clean
 dotnet test NArk.Tests.End2End
-./regtest/stop-env.sh              # shut down when done
+node regtest/regtest.mjs clean     # tear down containers and volumes when done
 ```
 
-Useful flags:
+Profiles let you start only the tier a suite needs. `ark` (bitcoind + nbxplorer + mempool +
+arkd) is enough for most of the suite, because that is where the faucet lives. Add a profile
+only for the service you are actually exercising:
 
-- `./regtest/start-env.sh --clean` — wipe volumes and start clean (required on first run or after schema changes)
-- `./regtest/start-env.sh` — start/resume without wiping data
-- `./regtest/clean-env.sh` — full teardown including nigiri data directories (Docker handles permission-locked container volumes automatically)
+- `delegate` — fulmine-delegator, for `DelegationTests`
+- `emulator` — the covenant (`ArkadeScript`) suite co-signs against the emulator
+- `boltz` — Boltz and the Lightning corridors; nothing else needs it
+
+Useful commands:
+
+- `node regtest/regtest.mjs mine [n]` — mine regtest blocks
+- `node regtest/regtest.mjs faucet <address> <amountBtc> [--confirm]` — send on-chain BTC
+- `node regtest/regtest.mjs rpc <args...>` — `bitcoin-cli` passthrough
+- `node regtest/regtest.mjs stop` — stop without wiping data
 
 > [!IMPORTANT]
 > E2E tests run sequentially (`[assembly: NonParallelizable]`) because they share a single arkd instance.
 
 > [!NOTE]
-> The regtest overlay adds boltz, boltz-lnd, boltz-fulmine, and nginx-boltz on top of nigiri. All test fixtures expect those services to be up. `SharedArkInfrastructure` and `SharedSwapInfrastructure` perform readiness probes against `/v1/info` (arkd) and boltz before running tests.
+> Tests get their VTXOs from `ArkadeFaucet`, which spends the `ark` client wallet that arkade-regtest seeds with 1 BTC inside the arkd container at start-up. That wallet comes with any profile that starts arkd, so funding costs no extra services. Fulmine still runs under the `delegate` profile, but only as the delegator the delegation suite exercises.
 
 ## Project Structure
 
@@ -52,7 +61,6 @@ Useful flags:
 dotnet-sdk/
 ├── NArk.Abstractions/     # Interfaces, domain types, vendored NBitcoin.Scripting
 ├── NArk.Core/             # Core services and transport
-├── NArk.Swaps/            # Boltz swap integration
 ├── NArk.Storage.EfCore/   # EF Core persistence (opt-in payment tracking)
 ├── NArk/                  # Meta-package
 ├── NArk.Tests/            # Unit tests

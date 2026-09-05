@@ -4,6 +4,7 @@
 @inject WalletState State
 @inject IJSRuntime JS
 @inject NavigationManager Nav
+@inject LocalSettlementConfigProvider SettlementConfig
 @using NArk.Wallet.Client.Services
 @using NArk.Abstractions.Contracts
 @using NArk.Abstractions.VTXOs
@@ -110,6 +111,49 @@
             </div>
         }
 
+        <!-- Auto-settlement -->
+        <div class="section-header mt-24" style="padding:0;">
+            <span class="section-title">Auto-settlement</span>
+        </div>
+
+        <div class="glass-card mt-12 mb-16">
+            <p class="text-secondary" style="font-size:12px;margin-bottom:12px;">
+                Pay the wallet out automatically once its balance reaches a threshold. An
+                <span class="mono">ark1…</span> destination settles off-chain; a Bitcoin address
+                settles through a collaborative exit. The threshold decides <em>when</em> a payout
+                fires — each payout sweeps the whole available balance.
+            </p>
+            <p class="text-secondary" style="font-size:12px;margin-bottom:12px;">
+                Leave the asset field empty to settle BTC. Fill it with an Arkade asset id to settle
+                that asset instead: the threshold then counts the asset's own units, the wallet's
+                satoshi balance is ignored, and the payout needs an <span class="mono">ark1…</span>
+                destination.
+            </p>
+
+            <p class="input-label">Destination address</p>
+            <input class="input mb-12" placeholder="ark1… or bc1…" @bind="_settlementDestination" />
+
+            <p class="input-label">Asset id (empty = BTC)</p>
+            <input class="input mb-12" placeholder="Arkade asset id" @bind="_settlementAssetId" />
+
+            <p class="input-label">@(string.IsNullOrWhiteSpace(_settlementAssetId) ? "Threshold (sats)" : "Threshold (asset units)")</p>
+            <input class="input mb-12" type="number" min="0" @bind="_settlementThreshold" />
+
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:12px;">
+                <input type="checkbox" @bind="_settlementEnabled" />
+                <span>Enabled</span>
+            </label>
+
+            <button class="btn btn-sm btn-secondary" @onclick="SaveSettlementRule" disabled="@_settlementSaving">
+                @(_settlementSaving ? "Saving..." : "Save")
+            </button>
+
+            @if (_settlementMessage is not null)
+            {
+                <p class="text-secondary mt-12" style="font-size:11px;">@_settlementMessage</p>
+            }
+        </div>
+
         <!-- Maintenance -->
         <div class="section-header mt-24" style="padding:0;">
             <span class="section-title">Maintenance</span>
@@ -185,6 +229,12 @@
     private bool _confirmDelete;
     private bool _recoveryInFlight;
     private string? _recoveryMessage;
+    private string _settlementDestination = string.Empty;
+    private string _settlementAssetId = string.Empty;
+    private long _settlementThreshold;
+    private bool _settlementEnabled;
+    private bool _settlementSaving;
+    private string? _settlementMessage;
 
     protected override async Task OnInitializedAsync()
     {
@@ -213,8 +263,58 @@
                 _networkConfig = Ark.GetNetworkConfig();
             }
             catch { }
+
+            var rule = await SettlementConfig.GetRule();
+            if (rule is not null && rule.WalletId == State.ActiveWalletId)
+            {
+                _settlementDestination = rule.Destination;
+                _settlementAssetId = rule.AssetId ?? string.Empty;
+                _settlementThreshold = rule.Threshold;
+                _settlementEnabled = rule.Enabled;
+            }
         }
         _loading = false;
+    }
+
+    private async Task SaveSettlementRule()
+    {
+        if (State.ActiveWalletId is null) return;
+        _settlementSaving = true;
+        _settlementMessage = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_settlementDestination))
+            {
+                await SettlementConfig.SaveRule(null);
+                _settlementEnabled = false;
+                _settlementMessage = "Auto-settlement cleared.";
+            }
+            else
+            {
+                var assetId = string.IsNullOrWhiteSpace(_settlementAssetId) ? null : _settlementAssetId.Trim();
+
+                await SettlementConfig.SaveRule(new LocalSettlementConfigProvider.SettlementRule(
+                    State.ActiveWalletId,
+                    _settlementDestination.Trim(),
+                    Math.Max(0, _settlementThreshold),
+                    _settlementEnabled,
+                    assetId));
+
+                var destination = LocalSettlementConfigProvider.ParseDestination(_settlementDestination.Trim(), assetId);
+                var unit = assetId is null ? "sats" : $"units of {assetId}";
+                _settlementMessage = _settlementEnabled
+                    ? $"Settling to {destination.Network} once the balance reaches {_settlementThreshold:N0} {unit}."
+                    : "Saved, but disabled — no payouts will fire.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _settlementMessage = $"Could not save: {ex.Message}";
+        }
+        finally
+        {
+            _settlementSaving = false;
+        }
     }
 
     private async Task CopyToClipboard(string text, string? field = null)

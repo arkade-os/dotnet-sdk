@@ -272,10 +272,10 @@ public class DelegationTests
 
     /// <summary>
     /// Minimal, plain-BTC (no assets) repeated-delegation-cycle test. Funds via a real
-    /// arkd note (redeemed through the full IntentGenerationService/IntentSynchronizationService/
-    /// BatchManagementService pipeline) instead of FundedWalletHelper's fulmine-liquidity-dependent
-    /// path (DockerHelper.SendArkdNoteTo → boltz-fulmine's own wallet balance/settle), which has
-    /// been unreliable (settle() timeouts) independent of the delegation logic under test.
+    /// arkd note redeemed through the full IntentGenerationService/IntentSynchronizationService/
+    /// BatchManagementService pipeline, rather than through <see cref="ArkadeFaucet"/> like the
+    /// rest of the suite: driving the note through our own batch machinery is part of what this
+    /// test covers, so the faucet's plain offchain send would skip the code under test.
     /// Uses the production AddArkDelegation() builder wiring (DelegatingWalletProvider +
     /// DelegationMonitorService as a real IHostedService) instead of manual service construction.
     /// </summary>

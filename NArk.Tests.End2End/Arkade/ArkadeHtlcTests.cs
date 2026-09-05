@@ -183,7 +183,7 @@ public class ArkadeHtlcTests
 
     private static async Task<ArkVtxo> FundAndWait(Ctx ctx, ArkProgramContract contract)
     {
-        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), ContractAmount);
+        await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), ContractAmount);
 
         var script = contract.GetArkAddress().ScriptPubKey.ToHex();
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);

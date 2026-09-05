@@ -28,7 +28,7 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 });
 ```
 
-`AddArkEfCoreStorage` registers all the core storage implementations (`IVtxoStorage`, `IContractStorage`, `IIntentStorage`, `ISwapStorage`, `IWalletStorage`).
+`AddArkEfCoreStorage` registers all the core storage implementations (`IVtxoStorage`, `IContractStorage`, `IIntentStorage`, `IWalletStorage`).
 
 ## Core Entities
 
@@ -39,7 +39,6 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 | `VtxoEntity` | `Vtxos` | `(TransactionId, TransactionOutputIndex)` |
 | `ArkIntentEntity` | `Intents` | `IntentTxId` |
 | `ArkIntentVtxoEntity` | `IntentVtxos` | `(IntentTxId, VtxoTransactionId, VtxoTransactionOutputIndex)` |
-| `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
 
 `ArkWalletEntity` carries a generic `Metadata` JSON column for per-wallet bookkeeping the SDK accumulates over time without requiring a column-add migration per concern. `VtxoSynchronizationService` uses key `vtxo.lastFullPollAt` to persist a cursor that bounds the cold-start catch-up window — on first startup it reads `MIN(per-wallet vtxo.lastFullPollAt)` as the `after` filter so wallets with long history don't refetch every VTXO on every cold start. Routine polls write the same `StartedAt` timestamp to every wallet on success. A failure-then-success sequence cannot advance the cursor past the catch-up window: routine-poll writes are gated until the cold-start catch-up has succeeded at least once. Use `IWalletStorage.SetMetadataValue` for sparse updates so concurrent writers for different concerns (sync, recovery, ...) don't clobber each other.
 
@@ -91,7 +90,6 @@ Each interface can be implemented independently if you need a non-EF Core backen
 - `IVtxoStorage` — VTXO CRUD and queries
 - `IContractStorage` — contract management and script lookups
 - `IIntentStorage` — intent lifecycle management
-- `ISwapStorage` — swap state tracking
 - `IWalletStorage` — wallet persistence
 - `IPaymentStorage` / `IPaymentRequestStorage` — opt-in payment tracking
 

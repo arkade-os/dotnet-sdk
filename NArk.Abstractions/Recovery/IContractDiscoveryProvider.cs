@@ -25,16 +25,19 @@ namespace NArk.Abstractions.Recovery;
 /// </para>
 /// <para>
 /// The deliberate exception is when a provider already has a richer import
-/// path of its own that produces metadata the orchestrator cannot reconstruct.
-/// <c>BoltzSwapDiscoveryProvider</c> is the canonical example: it delegates to
-/// <c>SwapsManagementService.RestoreSwaps</c>, which writes both the contract
-/// (with <c>Source=swap:&lt;id&gt;</c> metadata) and the corresponding
-/// <c>SwapData</c> row in one transaction. Returning those contracts back
-/// through the orchestrator would either lose the swap-id linkage or require
-/// duplicating the same write. Such providers should set
-/// <see cref="DiscoveryResult.Used"/> to <c>true</c> and leave
-/// <see cref="DiscoveryResult.Contracts"/> empty so the orchestrator does not
-/// re-import what they already persisted.
+/// path of its own that produces metadata the orchestrator cannot reconstruct
+/// — one that writes the contract together with a row linking it to whatever
+/// the provider discovered, in a single transaction. Returning those contracts
+/// back through the orchestrator would either lose that linkage or duplicate
+/// the write. Such providers set <see cref="DiscoveryResult.Used"/> to
+/// <c>true</c> and leave <see cref="DiscoveryResult.Contracts"/> empty, so the
+/// orchestrator does not re-import what they already persisted.
+/// </para>
+/// <para>
+/// No in-tree provider takes that path today; the one that did went with the
+/// swaps package. The rule is kept rather than retired because it is what
+/// <see cref="DiscoveryResult.Used"/> exists for — a provider reporting a hit
+/// it has already persisted itself.
 /// </para>
 /// </remarks>
 public interface IContractDiscoveryProvider

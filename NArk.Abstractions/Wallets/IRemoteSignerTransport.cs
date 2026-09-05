@@ -80,19 +80,23 @@ public interface IRemoteSignerTransport
     /// </summary>
     /// <remarks>
     /// Implementations <b>MUST</b> sign with <c>aux_rand</c> set to 32 zero bytes so the
-    /// signature is deterministic per <c>(key, hash)</c>. The SDK relies on this for the
-    /// swap-preimage recovery scheme in <c>SwapsManagementService.DerivePreimageAsync</c>:
-    /// same descriptor + same wallet must produce the same signature, otherwise a restored
-    /// wallet that rediscovers an outstanding swap will re-derive a different preimage and
-    /// fail to claim the VHTLC.
+    /// signature is deterministic per <c>(key, hash)</c>.
+    /// <para>
+    /// The requirement is about what a signature may be used FOR, not only about signing.
+    /// Anything that derives a secret from one — a swap preimage being the case this SDK has
+    /// shipped — needs the same descriptor and the same wallet to reproduce it exactly, or a
+    /// restored wallet re-derives a different secret and cannot spend what the old one
+    /// committed to. The in-box signing sources honour this; a transport that does not is not
+    /// interchangeable with them, however valid its signatures are on their own terms.
+    /// </para>
     /// <para>
     /// In NBitcoin.Secp256k1, use <c>ECPrivKey.SignBIP340(msg, new byte[32])</c> — the
     /// no-auxData overload <c>SignBIP340(msg)</c> draws from the system RNG on every call
     /// and is therefore non-deterministic.
     /// </para>
     /// Implementations that randomise <c>aux_rand</c> (e.g. for side-channel resistance on a
-    /// hardware signer) break that contract, and remote-signed wallets on such transports will
-    /// not recover outstanding swap preimages from seed.
+    /// hardware signer) break that contract, and a wallet on such a transport cannot rebuild
+    /// from its seed any secret that was derived from a signature.
     /// </remarks>
     /// <param name="walletId">The wallet whose key signs.</param>
     /// <param name="descriptor">The descriptor identifying the signing key.</param>

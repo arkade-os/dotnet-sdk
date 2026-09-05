@@ -38,36 +38,59 @@ jobs:
           fi
           echo "All proto files are in sync with arkd master."
 
-  proto-sync-fulmine:
-    name: Check proto files match fulmine master
-    runs-on: ubuntu-latest
-    container: alpine:latest
-    steps:
-      - uses: actions/checkout@v4
+  # DISABLED. It checked our vendored delegate.proto against fulmine MASTER, which
+  # is the wrong reference: master is ahead of anything deployed, and the delegate
+  # service's proto PACKAGE is part of its gRPC path, so following master silently
+  # repoints every delegation call.
+  #
+  # What that cost, concretely. Master moved the file to `delegate/v1` and renamed
+  # the package `fulmine.v1` -> `delegate.v1`. This job went red on the 404, the fix
+  # was to follow the move, and following it aimed the SDK at a package almost
+  # nothing serves:
+  #
+  #   v0.3.25   (production)  fulmine.v1
+  #   v0.4.0-rc.4             delegate.v1   <- the only release that ever had it
+  #   v0.4.0-rc.5  (newest)   fulmine.v1    <- upstream reverted it
+  #
+  # So the rename lived in exactly one release candidate and was undone. Chasing it
+  # would have shipped an SDK that gets Unimplemented against production and against
+  # the newest RC alike, and it took the regtest delegator down on the way.
+  #
+  # Re-enable only against a RELEASED tag, never master — a package rename in an
+  # unreleased branch is not a thing to follow within an hour of it landing. The
+  # arkd job above stays on, because arkd master is the reference the server we talk
+  # to actually tracks.
+  #
+  # proto-sync-fulmine:
+  #   name: Check proto files match fulmine master
+  #   runs-on: ubuntu-latest
+  #   container: alpine:latest
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Fetch fulmine proto files from master
-        run: |
-          mkdir -p /tmp/fulmine-protos
-          for f in delegate.proto; do
-            wget -q \
-              "https://raw.githubusercontent.com/ArkLabsHQ/fulmine/master/api-spec/protobuf/fulmine/v1/${f}" \
-              -O "/tmp/fulmine-protos/${f}"
-          done
+  #     - name: Fetch fulmine proto files from master
+  #       run: |
+  #         mkdir -p /tmp/fulmine-protos
+  #         for f in delegate.proto; do
+  #           wget -q \
+  #             "https://raw.githubusercontent.com/ArkLabsHQ/fulmine/master/api-spec/protobuf/fulmine/v1/${f}" \
+  #             -O "/tmp/fulmine-protos/${f}"
+  #         done
 
-      - name: Diff against SDK proto files
-        run: |
-          PROTO_DIR="NArk.Core/Transport/GrpcClient/Protos/fulmine/v1"
-          failed=0
-          for f in delegate.proto; do
-            if ! diff -u "/tmp/fulmine-protos/${f}" "${PROTO_DIR}/${f}"; then
-              echo "::error file=${PROTO_DIR}/${f}::${f} is out of sync with fulmine master"
-              failed=1
-            fi
-          done
-          if [ $failed -ne 0 ]; then
-            echo ""
-            echo "Proto files are out of sync with ArkLabsHQ/fulmine master."
-            echo "Copy the updated files from ~/sdks/fulmine/api-spec/protobuf/fulmine/v1/ and commit them."
-            exit 1
-          fi
-          echo "All proto files are in sync with fulmine master."
+  #     - name: Diff against SDK proto files
+  #       run: |
+  #         PROTO_DIR="NArk.Core/Transport/GrpcClient/Protos/fulmine/v1"
+  #         failed=0
+  #         for f in delegate.proto; do
+  #           if ! diff -u "/tmp/fulmine-protos/${f}" "${PROTO_DIR}/${f}"; then
+  #             echo "::error file=${PROTO_DIR}/${f}::${f} is out of sync with fulmine master"
+  #             failed=1
+  #           fi
+  #         done
+  #         if [ $failed -ne 0 ]; then
+  #           echo ""
+  #           echo "Proto files are out of sync with ArkLabsHQ/fulmine master."
+  #           echo "Copy the updated files from ~/sdks/fulmine/api-spec/protobuf/fulmine/v1/ and commit them."
+  #           exit 1
+  #         fi
+  #         echo "All proto files are in sync with fulmine master."

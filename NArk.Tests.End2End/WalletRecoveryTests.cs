@@ -194,7 +194,7 @@ public class WalletRecoveryTests
                 if (vtxo.Script == targetScript) vtxoTcs.TrySetResult();
             };
 
-            await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSats);
+            await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), amountSats);
             await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90), token);
 
             await host1.StopAsync();
@@ -268,7 +268,7 @@ public class WalletRecoveryTests
                 if (vtxo.Script == targetScript) vtxoTcs.TrySetResult();
             };
 
-            await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSats);
+            await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), amountSats);
             await vtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(90), token);
 
             await host1.StopAsync();

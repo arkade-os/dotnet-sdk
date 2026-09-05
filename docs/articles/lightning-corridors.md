@@ -1,9 +1,8 @@
 # Lightning Corridors (RFQ + covenant swaps)
 
-A second route between Arkade and Lightning, alongside the Boltz integration in
-[Swaps](swaps.md). Where Boltz is a bilateral protocol with one provider, this one negotiates terms
-over **RFQ** with any solver that serves the pair, and settles into a **covenant swap contract**
-that neither side has to stay online for.
+The route between Arkade and Lightning. Terms are negotiated over **RFQ** with any solver that
+serves the pair, and settle into a **covenant swap contract** that neither side has to stay online
+for.
 
 Two corridors:
 

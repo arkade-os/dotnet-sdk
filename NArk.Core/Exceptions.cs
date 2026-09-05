@@ -19,6 +19,13 @@ public class AdditionalInformationRequiredException(string msg) : Exception(msg)
 public class IncompatibleSdkVersionException(string msg) : Exception(msg);
 
 /// <summary>
+/// Thrown when the Arkade server declares a batch expiry the client refuses to commit to — one that is
+/// not encodable as a relative timelock, is block-typed on a network where that is not allowed, or falls
+/// below the configured floor. See <c>NArk.Core.Batches.BatchExpiryPolicy</c>.
+/// </summary>
+public class InvalidBatchExpiryException(string msg) : Exception(msg);
+
+/// <summary>
 /// Thrown when the Arkade server rejects a request because the cached server-info digest no longer matches.
 /// The SDK clears the cached digest and server info before throwing; the caller should retry after
 /// calling <c>GetServerInfoAsync</c> to refresh the configuration.

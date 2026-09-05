@@ -66,7 +66,7 @@ public class VtxoSynchronizationTests
         );
         await contractService.ImportContract(fp, contract);
 
-        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), randomAmount);
+        await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), randomAmount);
 
         // Wait for the sync service to receive it
         await receiveTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -124,7 +124,7 @@ public class VtxoSynchronizationTests
 
         // Send funds to the contract
         var randomAmount = RandomNumberGenerator.GetInt32((int)info.Dust.Satoshi, 100000);
-        await DockerHelper.SendArkdNoteTo(contractAddress.ToString(false), randomAmount);
+        await ArkadeFaucet.Fund(contractAddress.ToString(false), randomAmount);
 
         // Wait for auto-deactivation
         await deactivationTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -183,7 +183,7 @@ public class VtxoSynchronizationTests
             }
         };
 
-        await DockerHelper.SendArkdNoteTo(wallet1Address.ToString(false), randomAmount);
+        await ArkadeFaucet.Fund(wallet1Address.ToString(false), randomAmount);
 
         // Wait for the sync service to receive it
         await receiveTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));

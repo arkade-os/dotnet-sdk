@@ -98,7 +98,7 @@ public class RotationSelfOutputCurrentSignerTests
         transport = Substitute.For<IClientTransport>();
         transport.GetServerInfoAsync(Arg.Any<CancellationToken>()).Returns(MakeServerInfo());
 
-        return new SingleKeyAddressProvider(transport, wallet, Network.RegTest, sweepingAddress: null);
+        return new SingleKeyAddressProvider(transport, wallet, Network.RegTest);
     }
 
     private static ArkServerInfo MakeServerInfo()

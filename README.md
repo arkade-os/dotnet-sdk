@@ -14,9 +14,8 @@ The generated API reference is published at [arkade-os.github.io/dotnet-sdk](htt
 |---------|-------------|
 | **NArk.Abstractions** | Interfaces and domain types (`IVtxoStorage`, `IContractStorage`, `IWalletProvider`, `ArkCoin`, `ArkVtxo`, etc.) |
 | **NArk.Core** | Core services: spending, batch management, VTXO sync, sweeping, wallet infrastructure, gRPC transport |
-| **NArk.Swaps** | Multi-provider swap framework with pluggable providers ([Boltz](https://boltz.exchange) shipped; route-based architecture for adding others) |
 | **NArk.Storage.EfCore** | Entity Framework Core storage implementations (provider-agnostic — works with PostgreSQL, SQLite, etc.) |
-| **NArk** | Meta-package that pulls in `NArk.Core` + `NArk.Swaps` |
+| **NArk** | Meta-package that pulls in `NArk.Core` |
 
 ## Quick Start
 
@@ -44,7 +43,6 @@ var builder = Host.CreateDefaultBuilder(args)
     .WithSafetyService<YourSafetyService>()
     .WithBlockchain<NBXplorerBlockchain>()
     .OnMainnet()
-    .EnableSwaps();
 
 // Register your DbContext and EF Core storage
 builder.ConfigureServices((_, services) =>
@@ -68,7 +66,6 @@ using NArk.Storage.EfCore.Hosting;
 
 services.AddArkCoreServices();
 services.AddArkNetwork(ArkNetworkConfig.Mainnet);
-services.AddArkSwapServices();
 
 services.AddDbContextFactory<YourDbContext>(opts =>
     opts.UseNpgsql(connectionString));
@@ -98,11 +95,6 @@ NArk (meta-package)
  │    ├── Wallet (WalletFactory, signers, address providers)
  │    ├── Hosting (DI extensions, ArkApplicationBuilder)
  │    └── Transport (gRPC client for Arkade server communication)
- │
- ├── NArk.Swaps
- │    ├── Abstractions (ISwapProvider, SwapRoute, SwapAsset)
- │    ├── Boltz provider (submarine, reverse & chain swaps)
- │    └── SwapsManagementService (multi-provider router)
  │
  └── NArk.Abstractions
       ├── Domain types (ArkCoin, ArkVtxo, ArkContract, ArkAddress, etc.)
@@ -285,26 +277,25 @@ has been claimed or persisted.
 
 ## Wallet Recovery
 
-Rebuild a wallet's local state — contracts, the HD derivation index, funds (VTXOs)
-and boltz swap data — from on-chain / indexer / boltz sources, after importing a
-wallet into empty storage. Use the unified, wallet-type-agnostic
-`IWalletRecoveryService` (registered by `AddArkSwapServices`):
+Rebuild a wallet's local state — contracts, the HD derivation index and funds
+(VTXOs) — from on-chain and indexer sources, after importing a wallet into empty
+storage. Use the unified, wallet-type-agnostic `IWalletRecoveryService`
+(registered by `AddArkCoreServices`):
 
 ```csharp
 var recovery = sp.GetRequiredService<IWalletRecoveryService>();
 var report = await recovery.RecoverAsync(walletId);
-// report.HdScan, report.ContractsRecovered, report.RestoredSwaps,
-// report.SwapAudit, report.FinalizedPendingTxIds, report.FundsScriptsSynced
+// report.HdScan, report.ContractsRecovered,
+// report.FinalizedPendingTxIds, report.FundsScriptsSynced
 ```
 
 It dispatches by wallet type: **HD** wallets get a gap-limit index scan that
 discovers contracts across the **current and every deprecated server signer** — so
-funds locked under a rotated/legacy server key are still found — and restores boltz
-swaps in-line; **SingleKey** wallets re-derive their one deterministic contract and
-restore swaps directly. Both then finalize any in-flight Arkade transactions and
-resync funds.
+funds locked under a rotated/legacy server key are still found; **SingleKey**
+wallets re-derive their one deterministic contract. Both then finalize any
+in-flight Arkade transactions and resync funds.
 
-Discovery is pluggable via `IContractDiscoveryProvider` (indexer / boarding / boltz).
+Discovery is pluggable via `IContractDiscoveryProvider` (indexer / boarding).
 To also probe delegate (auto-renewal) scripts during recovery, register a
 `RecoveryDelegateConfig` with the delegate key descriptors.
 
@@ -493,6 +484,104 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
     walletId,
     new ArkTxOut(bitcoinAddress, Money.Satoshis(50_000)));
 ```
+
+## Settlement (Threshold-Based Payouts)
+
+Settlement moves value **out** of a wallet once its balance reaches a configured threshold — to an Arkade address, to on-chain Bitcoin, or to a rail you plug in yourself. It is separate from `SweeperService`, which consolidates VTXOs back into the same wallet.
+
+Three layers, each replaceable on its own: `ISettlementPolicy` instances yield plans (*when and how much*) the way `ISweepPolicy` yields coins, `CompositeSettlementService` routes each plan to the first `ISettlementService` that accepts the destination, and that rail moves the funds. The background `SettlementService` joins them, re-evaluating a wallet on VTXO changes, intent transitions, and a periodic heartbeat.
+
+```csharp
+services.AddArkSettlement();
+
+// Optional: also settle to on-chain Bitcoin addresses via a collaborative exit.
+services.AddArkSettlement(options => options.EnableCollaborativeExit = true);
+```
+
+The engine stays inert until you supply the rules — the SDK persists none of its own:
+
+```csharp
+public class MySettlementConfigProvider(IMySettingsStore store) : ISettlementConfigProvider
+{
+    public async Task<IReadOnlyCollection<SettlementConfig>> GetConfigs(
+        string? walletId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await store.GetPayoutSettings(walletId, cancellationToken);
+
+        return settings
+            .Select(setting => new SettlementConfig(
+                setting.WalletId,
+                SettlementDestination.Ark(setting.PayoutAddress),
+                Threshold: 100_000))
+            .ToArray();
+    }
+}
+
+services.AddSingleton<ISettlementConfigProvider, MySettlementConfigProvider>();
+```
+
+The threshold gates *when* a settlement fires, not *how much* moves: a wallet configured at 100 000 sats that reaches 250 000 settles all 250 000. Cap a single settlement with `SettlementConfig.MaxAmount`.
+
+### Settling an Arkade asset
+
+A rule settles one denomination, named by `SourceAsset`: satoshis for BTC (the default), atomic units for an Arkade-issued asset. Both are measured independently — an asset rule never fires on the wallet's satoshi balance, and the dust an asset VTXO carries never counts towards a BTC rule:
+
+```csharp
+// Pay out USDT0 once the wallet holds 500 000 units of it, whatever its BTC balance is.
+new SettlementConfig(
+    walletId,
+    SettlementDestination.ArkAsset(payoutAddress, usdt0AssetId),
+    Threshold: 500_000,
+    SourceAsset: usdt0AssetId);
+```
+
+`ArkAssetSettlementService`, registered by `AddArkSettlement()`, moves the asset to another Arkade address (or consolidates it onto a fresh address of the same wallet when the destination has none), returning the remainder as asset change and topping up the dust carriers from the wallet's BTC coins. The wallet's auto-sweep destination is not applied to asset outputs — they stay where the rule points.
+
+That rail transfers, it does not convert. Settling USDT0 *into a different asset* is a conversion: register a rail whose `CanSettle` accepts the destination and read `SettlementRequest.SourceAsset` for what it is handed.
+
+```csharp
+public class Usdt0ToUsdcSettlementService : ISettlementService
+{
+    public bool CanSettle(SettlementDestination destination) => destination.Is("base", "USDC");
+
+    public async Task<SettlementResult> SettleAsync(
+        SettlementRequest request, CancellationToken cancellationToken = default)
+    {
+        // request.SourceAsset is the Arkade asset leaving the wallet,
+        // request.Amount its atomic units.
+        var quote = await broker.Convert(request.SourceAsset, request.Amount, cancellationToken);
+
+        return new SettlementResult(
+            quote.Id, request.Amount, 0, quote.FeeSats,
+            DestinationAtomicAmount: quote.DeliveredUnits);
+    }
+}
+```
+
+A destination is just a network, an asset, and an address — all free-form strings. The SDK defines only the two it settles itself (`ark`, `bitcoin`); anything else is a rail you register, and the SDK never has to learn about it:
+
+```csharp
+// A destination the SDK knows nothing about
+var destination = new SettlementDestination("base", "USDC", "0x…");
+
+public class UsdcSettlementService : ISettlementService
+{
+    public bool Available => true;
+    public string? UnavailableReason => null;
+
+    public bool CanSettle(SettlementDestination destination) => destination.Is("base", "USDC");
+
+    public Task<SettlementResult> SettleAsync(
+        SettlementRequest request, CancellationToken cancellationToken = default) => /* … */;
+}
+
+services.AddSingleton<ISettlementService, UsdcSettlementService>();
+```
+
+The engine serialises settlements per wallet, but does not deduplicate across retries: a settlement broadcast without its result coming back looks the same as one that never ran, and the heartbeat will fire the rule again. Record attempts from `PostSettlementActionEvent` and gate the wallet with an `ISettlementGate` while one is in flight — the SDK persists nothing itself.
+
+`PostSettlementActionEvent` is raised for every attempt. See [docs/articles/settlement.md](docs/articles/settlement.md) for policies, gates, trigger sources, and options.
 
 ## Querying Intents by Proof
 
@@ -794,7 +883,6 @@ The default providers ship with the SDK:
 
 - `IndexerVtxoDiscoveryProvider` (`AddArkCoreServices`) — asks arkd's indexer for VTXOs at the index's payment script.
 - `BoardingUtxoDiscoveryProvider` (`AddArkCoreServices`, opt-in via registering an `IBitcoinBlockchain` whose `GetUtxosAsync` is implemented — NBXplorer or Esplora) — asks for historical UTXOs at the index's boarding address.
-- `BoltzSwapDiscoveryProvider` (`AddArkSwapServices`) — asks Boltz `/v2/swap/restore` whether the index's user pubkey ever participated in a swap.
 
 ```csharp
 var recovery = serviceProvider.GetRequiredService<HdWalletRecoveryService>();
@@ -933,7 +1021,6 @@ Off by default to preserve native column types for Postgres/MSSQL consumers. Tra
 | `VtxoEntity` | `Vtxos` | `(TransactionId, TransactionOutputIndex)` |
 | `ArkIntentEntity` | `Intents` | `IntentTxId` |
 | `ArkIntentVtxoEntity` | `IntentVtxos` | `(IntentTxId, VtxoTransactionId, VtxoTransactionOutputIndex)` |
-| `ArkSwapEntity` | `Swaps` | `(SwapId, WalletId)` |
 
 Payment-tracking entities (`ArkPaymentEntity`, `ArkPaymentRequestEntity`) are opt-in — see [Payment Repository](#payment-repository) below.
 
@@ -1049,154 +1136,31 @@ services.AddArkNetwork(new ArkNetworkConfig(
     BoltzUri: "http://my-boltz:9069/"));
 ```
 
-## Swaps
+## Batch Expiry Validation
 
-The swap framework is **multi-provider** — swap providers are pluggable via DI and the `SwapsManagementService` routes operations to the right provider based on the requested asset pair.
+The batch expiry an Arkade server declares becomes the timelock on the sweep leaf — the operator's
+only unilateral path out of the batch output. Tree validation can't vouch for it, since the sweep root
+it checks against is derived from that same expiry. The SDK bounds it directly, **on by default**,
+before confirming registration; a rejected batch fails the intent with `InvalidBatchExpiryException`.
 
-### Concepts
+| | Mainnet / testnet / signet | Regtest |
+| --- | --- | --- |
+| Block-typed expiry | rejected | allowed, minimum 10 blocks |
+| Seconds-typed expiry | minimum 24 hours | minimum 512 seconds |
 
-A **swap route** is a directional asset pair:
-
-```csharp
-// Route = source asset → destination asset
-var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);  // Lightning → Arkade
-var route = new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcOnchain);    // Arkade → BTC onchain
-
-// Arkade-issued assets
-var myToken = SwapAsset.ArkAsset("asset1abc...");
-```
-
-Each `ISwapProvider` declares which routes it supports. The router resolves the correct provider for a given route automatically.
-
-### Registration
+Configure only if a server's expiry is legitimately below these:
 
 ```csharp
-// Default: core services + Boltz (backward-compatible)
-services.AddArkSwapServices();
-```
-
-Or register providers individually:
-
-```csharp
-// Core services only (no providers)
-services.AddSingleton<SwapsManagementService>();
-services.AddSingleton<ISweepPolicy, SwapSweepPolicy>();
-services.AddSingleton<IContractTransformer, VHTLCContractTransformer>();
-
-// Pick your providers
-services.AddBoltzProvider(opts => opts.BoltzUrl = "https://api.boltz.exchange");
-```
-
-### Route Discovery
-
-Query which routes are available across all registered providers:
-
-```csharp
-var swaps = serviceProvider.GetRequiredService<SwapsManagementService>();
-
-// All routes from all providers
-var routes = await swaps.GetAvailableRoutesAsync(ct);
-// e.g. [Lightning→Arkade, Arkade→Lightning, BTC→Arkade, Arkade→BTC, ...]
-```
-
-### Pricing
-
-Get limits and quotes — the router picks the right provider:
-
-```csharp
-var route = new SwapRoute(SwapAsset.BtcLightning, SwapAsset.ArkBtc);
-
-var limits = await swaps.GetLimitsAsync(route, ct);
-// limits.MinAmount, limits.MaxAmount, limits.FeePercentage, limits.MinerFee
-
-var quote = await swaps.GetQuoteAsync(route, amount: 100_000, ct);
-// quote.SourceAmount, quote.DestinationAmount, quote.TotalFees, quote.ExchangeRate
-```
-
-### Executing a Reverse Swap (receive Lightning into Arkade)
-
-`InitiateReverseSwap` creates the Boltz reverse swap and returns the BOLT11 invoice to hand to the payer. The SDK watches the swap and materializes the VTXO automatically.
-
-```csharp
-var invoice = await swaps.InitiateReverseSwap(
-    walletId,
-    new CreateInvoiceParams(LightMoney.Satoshis(50_000), "Order #1234", TimeSpan.FromHours(1)),
-    cancellationToken: ct);
-```
-
-#### Who pays the swap fee
-
-An optional `ReverseSwapFeePayer` decides who absorbs the Boltz reverse-swap fee:
-
-| Mode | Invoice amount | Receiver nets | Use when |
-|------|----------------|---------------|----------|
-| `Recipient` (default) | `requested` | `requested − fee` | The payer's wallet verifies the invoice equals the amount it chose to pay (LNURL-pay / LUD-06). The **only** compliant option for lightning-address / checkout flows. |
-| `Sender` | `requested + fee` | `requested` | The payer is shown the invoice directly (e.g. a manual BOLT11 scan) and you want to receive an exact amount. **Not LUD-06-compliant** — the invoice no longer matches the requested amount, so LNURL/checkout wallets reject it. |
-
-```csharp
-// Merchant receives the exact amount; the payer covers the fee.
-var invoice = await swaps.InitiateReverseSwap(
-    walletId,
-    new CreateInvoiceParams(LightMoney.Satoshis(50_000), "Top up", TimeSpan.FromHours(1)),
-    ReverseSwapFeePayer.Sender,
-    ct);
-```
-
-Either way the SDK stores the actual on-chain amount Boltz delivers as `ArkSwap.ExpectedAmount`, so claim, refund, and payment tracking match the VTXO that arrives.
-
-### Providers
-
-| Provider | Routes | Features |
-|----------|--------|----------|
-| **Boltz** | Arkade &harr; Lightning, Arkade &harr; BTC on-chain | Submarine/reverse swaps, chain swaps with renegotiation, MuSig2 cooperative claiming **and refunding** (both BTC and Arkade sides), VHTLC management, WebSocket status updates |
-
-### Recovery (Renegotiation + Cooperative Refund)
-
-When a chain swap can't settle as originally quoted — user funds the lockup with the wrong amount, an LN invoice times out, or Boltz expires the swap — the SDK handles recovery automatically inside `BoltzSwapProvider.PollSwapState`. No manual call is needed.
-
-* **`transaction.lockupFailed`** → asks Boltz for a renegotiated quote via `GET/POST /v2/swap/chain/{id}/quote` and updates `ArkSwap.ExpectedAmount` if Boltz accepts.
-* **`swap.expired` / `transaction.failed` / `transaction.refunded`** → cooperative refund: BTC→Arkade refunds the BTC lockup with MuSig2 (`/v2/swap/chain/{id}/refund`); Arkade→BTC refunds the Arkade VHTLC via `/v2/swap/chain/{id}/refund/ark`. Marks the swap `Refunded`.
-* **`swap.expired` with no funds locked** → marked `Failed` (nothing to recover).
-
-Subscribe to `ISwapStorage.SwapsChanged` to observe transitions. To surface a "recovery available" indicator without committing to a refund, use the read-only inspectors:
-
-```csharp
-// Single swap
-var info = await swapMgr.InspectSwapRecoveryAsync(walletId, swapId);
-if (info.Status == SwapRecoveryStatus.Recoverable)
-    Console.WriteLine($"{info.AmountSats} sats stranded — recovery runs automatically");
-
-// Bulk audit (e.g. after wallet restore)
-var report = await swapMgr.ScanRecoverableSwapsAsync(walletId);
-```
-
-### Implementing a Custom Provider
-
-Implement `ISwapProvider` and register it:
-
-```csharp
-public class MySwapProvider : ISwapProvider
+builder.AddArk().ConfigureBatchExpiry(options =>
 {
-    public string ProviderId => "myprovider";
-    public string DisplayName => "My Swap Provider";
-
-    public bool SupportsRoute(SwapRoute route) =>
-        route == new SwapRoute(SwapAsset.ArkBtc, SwapAsset.BtcLightning);
-
-    public Task<IReadOnlyCollection<SwapRoute>> GetAvailableRoutesAsync(CancellationToken ct) => ...;
-    public Task StartAsync(string walletId, CancellationToken ct) => ...;
-    public Task StopAsync(CancellationToken ct) => ...;
-    public Task<SwapLimits> GetLimitsAsync(SwapRoute route, CancellationToken ct) => ...;
-    public Task<SwapQuote> GetQuoteAsync(SwapRoute route, long amount, CancellationToken ct) => ...;
-    public event EventHandler<SwapStatusChangedEvent>? SwapStatusChanged;
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-}
-
-// Register
-services.AddSingleton<ISwapProvider, MySwapProvider>();
+    options.MinimumExpiry = TimeSpan.FromHours(6);
+});
 ```
 
-The `SwapsManagementService` will automatically discover it and route matching requests to it.
+Floors can be lowered but not disabled — zero or less throws at startup, as does a `MinimumExpiry`
+below 512 seconds, which would round down to zero and accept anything. See
+[Batch Expiry Validation](docs/articles/batch-expiry.md) for the attack it prevents, the
+`AllowBlockTypedExpiry` escape hatch, and BIP-68 granularity.
 
 ## Lightning Corridors (`NArk.ArkadeIntents`)
 
@@ -1842,8 +1806,6 @@ The SDK uses a pluggable architecture. Register your implementations for:
 | `IVtxoStorage` | VTXO persistence | `EfCoreVtxoStorage` |
 | `IContractStorage` | Contract persistence | `EfCoreContractStorage` |
 | `IIntentStorage` | Intent persistence | `EfCoreIntentStorage` |
-| `ISwapStorage` | Swap persistence | `EfCoreSwapStorage` |
-| `ISwapProvider` | Swap provider (route-based) | `BoltzSwapProvider` |
 | `IWalletStorage` | Wallet persistence | `EfCoreWalletStorage` |
 | `IWalletProvider` | Wallet signer/address resolution | `DefaultWalletProvider` |
 | `ISafetyService` | Distributed locking | *Must implement* |
@@ -1856,12 +1818,23 @@ The SDK uses a pluggable architecture. Register your implementations for:
 
 ## Local Development
 
-The SDK uses [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) for local orchestration with Docker containers (arkd, Bitcoin Core, Boltz, etc.):
+E2E tests run against a regtest stack — arkd, Bitcoin Core and friends — kept in the
+[`arkade-regtest`](https://github.com/ArkLabsHQ/arkade-regtest) submodule and driven by a node
+script:
 
 ```bash
-cd NArk.AppHost
-dotnet run
+git submodule update --init
+
+# Bring the stack up. Profiles select which optional services start; the E2E workflows use
+# `boltz,delegate`, `emulator,boltz` and `solver,boltz`.
+node regtest/regtest.mjs start --profile boltz,delegate
+
+# Tear it down, wiping containers and volumes.
+node regtest/regtest.mjs clean
 ```
+
+`.github/actions/e2e-setup` is the authoritative version of this — it is what CI runs, including
+the retry loop that a flaky Docker pull needs.
 
 ### Running Tests
 

@@ -11,8 +11,6 @@ public class SharedArkInfrastructure
     // prefix when EsploraBlockchain appends relative paths (e.g. "blocks/tip/hash").
     public static readonly Uri ChopsticksEndpoint = new("http://localhost:3000/api/");
 
-    public static readonly Uri FulmineEndpoint = new("http://localhost:7003");
-
     [OneTimeSetUp]
     public async Task GlobalSetup()
     {
@@ -28,7 +26,7 @@ public class SharedArkInfrastructure
         {
             Assert.Fail(
                 "Ark infrastructure not running. Start it with:\n" +
-                "  node regtest/regtest.mjs start --profile boltz,delegate\n\n" +
+                "  node regtest/regtest.mjs start --profile ark\n\n" +
                 $"Health check failed: {ex.Message}");
         }
     }
