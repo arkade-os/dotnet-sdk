@@ -14,14 +14,14 @@ namespace NArk.Tests.End2End.Arkade;
 /// <summary>
 /// Runtime equivalent of <c>solver-init</c> for tests that need a filled solver: mints a fresh
 /// 0-decimals asset from a throwaway funded wallet, sends the whole supply to the solver's offchain
-/// address, and registers the <c>BTC/&lt;asset&gt;</c> (+ reverse) pair against the existing mock
-/// pricefeed. Unlike <c>SOLVER_INIT_ASSET_FUNDING</c> (a fixed 50k that a single ~49_750 fill drains),
+/// address, and registers the <c>BTC/&lt;asset&gt;</c> market — both directions in one call — against
+/// the existing mock pricefeed. Unlike <c>SOLVER_INIT_ASSET_FUNDING</c> (a fixed 50k that a single ~49_750 fill drains),
 /// this tops the solver up with as much inventory as the test needs, so several BTC→asset fills can
 /// coexist in one run.
 /// </summary>
 /// <remarks>
 /// The mock feed <c>http://pricefeed/btc-asset</c> is static and asset-agnostic (it returns
-/// <c>1e-8</c> for any pair), so the fresh pair reuses it directly — the solver resolves it internally
+/// <c>1e-8</c> for any pair), so the fresh market reuses it directly — the solver resolves it internally
 /// on its own docker network. The 1 sat ↔ 1 unit pricing the tests rely on holds only because the
 /// asset is issued with <c>decimals=0</c>; the solver reads that from the arkd indexer (issuance
 /// metadata), which is why it is set at issuance rather than on the pair.
@@ -32,7 +32,7 @@ internal static class SolverLiquidityHelper
 
     /// <summary>
     /// Ensures the solver holds a freshly-minted asset it can pay out, and returns the asset id.
-    /// The registered pair is <c>BTC/&lt;assetId&gt;</c>; discover its limits via
+    /// The registered market is <c>BTC/&lt;assetId&gt;</c>; discover its limits via
     /// <c>SolverClient.ListPairsAsync</c> if needed.
     /// </summary>
     /// <param name="solverEndpoint">The solver's grpc-gateway REST base (e.g. http://localhost:7091).</param>
@@ -103,9 +103,10 @@ internal static class SolverLiquidityHelper
             new ArkTxOut(ArkTxOutType.Vtxo, NBitcoin.Money.Satoshis(btcLiquidity), solverArkAddress),
         ], ct);
 
-        // 3. Register both directions on the existing mock feed.
-        await RegisterPair(http, $"BTC/{assetId}", $"{PriceFeedBase}/btc-asset", ct);
-        await RegisterPair(http, $"{assetId}/BTC", $"{PriceFeedBase}/asset-btc", ct);
+        // 3. Register the market on the existing mock feed. One call covers both directions:
+        //    solverd takes a base/quote pair with bounds on each side, and a side is enabled by
+        //    having a non-zero maximum. The old API took a direction per registration.
+        await RegisterMarket(http, "BTC", assetId, $"{PriceFeedBase}/btc-asset", "/btc/asset", ct);
 
         // 4. Wait until both sends have landed. The asset side is proved by the solver's own
         //    balance API — that also proves the decimals reached it, since a rejected send or a
@@ -200,16 +201,46 @@ internal static class SolverLiquidityHelper
         return false;
     }
 
-    private static async Task RegisterPair(HttpClient http, string pair, string priceFeed, CancellationToken ct)
+    /// <summary>Register one market, both directions, the way <c>solver-init</c> does.</summary>
+    /// <remarks>
+    /// <c>POST /v1/market</c>, not the <c>POST /v1/pair</c> this helper spoke until solverd v0.0.6 —
+    /// that route is gone and answers 404, which is what a stale helper looks like from the outside.
+    /// The shape is mirrored from <c>regtest/docker/solver-init/index.mjs</c> deliberately: it is the
+    /// reference bootstrap for the same daemon, so a drift there is a drift the next image bump
+    /// should surface here too.
+    /// <para>
+    /// <paramref name="pricePath"/> is a JSON pointer into the feed's response, and solverd has
+    /// required it since v0.0.3 for any feed that is not a Binance or CoinGecko URL — the mock feed
+    /// is neither.
+    /// </para>
+    /// </remarks>
+    private static async Task RegisterMarket(
+        HttpClient http, string baseAsset, string quoteAsset, string priceFeed, string pricePath,
+        CancellationToken ct)
     {
-        var body = new { pair = new { pair, min_amount = 1, max_amount = 100_000_000, price_feed = priceFeed } };
-        var resp = await http.PostAsJsonAsync("v1/pair", body, ct);
+        var body = new
+        {
+            market = new
+            {
+                base_asset = baseAsset,
+                quote_asset = quoteAsset,
+                min_quote_amount = 1,
+                max_quote_amount = 100_000_000,
+                min_base_amount = 1,
+                max_base_amount = 100_000_000,
+                price_feed = priceFeed,
+                price_path = pricePath,
+            },
+        };
+
+        var resp = await http.PostAsJsonAsync("v1/market", body, ct);
         if (resp.IsSuccessStatusCode || resp.StatusCode == HttpStatusCode.Conflict)
             return;
 
-        // A re-registered pair is fine; only a genuine server error should fail the helper.
+        // A re-registered market is fine; only a genuine server error should fail the helper.
         var text = await resp.Content.ReadAsStringAsync(ct);
         if (!text.Contains("exist", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"POST /v1/pair '{pair}' failed ({(int)resp.StatusCode}): {text}");
+            throw new InvalidOperationException(
+                $"POST /v1/market '{baseAsset}/{quoteAsset}' failed ({(int)resp.StatusCode}): {text}");
     }
 }
