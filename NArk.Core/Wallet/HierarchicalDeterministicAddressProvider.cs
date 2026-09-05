@@ -129,15 +129,23 @@ public class HierarchicalDeterministicAddressProvider(
             walletIds: [wallet.Id],
             scripts: inputScripts,
             cancellationToken: cancellationToken);
-        var invoiceScripts = storedContracts
-            .Where(c => c.Metadata?.TryGetValue("Source", out var src) == true
-                        && src.StartsWith("invoice:", StringComparison.Ordinal))
+        // Recycling a descriptor deactivates the script it reuses, so a script the wallet is still
+        // advertising as an inbound destination must be left alone even though we are spending its
+        // coin. Two cases:
+        //   - Source "invoice:*" — the payer may still pay it.
+        //   - Active — a receive address the wallet handed out and is still scanning.
+        // Change and refund outputs are derived AwaitingFundsBeforeDeactivate (then flipped Inactive
+        // once the coin lands), so they are not Active and stay recyclable.
+        var nonRecyclableScripts = storedContracts
+            .Where(c => c.ActivityState == ContractActivityState.Active
+                        || (c.Metadata?.TryGetValue("Source", out var src) == true
+                            && src.StartsWith("invoice:", StringComparison.Ordinal)))
             .Select(c => c.Script)
             .ToHashSet();
 
         foreach (var payment in inputs.OfType<ArkPaymentContract>())
         {
-            if (invoiceScripts.Contains(payment.GetScriptPubKey().ToHex()))
+            if (nonRecyclableScripts.Contains(payment.GetScriptPubKey().ToHex()))
                 continue;
 
             if (await IsOurs(payment.User, cancellationToken))
@@ -148,7 +156,7 @@ public class HierarchicalDeterministicAddressProvider(
 
         foreach (var htlc in inputs.OfType<VHTLCContract>())
         {
-            if (invoiceScripts.Contains(htlc.GetScriptPubKey().ToHex()))
+            if (nonRecyclableScripts.Contains(htlc.GetScriptPubKey().ToHex()))
                 continue;
 
             if (await IsOurs(htlc.Receiver, cancellationToken))
