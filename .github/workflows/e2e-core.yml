@@ -23,7 +23,7 @@ jobs:
       # are excluded from the filter below rather than left to be swept in by this catch-all.
       # Run everything else here.
       - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery&TestCategory!=UnilateralExit&TestCategory!=ArkadeScript&TestCategory!=ArkadeIntents"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Recovery&TestCategory!=UnilateralExit&TestCategory!=ArkadeScript&TestCategory!=ArkadeIntents"
         timeout-minutes: 20
       - name: Collect docker logs on failure
         if: failure()
