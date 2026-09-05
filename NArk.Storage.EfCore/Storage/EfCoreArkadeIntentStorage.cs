@@ -22,6 +22,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
     public async Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
         string? id = null,
         ArkadeSwapIntentStatus? status = null,
+        ArkadeSwapIntentStatus[]? statuses = null,
         string? swapPkScript = null,
         string[]? walletIds = null,
         int? skip = null,
@@ -35,6 +36,10 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
             query = query.Where(x => x.Id == id);
         if (status is { } s)
             query = query.Where(x => x.Status == s);
+        // Translated to a single `IN (...)`, which is the whole point of the filter: the alternative
+        // is the caller looping and paying a round-trip per status.
+        if (statuses is { Length: > 0 })
+            query = query.Where(x => statuses.Contains(x.Status));
         if (swapPkScript is not null)
             query = query.Where(x => x.SwapPkScript == swapPkScript);
         if (walletIds is not null)

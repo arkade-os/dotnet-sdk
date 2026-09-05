@@ -304,7 +304,8 @@ public class ArkadeIntentsReconciliationTests
 
         public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
             string? id = null,
-            ArkadeSwapIntentStatus? status = null, string? swapPkScript = null, string[]? walletIds = null,
+            ArkadeSwapIntentStatus? status = null, ArkadeSwapIntentStatus[]? statuses = null,
+            string? swapPkScript = null, string[]? walletIds = null,
             int? skip = null, int? take = null, CancellationToken cancellationToken = default)
         {
             // Applies the filters rather than always answering with the one intent. A fake that
@@ -312,6 +313,7 @@ public class ArkadeIntentsReconciliationTests
             IEnumerable<ArkadeSwapIntent> q = [intent];
             if (id is not null) q = q.Where(i => i.Id == id);
             if (status is { } s) q = q.Where(i => i.Status == s);
+            if (statuses is { Length: > 0 }) q = q.Where(i => statuses.Contains(i.Status));
             if (swapPkScript is not null) q = q.Where(i => i.SwapPkScript == swapPkScript);
             return Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(q.ToList());
         }

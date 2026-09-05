@@ -32,6 +32,7 @@ internal sealed class InMemoryArkadeIntentStorage : IArkadeIntentStorage
     public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
         string? id = null,
         ArkadeSwapIntentStatus? status = null,
+        ArkadeSwapIntentStatus[]? statuses = null,
         string? swapPkScript = null,
         string[]? walletIds = null,
         int? skip = null,
@@ -41,6 +42,7 @@ internal sealed class InMemoryArkadeIntentStorage : IArkadeIntentStorage
         IEnumerable<ArkadeSwapIntent> q = _byId.Values;
         if (id is not null) q = q.Where(i => i.Id == id);
         if (status is { } s) q = q.Where(i => i.Status == s);
+        if (statuses is { Length: > 0 }) q = q.Where(i => statuses.Contains(i.Status));
         if (swapPkScript is { }) q = q.Where(i => i.SwapPkScript == swapPkScript);
         if (walletIds is { Length: > 0 }) q = q.Where(i => walletIds.Contains(i.WalletId));
         if (skip is { } toSkip) q = q.Skip(toSkip);

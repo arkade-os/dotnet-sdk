@@ -1324,6 +1324,20 @@ looking at.
 Funding is deliberately left out: its lockup may not exist yet, so polling would watch a script that
 may never be funded. Reconciliation covers that window instead.
 
+All four are asked for in one query, via the store's `statuses` filter:
+
+```csharp
+var inFlight = await intentStorage.GetArkadeSwapIntents(
+    statuses: [ArkadeSwapIntentStatus.Pending, ArkadeSwapIntentStatus.Claimable]);
+```
+
+`status` (one) and `statuses` (any of) are separate filters and both apply when both are given,
+narrowing rather than widening; an empty set constrains nothing. The watch set is recomputed on every
+`ActiveScriptsChanged` notification, so a round-trip per status is three of them spent on a hot path
+to learn what the first could have returned. A custom `IArkadeIntentStorage` must honour it — the
+contract's rule is that every filter given is applied, and one quietly dropped is a caller acting on
+somebody else's intent.
+
 Indexes are cached in the service for 10 minutes, keyed by registry URL, so register it as a
 singleton — `AddArkadeIntentsServices()` does. An index older than a week is still used, with a
 warning: a stale registry is worse than a fresh one and better than none.

@@ -72,12 +72,27 @@ public class EfCoreArkadeIntentStorageTests
     }
 
     [Test]
-    public async Task GetActiveScripts_DropsSwapsWhoseMoneyHasMoved()
+    public async Task GetActiveScripts_DropsEveryStatusThatIsNotWatched()
     {
+        // The complement of `CoversEveryStateWhereFundsCanStillBeAtTheScript`, and named for that:
+        // between them the two tests pin the whole partition rather than a sample of it, so a status
+        // added to the enum later cannot quietly land on the wrong side of the line.
+        //
+        // `Funding` earns its place here rather than among the watched. Its lockup may not exist
+        // yet, so watching it means polling a script that may never be funded; reconciliation reads
+        // that state on startup instead, which is when a swap recorded before its own spend is
+        // actually worth re-examining.
         await _storage.SaveArkadeSwapIntent(Intent("tx1", "pending-script"));
-        await _storage.SaveArkadeSwapIntent(Intent("tx2", "done-script", status: ArkadeSwapIntentStatus.Fulfilled));
         await _storage.SaveArkadeSwapIntent(
-            Intent("tx3", "cancelled-script", status: ArkadeSwapIntentStatus.Cancelled));
+            Intent("tx2", "funding-script", status: ArkadeSwapIntentStatus.Funding));
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx3", "cancelling-script", status: ArkadeSwapIntentStatus.Cancelling));
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx4", "done-script", status: ArkadeSwapIntentStatus.Fulfilled));
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx5", "cancelled-script", status: ArkadeSwapIntentStatus.Cancelled));
+        await _storage.SaveArkadeSwapIntent(
+            Intent("tx6", "resolved-script", status: ArkadeSwapIntentStatus.Resolved));
 
         var scripts = await ((NArk.Abstractions.Scripts.IActiveScriptsProvider)_storage).GetActiveScripts();
 
@@ -125,6 +140,52 @@ public class EfCoreArkadeIntentStorageTests
         var scripts = await ((NArk.Abstractions.Scripts.IActiveScriptsProvider)_storage).GetActiveScripts();
 
         Assert.That(scripts, Is.EquivalentTo(new[] { "shared" }));
+    }
+
+    [Test]
+    public async Task GetArkadeSwapIntents_FiltersOnASetOfStatuses()
+    {
+        // The filter `GetActiveScripts` rides on, asserted against the real provider rather than
+        // through it: what the watch set comes back with is the same answer either way, so a store
+        // that ignored `statuses` entirely would still satisfy that test by returning everything.
+        await _storage.SaveArkadeSwapIntent(Intent("tx1", "s1", status: ArkadeSwapIntentStatus.Pending));
+        await _storage.SaveArkadeSwapIntent(Intent("tx2", "s2", status: ArkadeSwapIntentStatus.Claimable));
+        await _storage.SaveArkadeSwapIntent(Intent("tx3", "s3", status: ArkadeSwapIntentStatus.Fulfilled));
+
+        var found = await _storage.GetArkadeSwapIntents(
+            statuses: [ArkadeSwapIntentStatus.Pending, ArkadeSwapIntentStatus.Claimable]);
+
+        Assert.That(found.Select(i => i.Id), Is.EquivalentTo(new[] { "tx1", "tx2" }));
+    }
+
+    [Test]
+    public async Task GetArkadeSwapIntents_CombinesStatusAndStatuses_ByNarrowing()
+    {
+        // Two filters, both applied. Widening instead would make the pair a way to ask for MORE than
+        // either alone allows, and every caller here uses a filter to single out one swap before
+        // moving its money.
+        await _storage.SaveArkadeSwapIntent(Intent("tx1", "s1", status: ArkadeSwapIntentStatus.Pending));
+        await _storage.SaveArkadeSwapIntent(Intent("tx2", "s2", status: ArkadeSwapIntentStatus.Claimable));
+
+        var found = await _storage.GetArkadeSwapIntents(
+            status: ArkadeSwapIntentStatus.Pending,
+            statuses: [ArkadeSwapIntentStatus.Pending, ArkadeSwapIntentStatus.Claimable]);
+
+        Assert.That(found.Select(i => i.Id), Is.EquivalentTo(new[] { "tx1" }));
+    }
+
+    [Test]
+    public async Task GetArkadeSwapIntents_AnEmptyStatusSet_ConstrainsNothing()
+    {
+        // Empty means "no constraint", not "match nothing". Read the other way this is a filter that
+        // silently hides every row, which is the shape of bug that ends with a wallet reporting no
+        // swaps at all.
+        await _storage.SaveArkadeSwapIntent(Intent("tx1", "s1", status: ArkadeSwapIntentStatus.Pending));
+        await _storage.SaveArkadeSwapIntent(Intent("tx2", "s2", status: ArkadeSwapIntentStatus.Fulfilled));
+
+        var found = await _storage.GetArkadeSwapIntents(statuses: []);
+
+        Assert.That(found.Select(i => i.Id), Is.EquivalentTo(new[] { "tx1", "tx2" }));
     }
 
     [Test]

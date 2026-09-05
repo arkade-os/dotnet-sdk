@@ -229,6 +229,7 @@ public class ArkadeSwapIntentMonitoringServiceTests
         public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
             string? id = null,
             ArkadeSwapIntentStatus? status = null,
+            ArkadeSwapIntentStatus[]? statuses = null,
             string? swapPkScript = null,
             string[]? walletIds = null,
             int? skip = null,
@@ -243,6 +244,7 @@ public class ArkadeSwapIntentMonitoringServiceTests
                     : Swaps.Values;
             if (id is not null) q = q.Where(i => i.Id == id);
             if (status is { } st) q = q.Where(i => i.Status == st);
+            if (statuses is { Length: > 0 }) q = q.Where(i => statuses.Contains(i.Status));
             return Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(q.ToArray());
         }
 

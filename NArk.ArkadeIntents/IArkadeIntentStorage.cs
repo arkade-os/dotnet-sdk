@@ -17,6 +17,9 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     /// <summary>Query swap intents by id, status, covenant script and/or wallet.</summary>
     /// <param name="id">A single intent's id.</param>
     /// <param name="status">Only intents in this status.</param>
+    /// <param name="statuses">
+    /// Only intents in <b>any</b> of these statuses. Null or empty places no constraint.
+    /// </param>
     /// <param name="swapPkScript">Only the intent on this covenant script.</param>
     /// <param name="walletIds">Only intents belonging to these wallets.</param>
     /// <param name="skip">Rows to skip.</param>
@@ -24,13 +27,23 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     /// <param name="cancellationToken">Cancels the query.</param>
     /// <returns>The matching intents.</returns>
     /// <remarks>
+    /// <para>
     /// Implementations must apply every filter given. A store that ignores one does not merely return
     /// too much: callers use these to identify a single swap before moving its money, so a filter
     /// quietly dropped is a caller acting on somebody else's intent.
+    /// </para>
+    /// <para>
+    /// <paramref name="status"/> and <paramref name="statuses"/> are separate filters and both apply
+    /// when both are given, narrowing rather than widening. The set exists so a caller wanting several
+    /// statuses asks once instead of once per status — <see cref="IActiveScriptsProvider"/> wants four
+    /// of them on every change notification, and four round-trips for one answer is a cost paid on a
+    /// hot path for nothing.
+    /// </para>
     /// </remarks>
     Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
         string? id = null,
         ArkadeSwapIntentStatus? status = null,
+        ArkadeSwapIntentStatus[]? statuses = null,
         string? swapPkScript = null,
         string[]? walletIds = null,
         int? skip = null,
@@ -74,28 +87,25 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     /// Funding is deliberately left out. Its lockup may not exist yet, so polling would watch a
     /// script that may never be funded; reconciliation reads that state on startup, which is when a
     /// swap recorded before its own spend actually needs re-examining.
+    ///
+    /// One query for all four, not one per status. This runs on every <c>ActiveScriptsChanged</c>
+    /// notification, and a round-trip per status is three of them spent to learn nothing the first
+    /// could not have returned. The de-duplication is the set's, not the query's: two rows can name
+    /// the same script — identical offers derive identical addresses — and that is one subscription.
     /// </remarks>
     async Task<HashSet<string>> IActiveScriptsProvider.GetActiveScripts(CancellationToken cancellationToken)
     {
-        var watched = new[]
-        {
-            ArkadeSwapIntentStatus.Pending,
-            ArkadeSwapIntentStatus.Refundable,
-            ArkadeSwapIntentStatus.Claimable,
-            ArkadeSwapIntentStatus.Recoverable,
-        };
+        var watched = await GetArkadeSwapIntents(
+            statuses:
+            [
+                ArkadeSwapIntentStatus.Pending,
+                ArkadeSwapIntentStatus.Refundable,
+                ArkadeSwapIntentStatus.Claimable,
+                ArkadeSwapIntentStatus.Recoverable,
+            ],
+            cancellationToken: cancellationToken);
 
-        var scripts = new HashSet<string>();
-        foreach (var status in watched)
-        {
-            foreach (var intent in await GetArkadeSwapIntents(
-                         status: status, cancellationToken: cancellationToken))
-            {
-                scripts.Add(intent.SwapPkScript);
-            }
-        }
-
-        return scripts;
+        return watched.Select(i => i.SwapPkScript).ToHashSet();
     }
 }
 
