@@ -3,9 +3,15 @@ description: Configure .NET + Node, start regtest infrastructure, build. Require
 
 inputs:
   profile:
-    description: regtest compose profile(s) to start, comma-separated (e.g. "boltz,delegate" or "solver,boltz").
+    description: >-
+      regtest compose profile(s) to start, comma-separated (e.g. "delegate" or "emulator").
+      `ark` is the default — bitcoind, nbxplorer, mempool and arkd — because that is all a
+      suite needs to fund itself now: ArkadeFaucet draws on the ark CLI wallet the stack
+      seeds inside the arkd container. Name a bigger profile only for the service you are
+      actually exercising: `delegate` for fulmine-delegator, `emulator` for covenant
+      co-signing, `boltz` for Boltz and the Lightning corridors.
     required: false
-    default: boltz,delegate
+    default: ark
   start-attempts:
     description: >-
       How many times to try bringing the regtest stack up before failing the job. Docker on hosted

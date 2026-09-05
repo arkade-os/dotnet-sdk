@@ -12,10 +12,14 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
+      # The catch-all suite is the only one that runs DelegationTests, so it is the only one
+      # that pays for `delegate` (fulmine-delegator). Everything else boots on plain `ark`.
       - uses: ./.github/actions/e2e-setup
-      # Swap and recovery tests run in dedicated parallel workflows (e2e-swaps, e2e-recovery).
-      # Rotation tests run in e2e-rotation. Arkade covenant tests need the emulator profile,
-      # so they run in the arkade-e2e job. Run everything else here.
+        with:
+          profile: delegate
+      # Recovery tests run in a dedicated parallel workflow (e2e-recovery). Rotation tests run
+      # in e2e-rotation. Arkade covenant tests need the emulator profile, so they run in the
+      # arkade-e2e job. Run everything else here.
       - name: Run E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery&TestCategory!=UnilateralExit&TestCategory!=ArkadeScript"
         timeout-minutes: 20
@@ -23,11 +27,8 @@ jobs:
         if: failure()
         run: |
           docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
-          docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
           docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
-          docker logs boltz-lnd > /tmp/boltz-lnd-logs.txt 2>&1 || true
-          docker logs boltz-fulmine > /tmp/fulmine-logs.txt 2>&1 || true
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4

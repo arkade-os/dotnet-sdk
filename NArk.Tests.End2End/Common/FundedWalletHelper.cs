@@ -67,7 +67,7 @@ internal static class FundedWalletHelper
         // so concurrent tests that need parallel coin selection don't race
         // on a shared input.
         for (var i = 0; i < vtxoCount; i++)
-            await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), amountSatsPerVtxo);
+            await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), amountSatsPerVtxo);
 
         await receivedAllVtxosTcs.Task.WaitAsync(TimeSpan.FromSeconds(15 * vtxoCount));
 
@@ -126,9 +126,12 @@ internal static class FundedWalletHelper
         var delegateContract = (ArkDelegateContract)contract;
 
         const int randomAmount = 500000;
-        await DockerHelper.SendArkdNoteTo(delegateContract.GetArkAddress().ToString(false), randomAmount);
+        await ArkadeFaucet.Fund(delegateContract.GetArkAddress().ToString(false), randomAmount);
 
-        await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Same budget the non-delegate path allows per VTXO: 5s is not enough for the sync service
+        // to observe the funding VTXO on a loaded stack, and the shortfall reads as a delegator
+        // failure rather than the timing artefact it is.
+        await receivedFirstVtxoTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
         return (safetyService, walletProvider, walletId, storage.VtxoStorage, contractService, storage.ContractStorage,
             clientTransport, vtxoSync, delegateContract);

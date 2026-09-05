@@ -75,7 +75,12 @@ public class ArkadeCashTests
         Assert.That(result.Unclaimed, Is.Empty, "Nothing should be left behind at the note's address");
 
         // The funds really moved: the destination holds them, and the note's address is drained.
-        var atDestination = await SnapshotScript(clientTransport, destination.ScriptPubKey.ToHex());
+        // The claim returns as soon as the sweep is submitted, so the destination's VTXO may not be
+        // indexed yet. Poll for it rather than snapshotting once — a single read races the indexer
+        // and fails intermittently even though the sweep itself succeeded.
+        var atDestination = await AwaitScript(clientTransport, destination.ScriptPubKey.ToHex(),
+            v => v.Where(x => !x.IsSpent()).Sum(x => (long)x.Amount) == 100000L,
+            TimeSpan.FromSeconds(15));
         Assert.That(atDestination.Where(v => !v.IsSpent()).Sum(v => (long)v.Amount), Is.EqualTo(100000L),
             "Destination should hold the swept amount");
 
@@ -112,6 +117,25 @@ public class ArkadeCashTests
         return result;
     }
 
+    /// <summary>
+    /// Snapshots <paramref name="scriptHex"/> until <paramref name="settled"/> holds or
+    /// <paramref name="timeout"/> elapses, returning the last snapshot either way so the caller's
+    /// assertion reports the real state rather than a timeout.
+    /// </summary>
+    private static async Task<List<ArkVtxo>> AwaitScript(GrpcClientTransport transport, string scriptHex,
+        Func<List<ArkVtxo>, bool> settled, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        var snapshot = await SnapshotScript(transport, scriptHex);
+        while (!settled(snapshot) && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            snapshot = await SnapshotScript(transport, scriptHex);
+        }
+
+        return snapshot;
+    }
+
     private static async Task<List<ArkVtxo>> SnapshotScript(GrpcClientTransport transport, string scriptHex)
     {
         var vtxos = new List<ArkVtxo>();
@@ -128,7 +152,7 @@ public class ArkadeCashTests
             "tarkadecash");
 
         var cashAddress = cash.GetAddress(serverInfo.Network);
-        await DockerHelper.SendArkdNoteTo(cashAddress.ToString(false), amount);
+        await ArkadeFaucet.Fund(cashAddress.ToString(false), amount);
         return cash;
     }
 

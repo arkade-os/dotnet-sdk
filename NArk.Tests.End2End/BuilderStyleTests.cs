@@ -50,7 +50,7 @@ public class BuilderStyleTests
         var fp = await wallet.CreateTestWallet();
         var contract = await contractService.DeriveContract(fp, NextContractPurpose.Receive, cancellationToken: CancellationToken.None);
 
-        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), 50000);
+        await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), 50000);
 
         var gotBatchTcs = new TaskCompletionSource();
 

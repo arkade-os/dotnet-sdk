@@ -70,7 +70,7 @@ public class OnchainTests
                 fundedTcs.TrySetResult();
         };
 
-        await DockerHelper.SendArkdNoteTo(contract.GetArkAddress().ToString(false), 50000);
+        await ArkadeFaucet.Fund(contract.GetArkAddress().ToString(false), 50000);
 
         await fundedTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
