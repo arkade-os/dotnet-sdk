@@ -243,6 +243,76 @@ public class OnchainSendOrchestrationTests
         await ctx.Blockchain.DidNotReceiveWithAnyArgs().BroadcastAsync(default!, default);
     }
 
+    [Test]
+    public async Task AFullyFundedHtlc_IsClaimed_AndTheBroadcastCarriesThePreimage()
+    {
+        // The one branch every other test in this fixture stops short of. The refusals are the
+        // safety net, but a net is all they are: with only refusals pinned, a success path that
+        // signed for the wrong key, broadcast nothing, or dropped the preimage from the witness
+        // would leave the whole fixture green while no swap could ever complete.
+        var ctx = Ctx(intent: Intent());
+        ctx.Blockchain.GetUtxosAsync(default!, default)
+            .ReturnsForAnyArgs([Utxo(100_000, height: 100)]);
+        ctx.Blockchain.GetChainTime(default).ReturnsForAnyArgs(new TimeHeight(Stamp(Now), 110));
+        ctx.Blockchain.EstimateFeeRateAsync(default, default)
+            .ReturnsForAnyArgs(new FeeRate(Money.Satoshis(2), 1));
+        ctx.Blockchain.BroadcastAsync(default!, default).ReturnsForAnyArgs(true);
+        // Built into a local first: NSubstitute refuses a substitute configured inside another's
+        // `Returns(...)`, and the failure it raises names neither call.
+        var signer = SignerFor(ClientKey);
+        ctx.Wallets.GetSignerAsync(default!, default).ReturnsForAnyArgs(signer);
+
+        var outcome = await ctx.Client.ClaimOnchainAsync("swap-1", minConfirmations: 1);
+
+        var broadcast = OnlyBroadcast(ctx);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(outcome.Claimed, Is.True);
+            Assert.That(outcome.Txid, Is.EqualTo(broadcast.GetHash().ToString()),
+                "the reported txid must be the transaction that was actually broadcast");
+
+            // The preimage is the payment, not a detail of the witness: it is what lets the solver
+            // take the Arkade side. A claim that confirmed without it takes the sats and strands
+            // the counterparty, which is the failure this corridor is built to make impossible.
+            Assert.That(
+                broadcast.Inputs[0].WitScript.Pushes.Any(p => p.SequenceEqual(Preimage)),
+                Is.True, "the claim witness must publish the preimage");
+
+            // Paid where the row said, not wherever the builder felt like.
+            Assert.That(
+                broadcast.Outputs[0].ScriptPubKey, Is.EqualTo(PayoutAddress.ScriptPubKey));
+        });
+    }
+
+    [Test]
+    public async Task ABroadcastTheNetworkRejects_IsNotReportedAsClaimed()
+    {
+        // The narrow window between "we signed it" and "it is in a mempool". Reporting a claim here
+        // is worse than reporting nothing: the caller stops watching a swap whose preimage never
+        // became public, so neither leg moves and nobody is looking.
+        var ctx = Ctx(intent: Intent());
+        ctx.Blockchain.GetUtxosAsync(default!, default)
+            .ReturnsForAnyArgs([Utxo(100_000, height: 100)]);
+        ctx.Blockchain.GetChainTime(default).ReturnsForAnyArgs(new TimeHeight(Stamp(Now), 110));
+        ctx.Blockchain.EstimateFeeRateAsync(default, default)
+            .ReturnsForAnyArgs(new FeeRate(Money.Satoshis(2), 1));
+        ctx.Blockchain.BroadcastAsync(default!, default).ReturnsForAnyArgs(false);
+        // Built into a local first: NSubstitute refuses a substitute configured inside another's
+        // `Returns(...)`, and the failure it raises names neither call.
+        var signer = SignerFor(ClientKey);
+        ctx.Wallets.GetSignerAsync(default!, default).ReturnsForAnyArgs(signer);
+
+        var outcome = await ctx.Client.ClaimOnchainAsync("swap-1", minConfirmations: 1);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(outcome.Claimed, Is.False);
+            Assert.That(outcome.Txid, Is.Null);
+            Assert.That(outcome.Detail, Does.Contain("not accepted"));
+        });
+    }
+
     // ─── Harness ──────────────────────────────────────────────────────
 
     private static Task<FundedOnchainSend> Send(Harness ctx, RfqQuote<OnchainSendQuoteProfile> quote)
@@ -253,6 +323,23 @@ public class OnchainSendOrchestrationTests
 
         return ctx.Client.SendToOnchainAsync(
             WalletId, PayoutAddress, 50_000, RfqAmountSide.To, rfq);
+    }
+
+    /// <summary>The one transaction handed to <see cref="IBitcoinBlockchain.BroadcastAsync"/>.</summary>
+    /// <remarks>
+    /// Read back off the recorded call rather than captured with <c>Arg.Do</c>. A capture only fires
+    /// while the call is being made, so writing it into the <c>Received()</c> assertion afterwards
+    /// leaves the variable null and the test fails on a NullReferenceException that says nothing
+    /// about what actually went wrong.
+    /// </remarks>
+    private static Transaction OnlyBroadcast(Harness ctx)
+    {
+        var calls = ctx.Blockchain.ReceivedCalls()
+            .Where(c => c.GetMethodInfo().Name == nameof(IBitcoinBlockchain.BroadcastAsync))
+            .ToList();
+
+        Assert.That(calls, Has.Count.EqualTo(1), "expected exactly one broadcast");
+        return (Transaction)calls[0].GetArguments()[0]!;
     }
 
     private static void AssertNothingMoved(Harness ctx)
@@ -276,7 +363,8 @@ public class OnchainSendOrchestrationTests
         ISpendingService Spending,
         IContractService Contracts,
         IArkadeIntentStorage Intents,
-        IBitcoinBlockchain Blockchain);
+        IBitcoinBlockchain Blockchain,
+        IWalletProvider Wallets);
 
     private static Harness Ctx(ArkadeSwapIntent? intent = null, long now = Now)
     {
@@ -309,7 +397,7 @@ public class OnchainSendOrchestrationTests
             options: Options.Create(new ArkadeIntentsOptions()),
             time: new FixedClock(now));
 
-        return new Harness(client, spending, contracts, intents, blockchain);
+        return new Harness(client, spending, contracts, intents, blockchain, wallets);
     }
 
     /// <summary>The lockup the claim path reads back to recover the client key.</summary>
@@ -401,6 +489,31 @@ public class OnchainSendOrchestrationTests
 
     private static OutputDescriptor Descriptor(byte seed) =>
         KeyExtensions.ParseOutputDescriptor(KeyFor(seed).PubKey.ToHex(), Network.RegTest);
+
+    /// <summary>The preimage <see cref="Intent"/> records, as bytes.</summary>
+    private static byte[] Preimage => Enumerable.Repeat((byte)0xa3, 32).ToArray();
+
+    /// <summary>The private half of <see cref="ClientDescriptor"/> — the key the claim leaf needs.</summary>
+    private static ECPrivKey ClientKey => ECPrivKey.Create(KeyFor(4).ToBytes());
+
+    /// <summary>
+    /// A signer that really signs, with the key the covenant names as <c>sender</c>.
+    /// </summary>
+    /// <remarks>
+    /// A stub returning a fixed 64 bytes would carry this test just as far, and that is the problem:
+    /// signing for the wrong key is one of the failures the success path exists to catch, and it is
+    /// invisible until the network rejects a transaction the SDK already called claimed.
+    /// </remarks>
+    private static IArkadeWalletSigner SignerFor(ECPrivKey key)
+    {
+        var signer = Substitute.For<IArkadeWalletSigner>();
+        signer.Sign(default!, default!, default).ReturnsForAnyArgs(call =>
+        {
+            var hash = call.ArgAt<uint256>(1);
+            return Task.FromResult((key.CreateXOnlyPubKey(), key.SignBIP340(hash.ToBytes(false))));
+        });
+        return signer;
+    }
 
     private static BoardingUtxo Utxo(ulong sats, long height) =>
         new(Txid: new string('7', 64), Vout: 0, Amount: sats,
