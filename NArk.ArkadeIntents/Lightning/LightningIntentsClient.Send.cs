@@ -322,6 +322,19 @@ public sealed partial class LightningIntentsClient
                 return new RefundOutcome(
                     RefundOutcomeKind.Unknown, fate.Fate,
                     Detail: "the chain said nothing usable about this lockup — not an answer, ask again");
+
+            // The one fate that falls through to the refund: still live, so the locktime decides.
+            // Spelled out rather than left implicit, and paired with a default that refuses. This
+            // method's fall-through IS the push, so a verdict nobody taught it about would reach a
+            // spend by default — the one direction in which an unhandled case must never resolve.
+            case LockupFate.Open:
+                break;
+
+            default:
+                return new RefundOutcome(
+                    RefundOutcomeKind.Unknown, fate.Fate,
+                    Detail: $"the lockup's fate came back as {fate.Fate}, which this refund path does "
+                        + "not know how to weigh — refusing to push a spend on a verdict it cannot read");
         }
 
         if (intent.RefundLocktime is not { } locktime)
