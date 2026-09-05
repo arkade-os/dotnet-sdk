@@ -6,8 +6,27 @@ namespace NArk.ArkadeIntents.Onchain;
 /// <summary>Where an L1 HTLC stands, as the chain reports it.</summary>
 public enum OnchainHtlcPhase
 {
-    /// <summary>Nothing has arrived at the address.</summary>
-    Unfunded,
+    /// <summary>
+    /// Nothing is at the address — and which of the two reasons that is cannot be decided from here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An HTLC that was never funded and one that was funded and already spent give an address UTXO
+    /// query exactly the same answer, and <see cref="IBitcoinBlockchain"/> exposes no address history
+    /// to separate them. So this is named for what is known rather than for either guess. It replaces
+    /// a pair that claimed more than the query supports: an <c>Unfunded</c> nothing ever produced,
+    /// and a <c>Settled</c> that told a caller somebody had taken the money over a swap that may
+    /// simply never have been funded.
+    /// </para>
+    /// <para>
+    /// A caller needing the distinction has it elsewhere. Its own row knows whether it ever funded,
+    /// and where a spend is suspected <see cref="OnchainHtlcState.ExtractPreimage"/> against the
+    /// spending transaction turns "gone" into proof of which leaf took it. On an on-board a settled
+    /// HTLC is the solver collecting with the preimage our own claim published, which is the ordinary
+    /// end — but the proof is in that witness, never in this absence.
+    /// </para>
+    /// </remarks>
+    Empty,
 
     /// <summary>Funded, but short of the confirmations the swap was quoted at.</summary>
     AwaitingConfirmations,
@@ -25,15 +44,6 @@ public enum OnchainHtlcPhase
     /// rather than anything here.
     /// </remarks>
     Refundable,
-
-    /// <summary>Nothing is left at the address: somebody already took it, by one leaf or the other.</summary>
-    /// <remarks>
-    /// Which leaf is not decidable from the absence alone. On an on-board a settled HTLC is the
-    /// solver collecting with the preimage our own claim published, which is the ordinary end;
-    /// <see cref="OnchainHtlcState.ExtractPreimage"/> against the spending transaction is what turns
-    /// that from an inference into a proof.
-    /// </remarks>
-    Settled,
 }
 
 /// <summary>What a look at an L1 HTLC found.</summary>
@@ -84,9 +94,10 @@ public static class OnchainHtlcState
         var utxos = await blockchain.GetUtxosAsync(htlc.Address.ToString(), cancellationToken);
         if (utxos.Count == 0)
         {
-            // Unfunded and already-spent are the same emptiness from an address query. The caller
-            // knows which it expected; what it needs from here is that nothing is claimable.
-            return new OnchainHtlcStatus(OnchainHtlcPhase.Settled, [], 0);
+            // Never-funded and already-spent are the same emptiness from an address query, and this
+            // says so rather than picking one. What every caller needs from here either way is that
+            // nothing is claimable; a caller that needs to know WHICH reads it off its own row.
+            return new OnchainHtlcStatus(OnchainHtlcPhase.Empty, [], 0);
         }
 
         var chain = await blockchain.GetChainTime(cancellationToken);
@@ -116,7 +127,10 @@ public static class OnchainHtlcState
     /// <param name="within">How long to keep looking.</param>
     /// <param name="poll">How often to look. Defaults to five seconds.</param>
     /// <param name="cancellationToken">Cancels the wait.</param>
-    /// <returns>The status once it is claimable, or the last one seen when the time ran out.</returns>
+    /// <returns>
+    /// The status once it is claimable, or the last one seen when the time ran out —
+    /// <see cref="OnchainHtlcPhase.Empty"/> when nothing ever arrived while this was watching.
+    /// </returns>
     /// <remarks>
     /// Polling, because an L1 funding raises no event this SDK subscribes to — which is the same
     /// reason the advance pass proposes its onchain actions on every tick rather than on a trigger.
@@ -133,11 +147,10 @@ public static class OnchainHtlcState
     {
         var interval = poll ?? TimeSpan.FromSeconds(5);
         var deadline = DateTimeOffset.UtcNow + within;
-        var status = new OnchainHtlcStatus(OnchainHtlcPhase.Unfunded, [], 0);
 
         while (true)
         {
-            status = await ClassifyAsync(blockchain, htlc, minConfirmations, cancellationToken);
+            var status = await ClassifyAsync(blockchain, htlc, minConfirmations, cancellationToken);
             if (status.Phase is OnchainHtlcPhase.Claimable) return status;
             if (DateTimeOffset.UtcNow + interval > deadline) return status;
 

@@ -1683,7 +1683,11 @@ an advance loop that already catches that type keeps sweeping the other swaps in
 
 ```csharp
 var status = await OnchainHtlcState.ClassifyAsync(blockchain, htlc, minConfirmations);
-// Unfunded | AwaitingConfirmations | Claimable | Refundable | Settled
+// Empty | AwaitingConfirmations | Claimable | Refundable
+//
+// `Empty` is nothing at the address, and deliberately does not guess which of the two reasons that
+// is: never funded and already spent are the same answer from an address query. Your own row knows
+// which; where a spend is suspected, ExtractPreimage turns the inference into proof.
 
 // Wait for a fill rather than poll by hand. Returns the last status seen when the time runs out,
 // so "it never arrived" stays an answer you can branch on.

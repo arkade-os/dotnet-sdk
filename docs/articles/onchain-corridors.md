@@ -158,11 +158,10 @@ var status = await OnchainHtlcState.ClassifyAsync(blockchain, htlc, minConfirmat
 
 | phase | meaning |
 |---|---|
-| `Unfunded` | nothing has arrived |
+| `Empty` | nothing is at the address — never funded, or funded and already spent |
 | `AwaitingConfirmations` | funded, short of the count the swap was quoted at |
 | `Claimable` | funded, confirmed, and there is still room before the refund leaf opens |
 | `Refundable` | **the claim window is closed** — see below |
-| `Settled` | nothing left at the address; somebody took it |
 
 `Refundable` is the one worth being careful about. It does not mean a claim is still available: it
 means the refund leaf has matured, so reaching it on a swap you expected to claim means the claim was
@@ -174,9 +173,11 @@ trails wall clock by roughly an hour. Classifying on a local clock would report 
 that long before a refund would actually be accepted, and — worse in the other direction — would call
 a window closed while a claim could still have landed.
 
-`Settled` does not say *which* leaf took it. On an on-board it is ordinarily the solver collecting
-with the preimage our own claim published; turning that inference into proof is what
-`ExtractPreimage` is for:
+`Empty` is named for what an address query can actually establish. An HTLC that was never funded and
+one that was funded and already spent give exactly the same answer, and `IBitcoinBlockchain` exposes
+no address history to separate them — so the phase says "nothing is here" and leaves the reason to a
+caller that has it. Its own row knows whether it ever funded; where a spend is suspected, turning
+that inference into proof is what `ExtractPreimage` is for:
 
 ```csharp
 var preimage = OnchainHtlcState.ExtractPreimage(spendingTx, paymentHash);
@@ -197,7 +198,8 @@ var filled = await OnchainHtlcState.AwaitFillAsync(
 
 Polling, because an L1 funding raises no event this SDK subscribes to — the same reason the advance
 pass proposes its onchain actions on every tick rather than on a trigger. It returns the last status
-seen when the time runs out rather than throwing, so "it never arrived" stays an answer to branch on.
+seen when the time runs out rather than throwing, so "it never arrived" stays an answer to branch on —
+and it comes back as `Empty` when nothing arrived while this was watching.
 
 ## Testing
 
