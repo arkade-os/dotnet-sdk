@@ -31,9 +31,11 @@ namespace NArk.Tests.End2End.Arkade;
 /// contract" and "known to settle."
 /// </para>
 /// <para>
-/// <b>The solver is not part of the regtest stack and has to be started by hand.</b> Point
-/// <c>ARKADE_LN_SOLVER_URL</c> at it; without that variable every test here skips, which is also
-/// what happens in CI, where no solver runs.
+/// <b>The solver is the regtest stack's own `intent-solver` profile.</b> The e2e-arkade-intents
+/// workflow starts it and points <c>ARKADE_LN_SOLVER_URL</c> at its `serve` API. Locally, start
+/// that profile and set the same variable. Without it every test here still skips — the guard is
+/// kept because a developer running the suite against a stack booted on a smaller profile should
+/// get a skip rather than a connection error.
 /// </para>
 /// <para>
 /// The tests also need a Lightning node — the send leg needs an invoice for the solver to pay, and
@@ -46,11 +48,10 @@ namespace NArk.Tests.End2End.Arkade;
 /// <c>ARKADE_COVCLAIMD_URL</c> the daemon's own address.
 /// </para>
 /// <para>
-/// Kept out of CI by category, not just by the environment guard below. The guard alone would make
-/// these skip there, but a skip is a claim that the corridor was considered and found untestable,
-/// and CI has no solver to consider it with. Excluding them says the true thing: this suite is not
-/// part of the automated run yet. Select it deliberately with
-/// <c>--filter TestCategory=LightningCorridors</c>.
+/// Categorised rather than left to the catch-all suite, because the stack this needs — arkd, the
+/// emulator, boltz's funded Lightning node, a Nostr relay and two solvers — is far larger than the
+/// one e2e-core boots. e2e-arkade-intents runs the whole <c>ArkadeIntents</c> category; select this
+/// half alone with <c>--filter TestCategory=LightningCorridors</c>.
 /// </para>
 /// </remarks>
 [TestFixture]

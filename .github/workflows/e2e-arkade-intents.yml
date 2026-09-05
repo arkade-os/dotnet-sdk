@@ -1,50 +1,60 @@
-# NOT WIRED UP YET. The caller in build.yml is commented out, and `ArkadeIntents` is excluded
-# from e2e-core's catch-all filter, so nothing runs these today. This file exists so turning the
-# suite on is a one-line change rather than a new workflow written under pressure.
+# The ArkadeIntents corridors against live solvers, in TWO jobs on TWO stacks.
 #
-# Before enabling, two things still need settling:
+# The split is not parallelism, it is a constraint: arkd's timelocks are typed, and the corridors
+# need opposite types from one server.
 #
-#  1. The Lightning half (`ArkadeLightningTests`) drives a real solver over Nostr and a Lightning
-#     node through `docker exec … lncli`. Neither is in the `solver,boltz` profile below: those
-#     tests read `ARKADE_LN_SOLVER_URL` and `ARKADE_LND_CONTAINER`, and self-`Ignore` when the
-#     first is unset. So enabling this as-is exercises the asset corridor and skips Lightning —
-#     green, but only because half the suite opted out.
-#  2. The onchain corridors (`ArkadeOnchainTests`) now have E2E in this category, and they need the
-#     same solver: they read `ARKADE_LN_SOLVER_URL` and self-`Ignore` when it is unset, so they are
-#     in the same position as the Lightning half above. They also skip when the solver answers
-#     `unsupported_pair`, which is what a build with ONCHAIN_SEND/ONCHAIN_RECEIVE switched off
-#     returns — so a green run here says nothing about those corridors until the profile below
-#     starts a solver that serves them. Unlike the Lightning half they need no Lightning node; the
-#     far leg is L1, driven through bitcoin-cli in the stack.
+#  * The RFQ corridors (Lightning, onchain) build swap scripts with seconds-typed unilateral tiers.
+#    `LightningCorridor.MatchQuotedLockup` refuses a server whose unilateral exit delay is
+#    block-typed or under BIP68's 512-second granularity — it throws before a quote is ever
+#    requested, because a value below 512 is a block count by the SDK's own convention, and reading
+#    144 blocks as 144 seconds would build a timelock accepted at funding and refused at spend.
+#    regtest's defaults are all under 512, so this job overrides all five.
+#  * The asset corridor keeps the stack's defaults. It negotiates covenant offers through solverd
+#    and does not go through that check.
+#
+# arkade-os/ts-sdk splits its own suite the same way and for the same reason; see
+# `packages/swap/.env.regtest.rfq` there, whose seconds-typed values these mirror.
+#
+# Two different solvers, hence two profiles:
+#
+#  * `solver` is solverd, the market maker the asset corridor quotes against. `solver-init` funds
+#    it, mints an asset and registers the pairs, so there is a live market.
+#  * `intent-solver` is arkade-os/intent-solver, behind the Lightning and onchain corridors. Under
+#    `command: serve` it answers `POST /v1/swap`, which is what `HttpRfqTransport` speaks, so the
+#    tests reach it over ARKADE_LN_SOLVER_URL. Its profile pulls in `boltz` — not for a corridor,
+#    but because the boltz setup is the only thing that funds the base `lnd` node and opens a
+#    channel to it — and `nostr` for the registry card.
+#
+# The intent-solver image is not publicly pullable: an anonymous ghcr token for
+# arkade-os/intent-solver comes back DENIED. Hence the login step, which needs the package to grant
+# this repository read access. If the pull fails, check that grant first — regtest treats an image
+# it cannot start as a hard failure, so the job goes red rather than quietly green.
 name: Arkade Intents E2E Tests
 
 on:
   workflow_call:
 
 jobs:
-  test:
-    name: Arkade Intents E2E Tests
+  assets:
+    name: Asset Corridor E2E
     runs-on: ubuntu-latest
     env:
-      # Same reasoning as e2e-arkade: at the default level the solver logs nothing once it is up,
-      # so a swap it silently declines to fill looks identical to one it never received. Level 5
-      # puts the fill decision in the logs collected below.
+      # At the default level solverd logs nothing once it is up, so a swap it silently declines to
+      # fill looks identical to one it never received. Level 5 puts the fill decision in the logs
+      # collected below. A pre-set variable wins over regtest/.env.defaults (see lib/env.mjs).
       SOLVER_LOG_LEVEL: '5'
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
-      # `solver` pulls in arkd + emulator, starts the mock pricefeed and solver, and runs
-      # solver-init so there is a live market to quote against. `boltz` adds fulmine, which is the
-      # funding endpoint the shared harness tops wallets up from.
       - uses: ./.github/actions/e2e-setup
         with:
-          profile: solver,boltz
-      - name: Run Arkade Intents E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=ArkadeIntents"
-        # Matches e2e-arkade's headroom: a fill normally lands in a few seconds, but any one test
-        # can wait out SolverFillTimeout when its offer queues behind a solver settlement.
+          profile: solver
+      - name: Run asset corridor E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=AssetCorridor"
+        # A fill normally lands in a few seconds, but any one test can wait out SolverFillTimeout
+        # when its offer queues behind a solver settlement.
         timeout-minutes: 25
       - name: Collect docker logs on failure
         if: failure()
@@ -58,7 +68,71 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: arkade-intents-docker-logs
+          name: asset-corridor-docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
+
+  rfq-corridors:
+    name: Lightning + Onchain Corridors E2E
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Reading arkade-os/intent-solver off ghcr. Without this the login below succeeds and the
+      # pull still fails, which reads as a broken image rather than a missing permission.
+      packages: read
+    env:
+      SOLVER_LOG_LEVEL: '5'
+      # Empty in .env.defaults, because our regtest fork names a v0.2.0 that has not been cut.
+      # v0.1.0 is the published tag, and the one ArkLabsHQ/arkade-regtest pins.
+      INTENT_SOLVER_IMAGE: ghcr.io/arkade-os/intent-solver:v0.1.0
+      # What the suites read to decide whether there is a solver at all: unset, every one of them
+      # self-`Ignore`s and the job goes green having exercised nothing.
+      ARKADE_LN_SOLVER_URL: http://localhost:8787
+      # The Lightning half drives the node through `docker exec … lncli`. This is the base node the
+      # boltz setup funded, not boltz's own.
+      ARKADE_LND_CONTAINER: lnd
+      # Seconds-typed timelocks — see this file's header for why the RFQ corridors cannot run on
+      # the block-typed defaults. All five are set and all are ≥ 512 so arkd reads them as seconds;
+      # a mixed set is not a thing arkd will serve.
+      ARKD_VTXO_TREE_EXPIRY: '7200'
+      ARKD_BOARDING_EXIT_DELAY: '4096'
+      ARKD_UNILATERAL_EXIT_DELAY: '2048'
+      ARKD_PUBLIC_UNILATERAL_EXIT_DELAY: '2048'
+      ARKD_CHECKPOINT_EXIT_DELAY: '2048'
+      ARKD_VTXO_MIN_AMOUNT: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/e2e-setup
+        with:
+          profile: intent-solver
+      - name: Run Lightning and onchain corridor E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=LightningCorridors|TestCategory=OnchainCorridors"
+        timeout-minutes: 25
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs intent-solver > /tmp/intent-solver-logs.txt 2>&1 || true
+          docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
+          docker logs boltz > /tmp/boltz-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfq-corridors-docker-logs
           path: /tmp/*-logs.txt
       - name: Stop infrastructure
         if: always()

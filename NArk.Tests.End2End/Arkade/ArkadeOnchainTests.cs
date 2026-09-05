@@ -35,9 +35,11 @@ namespace NArk.Tests.End2End.Arkade;
 /// than the Lightning one, because both legs are chains this SDK has to watch and spend on itself.
 /// </para>
 /// <para>
-/// <b>The solver is not part of the regtest stack and has to be started by hand.</b> Point
-/// <c>ARKADE_LN_SOLVER_URL</c> at it — the same solver serves every corridor — and without that
-/// variable every test here skips, which is also what happens in CI.
+/// <b>The solver is the regtest stack's own `intent-solver` profile</b> — the same one serves
+/// every corridor. The e2e-arkade-intents workflow starts it and points
+/// <c>ARKADE_LN_SOLVER_URL</c> at its `serve` API; locally, start that profile and set the same
+/// variable. Without it every test here still skips, so a stack booted on a smaller profile gives
+/// a skip rather than a connection error.
 /// </para>
 /// <para>
 /// They also skip when the solver answers <c>unsupported_pair</c>. The onchain corridors are
@@ -52,9 +54,9 @@ namespace NArk.Tests.End2End.Arkade;
 /// Lightning-only deployment has no reason to register.
 /// </para>
 /// <para>
-/// Kept out of the automated run by category rather than only by the environment guard, for the
-/// reason <see cref="ArkadeLightningTests"/> gives: a skip claims the corridor was considered and
-/// found untestable, and CI has no solver to consider it with. Select them deliberately with
+/// Categorised for the reason <see cref="ArkadeLightningTests"/> gives: the stack these need is
+/// much larger than the one the catch-all suite boots. e2e-arkade-intents runs the whole
+/// <c>ArkadeIntents</c> category; select these alone with
 /// <c>--filter TestCategory=OnchainCorridors</c>.
 /// </para>
 /// </remarks>
