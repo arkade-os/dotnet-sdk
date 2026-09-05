@@ -65,20 +65,37 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     /// ours to take, on a clock that runs out in hours, and dropping the script there is dropping it
     /// exactly when the spend that matters is about to happen.
     ///
+    /// Recoverable ones stay watched too, and that is the one worth spelling out because the status
+    /// is TERMINAL: the swap is over, but a swept deposit is still the maker's money sitting at that
+    /// script. Terminal describes the negotiation, not the funds. Unwatching it is how those funds
+    /// stop appearing in the wallet at all — which is a silent loss rather than a visible one, since
+    /// nothing reports a script nobody is looking at.
+    ///
     /// Funding is deliberately left out. Its lockup may not exist yet, so polling would watch a
     /// script that may never be funded; reconciliation reads that state on startup, which is when a
     /// swap recorded before its own spend actually needs re-examining.
     /// </remarks>
     async Task<HashSet<string>> IActiveScriptsProvider.GetActiveScripts(CancellationToken cancellationToken)
     {
-        var pending = await GetArkadeSwapIntents(
-            status: ArkadeSwapIntentStatus.Pending, cancellationToken: cancellationToken);
-        var refundable = await GetArkadeSwapIntents(
-            status: ArkadeSwapIntentStatus.Refundable, cancellationToken: cancellationToken);
-        var claimable = await GetArkadeSwapIntents(
-            status: ArkadeSwapIntentStatus.Claimable, cancellationToken: cancellationToken);
+        var watched = new[]
+        {
+            ArkadeSwapIntentStatus.Pending,
+            ArkadeSwapIntentStatus.Refundable,
+            ArkadeSwapIntentStatus.Claimable,
+            ArkadeSwapIntentStatus.Recoverable,
+        };
 
-        return pending.Concat(refundable).Concat(claimable).Select(s => s.SwapPkScript).ToHashSet();
+        var scripts = new HashSet<string>();
+        foreach (var status in watched)
+        {
+            foreach (var intent in await GetArkadeSwapIntents(
+                         status: status, cancellationToken: cancellationToken))
+            {
+                scripts.Add(intent.SwapPkScript);
+            }
+        }
+
+        return scripts;
     }
 }
 

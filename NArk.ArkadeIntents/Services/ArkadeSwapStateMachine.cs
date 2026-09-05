@@ -196,7 +196,17 @@ public static class ArkadeSwapStateMachine
                 or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc =>
                 o.PreimageRevealed ? ArkadeSwapIntentStatus.Fulfilled : ArkadeSwapIntentStatus.Resolved,
 
-            // The asset corridors have no such leaf: a spend can only be the fill.
+            // The asset corridors have no preimage to prove anything with, so a spend is read as the
+            // fill. That is right for every spend this SDK can currently tell apart, and it is worth
+            // being precise about the one it cannot: the covenant's `cancel` and `exit` leaves also
+            // spend the deposit, and both hand it back. Our OWN cancel is covered — `Cancelling` is
+            // written before the spend, and the guard above catches it — but a cancel made from
+            // another device, or after this row was rebuilt, lands here and reads as a fill.
+            //
+            // Not guessed differently in the meantime: a spend classified from nothing is how a
+            // returned deposit becomes a settled sale, and the honest reading with no evidence is
+            // the common case. Deciding it properly means reading the covenant leaf off the
+            // spending transaction, which is what the offer restore scan does.
             _ => ArkadeSwapIntentStatus.Fulfilled,
         };
 
