@@ -20,7 +20,8 @@ public class OnchainHtlcStateTests
     private static ECPrivKey ClaimKey => ECPrivKey.Create(Enumerable.Repeat((byte)0x11, 32).ToArray());
     private static ECPrivKey RefundKey => ECPrivKey.Create(Enumerable.Repeat((byte)0x22, 32).ToArray());
 
-    private static uint256 PaymentHash => new(System.Security.Cryptography.SHA256.HashData(Preimage));
+    private static uint256 PaymentHash =>
+        new(System.Security.Cryptography.SHA256.HashData(Preimage), lendian: false);
 
     [Test]
     public void APreimageIsRecoveredFromTheSpendingWitness()

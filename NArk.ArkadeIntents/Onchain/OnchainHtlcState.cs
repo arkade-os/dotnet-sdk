@@ -190,13 +190,12 @@ public static class OnchainHtlcState
             {
                 if (push.Length != OnchainHtlc.PreimageSize) continue;
 
-                // Compared as uint256 rather than as bytes, deliberately. Every caller builds this
-                // hash as `new uint256(sha256(P))`, and `uint256` hands its bytes out little-endian
-                // by default while a payment hash is written the other way — so a byte comparison
-                // here has to pick a convention, and picking the wrong one fails silently: the
-                // preimage is simply never found, which reads exactly like a spend that carried
-                // none. Rebuilding the same type the caller did leaves no convention to get wrong.
-                if (new uint256(NBitcoin.Crypto.Hashes.SHA256(push)) == paymentHash)
+                // Compared as uint256 rather than as bytes, deliberately — but the CONVENTION has
+                // to match the one every caller builds its payment hash with, which is
+                // `lendian: false`. Omit it and the byte-array constructor stores the bytes
+                // reversed, this comparison never matches, and the failure is silent: the preimage
+                // is simply never found, which reads exactly like a spend that carried none.
+                if (new uint256(NBitcoin.Crypto.Hashes.SHA256(push), lendian: false) == paymentHash)
                 {
                     return push;
                 }

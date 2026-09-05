@@ -45,7 +45,8 @@ public static class OnchainClaimBuilder
         // network rejects it — and a claim that cannot be spent has still leaked nothing, but a
         // caller that thinks it published the preimage will stop watching.
         if (preimage.Length != OnchainHtlc.PreimageSize
-            || new uint256(System.Security.Cryptography.SHA256.HashData(preimage)) != htlc.PaymentHash)
+            || new uint256(System.Security.Cryptography.SHA256.HashData(preimage), lendian: false)
+                != htlc.PaymentHash)
         {
             throw new ArgumentException(
                 "the preimage does not hash to this HTLC's payment hash", nameof(preimage));

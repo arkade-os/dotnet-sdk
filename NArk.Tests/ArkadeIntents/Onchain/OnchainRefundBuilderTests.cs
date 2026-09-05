@@ -24,7 +24,7 @@ public class OnchainRefundBuilderTests
     private const long Locktime = 1_800_000_000;
 
     private static OnchainHtlc Htlc() => OnchainHtlc.Derive(
-        new uint256(System.Security.Cryptography.SHA256.HashData(Preimage)),
+        new uint256(System.Security.Cryptography.SHA256.HashData(Preimage), lendian: false),
         ClaimKey.CreateXOnlyPubKey(),
         RefundKey.CreateXOnlyPubKey(),
         Locktime,

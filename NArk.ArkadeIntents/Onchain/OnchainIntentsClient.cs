@@ -219,7 +219,13 @@ public sealed partial class OnchainIntentsClient(
                 "the quote carries no htlc_pubkey, so the L1 refund leaf cannot be reconstructed");
 
         return OnchainHtlc.Derive(
-            new uint256(System.Security.Cryptography.SHA256.HashData(preimage)),
+// `lendian: false`, and it is load-bearing. The claim leaf commits to
+            // RIPEMD160(paymentHash.ToBytes(false)) and the script computes HASH160 over the
+            // preimage the witness pushes, so those two agree only when `ToBytes(false)` gives
+            // back the raw SHA-256. The byte-array constructor defaults to little-endian and
+            // hands them back REVERSED — an address both sides can still derive, funded, and
+            // holding a claim leaf no witness can ever satisfy.
+            new uint256(System.Security.Cryptography.SHA256.HashData(preimage), lendian: false),
             clientKey.ToXOnlyPubKey(),
             ECXOnlyPubKey.Create(Convert.FromHexString(htlcPubkey)),
             quote.Profile.HtlcLocktime!.Value,
@@ -389,7 +395,13 @@ public sealed partial class OnchainIntentsClient(
         var clientKey = contract.Sender;
         var preimage = Convert.FromHexString(preimageHex);
         var htlc = OnchainHtlc.Derive(
-            new uint256(System.Security.Cryptography.SHA256.HashData(preimage)),
+// `lendian: false`, and it is load-bearing. The claim leaf commits to
+            // RIPEMD160(paymentHash.ToBytes(false)) and the script computes HASH160 over the
+            // preimage the witness pushes, so those two agree only when `ToBytes(false)` gives
+            // back the raw SHA-256. The byte-array constructor defaults to little-endian and
+            // hands them back REVERSED — an address both sides can still derive, funded, and
+            // holding a claim leaf no witness can ever satisfy.
+            new uint256(System.Security.Cryptography.SHA256.HashData(preimage), lendian: false),
             clientKey.ToXOnlyPubKey(),
             ECXOnlyPubKey.Create(Convert.FromHexString(htlcPubkey)),
             htlcLocktime,
