@@ -1,6 +1,7 @@
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Arkade.Contracts;
+using NArk.ArkadeIntents.Recovery;
 using Microsoft.Extensions.Logging;
 using NArk.Arkade.Emulator;
 using NArk.Core;
@@ -255,7 +256,8 @@ public static class LightningCorridor
         var contracts = await contractStorage.GetContracts(
             scripts: [swapPkScript], cancellationToken: cancellationToken);
         var entity = contracts.FirstOrDefault()
-            ?? throw new InvalidOperationException(
+            ?? throw new RefundNotLocallyPossibleException(
+                RefundBlockedReason.ContractMissing,
                 $"the lockup contract for swap '{swapId}' is not in the contract store — " +
                 "without it the funded script cannot be rebuilt");
 
@@ -269,7 +271,8 @@ public static class LightningCorridor
         var rebuilt = contract.GetScriptPubKey().ToHex();
         if (!string.Equals(rebuilt, swapPkScript, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException(
+            throw new RefundNotLocallyPossibleException(
+                RefundBlockedReason.ContractMismatch,
                 $"the stored lockup contract for swap '{swapId}' rebuilds to {rebuilt}, but it was " +
                 $"filed under {swapPkScript} — these parameters are not this swap's");
         }

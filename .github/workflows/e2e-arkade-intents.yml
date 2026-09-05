@@ -9,7 +9,13 @@
 #     tests read `ARKADE_LN_SOLVER_URL` and `ARKADE_LND_CONTAINER`, and self-`Ignore` when the
 #     first is unset. So enabling this as-is exercises the asset corridor and skips Lightning —
 #     green, but only because half the suite opted out.
-#  2. The off-board corridor has no E2E at all yet. When it gets one it belongs in this category.
+#  2. The onchain corridors (`ArkadeOnchainTests`) now have E2E in this category, and they need the
+#     same solver: they read `ARKADE_LN_SOLVER_URL` and self-`Ignore` when it is unset, so they are
+#     in the same position as the Lightning half above. They also skip when the solver answers
+#     `unsupported_pair`, which is what a build with ONCHAIN_SEND/ONCHAIN_RECEIVE switched off
+#     returns — so a green run here says nothing about those corridors until the profile below
+#     starts a solver that serves them. Unlike the Lightning half they need no Lightning node; the
+#     far leg is L1, driven through bitcoin-cli in the stack.
 name: Arkade Intents E2E Tests
 
 on:

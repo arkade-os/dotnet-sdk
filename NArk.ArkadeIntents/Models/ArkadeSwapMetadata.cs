@@ -19,13 +19,23 @@ public static class ArkadeSwapMetadataKeys
     /// <summary>The preimage a swap settles on, hex.</summary>
     public const string Preimage = "preimage";
 
-    /// <summary>The counterparty's x-only key on an off-board's L1 HTLC refund leaf, hex.</summary>
+    /// <summary>
+    /// The counterparty's x-only key on an onchain corridor's L1 HTLC, hex.
+    /// </summary>
+    /// <remarks>
+    /// Which leaf it sits on follows the direction, exactly as the wire's own field names do: on an
+    /// off-board the counterparty holds the refund role, on an on-board it holds the claim role. One
+    /// key either way — it is always "the half of the L1 HTLC that is not ours".
+    /// </remarks>
     public const string HtlcPubkey = "htlcPubkey";
 
-    /// <summary>Unix seconds at which that refund leaf opens.</summary>
+    /// <summary>Unix seconds at which the L1 HTLC's refund leaf opens.</summary>
     public const string HtlcLocktime = "htlcLocktime";
 
-    /// <summary>Where an off-board pays out on Bitcoin L1.</summary>
+    /// <summary>
+    /// Where this swap's own L1 spend pays. A payout on an off-board, where we claim; a refund on an
+    /// on-board, where reclaiming our own funding is the only L1 move we ever make.
+    /// </summary>
     public const string OnchainPayoutAddress = "onchainPayoutAddress";
 }
 
@@ -50,22 +60,28 @@ public sealed record AssetSwapMetadata(string OfferHex, string? MakerDescriptor)
 /// </param>
 public sealed record LightningSwapMetadata(string? Invoice, string? Preimage);
 
-/// <summary>What an off-board keeps beyond the fields every corridor has.</summary>
+/// <summary>What an onchain corridor swap keeps beyond the fields every corridor has.</summary>
+/// <remarks>
+/// One record for both directions, because both keep the same four things. What each MEANS follows
+/// the direction, and the fields say so individually rather than the corridor carrying two
+/// near-identical records that would have to be kept in step.
+/// </remarks>
 /// <param name="Preimage">The secret linking the two rails, hex. Derived from the wallet's seed.</param>
 /// <param name="HtlcPubkey">
-/// The counterparty's x-only key on the L1 HTLC's refund leaf. This and <paramref name="HtlcLocktime"/>
-/// are the only parts of the L1 leg nobody can re-derive — everything else about that contract comes
-/// from the payment hash and the wallet's own key. The address is deliberately not kept: recomputing
-/// it stops a derived value from drifting away from what derived it.
+/// The counterparty's x-only key on the L1 HTLC — its refund leaf on an off-board, its claim leaf on
+/// an on-board. This and <paramref name="HtlcLocktime"/> are the only parts of the L1 leg nobody can
+/// re-derive: everything else about that contract comes from the payment hash and the wallet's own
+/// key. The address is deliberately not kept, so a derived value cannot drift from what derived it.
 /// </param>
 /// <param name="HtlcLocktime">
-/// Unix seconds at which that leaf opens for the counterparty. Always earlier than the Arkade side's
-/// refund locktime, and by a margin — the ordering the corridor refuses to fund without.
+/// Unix seconds at which the L1 refund leaf opens. On an off-board that is the counterparty's way
+/// out and falls BEFORE the Arkade refund; on an on-board it is ours and falls AFTER it. Either way
+/// the ordering is what the corridor refuses to fund without.
 /// </param>
 /// <param name="PayoutAddress">
-/// Where the off-board pays out on L1. The claim chooses this, not the HTLC, so neither contract
-/// commits to it and it has to be remembered: a swap whose row is lost can still be claimed once
-/// rebuilt, but the sats land wherever that rebuild names.
+/// Where this swap's own L1 spend pays. The spend chooses it, not the HTLC, so neither contract
+/// commits to it and it has to be remembered: a swap whose row is lost can still be rebuilt, but the
+/// sats land wherever that rebuild names.
 /// </param>
 public sealed record OnchainSwapMetadata(
     string? Preimage, string? HtlcPubkey, long? HtlcLocktime, string? PayoutAddress);
@@ -122,11 +138,11 @@ public static class ArkadeSwapIntentMetadataExtensions
         return intent;
     }
 
-    /// <summary>Read the off-board view.</summary>
-    /// <exception cref="InvalidOperationException">This intent is not an off-board.</exception>
+    /// <summary>Read the onchain-corridor view.</summary>
+    /// <exception cref="InvalidOperationException">This intent is not an onchain corridor swap.</exception>
     public static OnchainSwapMetadata OnchainMetadata(this ArkadeSwapIntent intent)
     {
-        Require(intent, ArkadeSwapIntentType.BtcToOnchain);
+        Require(intent, ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentType.OnchainToBtc);
         return new OnchainSwapMetadata(
             Get(intent, ArkadeSwapMetadataKeys.Preimage),
             Get(intent, ArkadeSwapMetadataKeys.HtlcPubkey),
@@ -136,7 +152,7 @@ public static class ArkadeSwapIntentMetadataExtensions
             Get(intent, ArkadeSwapMetadataKeys.OnchainPayoutAddress));
     }
 
-    /// <summary>Write the off-board view, replacing whatever those keys held.</summary>
+    /// <summary>Write the onchain-corridor view, replacing whatever those keys held.</summary>
     public static ArkadeSwapIntent WithOnchainMetadata(
         this ArkadeSwapIntent intent, OnchainSwapMetadata metadata)
     {

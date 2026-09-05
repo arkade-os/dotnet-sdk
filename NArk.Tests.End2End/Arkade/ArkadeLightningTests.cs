@@ -280,7 +280,7 @@ public class ArkadeLightningTests
             extensionPacketProviders: [new ArkadeEmulatorPacketProvider()],
             submitHandlers: [new ArkadeEmulatorSpendSubmitter(emulator, new PrevArkTxProvider(w.clientTransport))]);
 
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = new InMemoryArkadeIntentStorage();
 
         // One client for both directions now, so the two constructions that used to differ by a
         // parameter cannot differ at all.
@@ -452,52 +452,4 @@ public class ArkadeLightningTests
         }
     }
 
-    /// <summary>In-memory <see cref="IArkadeIntentStorage"/> for the test — the real one is EF Core.</summary>
-    private sealed class InMemoryIntentStorage : IArkadeIntentStorage
-    {
-        private readonly Dictionary<string, ArkadeSwapIntent> _byId = new();
-
-        public event EventHandler<ArkadeSwapIntent>? SwapsChanged;
-        public event EventHandler? ActiveScriptsChanged;
-
-        public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
-            string? id = null,
-            ArkadeSwapIntentStatus? status = null,
-            string? swapPkScript = null,
-            string[]? walletIds = null,
-            int? skip = null,
-            int? take = null,
-            CancellationToken cancellationToken = default)
-        {
-            IEnumerable<ArkadeSwapIntent> q = _byId.Values;
-            if (id is not null) q = q.Where(i => i.Id == id);
-            if (status is { } s) q = q.Where(i => i.Status == s);
-            if (swapPkScript is { }) q = q.Where(i => i.SwapPkScript == swapPkScript);
-            if (walletIds is { Length: > 0 }) q = q.Where(i => walletIds.Contains(i.WalletId));
-            return Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(q.ToList());
-        }
-
-        public Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default)
-        {
-            _byId[intent.Id] = intent;
-            SwapsChanged?.Invoke(this, intent);
-            ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
-            return Task.CompletedTask;
-        }
-
-        public Task<bool> UpdateStatus(
-            string swapPkScript,
-            ArkadeSwapIntentStatus status,
-            string? spentTxid = null,
-            CancellationToken cancellationToken = default)
-        {
-            var intent = _byId.Values.FirstOrDefault(i => i.SwapPkScript == swapPkScript);
-            if (intent is null) return Task.FromResult(false);
-
-            intent.Status = status;
-            if (spentTxid is { Length: > 0 }) intent.SpentTxid = spentTxid;
-            SwapsChanged?.Invoke(this, intent);
-            return Task.FromResult(true);
-        }
-    }
 }

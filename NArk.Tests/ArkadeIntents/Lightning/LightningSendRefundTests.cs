@@ -76,7 +76,28 @@ public class LightningSendRefundTests
 
         var ex = Assert.ThrowsAsync<InvalidOperationException>(() => refunder.RefundSwap("swap-1"));
 
-        Assert.That(ex!.Message, Does.Contain("not a Lightning swap"));
+        Assert.That(ex!.Message, Does.Contain("not a corridor swap this refund applies to"));
+    }
+
+    [Test]
+    public void AnOffBoard_IsRefundableThisWay()
+    {
+        // The off-board settles into the same VHTLCv2 covenant as the Lightning send leg and takes
+        // the same `refundWithoutReceiver` leaf, so this is its refund too — and it is the ONLY one
+        // it has once the L1 window has shut. It used to be turned away here by a corridor check,
+        // which left the action the policy routes to it throwing every time it fired.
+        var swap = Swap();
+        swap.Type = ArkadeSwapIntentType.BtcToOnchain;
+        // Past the median-time-past lag too, so the corridor check is the only gate left that could
+        // turn it away.
+        var refunder = Refunder(swap, now: Locktime + 7201);
+
+        // The stubs cannot carry a spend through, so it still fails — but on the machinery rather
+        // than on the door. Asserting the absence of the corridor refusal is what pins the fix:
+        // "throws nothing" was never reachable here, and "throws" alone passed before it too.
+        var ex = Assert.CatchAsync(() => refunder.RefundSwap("swap-1"));
+
+        Assert.That(ex!.Message, Does.Not.Contain("not a corridor swap this refund applies to"));
     }
 
     [Test]

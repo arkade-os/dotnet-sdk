@@ -261,6 +261,8 @@ public class ArkadeSwapStateMachineTests
     [TestCase(ArkadeSwapIntentType.BtcToLightning)]
     [TestCase(ArkadeSwapIntentType.LightningToBtc)]
     [TestCase(ArkadeSwapIntentType.BtcToAsset)]
+    [TestCase(ArkadeSwapIntentType.BtcToOnchain)]
+    [TestCase(ArkadeSwapIntentType.OnchainToBtc)]
     public void TheStepsAreOrderedAndLandInReachableStates(ArkadeSwapIntentType type)
     {
         var steps = ArkadeSwapStateMachine.Steps(type);
@@ -313,9 +315,84 @@ public class ArkadeSwapStateMachineTests
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
+    // ─── The onchain pair ─────────────────────────────────────────────
+
+    [Test]
+    public void OnBoard_ReadsItsArkadeSideExactlyAsTheLightningReceiveLegDoes()
+    {
+        // Same covenant, same roles, same clock — so the same readings. Anything else would mean two
+        // descriptions of one mechanism, which is how they drift.
+        Assert.Multiple(() =>
+        {
+            Assert.That(Next(OnBoard, Pending, Open(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
+            Assert.That(Next(OnBoard, Claimable, Open(After)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+            Assert.That(Next(OnBoard, Claimable, Filled(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(Next(OnBoard, Claimable, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+        });
+    }
+
+    [Test]
+    public void OnTheClock_AnOffBoardBecomesRefundablePastItsDeadline()
+    {
+        // It used not to. The vtxo-driven path had this transition and the clock-driven one did not,
+        // so an off-board whose solver simply went quiet — no spend, no sweep, no chain event of any
+        // kind — never opened its refund at all.
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(OffBoard, Pending, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+    }
+
+    [Test]
+    public void OnTheClock_AnOnBoardPastItsClaimWindow_IsOverOnArkade()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(OnBoard, Claimable, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void TheOnchainLegsGetTheirOwnActions()
+    {
+        Assert.Multiple(() =>
+        {
+            // The off-board's L1 claim is proposed while it waits, because the funding it watches
+            // for raises no vtxo event.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OffBoard, Pending),
+                Is.EqualTo(ArkadeIntentAction.ClaimOnchain));
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OffBoard, Refundable),
+                Is.EqualTo(ArkadeIntentAction.RefundSend));
+
+            // The on-board claims the same way the Lightning receive leg does.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, Claimable),
+                Is.EqualTo(ArkadeIntentAction.ClaimReceive));
+        });
+    }
+
+    [Test]
+    public void AnOnBoardsL1RefundSurvivesATerminalArkadeStatus()
+    {
+        // Resolved means our claim window shut unused — which is exactly the case where the solver
+        // never learns the preimage, never claims on L1, and our funding is sitting there for us.
+        // Treating a status terminal for one rail as terminal for both would abandon those sats.
+        Assert.Multiple(() =>
+        {
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, ArkadeSwapIntentStatus.Resolved),
+                Is.EqualTo(ArkadeIntentAction.RefundOnchain));
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, Pending),
+                Is.EqualTo(ArkadeIntentAction.RefundOnchain));
+
+            // Once we have claimed, the preimage is public and the solver can take that same HTLC.
+            // Racing it is at best a wasted fee.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, ArkadeSwapIntentStatus.Fulfilled),
+                Is.EqualTo(ArkadeIntentAction.None));
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, ArkadeSwapIntentStatus.Cancelled),
+                Is.EqualTo(ArkadeIntentAction.None));
+        });
+    }
+
     private const ArkadeSwapIntentType Send = ArkadeSwapIntentType.BtcToLightning;
     private const ArkadeSwapIntentType Receive = ArkadeSwapIntentType.LightningToBtc;
     private const ArkadeSwapIntentType Asset = ArkadeSwapIntentType.BtcToAsset;
+    private const ArkadeSwapIntentType OffBoard = ArkadeSwapIntentType.BtcToOnchain;
+    private const ArkadeSwapIntentType OnBoard = ArkadeSwapIntentType.OnchainToBtc;
 
     private const ArkadeSwapIntentStatus Pending = ArkadeSwapIntentStatus.Pending;
     private const ArkadeSwapIntentStatus Claimable = ArkadeSwapIntentStatus.Claimable;

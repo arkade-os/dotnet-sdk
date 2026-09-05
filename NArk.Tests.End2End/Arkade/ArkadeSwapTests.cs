@@ -336,7 +336,7 @@ public class ArkadeSwapTests
         string WalletId,
         IClientTransport Transport,
         IVtxoStorage VtxoStorage,
-        InMemoryIntentStorage IntentStorage,
+        InMemoryArkadeIntentStorage IntentStorage,
         AssetIntentsManager Manager);
 
     private static async Task<Ctx> SetUpAsync()
@@ -358,7 +358,7 @@ public class ArkadeSwapTests
             extensionPacketProviders: [new ArkadeEmulatorPacketProvider()],
             submitHandlers: [new ArkadeEmulatorSpendSubmitter(emulator, new PrevArkTxProvider(w.clientTransport))]);
 
-        var intentStorage = new InMemoryIntentStorage();
+        var intentStorage = new InMemoryArkadeIntentStorage();
         var manager = new AssetIntentsManager(
             w.clientTransport, w.contractService, w.walletProvider, spendingService, intentStorage,
             w.vtxoStorage);
@@ -384,48 +384,4 @@ public class ArkadeSwapTests
         throw new TimeoutException($"No spendable VTXO appeared at {scriptHex} within 30s.");
     }
 
-    /// <summary>In-memory <see cref="IArkadeIntentStorage"/> for the test — the real one is EF Core.</summary>
-    private sealed class InMemoryIntentStorage : IArkadeIntentStorage
-    {
-        private readonly Dictionary<string, ArkadeSwapIntent> _byId = new();
-
-        public event EventHandler<ArkadeSwapIntent>? SwapsChanged;
-        public event EventHandler? ActiveScriptsChanged;
-
-        public Task<IReadOnlyCollection<ArkadeSwapIntent>> GetArkadeSwapIntents(
-            string? id = null,
-            ArkadeSwapIntentStatus? status = null,
-            string? swapPkScript = null,
-            string[]? walletIds = null,
-            int? skip = null,
-            int? take = null,
-            CancellationToken cancellationToken = default)
-        {
-            var query = _byId.Values.AsEnumerable();
-            if (id is not null) query = query.Where(x => x.Id == id);
-            if (status is { } s) query = query.Where(x => x.Status == s);
-            if (swapPkScript is not null) query = query.Where(x => x.SwapPkScript == swapPkScript);
-            if (walletIds is not null) query = query.Where(x => walletIds.Contains(x.WalletId));
-            return Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(query.ToList());
-        }
-
-        public Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default)
-        {
-            _byId[intent.Id] = intent;
-            SwapsChanged?.Invoke(this, intent);
-            ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
-            return Task.CompletedTask;
-        }
-
-        public Task<bool> UpdateStatus(string swapPkScript, ArkadeSwapIntentStatus status, string? spentTxid = null,
-            CancellationToken cancellationToken = default)
-        {
-            var e = _byId.Values.FirstOrDefault(x => x.SwapPkScript == swapPkScript && x.Status == ArkadeSwapIntentStatus.Pending);
-            if (e is null) return Task.FromResult(false);
-            e.Status = status;
-            if (spentTxid is not null) e.SpentTxid = spentTxid;
-            SwapsChanged?.Invoke(this, e);
-            return Task.FromResult(true);
-        }
-    }
 }

@@ -46,4 +46,16 @@ public static class RfqStateExtensions
     /// <returns><c>true</c> when the negotiation has reached a terminal state.</returns>
     public static bool IsTerminal(this RfqState state) => state
         is RfqState.Settled or RfqState.Refused or RfqState.Expired or RfqState.Refunded or RfqState.Stuck;
+
+    /// <summary>True for the two states in which the contract itself was resolved.</summary>
+    /// <param name="state">The state to classify.</param>
+    /// <returns><c>true</c> when the money reached one side or came back.</returns>
+    /// <remarks>
+    /// Narrower than <see cref="IsTerminal"/>, and the difference is the point. A negotiation
+    /// refused or expired is over without any contract having been funded, while these two are the
+    /// only states in which one was funded and then settled — which is what a caller deciding
+    /// whether a refund is still worth pushing is actually asking about.
+    /// </remarks>
+    public static bool IsResolved(this RfqState state) =>
+        state is RfqState.Settled or RfqState.Refunded;
 }

@@ -1483,6 +1483,209 @@ node NArk.Tests/ArkadeIntents/Fixtures/generate-covenant-vectors.mjs \
 dotnet test NArk.Tests --filter VHTLCv2ContractTests
 ```
 
+## Onchain Corridors (`NArk.ArkadeIntents`)
+
+The same RFQ negotiation and the same covenant, with Bitcoin L1 on the far side instead of
+Lightning. Both directions are served: `arkade:BTC->onchain:BTC` off-boards an Arkade balance to L1,
+and `onchain:BTC->arkade:BTC` on-boards L1 sats into one. Full details in
+[docs/articles/onchain-corridors.md](docs/articles/onchain-corridors.md).
+
+Two contracts on two rails, linked by one secret. Whoever funds first holds it, so nothing is ever
+owed on trust — and because the two rails have independent deadlines, **their order is the corridor's
+central safety property.** Neither contract enforces it; the client checks it before funding and
+refuses a quote that gets it wrong.
+
+Both directions need `IBitcoinBlockchain` registered. `AddArkadeIntentsServices()` wires the corridor
+only when one is present, so a Lightning-only deployment is unaffected.
+
+### Off-boarding — Arkade balance out to L1
+
+You fund the Arkade covenant, the solver funds an L1 HTLC paying you, and your L1 claim publishes the
+preimage that pays the solver. You move first, so you choose the secret.
+
+```csharp
+var funded = await intents.SendToOnchainAsync(
+    walletId: "my-wallet",
+    payoutAddress: BitcoinAddress.Create("bcrt1q...", Network.RegTest),
+    amountSats: 50_000,
+    amountSide: RfqAmountSide.To,      // pin what lands on L1
+    rfqTransport: rfqTransport);
+
+Console.WriteLine($"solver must fund {funded.HtlcAddress}");
+
+// Claimed automatically by the advance loop once the solver's funding has the quoted
+// confirmations. Callable directly too — "not yet" is an ordinary answer, not an error:
+var outcome = await intents.AdvanceAsync(funded.RfqId);
+```
+
+Your recourse is the Arkade covenant's refund, which opens **after** the solver's L1 one — that order
+is what stops you reclaiming on Arkade while the solver can still reclaim on L1.
+
+### On-boarding — L1 sats into an Arkade balance
+
+The mirror, and the exposure mirrors with it: you fund L1 first and the *solver* funds Arkade against
+it, collecting only when your claim publishes the preimage. You still choose the secret, for the same
+reason you do on the Lightning receive leg.
+
+```csharp
+var pending = await intents.ReceiveFromOnchainAsync(
+    walletId: "my-wallet",
+    amountSats: 50_000,
+    rfqTransport: rfqTransport,
+    covclaimdPubKey: covclaimdPubKey,   // read live from covclaimd, never hardcoded
+    l1RefundAddress: BitcoinAddress.Create("bcrt1q...", Network.RegTest));
+
+// Fund this from your own Bitcoin wallet — the SDK holds an Arkade wallet, and these sats are by
+// definition not in it yet. Fund the address derived here, never the one the quote names.
+Console.WriteLine($"send {pending.FundAmountSats} sats to {pending.HtlcAddress}");
+
+// After min_confirmations the solver funds the lockup and the monitor moves the intent to
+// Claimable; the advance loop claims it, or you can:
+await intents.ClaimOnchainReceiveAsync(pending.RfqId);
+```
+
+If the solver never delivers, the L1 HTLC's own refund leaf is the only way home — there is no Arkade
+covenant of yours to refund, because you never funded one:
+
+```csharp
+// Ordinary answer while the leaf is immature; it matures against the chain's MEDIAN TIME PAST
+// (BIP-113), which trails wall clock by about an hour.
+var refund = await intents.RefundOnchainReceiveAsync(pending.RfqId);
+```
+
+The advance loop proposes this refund on every pass, including after the Arkade side has been written
+off as `Resolved` — a claim window that shut unused is exactly the case where the solver never learns
+the preimage, never claims on L1, and those sats are still yours to collect.
+
+## Restore & Recovery (`NArk.ArkadeIntents`)
+
+Two different questions, and the SDK keeps them apart because the answers differ in kind. The drive
+path asks *may I act yet*; recovery asks *what is actually true*. Rows that exist are corrected by
+`ReconcileAsync`; rows that no longer exist are rebuilt here.
+
+### Rebuilding asset swaps from the chain
+
+Nothing in an asset swap lives only in the store. The funding transaction carries the offer as an
+extension packet, the covenant VTXO at the offer's script holds the deposit, and that VTXO's spender
+says what became of it — so the row is recomputable after the storage backend is gone.
+
+```csharp
+// Candidate txids are supplied, not discovered: any history source serves, and an incremental
+// caller persists `Scanned` so the same transaction is never fetched twice.
+var result = await intents.RestoreAssetSwapsAsync("my-wallet", sentTxids);
+
+foreach (var r in result.Restored)
+    Console.WriteLine($"{r.Intent.Id} {r.Intent.Status} cancellable={r.Cancellable}");
+
+// Held an offer, outcome not decidable yet — rescan later. Never recorded as a guess.
+Console.WriteLine($"unresolved: {string.Join(", ", result.Unresolved)}");
+```
+
+**A restored swap cannot be cancelled.** The wire offer carries the maker's x-only key, which is
+enough to rebuild the address and not enough to sign — the spendable descriptor was only ever local.
+That is a property of the offer format, and `RestoredOffer.Cancellable` reports it in advance rather
+than letting it surface as a failure when somebody tries. A restored swap can still be watched, and
+still be filled, which is the outcome it was waiting for.
+
+Rows already present are left completely alone, matched by id. A reconstruction knows strictly less
+than a live row — the maker descriptor above, for one — so overwriting would lose the ability to
+cancel a swap that still had it.
+
+### Reading what became of a deposit
+
+```csharp
+// Classified by the covenant LEAF the spend took, not by what it moved. Once the covenant is a
+// registered contract the deposit joins the wallet's own coins, every wallet-level figure becomes a
+// net delta, and an asset cancel — asset out, same asset back — nets to zero and reads exactly like
+// its fill. Leaves have no such failure mode, and they survive batching.
+var kind = OfferRestore.ClassifySpend(offer, serverKey, network, spendPsbt, deposit);
+// Fulfilled | Cancelled | Indeterminate
+```
+
+`Indeterminate` is not a third outcome — it is the absence of one, so the caller rescans rather than
+records. A server key rotated since funding rebuilds a different tree and answers `Indeterminate`
+too, rather than describing somebody else's script with confidence.
+
+### Deciding what became of a lockup
+
+```csharp
+var fate = await intents.ReadLockupFateAsync(swapId);
+// Unknown | Open | Claimed | Returned | Exited | Swept
+```
+
+Decidable without asking the counterparty anything. The claim leaf can only be spent by revealing
+the preimage, and every other leaf is a refund — the covenant's non-interactive one is pinned to
+your own address, and the rest need your own signature. So "spent, but not by a hash-verified claim"
+means the money came back, and `Claimed` carries the preimage as proof rather than as a hint.
+
+Three readings are deliberately not verdicts:
+
+- **`Unknown` is not `Returned`.** No outputs visible, or a spend the indexer cannot produce. An
+  outage and a genuine refund are the same silence, and reading it as a refund reports the money
+  home while it may have been claimed.
+- **`Exited` outranks `Open`.** A unilaterally exited output is unspent, so a naive read calls the
+  swap "still running" — but it sits on-chain under the same script, where no off-chain claim or
+  refund reaches it. It is not a loss: the leaves are unchanged, so finishing the unroll and
+  spending on-chain still ends the swap.
+- **`Swept` outranks `Open` too**, for the same reason on the other cause.
+
+### Refunding what is actually still open
+
+```csharp
+var outcome = await intents.RefundIfUnresolvedAsync(swapId);
+// Resolved | NotDue | Refunded | NeedsRecovery | Blocked | Unknown
+```
+
+The recovery entry point, as distinct from `RefundLightningSendAsync`, which is the action. This one
+reads the fate first — a caller coming back after downtime does not know whether the counterparty
+already claimed, and pushing a refund at a lockup that settled is a wasted fee. Every outcome is
+returned rather than thrown, because the useful caller is a loop and "resolved", "not due" and
+"needs recovery" are not failures.
+
+Covers both send legs. The on-board is not among them and cannot be — it never funded an Arkade
+covenant, so its recourse is `RefundOnchainReceiveAsync` on L1.
+
+**A partial lockup stops the whole push.** If any output is swept or exited, the refund is refused
+with `LockupNeedsRecoveryException` naming the outpoints, rather than refunding the rest:
+
+```csharp
+catch (LockupNeedsRecoveryException e)
+{
+    // e.Fate is Swept or Exited; e.Outpoints is what must be dealt with first.
+}
+```
+
+Refunding the remainder would report success over money that never moved, and a caller who believes
+the swap is refunded stops watching the part still sitting there. Neither cause is recoverable at
+this layer: a swept output goes through the wallet's own recovery path, an exited one needs its
+unroll finished and then an on-chain spend of the same leaves.
+
+`Blocked` is the other non-answer worth branching on — the refund is not this wallet's to push at
+all (`NoSigner`, `ContractMissing`, `ContractMismatch`, `NoLocktime`), which does not resolve by
+waiting the way `NotDue` does. Both recovery exceptions derive from `InvalidOperationException`, so
+an advance loop that already catches that type keeps sweeping the other swaps instead of dying.
+
+### Reading an L1 HTLC back off the chain
+
+```csharp
+var status = await OnchainHtlcState.ClassifyAsync(blockchain, htlc, minConfirmations);
+// Unfunded | AwaitingConfirmations | Claimable | Refundable | Settled
+
+// Wait for a fill rather than poll by hand. Returns the last status seen when the time runs out,
+// so "it never arrived" stays an answer you can branch on.
+var filled = await OnchainHtlcState.AwaitFillAsync(
+    blockchain, htlc, minConfirmations, within: TimeSpan.FromMinutes(30));
+
+// Recover the secret from whatever spent it — the L1 counterpart of SwapPreimageReader, which reads
+// Arkade spends through the indexer and cannot answer for a Bitcoin transaction.
+var preimage = OnchainHtlcState.ExtractPreimage(spendingTx, paymentHash);
+```
+
+`Refundable` means **the claim window is closed**, not that a claim is still available. Reaching it
+on a swap you expected to claim means the claim was missed. Maturity is judged against the chain's
+median time past (BIP-113), which trails wall clock by about an hour — classifying on a local clock
+would call a window closed while a claim could still have landed.
+
 ## ArkadeScript & Emulator (`NArk.Arkade`)
 
 The optional `NArk.Arkade` package adds client-side support for [ArkadeScript](https://github.com/arkade-os/emulator) — a Bitcoin-Script superset (40+ extension opcodes for transaction introspection, asset queries, EC operations, streaming SHA-256, …) that the [emulator](https://github.com/arkade-os/emulator) co-signs only when the script attached to an input passes validation.
