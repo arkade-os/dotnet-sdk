@@ -42,6 +42,24 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 
 `ArkWalletEntity` carries a generic `Metadata` JSON column for per-wallet bookkeeping the SDK accumulates over time without requiring a column-add migration per concern. `VtxoSynchronizationService` uses key `vtxo.lastFullPollAt` to persist a cursor that bounds the cold-start catch-up window — on first startup it reads `MIN(per-wallet vtxo.lastFullPollAt)` as the `after` filter so wallets with long history don't refetch every VTXO on every cold start. Routine polls write the same `StartedAt` timestamp to every wallet on success. A failure-then-success sequence cannot advance the cursor past the catch-up window: routine-poll writes are gated until the cold-start catch-up has succeeded at least once. Use `IWalletStorage.SetMetadataValue` for sparse updates so concurrent writers for different concerns (sync, recovery, ...) don't clobber each other.
 
+`ArkadeSwapIntentEntity` (table `ArkadeSwapIntents`) stores its `Type` and `Status` enums as their
+member **names**, not as the ordinals EF Core would default to — so the columns are `TEXT`/`nvarchar`,
+not `INTEGER`. An ordinal is positional: adding a corridor or a status anywhere but the end of its
+enum reinterprets every row already written, with no migration and no error. Consumers who generated
+a migration against an earlier build of this SDK need a new one that converts those two columns.
+
+The same entity keeps everything corridor-specific in one `Metadata` JSON column rather than in a
+column each — the offer TLV of an asset swap, the BOLT11 of a Lightning one, the L1 HTLC's terms on
+an off-board. A column each made the table a union of every corridor that had ever existed, and a
+schema migration a precondition for adding one. Read and write it through the typed views in
+`ArkadeSwapIntentMetadataExtensions` (`AssetMetadata()`, `LightningMetadata()`, `OnchainMetadata()`
+and their `With…` counterparts) rather than by key: each states its corridor's shape once and refuses
+a read against the wrong `Type` instead of answering it with nulls.
+
+What stays a column is what is *not* corridor-specific, plus what is queried: `FromAssetId` /
+`ToAssetId` (every corridor sets them), `PaymentHash` (indexed — a solver dedupes a negotiation on
+it) and `RefundLocktime` (the monitor needs it to tell a fill from a refund).
+
 ## Payment Tracking (Opt-In)
 
 Payment tracking (`ArkPayment` / `ArkPaymentRequest`) is **opt-in** — consumers who don't need it carry no extra schema or services. To enable it, add the entity configuration *and* the DI registration:

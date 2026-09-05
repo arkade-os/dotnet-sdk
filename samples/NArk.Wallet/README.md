@@ -1,6 +1,6 @@
 # Arkade Wallet — Sample App
 
-A neo-bank style wallet built with the NArk .NET SDK. It showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and swaps. It runs entirely in the browser via Blazor WASM.
+A neo-bank style wallet built with the NArk .NET SDK. It showcases all SDK features: wallets, VTXOs, spending, receiving, assets, and the Arkade Lightning corridors. It runs entirely in the browser via Blazor WASM.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ A neo-bank style wallet built with the NArk .NET SDK. It showcases all SDK featu
 │   ┌───────────┐ ┌─────────────┐ │
 │   │ NArk SDK  │ │ SQLite via  │ │
 │   │ (Core +   │ │ OPFS        │ │
-│   │  Swaps)   │ │ (SqliteWasm │ │
+│   │  Intents) │ │ (SqliteWasm │ │
 │   └─────┬─────┘ │  Blazor)    │ │
 │         │ REST   └─────────────┘ │
 └─────────┼───────────────────────┘
@@ -49,7 +49,11 @@ Open `https://localhost:5001` in your browser.
 | List VTXOs | `IVtxoStorage.GetVtxos` | `ArkWalletService.GetVtxos()` |
 | Send payment | `ISpendingService.Spend` | `ArkWalletService.Send()` |
 | Receive addresses | `IArkadeAddressProvider.GetNextContract` | `ArkWalletService.GetReceiveInfo()` |
-| List swaps | `ISwapStorage.GetSwaps` | `ArkWalletService.GetSwaps()` |
+| Pay a BOLT11 | `LightningIntentsClient.SendToLightningAsync` | `ArkadeLightningService.PayInvoiceAsync()` |
+| Be paid over Lightning | `LightningIntentsClient.ReceiveFromLightningAsync` | `ArkadeLightningService.CreateInvoiceAsync()` |
+| Claim / refund a swap | `LightningIntentsClient.ClaimAsync` / `RefundSwap` | `ArkadeLightningService.ClaimAsync()` / `RefundAsync()` |
+| List swaps | `IArkadeIntentStorage.GetArkadeSwapIntents` | `ArkadeLightningService.ListAsync()` |
+| Find a solver | `SolverDiscoveryService.DiscoverMarketsAsync` | `ArkadeLightningService.IsAvailableAsync()` |
 | Issue asset | `IAssetManager.IssueAsync` | `ArkWalletService.IssueAsset()` |
 | Burn asset | `IAssetManager.BurnAsync` | `ArkWalletService.BurnAsset()` |
 
@@ -64,9 +68,12 @@ and the phrase alone is enough to rebuild state on another device.
 **Restore Wallet** accepts either a BIP39 phrase or a legacy `nsec1…` single key. The secret is
 validated client-side before import (`ArkWalletService.ValidateSecret`). For HD wallets, restore
 then runs `HdWalletRecoveryService.ScanAsync`, a gap-limit sweep across every registered
-`IContractDiscoveryProvider` (arkd indexer, on-chain boarding, Boltz swaps), so prior contracts,
-VTXOs and swaps reappear in local storage. `nsec` wallets have no derivation index and skip the
-scan.
+`IContractDiscoveryProvider` (arkd indexer, on-chain boarding), so prior contracts and VTXOs
+reappear in local storage. `nsec` wallets have no derivation index and skip the scan.
+
+Swap rows do not come back this way. They were rebuilt from the swap provider's own record of them,
+and that provider is gone; an intent swap is recorded locally against a covenant the wallet derived,
+so restoring one means rebuilding it from the chain rather than asking a counterparty.
 
 ## Configuration
 
@@ -82,13 +89,16 @@ samples/NArk.Wallet/
 ├── NArk.Wallet.Gateway/    # Static file server (COOP/COEP headers)
 │   └── Program.cs           # Minimal host
 └── NArk.Wallet.Client/     # Blazor WASM PWA (full SDK in-browser)
-    ├── Pages/               # Route pages (Home, Send, Receive, Swap, Assets)
+    ├── Pages/               # Route pages (Home, Send, Receive, Swap, Intents, Assets, Contracts, Vtxos, Backup, Settings)
     ├── Layout/              # App shell with bottom navigation
     ├── Services/            # ArkWalletService, WalletDbContext, WasmSafetyService
     │   ├── ArkWalletService.cs       # Wraps SDK services (replaces REST API client)
+    │   ├── ArkadeLightningService.cs # The Lightning corridors, behind one options object
     │   ├── ArkServiceStartup.cs      # Manual IHostedService startup for WASM
     │   ├── WalletDbContext.cs         # EF Core context with SqliteWasmBlazor
+    │   ├── SchemaBootstrapper.cs      # Creates the local schema on first run
     │   ├── WasmSafetyService.cs       # In-browser ISafetyService
+    │   ├── WebCryptoAesGcmCipher.cs   # Browser AES-GCM; the runtime here has none
     │   └── FallbackChainTimeProvider.cs
     └── wwwroot/             # Static assets, CSS, PWA manifest
 ```

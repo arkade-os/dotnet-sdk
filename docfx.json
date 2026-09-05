@@ -7,6 +7,8 @@
             "NArk.Abstractions/NArk.Abstractions.csproj",
             "NArk.Core/NArk.Core.csproj",
             "NArk.Swaps/NArk.Swaps.csproj",
+          "NArk.Arkade/NArk.Arkade.csproj",
+          "NArk.ArkadeIntents/NArk.ArkadeIntents.csproj",
             "NArk.Storage.EfCore/NArk.Storage.EfCore.csproj"
           ]
         }

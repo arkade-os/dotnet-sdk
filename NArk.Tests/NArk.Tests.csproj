@@ -30,6 +30,7 @@
     </ItemGroup>
 
     <ItemGroup>
+      <ProjectReference Include="..\NArk.ArkadeIntents\NArk.ArkadeIntents.csproj" />
       <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
       <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
       <ProjectReference Include="..\NArk.Arkade\NArk.Arkade.csproj" />
@@ -38,11 +39,18 @@
     <ItemGroup>
       <Content Include="Assets\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
       <!--
-        Arkade fixtures are sourced verbatim from the emulator reference
-        (arkade-os/emulator pkg/arkade/testdata) so cross-SDK divergence
-        fails CI on both sides.
+        Arkade fixtures are sourced verbatim from a reference implementation —
+        the emulator (arkade-os/emulator pkg/arkade/testdata) for the packet
+        vectors, the TypeScript SDK's own vhtlc-vectors.test.ts for the VHTLCv2
+        leaves — so cross-SDK divergence fails CI on both sides.
       -->
       <Content Include="Arkade\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+      <!--
+        Lightning covenant-swap vectors, generated from the solver side's own
+        derivation so a drift in either implementation fails the maker's
+        derivation test here.
+      -->
+      <Content Include="ArkadeIntents\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>
