@@ -1536,6 +1536,14 @@ Console.WriteLine($"send {pending.FundAmountSats} sats to {pending.HtlcAddress}"
 await intents.ClaimOnchainReceiveAsync(pending.RfqId);
 ```
 
+**The funding must be exact: one output, holding exactly `FundAmountSats`.** The solver matches the
+address for a single output equal to the quote, so underfunding cannot be topped up (a second
+payment is a second output, and its claim spends one input), and overfunding is simply not taken —
+those sats stay at the HTLC and come back through the refund below. A wrong amount that confirms is
+refused immediately rather than left to time out. The quote is short-lived too, so quote per payment
+rather than per order. Anything that lets a person type the amount, or accepts partial payment,
+needs a second path alongside this one.
+
 If the solver never delivers, the L1 HTLC's own refund leaf is the only way home — there is no Arkade
 covenant of yours to refund, because you never funded one:
 

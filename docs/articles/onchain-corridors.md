@@ -110,6 +110,24 @@ Console.WriteLine($"send {pending.FundAmountSats} sats to {pending.HtlcAddress}"
 This returns rather than funds: the L1 funding transaction belongs to your own Bitcoin wallet, since
 the sats being on-boarded are by definition not on Arkade yet.
 
+### The funding has to be exact
+
+One output, holding exactly `FundAmountSats`. The solver looks at the address for a single output
+whose value equals the quote — not a sum, and not "at least" — so the usual near misses have no
+recovery:
+
+| | what happens |
+|---|---|
+| underfunded | cannot be topped up: a second payment is a second output, and the solver's claim spends one input, so the two are never added together |
+| overfunded | not taken — the solver will not match a wrong value, so the sats stay at the HTLC and come back through `RefundOnchainReceiveAsync` after its locktime |
+| wrong amount, confirmed | refused on the spot rather than left to time out, which is in your favour: the sooner the swap is known dead, the sooner the refund can start |
+
+The quote itself is short-lived — the reference solver drops an unfunded one fifteen minutes after
+making it — so quote per payment, not per order.
+
+This makes the corridor a poor fit for anything where a person types the amount, or where partial
+payment is accepted. Offer a path that tolerates those alongside it, or do not offer this one.
+
 You still choose the preimage here — the solver funds Arkade before it has been paid, so a solver
 able to release the secret could collect without delivering. A copy sealed to covclaimd travels with
 the request so the claim can be pushed while you are offline; the solver carries it as bytes it

@@ -26,7 +26,10 @@ namespace NArk.ArkadeIntents.Onchain;
 /// The Bitcoin L1 address to send <paramref name="FundAmountSats"/> to. Fund this and nothing else:
 /// it was derived here, not taken from the quote.
 /// </param>
-/// <param name="FundAmountSats">What the L1 funding must carry, in sats.</param>
+/// <param name="FundAmountSats">
+/// What the L1 funding must carry, in sats — <b>exactly this, in exactly one output</b>. See
+/// <see cref="OnchainIntentsClient.ReceiveFromOnchainAsync"/> for what a near miss costs.
+/// </param>
 /// <param name="HtlcLocktime">Unix seconds at which the L1 refund leaf opens — the way out.</param>
 /// <param name="MinConfirmations">Confirmations the solver waits for before it funds Arkade.</param>
 /// <param name="LockupAddress">The Arkade covenant the solver will fund, and we will claim.</param>
@@ -108,9 +111,38 @@ public sealed partial class OnchainIntentsClient
     /// <exception cref="RfqRefusedException">The solver declined to quote.</exception>
     /// <exception cref="OnchainReceiveNotFundableException">A safety gate refused — fund nothing.</exception>
     /// <remarks>
+    /// <para>
     /// Returns rather than funds. The L1 funding transaction is the caller's own wallet's job, exactly
     /// as the off-board leaves its L1 claim destination to the caller: this SDK holds an Arkade
     /// wallet, and the sats being on-boarded are by definition not in it yet.
+    /// </para>
+    /// <para>
+    /// <b>That funding must be EXACT, and it must be a single output.</b> The reference solver looks
+    /// at the address for one output whose value equals the quoted amount — not a sum, and not "at
+    /// least" — so none of the ways a payment usually goes slightly wrong can be recovered from.
+    /// </para>
+    /// <list type="bullet">
+    /// <item>
+    /// Underfunding cannot be topped up. A second payment is a second output, and the solver's claim
+    /// spends one input, so the two are never added together: it is two mismatches, not one match.
+    /// </item>
+    /// <item>
+    /// Overfunding is not taken. The solver will not match an output of the wrong value, so the sats
+    /// are not lost to it — they sit at the HTLC until <see cref="RefundOnchainReceiveAsync"/> takes
+    /// them back after its locktime.
+    /// </item>
+    /// <item>
+    /// A mismatch that confirms is refused on the spot rather than left to time out, which is in the
+    /// funder's favour: the sooner the swap is known dead, the sooner the refund can start.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// A caller that cannot guarantee the exact amount — anything driven by a person typing into a
+    /// wallet, or by a flow that accepts partial payment — should not offer this corridor without
+    /// also offering one that tolerates it. Quoting per payment rather than per order is the other
+    /// half of the same constraint: the reference solver drops an unfunded quote fifteen minutes
+    /// after making it.
+    /// </para>
     /// </remarks>
     public async Task<PendingOnchainReceive> ReceiveFromOnchainAsync(
         string walletId,
@@ -127,6 +159,16 @@ public sealed partial class OnchainIntentsClient
         // One derivation, three roles again — the covenant's `receiver` (so we can claim without
         // covclaimd), the destination its claim leaf is pinned to, and the L1 HTLC's refund key.
         // All on the chain the wallet already recovers, so none of them needs storage to survive.
+        //
+        // The three coincide here because this leg pays its own wallet, and that is the only reason.
+        // They are separable, and the seam is worth naming before something needs it: chaining this
+        // leg into a second swap — taking the payout in a stablecoin, say, by letting the next hop's
+        // solver be paid directly — means the DESTINATION becomes somebody else's lockup while the
+        // claim key and the L1 refund key stay ours. `nonInteractiveClaim` already pins the
+        // destination as a script rather than deriving it at claim time, and `ClaimOnchainReceiveAsync`
+        // reads that script back, so the covenant side needs nothing new: what it takes is letting a
+        // caller supply `payoutPkScript` instead of deriving it, and no longer spelling all three
+        // roles with one descriptor.
         var payout = await contractService.DeriveContract(
             walletId, NextContractPurpose.Receive, cancellationToken: cancellationToken);
         var payoutArkAddress = payout.GetArkAddress();
