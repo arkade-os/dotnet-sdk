@@ -258,7 +258,7 @@ public sealed partial class OnchainIntentsClient
             Convert.ToHexString(preimage).ToLowerInvariant(),
             quote.Profile!.ClaimPubkey,
             quote.Profile.HtlcLocktime,
-            l1RefundAddress.ToString()));
+            l1RefundAddress.ToString())).WithSolver(quote.SolverPubkey);
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         logger?.LogInformation(

@@ -37,6 +37,16 @@ public static class ArkadeSwapMetadataKeys
     /// on-board, where reclaiming our own funding is the only L1 move we ever make.
     /// </summary>
     public const string OnchainPayoutAddress = "onchainPayoutAddress";
+
+    /// <summary>The solver that quoted this swap, x-only hex.</summary>
+    /// <remarks>
+    /// Corridor-neutral, so it sits beside the per-corridor records rather than inside one: every
+    /// corridor here is negotiated against a counterparty, and which one it was is the first thing
+    /// anybody asks when a swap goes wrong. Recorded because the choice is made per payment — the
+    /// cheapest listed solver at that moment — so it cannot be reconstructed afterwards from
+    /// configuration.
+    /// </remarks>
+    public const string SolverPubkey = "solverPubkey";
 }
 
 /// <summary>What an Arkade BTC↔asset swap keeps beyond the fields every corridor has.</summary>
@@ -140,6 +150,26 @@ public static class ArkadeSwapIntentMetadataExtensions
 
     /// <summary>Read the onchain-corridor view.</summary>
     /// <exception cref="InvalidOperationException">This intent is not an onchain corridor swap.</exception>
+    /// <summary>The solver that quoted this swap, or <c>null</c> on a row that never recorded one.</summary>
+    /// <param name="intent">The swap.</param>
+    public static string? SolverPubkey(this ArkadeSwapIntent intent) =>
+        intent.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.SolverPubkey) is { Length: > 0 } key
+            ? key
+            : null;
+
+    /// <summary>Record which solver quoted this swap.</summary>
+    /// <param name="intent">The swap.</param>
+    /// <param name="solverPubkey">The solver's x-only key, hex. Ignored when blank.</param>
+    /// <returns>The same intent, for chaining.</returns>
+    public static ArkadeSwapIntent WithSolver(this ArkadeSwapIntent intent, string? solverPubkey)
+    {
+        if (solverPubkey is { Length: > 0 })
+        {
+            intent.Metadata[ArkadeSwapMetadataKeys.SolverPubkey] = solverPubkey;
+        }
+        return intent;
+    }
+
     public static OnchainSwapMetadata OnchainMetadata(this ArkadeSwapIntent intent)
     {
         Require(intent, ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentType.OnchainToBtc);

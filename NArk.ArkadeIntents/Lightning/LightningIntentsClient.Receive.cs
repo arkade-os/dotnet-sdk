@@ -205,7 +205,8 @@ public sealed partial class LightningIntentsClient
             // No offer TLV on this corridor: it is negotiated by RFQ, and the covenant is rebuilt
             // from the imported contract rather than from a wire offer.
         }.WithLightningMetadata(new LightningSwapMetadata(
-            invoice.ToString(), Convert.ToHexString(sealed_.Preimage).ToLowerInvariant())),
+                invoice.ToString(), Convert.ToHexString(sealed_.Preimage).ToLowerInvariant()))
+            .WithSolver(quote.SolverPubkey),
             cancellationToken);
 
         _logger?.LogInformation(

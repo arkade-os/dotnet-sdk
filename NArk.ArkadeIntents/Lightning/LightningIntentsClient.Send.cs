@@ -185,7 +185,7 @@ public sealed partial class LightningIntentsClient
             // No offer TLV on this corridor: it is negotiated by RFQ, and the covenant is rebuilt
             // from the imported contract rather than from a wire offer. No preimage either — on a
             // send the solver holds it, and its reveal in their claim is what settles our side.
-        }.WithLightningMetadata(new LightningSwapMetadata(invoice, null));
+        }.WithLightningMetadata(new LightningSwapMetadata(invoice, null)).WithSolver(quote.SolverPubkey);
         await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         var txid = await _spendingService.Spend(
