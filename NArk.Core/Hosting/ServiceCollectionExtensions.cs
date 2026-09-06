@@ -31,7 +31,7 @@ namespace NArk.Hosting;
 
 /// <summary>
 /// Network configuration for Ark services.
-/// Contains URIs for Ark server, Arkade wallet, and Boltz swap service.
+/// Contains URIs for the Arkade server, the wallet, the explorer and the chain backends.
 /// </summary>
 public record ArkNetworkConfig(
     [property: JsonPropertyName("ark")]
@@ -98,7 +98,7 @@ public record ArkNetworkConfig(
     /// <summary>
     /// Local regtest configuration. Ports match the arkade-regtest docker stack
     /// (the <c>regtest</c> submodule, <c>block-based-config</c>): arkd :7070,
-    /// arkade-explorer :7080, nginx-boltz :9069, arkade-wallet :3003, mempool
+    /// arkade-explorer :7080, arkade-wallet :3003, mempool
     /// :3000 (Esplora API under <c>/api</c>), Fulcrum Electrum WS :50003 / TCP :50001.
     /// </summary>
     public static readonly ArkNetworkConfig Regtest = new(
