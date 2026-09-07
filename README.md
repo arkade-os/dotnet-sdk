@@ -1133,7 +1133,6 @@ builder.AddArk().OnCustomGrpcArk("http://my-ark-server:7070");
 services.AddArkNetwork(ArkNetworkConfig.Mainnet);
 services.AddArkNetwork(new ArkNetworkConfig(
     ArkUri: "http://my-ark-server:7070",
-    BoltzUri: "http://my-boltz:9069/"));
 ```
 
 ## Batch Expiry Validation
@@ -1535,6 +1534,28 @@ Console.WriteLine($"send {pending.FundAmountSats} sats to {pending.HtlcAddress}"
 // Claimable; the advance loop claims it, or you can:
 await intents.ClaimOnchainReceiveAsync(pending.RfqId);
 ```
+
+By default the payout is a freshly derived receive contract. If you already hold one — an invoice
+that derived an address to be paid to, say — pass it as `payoutContract` and the swap costs no HD
+index of its own:
+
+```csharp
+var contract = await contractService.DeriveContract(walletId, NextContractPurpose.Receive);
+
+var pending = await intents.ReceiveFromOnchainAsync(
+    walletId: "my-wallet",
+    amountSats: 50_000,
+    rfqTransport: rfqTransport,
+    covclaimdPubKey: covclaimdPubKey,
+    l1RefundAddress: BitcoinAddress.Create("bcrt1q...", Network.RegTest),
+    payoutContract: contract);
+```
+
+This matters to recovery, not just tidiness: an HD wallet is restored by scanning until
+`RecoveryOptions.GapLimit` consecutive indices come back unused, and an offer that is never funded
+leaves whatever it derived behind. A caller that spends two indices per offer reaches that limit at
+twice the rate, and what lies past it a seed restore does not find. The cost is that one key appears
+in both contracts, linking them — they are one payment, so the link exists either way.
 
 **The funding must be exact: one output, holding exactly `FundAmountSats`.** The solver matches the
 address for a single output equal to the quote, so underfunding cannot be topped up (a second

@@ -181,7 +181,9 @@ public sealed partial class OnchainIntentsClient(
             PaymentHash = paymentHash,
             RefundLocktime = quote.RefundLocktime,
             // The L1 half the claim pass needs. Only the key and the locktime — the HTLC address is
-            // recomputed from them, so it cannot drift from what derived it.
+            // recomputed from them, so it cannot drift from what derived it — plus the confirmation
+            // count, which the claim pass has no other way to learn and which the counterparty sized
+            // its own refund deadline from.
         }.WithOnchainMetadata(new OnchainSwapMetadata(
             Convert.ToHexString(preimage).ToLowerInvariant(),
             quote.Profile!.HtlcPubkey,
@@ -481,10 +483,20 @@ public sealed partial class OnchainIntentsClient(
             cancellationToken);
     }
 
+    /// <summary>
+    /// The wallet's own key out of a receive contract, whatever shape it came back as.
+    /// </summary>
+    /// <remarks>
+    /// The shapes accepted here are the ones a wallet can spend from with its own signer, which is
+    /// the only property this key is read for — it signs the L1 claim and is the L1 refund key. A
+    /// caller supplying its own <c>payoutContract</c> widens what arrives here, so the list follows
+    /// what <see cref="IContractService.DeriveContract"/> can hand back rather than one shape.
+    /// </remarks>
     private static OutputDescriptor UserKeyOf(ArkContract contract) => contract switch
     {
         ArkPaymentContract payment => payment.User,
         HashLockedArkPaymentContract hashLocked => hashLocked.User,
+        ArkDelegateContract delegated => delegated.User,
         _ => throw new InvalidOperationException(
             $"expected a payment contract to take the client key from, got {contract.GetType().Name}"),
     };

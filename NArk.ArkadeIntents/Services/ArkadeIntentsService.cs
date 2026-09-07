@@ -1,3 +1,4 @@
+using NArk.Abstractions.Contracts;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents.Lightning;
@@ -368,6 +369,10 @@ public sealed class ArkadeIntentsService
     /// send on L1 (<see cref="RfqAmountSide.From"/>, the default) or what lands on Arkade.
     /// </param>
     /// <param name="solverCard">The solver's published card, when there is one.</param>
+    /// <param name="payoutContract">
+    /// A contract to take the payout key from instead of deriving a fresh one, so the swap costs no
+    /// HD index of its own. See the corridor's own remarks for why that matters to recovery.
+    /// </param>
     /// <param name="cancellationToken">Cancels the negotiation.</param>
     /// <returns>The L1 address to fund, and what is needed to claim afterwards.</returns>
     /// <exception cref="InvalidOperationException">No onchain corridor is registered.</exception>
@@ -383,10 +388,11 @@ public sealed class ArkadeIntentsService
         BitcoinAddress l1RefundAddress,
         RfqAmountSide amountSide = RfqAmountSide.From,
         SolverCard? solverCard = null,
+        ArkContract? payoutContract = null,
         CancellationToken cancellationToken = default) =>
         RequireOnchain().ReceiveFromOnchainAsync(
             walletId, amountSats, rfqTransport, covclaimdPubKey, l1RefundAddress,
-            amountSide, solverCard, cancellationToken);
+            amountSide, solverCard, payoutContract, cancellationToken);
 
     /// <summary>
     /// Claim a funded on-board, publishing the preimage.

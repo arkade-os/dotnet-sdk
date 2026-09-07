@@ -106,6 +106,11 @@ public sealed partial class OnchainIntentsClient
     /// The solver's published card, when there is one. Supplying it holds the solver to its own
     /// advertised limits and fee.
     /// </param>
+    /// <param name="payoutContract">
+    /// A contract to take the payout key from instead of deriving a fresh one. Supply the one this
+    /// swap already belongs to — an invoice's own payment contract, say — and the swap costs no HD
+    /// index of its own.
+    /// </param>
     /// <param name="cancellationToken">Cancels the negotiation. Nothing is funded here either way.</param>
     /// <returns>The L1 address to fund, and everything needed to claim once the solver responds.</returns>
     /// <exception cref="RfqRefusedException">The solver declined to quote.</exception>
@@ -143,6 +148,14 @@ public sealed partial class OnchainIntentsClient
     /// half of the same constraint: the reference solver drops an unfunded quote fifteen minutes
     /// after making it.
     /// </para>
+    /// <para>
+    /// Pass <paramref name="payoutContract"/> where the caller already derived a key for this same
+    /// payment. Deriving a second one is not free: an HD wallet is recovered by scanning until
+    /// <c>GapLimit</c> consecutive indices come back unused, so every index spent on a swap that is
+    /// never funded shortens the run a restore can cross. A flow that mints an address per attempt —
+    /// an invoice, an order — reaches that limit at twice the rate if the swap takes an index of its
+    /// own, and what lies beyond it is not found by a seed restore.
+    /// </para>
     /// </remarks>
     public async Task<PendingOnchainReceive> ReceiveFromOnchainAsync(
         string walletId,
@@ -152,6 +165,7 @@ public sealed partial class OnchainIntentsClient
         BitcoinAddress l1RefundAddress,
         RfqAmountSide amountSide = RfqAmountSide.From,
         SolverCard? solverCard = null,
+        ArkContract? payoutContract = null,
         CancellationToken cancellationToken = default)
     {
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
@@ -169,7 +183,7 @@ public sealed partial class OnchainIntentsClient
         // reads that script back, so the covenant side needs nothing new: what it takes is letting a
         // caller supply `payoutPkScript` instead of deriving it, and no longer spelling all three
         // roles with one descriptor.
-        var payout = await contractService.DeriveContract(
+        var payout = payoutContract ?? await contractService.DeriveContract(
             walletId, NextContractPurpose.Receive, cancellationToken: cancellationToken);
         var payoutArkAddress = payout.GetArkAddress();
         var payoutPkScript = payoutArkAddress.ScriptPubKey.ToBytes();

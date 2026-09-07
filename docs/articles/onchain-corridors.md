@@ -110,6 +110,34 @@ Console.WriteLine($"send {pending.FundAmountSats} sats to {pending.HtlcAddress}"
 This returns rather than funds: the L1 funding transaction belongs to your own Bitcoin wallet, since
 the sats being on-boarded are by definition not on Arkade yet.
 
+### Where the payout lands
+
+Left alone, the corridor derives a fresh receive contract to be paid into. A caller that already
+holds one should pass it instead:
+
+```csharp
+var pending = await intents.ReceiveFromOnchainAsync(
+    walletId: "my-wallet",
+    amountSats: 50_000,
+    rfqTransport: rfqTransport,
+    covclaimdPubKey: covclaimdPubKey,
+    l1RefundAddress: BitcoinAddress.Create("bcrt1q...", Network.RegTest),
+    payoutContract: contract);   // reuse, rather than spend a second HD index
+```
+
+The reason is recovery, not tidiness. An HD wallet is restored by scanning forward until
+`RecoveryOptions.GapLimit` consecutive indices come back unused, and an offer that is made but never
+funded still leaves whatever it derived behind. Somewhere like a payment page — where an address is
+derived for every invoice and most invoices are abandoned — deriving twice per offer reaches the gap
+at twice the rate, and coins past the gap are coins a seed restore does not find.
+
+What it costs is privacy: one key then appears in the payout contract and in whatever the caller
+already derived. Those are one payment, so anyone watching relates them regardless.
+
+Any contract shape the wallet can sign for is accepted — payment, hash-locked payment, delegate. The
+key is read for three roles at once (the covenant's receiver, the L1 refund key, the claim signature),
+which is only sound because all three are yours on this leg.
+
 ### The funding has to be exact
 
 One output, holding exactly `FundAmountSats`. The solver looks at the address for a single output

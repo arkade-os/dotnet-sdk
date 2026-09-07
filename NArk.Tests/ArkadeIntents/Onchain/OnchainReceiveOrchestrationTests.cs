@@ -136,6 +136,53 @@ public class OnchainReceiveOrchestrationTests
         AssertNothingMoved(ctx);
     }
 
+    [Test]
+    public void ANegotiationGivenNoPayoutContract_SpendsAnHdIndexOfItsOwn()
+    {
+        // The baseline the next test is measured against. Stated as a test rather than assumed,
+        // because the cost being avoided there is invisible unless this one pins it down.
+        var ctx = Ctx();
+
+        Assert.ThrowsAsync<OnchainReceiveNotFundableException>(
+            () => Receive(ctx, Quote(validUntil: Now)));
+
+        Assert.That(DerivationsIn(ctx), Is.EqualTo(1));
+    }
+
+    [Test]
+    public void ANegotiationHandedAPayoutContract_SpendsNoHdIndex()
+    {
+        // An HD wallet is restored by scanning until GapLimit consecutive indices come back unused,
+        // and a swap that is offered but never funded leaves whatever it derived behind. A caller
+        // already holding a receive contract — an invoice, say, that derived one to be paid to —
+        // would otherwise burn indices at twice the rate, and what lies past the gap a seed restore
+        // does not find. So the contract is reused rather than a second one derived.
+        var ctx = Ctx();
+        var payout = new ArkPaymentContract(
+            ServerInfo.SignerKey, new Sequence(TimeSpan.FromSeconds(4096)), ClientDescriptor);
+
+        Assert.ThrowsAsync<OnchainReceiveNotFundableException>(
+            () => Receive(ctx, Quote(validUntil: Now), payout));
+
+        Assert.That(DerivationsIn(ctx), Is.Zero);
+    }
+
+    [Test]
+    public void ADelegateContractAsThePayout_IsAcceptedRatherThanRefusedForItsShape()
+    {
+        // What the key is read for is that this wallet can sign with it, and a delegate contract's
+        // user key satisfies that as much as a plain payment contract's. Refusing the shape would
+        // silently disable the corridor for every wallet whose receive address happens to be one.
+        var ctx = Ctx();
+        var payout = new ArkDelegateContract(
+            ServerInfo.SignerKey, new Sequence(TimeSpan.FromSeconds(4096)),
+            user: ClientDescriptor, @delegate: Descriptor(7));
+
+        // Reaching the quote gates at all is the assertion: an unusable shape throws before them.
+        Assert.ThrowsAsync<OnchainReceiveNotFundableException>(
+            () => Receive(ctx, Quote(validUntil: Now), payout));
+    }
+
     // ─── Taking delivery ──────────────────────────────────────────────
 
     [Test]
@@ -351,15 +398,20 @@ public class OnchainReceiveOrchestrationTests
     }
 
     private static Task<PendingOnchainReceive> Receive(
-        Harness ctx, RfqQuote<OnchainReceiveQuoteProfile> quote)
+        Harness ctx, RfqQuote<OnchainReceiveQuoteProfile> quote, ArkContract? payout = null)
     {
         var rfq = Substitute.For<IRfqTransport>();
         rfq.RequestQuoteAsync<OnchainReceiveRequestProfile, OnchainReceiveQuoteProfile>(default!, default)
             .ReturnsForAnyArgs(quote);
 
         return ctx.Client.ReceiveFromOnchainAsync(
-            WalletId, 50_000, rfq, CovclaimdPubKey, RefundAddress);
+            WalletId, 50_000, rfq, CovclaimdPubKey, RefundAddress, payoutContract: payout);
     }
+
+    /// <summary>How many fresh HD indices a negotiation spent.</summary>
+    private static int DerivationsIn(Harness ctx) =>
+        ctx.Contracts.ReceivedCalls()
+            .Count(c => c.GetMethodInfo().Name == nameof(IContractService.DeriveContract));
 
     /// <summary>The one transaction handed to <see cref="IBitcoinBlockchain.BroadcastAsync"/>.</summary>
     /// <remarks>
