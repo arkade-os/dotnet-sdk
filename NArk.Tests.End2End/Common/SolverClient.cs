@@ -35,9 +35,13 @@ public sealed class SolverClient
         }
     }
 
-    /// <summary><c>GET /v1/pairs</c> — the trading pairs the solver honors.</summary>
-    public async Task<IReadOnlyList<SolverPair>> ListPairsAsync(CancellationToken cancellationToken = default)
-        => (await GetAsync<ListPairsResponse>("v1/pairs", cancellationToken))?.Pairs ?? [];
+    /// <summary><c>GET /v1/markets</c> — the markets the solver honors.</summary>
+    /// <remarks>
+    /// Was <c>GET /v1/pairs</c>. solverd renamed the concept: a market names its two assets
+    /// separately rather than as one <c>"BTC/&lt;asset&gt;"</c> string, and the old path now 404s.
+    /// </remarks>
+    public async Task<IReadOnlyList<SolverMarket>> ListMarketsAsync(CancellationToken cancellationToken = default)
+        => (await GetAsync<ListMarketsResponse>("v1/markets", cancellationToken))?.Markets ?? [];
 
     /// <summary><c>GET /v1/balance</c> — the solver's asset inventory, keyed by asset id.</summary>
     public async Task<IReadOnlyDictionary<string, ulong>> GetAssetBalancesAsync(CancellationToken cancellationToken = default)
@@ -54,18 +58,33 @@ public sealed class SolverClient
         return JsonSerializer.Deserialize<T>(body, JsonOptions);
     }
 
-    public sealed record SolverPair
+    /// <summary>One market as <c>GET /v1/markets</c> reports it.</summary>
+    /// <remarks>
+    /// Read off the wire rather than from the proto's comments, which describe the two amount
+    /// ranges by trade direction and are easy to read backwards. The bounds here are named for
+    /// the asset they are denominated in: a deposit of sats is a BASE amount on a <c>BTC/…</c>
+    /// market, so that is the pair to clamp it against.
+    /// </remarks>
+    public sealed record SolverMarket
     {
-        /// <summary>Display pair, e.g. <c>"BTC/&lt;assetId&gt;"</c>. The asset side is the non-BTC id.</summary>
-        public string Pair { get; init; } = "";
+        /// <summary>The base asset's id — <c>"BTC"</c> on the seeded regtest market.</summary>
+        public string BaseAsset { get; init; } = "";
+
+        /// <summary>The quote asset's id, hex for an Arkade-issued asset.</summary>
+        public string QuoteAsset { get; init; } = "";
+
+        public int BaseDecimals { get; init; }
         public string PriceFeed { get; init; } = "";
-        public ulong MinAmount { get; init; }
-        public ulong MaxAmount { get; init; }
+        public ulong MinBaseAmount { get; init; }
+        public ulong MaxBaseAmount { get; init; }
+        public ulong MinQuoteAmount { get; init; }
+        public ulong MaxQuoteAmount { get; init; }
     }
 
     public sealed record SolverTrade
     {
-        public string Pair { get; init; } = "";
+        /// <summary>The market this trade was on, as <c>"&lt;base&gt;/&lt;quote&gt;"</c>.</summary>
+        public string Market { get; init; } = "";
         public string DepositAsset { get; init; } = "";
         public ulong DepositAmount { get; init; }
         public string WantAsset { get; init; } = "";
@@ -75,7 +94,7 @@ public sealed class SolverClient
     }
 
     private sealed record StatusResponse { public bool Running { get; init; } }
-    private sealed record ListPairsResponse { public List<SolverPair> Pairs { get; init; } = []; }
+    private sealed record ListMarketsResponse { public List<SolverMarket> Markets { get; init; } = []; }
     private sealed record BalanceResponse { public Dictionary<string, ulong> AssetBalances { get; init; } = new(); }
     private sealed record ListTradesResponse { public List<SolverTrade> Trades { get; init; } = []; }
 }

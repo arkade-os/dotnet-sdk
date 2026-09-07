@@ -33,7 +33,7 @@ internal static class SolverLiquidityHelper
     /// <summary>
     /// Ensures the solver holds a freshly-minted asset it can pay out, and returns the asset id.
     /// The registered market is <c>BTC/&lt;assetId&gt;</c>; discover its limits via
-    /// <c>SolverClient.ListPairsAsync</c> if needed.
+    /// <c>SolverClient.ListMarketsAsync</c> if needed.
     /// </summary>
     /// <param name="solverEndpoint">The solver's grpc-gateway REST base (e.g. http://localhost:7091).</param>
     /// <param name="inventory">Asset units to mint and hand to the solver. Each 0-decimals unit is

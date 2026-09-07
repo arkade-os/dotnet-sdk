@@ -100,12 +100,12 @@ public class ArkadeSwapTests
         if (!await Poll(() => solver.IsRunningAsync(), TimeSpan.FromSeconds(20)))
             Assert.Ignore("solver not running — enable the regtest `solver` profile + `solver-init`");
 
-        var pair = (await solver.ListPairsAsync())
-            .FirstOrDefault(p => p.Pair.StartsWith("BTC/", StringComparison.OrdinalIgnoreCase));
-        if (pair is null)
+        var market = (await solver.ListMarketsAsync())
+            .FirstOrDefault(m => m.BaseAsset.Equals("BTC", StringComparison.OrdinalIgnoreCase));
+        if (market is null)
             Assert.Ignore("no BTC/<asset> market registered by solver-init");
 
-        var assetIdHex = pair.Pair.Split('/')[1];
+        var assetIdHex = market.QuoteAsset;
 
         // The solver must hold the asset to pay it out.
         if (!await Poll(async () => (await solver.GetAssetBalancesAsync()).GetValueOrDefault(assetIdHex) > 0,
@@ -113,7 +113,7 @@ public class ArkadeSwapTests
             Assert.Ignore("solver has no asset inventory for the pair");
 
         var ctx = await SetUpAsync();
-        var deposit = (long)Math.Clamp((ulong)DepositSats, pair.MinAmount, Math.Min(pair.MaxAmount, 200_000UL));
+        var deposit = (long)Math.Clamp((ulong)DepositSats, market.MinBaseAmount, Math.Min(market.MaxBaseAmount, 200_000UL));
 
         // The solver rejects any offer whose price deviates more than the pair's slippage
         // (default ±1%) from the feed, so we must ask for the fair amount — not "very little"
@@ -152,8 +152,9 @@ public class ArkadeSwapTests
         // Mint + fund our own asset market so a single 49_750-unit fill doesn't have to share the
         // stingy SOLVER_INIT_ASSET_FUNDING pool with the other solver tests.
         var assetIdHex = await SolverLiquidityHelper.EnsureAssetMarket(SolverEndpoint);
-        var pair = (await solver.ListPairsAsync())
-            .First(p => p.Pair.Equals($"BTC/{assetIdHex}", StringComparison.OrdinalIgnoreCase));
+        var market = (await solver.ListMarketsAsync())
+            .First(m => m.BaseAsset.Equals("BTC", StringComparison.OrdinalIgnoreCase)
+                        && m.QuoteAsset.Equals(assetIdHex, StringComparison.OrdinalIgnoreCase));
 
         var ctx = await SetUpAsync();
 
@@ -167,7 +168,7 @@ public class ArkadeSwapTests
 
         try
         {
-            var deposit = (long)Math.Clamp((ulong)DepositSats, pair.MinAmount, Math.Min(pair.MaxAmount, 200_000UL));
+            var deposit = (long)Math.Clamp((ulong)DepositSats, market.MinBaseAmount, Math.Min(market.MaxBaseAmount, 200_000UL));
             // 1 sat ↔ 1 asset unit mock market → atomic price 1; the canonical maker formula lands the
             // offer inside the solver's slippage band (see FullSwap_SolverFulfills_BtcToAsset).
             var want = SolverDiscoveryService.ComputeWantAmount(deposit, price: 1m, feeBps: 0);
@@ -254,8 +255,9 @@ public class ArkadeSwapTests
         // Our own funded market: this also registers the <asset>/BTC reverse pair (EnsureAssetMarket
         // registers both directions) and seeds the solver's asset inventory for leg 1.
         var assetIdHex = await SolverLiquidityHelper.EnsureAssetMarket(SolverEndpoint);
-        var pairs = await solver.ListPairsAsync();
-        var btcToAsset = pairs.First(p => p.Pair.Equals($"BTC/{assetIdHex}", StringComparison.OrdinalIgnoreCase));
+        var markets = await solver.ListMarketsAsync();
+        var btcToAsset = markets.First(m => m.BaseAsset.Equals("BTC", StringComparison.OrdinalIgnoreCase)
+                                            && m.QuoteAsset.Equals(assetIdHex, StringComparison.OrdinalIgnoreCase));
 
         var ctx = await SetUpAsync();
         await using var swapSync = new VtxoSynchronizationService(ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
@@ -268,7 +270,7 @@ public class ArkadeSwapTests
             var asset = AssetId.FromString(assetIdHex);
 
             // Leg 1 — acquire the asset: a BTC→asset swap the solver fills, paying the asset to our maker script.
-            var deposit1 = (long)Math.Clamp((ulong)DepositSats, btcToAsset.MinAmount, Math.Min(btcToAsset.MaxAmount, 200_000UL));
+            var deposit1 = (long)Math.Clamp((ulong)DepositSats, btcToAsset.MinBaseAmount, Math.Min(btcToAsset.MaxBaseAmount, 200_000UL));
             var want1 = SolverDiscoveryService.ComputeWantAmount(deposit1, price: 1m, feeBps: 0);
             var leg1 = await ctx.Manager.CreateSwap(new CreateSwapRequest(
                 ctx.WalletId, ArkadeSwapIntentType.BtcToAsset, deposit1, want1, asset));
