@@ -51,7 +51,7 @@ public static class LightningCorridor
             throw new InvalidOperationException(
                 "the Arkade server advertises its unilateral exit delay in blocks; this swap script " +
                 "encodes a time-based delay, and block-interval variance is far too wide to hold a " +
-                "Lightning HTLC deadline against");
+                "swap deadline against. Every corridor here needs a seconds-typed deployment");
         }
 
         var seconds = checked((uint)exit.LockPeriod.TotalSeconds);
