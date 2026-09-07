@@ -112,7 +112,11 @@ public class ArkadeOnchainTests
             async () => (await ctx.Blockchain.GetUtxosAsync(funded.HtlcAddress)).Count > 0, SolverTimeout);
         Assert.That(htlcFunded, Is.True, "the solver funded the L1 HTLC it quoted");
 
-        // Its own quoted count, not a guess: the corridor refuses to claim before it is met.
+        // Its own quoted count, and the assertion is that this is enough. The pass reads the count
+        // back off the row rather than holding to this SDK's ceiling, which matters because the
+        // solver sized the L1 refund locktime from the same number: mining exactly what was quoted
+        // and getting a claim is what says the two ends agree on the wait. Before the row carried
+        // it, this needed six blocks for a swap quoted at one.
         await DockerHelper.MineBlocks(funded.Quote.Profile!.MinConfirmations!.Value);
 
         var claimed = await Poll(async () =>
@@ -215,6 +219,17 @@ public class ArkadeOnchainTests
 
         await DockerHelper.BitcoinSendToAddress(pending.HtlcAddress, Money.Satoshis(pending.FundAmountSats));
         await DockerHelper.MineBlocks(1);
+
+        // Mining is not seeing. The stack's Esplora is mempool's, which serves the output from its
+        // mempool view a second or two before the block carrying it is indexed — so `Count > 0` is
+        // already true while `Confirmed` is still false. The refund path filters on `Confirmed`, so
+        // this waits on the same predicate: asking earlier gets "nothing confirmed here", a true
+        // answer to a different question, which would satisfy this test's `Refunded is false` while
+        // proving nothing about the leaf.
+        var confirmed = await Poll(
+            async () => (await ctx.Blockchain.GetUtxosAsync(pending.HtlcAddress)).Any(u => u.Confirmed),
+            SolverTimeout);
+        Assert.That(confirmed, Is.True, "the funding has to be confirmed before the refund can be about the clock");
 
         var outcome = await ctx.Intents.RefundOnchainReceiveAsync(pending.RfqId);
 
