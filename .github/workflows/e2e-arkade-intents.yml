@@ -1,0 +1,156 @@
+# The ArkadeIntents corridors against live solvers, in TWO jobs on TWO stacks.
+#
+# The split is not parallelism, it is a constraint: arkd's timelocks are typed, and the corridors
+# need opposite types from one server.
+#
+#  * The RFQ corridors (Lightning, onchain) build swap scripts with seconds-typed unilateral tiers.
+#    `LightningCorridor.MatchQuotedLockup` refuses a server whose unilateral exit delay is
+#    block-typed or under BIP68's 512-second granularity — it throws before a quote is ever
+#    requested, because a value below 512 is a block count by the SDK's own convention, and reading
+#    144 blocks as 144 seconds would build a timelock accepted at funding and refused at spend.
+#    regtest's defaults are all under 512, so this job overrides all five.
+#  * The asset corridor keeps the stack's defaults. It negotiates covenant offers through solverd
+#    and does not go through that check.
+#
+# arkade-os/ts-sdk splits its own suite the same way and for the same reason; see
+# `packages/swap/.env.regtest.rfq` there, whose seconds-typed values these mirror.
+#
+# Two different solvers, hence two profiles:
+#
+#  * `solver` is solverd, the market maker the asset corridor quotes against. `solver-init` funds
+#    it, mints an asset and registers the pairs, so there is a live market.
+#  * `intent-solver` is arkade-os/intent-solver, behind the Lightning and onchain corridors. Under
+#    `command: serve` it answers `POST /v1/swap`, which is what `HttpRfqTransport` speaks, so the
+#    tests reach it over ARKADE_LN_SOLVER_URL. Its profile pulls in `lightning` — the `lnd-peer`
+#    node and the channel it opens to the base `lnd` — and `nostr` for the registry card.
+#
+# `covclaimd` is named alongside it because the profile's own closure does NOT include it, and the
+# onchain suites read their claim key off its endpoint before they negotiate anything. Without it
+# every one of them fails on a refused connection to :7271 rather than on anything about a corridor.
+#
+# The image is public and anonymously pullable, so no ghcr login is needed. It is amd64-only: this
+# job's ubuntu-latest runner is fine, an arm64 machine needs DOCKER_DEFAULT_PLATFORM=linux/amd64 and
+# emulation. regtest treats an image it cannot start as a hard failure, so a bad tag goes red rather
+# than quietly green.
+name: Arkade Intents E2E Tests
+
+on:
+  workflow_call:
+
+jobs:
+  assets:
+    name: Asset Corridor E2E
+    runs-on: ubuntu-latest
+    env:
+      # At the default level solverd logs nothing once it is up, so a swap it silently declines to
+      # fill looks identical to one it never received. Level 5 puts the fill decision in the logs
+      # collected below. A pre-set variable wins over regtest/.env.defaults (see lib/env.mjs).
+      SOLVER_LOG_LEVEL: '5'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: ./.github/actions/e2e-setup
+        with:
+          profile: solver
+      - name: Run asset corridor E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=AssetCorridor"
+        # A fill normally lands in a few seconds, but any one test can wait out SolverFillTimeout
+        # when its offer queues behind a solver settlement.
+        timeout-minutes: 25
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs solver > /tmp/solver-logs.txt 2>&1 || true
+          docker logs solver-init > /tmp/solver-init-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asset-corridor-docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true
+
+  rfq-corridors:
+    name: Lightning + Onchain Corridors E2E
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SOLVER_LOG_LEVEL: '5'
+      # INTENT_SOLVER_IMAGE is deliberately NOT set here. regtest reads ../.env.regtest as its
+      # override, so that file names the image for CI and for a local run from one place; setting it
+      # again here would be a second tag to keep in step with the first.
+      # What the suites read to decide whether there is a solver at all: unset, every one of them
+      # self-`Ignore`s and the job goes green having exercised nothing.
+      ARKADE_LN_SOLVER_URL: http://localhost:8787
+      # The Lightning half drives the PAYER through `docker exec … lncli`, and the payer cannot be
+      # the solver's own node. The solver is wired to the base `lnd` (LND_SOCKET: lnd:10009), so
+      # naming `lnd` here has it pay its own invoice: nothing settles, the solver logs nothing at
+      # all because it was never asked, and both Lightning tests sit until their poll expires.
+      # `lnd-peer` is the other end of the channel the `lightning` profile opens.
+      ARKADE_LND_CONTAINER: lnd-peer
+      # Seconds-typed timelocks — see this file's header for why the RFQ corridors cannot run on
+      # the block-typed defaults. All five are set and all are ≥ 512 so arkd reads them as seconds;
+      # a mixed set is not a thing arkd will serve.
+      ARKD_VTXO_TREE_EXPIRY: '7200'
+      ARKD_BOARDING_EXIT_DELAY: '4096'
+      ARKD_UNILATERAL_EXIT_DELAY: '2048'
+      ARKD_PUBLIC_UNILATERAL_EXIT_DELAY: '2048'
+      ARKD_CHECKPOINT_EXIT_DELAY: '2048'
+      ARKD_VTXO_MIN_AMOUNT: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: ./.github/actions/e2e-setup
+        with:
+          profile: intent-solver,covclaimd
+      # The off-board has the SOLVER pay on L1, and `setupLightning` leaves the base `lnd` with its
+      # whole balance committed to the channel — an on-chain balance of exactly zero. Without this
+      # the solver answers every off-board tick with InsufficientBalanceToSendToChainAddress and the
+      # test times out with nothing on either chain to explain it. Confirmed, then waited for: lnd
+      # credits the output only once it has walked the block, which is not the moment it was mined.
+      - name: Fund the solver's on-chain wallet
+        timeout-minutes: 5
+        run: |
+          set -eu
+          addr=$(docker exec lnd lncli --network=regtest newaddress p2tr | jq -r .address)
+          node regtest/regtest.mjs faucet "$addr" 1 --confirm
+          node regtest/regtest.mjs mine 3
+          for _ in $(seq 1 30); do
+            balance=$(docker exec lnd lncli --network=regtest walletbalance | jq -r .confirmed_balance)
+            [ "$balance" != "0" ] && echo "lnd on-chain balance: $balance" && exit 0
+            sleep 2
+          done
+          echo "::error::lnd never credited the faucet output"
+          exit 1
+      - name: Run Lightning and onchain corridor E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=LightningCorridors|TestCategory=OnchainCorridors"
+        timeout-minutes: 25
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
+          docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs intent-solver > /tmp/intent-solver-logs.txt 2>&1 || true
+          docker logs covclaimd > /tmp/covclaimd-logs.txt 2>&1 || true
+          docker logs lnd > /tmp/lnd-logs.txt 2>&1 || true
+          docker logs lnd-peer > /tmp/lnd-peer-logs.txt 2>&1 || true
+          docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfq-corridors-docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean || true

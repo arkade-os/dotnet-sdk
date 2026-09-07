@@ -31,7 +31,7 @@ namespace NArk.Hosting;
 
 /// <summary>
 /// Network configuration for Ark services.
-/// Contains URIs for Ark server, Arkade wallet, and Boltz swap service.
+/// Contains URIs for the Arkade server, the wallet, the explorer and the chain backends.
 /// </summary>
 public record ArkNetworkConfig(
     [property: JsonPropertyName("ark")]
@@ -39,9 +39,6 @@ public record ArkNetworkConfig(
 
     [property: JsonPropertyName("arkade-wallet")]
     string? ArkadeWalletUri = null,
-
-    [property: JsonPropertyName("boltz")]
-    string? BoltzUri = null,
 
     [property: JsonPropertyName("explorer")]
     string? ExplorerUri = null,
@@ -84,7 +81,6 @@ public record ArkNetworkConfig(
     public static readonly ArkNetworkConfig Mainnet = new(
         ArkUri: "https://arkade.computer",
         ArkadeWalletUri: "https://arkade.money",
-        BoltzUri: "https://api.boltz.exchange/",
         ExplorerUri: "https://arkade.space",
         EsploraUri: "https://mempool.arkade.sh/api",
         ElectrumWsUri: "wss://electrum.arkade.sh",
@@ -94,7 +90,6 @@ public record ArkNetworkConfig(
     public static readonly ArkNetworkConfig Mutinynet = new(
         ArkUri: "https://mutinynet.arkade.sh",
         ArkadeWalletUri: "https://mutinynet.arkade.money",
-        BoltzUri: "https://api.boltz.mutinynet.arkade.sh/",
         ExplorerUri: "https://explorer.mutinynet.arkade.sh",
         EsploraUri: "https://mempool.mutinynet.arkade.sh/api",
         ElectrumWsUri: "wss://electrum.mutinynet.arkade.sh",
@@ -103,13 +98,12 @@ public record ArkNetworkConfig(
     /// <summary>
     /// Local regtest configuration. Ports match the arkade-regtest docker stack
     /// (the <c>regtest</c> submodule, <c>block-based-config</c>): arkd :7070,
-    /// arkade-explorer :7080, nginx-boltz :9069, arkade-wallet :3003, mempool
+    /// arkade-explorer :7080, arkade-wallet :3003, mempool
     /// :3000 (Esplora API under <c>/api</c>), Fulcrum Electrum WS :50003 / TCP :50001.
     /// </summary>
     public static readonly ArkNetworkConfig Regtest = new(
         ArkUri: "http://localhost:7070",
         ArkadeWalletUri: "http://localhost:3003",
-        BoltzUri: "http://localhost:9069/",
         ExplorerUri: "http://localhost:7080",
         // mempool frontend serves the Esplora-compatible REST API under /api,
         // mirroring the Mutinynet/Mainnet mempool endpoints.

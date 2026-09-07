@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <EmbeddedResource Include="Programs\asset-to-btc.program.json" />
+      <EmbeddedResource Include="Programs\btc-to-asset.program.json" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.11" />
+      <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
+      <!-- BOLT11 decoding: the send leg's gates all check facts the invoice itself carries. -->
+      <PackageReference Include="BTCPayServer.Lightning.Common" Version="1.5.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\NArk.Arkade\NArk.Arkade.csproj" />
+      <ProjectReference Include="..\NArk.Core\NArk.Core.csproj" />
+    </ItemGroup>
+
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>NArk.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+
+    <ItemGroup>
+      <Folder Include="Onchain\" />
+    </ItemGroup>
+</Project>

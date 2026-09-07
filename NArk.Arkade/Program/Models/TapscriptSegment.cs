@@ -7,8 +7,8 @@ namespace NArk.Arkade.Program.Models;
 /// ts-sdk's <c>TapscriptSegment</c>.
 /// </summary>
 /// <remarks>
-/// At most one of <see cref="Asm"/>, <see cref="Csv"/>, <see cref="Cltv"/> may be set —
-/// enforced later by validation, not by this data holder.
+/// <see cref="Asm"/> and <see cref="Csv"/> may be set together (a condition-plus-CSV leaf);
+/// <see cref="Cltv"/> excludes both. Enforced later by validation, not by this data holder.
 /// </remarks>
 public sealed class TapscriptSegment
 {

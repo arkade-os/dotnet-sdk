@@ -51,6 +51,7 @@ public partial class RestClientTransport
             SignerKey: PubKeyExtensions.ParseOutputDescriptor(signerPubkey, network),
             DeprecatedSigners: deprecatedSigners,
             Network: network,
+            NetworkName: networkStr,
             UnilateralExit: ParseSequence(GetInt64(json, "unilateral_exit_delay")),
             BoardingExit: ParseSequence(GetInt64(json, "boarding_exit_delay")),
             ForfeitAddress: BitcoinAddress.Create(GetString(json, "forfeit_address"), network),

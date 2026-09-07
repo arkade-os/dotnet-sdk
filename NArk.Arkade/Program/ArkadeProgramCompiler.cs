@@ -103,12 +103,17 @@ public static class ArkadeProgramCompiler
     }
 
     /// <summary>
-    /// Validates that a segment has at least one signer, at most one of
-    /// <see cref="TapscriptSegment.Asm"/>/<see cref="TapscriptSegment.Csv"/>/
-    /// <see cref="TapscriptSegment.Cltv"/>, and no Arkade extension opcodes in
-    /// <see cref="TapscriptSegment.Asm"/> (those are <c>OP_SUCCESS</c> on-chain and
-    /// belong in the covenant segment instead).
+    /// Validates that a segment has at least one signer, that its timelock/condition combination is
+    /// one the ts-sdk also accepts, and that <see cref="TapscriptSegment.Asm"/> carries no Arkade
+    /// extension opcodes (those are <c>OP_SUCCESS</c> on-chain and belong in the covenant segment
+    /// instead).
     /// </summary>
+    /// <remarks>
+    /// <see cref="TapscriptSegment.Asm"/> combines with <see cref="TapscriptSegment.Csv"/> — that
+    /// pairing is the condition-plus-CSV leaf (the ts-sdk's <c>ConditionCSVMultisigTapscript</c>),
+    /// used for hashlocked paths that also wait out a relative delay.
+    /// <see cref="TapscriptSegment.Cltv"/> combines with neither.
+    /// </remarks>
     private static void ValidateTapscript(TapscriptSegment seg)
     {
         if (seg.Signers.Count == 0)
@@ -116,10 +121,9 @@ public static class ArkadeProgramCompiler
             throw new InvalidOperationException("tapscript: at least one signer is required.");
         }
 
-        var formCount = new[] { seg.Asm is not null, seg.Csv is not null, seg.Cltv is not null }.Count(x => x);
-        if (formCount > 1)
+        if (seg.Cltv is not null && (seg.Csv is not null || seg.Asm is not null))
         {
-            throw new InvalidOperationException("tapscript: 'asm', 'csv' and 'cltv' conflict — use at most one.");
+            throw new InvalidOperationException("tapscript: 'cltv' conflicts with 'csv' and 'asm' — use it alone.");
         }
 
         if (seg.Asm is null) return;
@@ -139,8 +143,14 @@ public static class ArkadeProgramCompiler
     /// Builds the leaf ops for a tapscript segment: an N-of-N over <paramref name="pubkeys"/>
     /// (via <see cref="NofNMultisigTapScript"/>, with its final <c>OP_CHECKSIGVERIFY</c> swapped
     /// to a plain <c>OP_CHECKSIG</c> — the same convention <see cref="UnilateralPathArkTapScript"/>
-    /// uses), optionally gated by a CSV/CLTV timelock or a resolved condition script.
+    /// uses), preceded by the segment's condition and/or timelock gate.
     /// </summary>
+    /// <remarks>
+    /// Gate order matches the ts-sdk: the condition is verified first, then the timelock, then the
+    /// signatures — so a condition-plus-CSV leaf reads
+    /// <c>&lt;condition&gt; VERIFY &lt;delay&gt; CSV DROP &lt;keys&gt;</c>. The order is consensus-visible:
+    /// swapping the two segments changes the leaf hash and therefore the contract's address.
+    /// </remarks>
     private static IEnumerable<Op> EncodeTapscriptSegment(
         TapscriptSegment seg,
         IReadOnlyList<ECXOnlyPubKey> pubkeys,
@@ -149,24 +159,24 @@ public static class ArkadeProgramCompiler
         var multisigOps = new NofNMultisigTapScript(pubkeys.ToArray()).BuildScript().ToList();
         multisigOps[^1] = OpcodeType.OP_CHECKSIG;
 
-        if (seg.Csv is { } csv)
-        {
-            return [Op.GetPushOp(csv.Value), OpcodeType.OP_CHECKSEQUENCEVERIFY, OpcodeType.OP_DROP, .. multisigOps];
-        }
-
-        if (seg.Cltv is { } cltv)
-        {
-            return [Op.GetPushOp(cltv.Value), OpcodeType.OP_CHECKLOCKTIMEVERIFY, OpcodeType.OP_DROP, .. multisigOps];
-        }
+        var gate = new List<Op>();
 
         if (seg.Asm is { } asm)
         {
-            var conditionOps = ResolveAsmOps(asm, args).ToList();
-            conditionOps.Add(OpcodeType.OP_VERIFY);
-            return [.. conditionOps, .. multisigOps];
+            gate.AddRange(ResolveAsmOps(asm, args));
+            gate.Add(OpcodeType.OP_VERIFY);
         }
 
-        return multisigOps;
+        if (seg.Csv is { } csv)
+        {
+            gate.AddRange([Op.GetPushOp(csv.Value), OpcodeType.OP_CHECKSEQUENCEVERIFY, OpcodeType.OP_DROP]);
+        }
+        else if (seg.Cltv is { } cltv)
+        {
+            gate.AddRange([Op.GetPushOp(cltv.Value), OpcodeType.OP_CHECKLOCKTIMEVERIFY, OpcodeType.OP_DROP]);
+        }
+
+        return [.. gate, .. multisigOps];
     }
 
     /// <summary>

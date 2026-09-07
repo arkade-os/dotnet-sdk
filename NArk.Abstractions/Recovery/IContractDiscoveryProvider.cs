@@ -8,7 +8,7 @@ namespace NArk.Abstractions.Recovery;
 /// Probes a single derivation index of an HD wallet to determine whether any
 /// contract derivable from that index has ever been used. Each implementation
 /// answers from a different source of truth (arkd indexer, on-chain UTXO set,
-/// boltz swap history, etc.) and they are aggregated by
+/// swap history, etc.) and they are aggregated by
 /// <c>HdWalletRecoveryService</c> using a logical OR — if any provider sees
 /// usage at an index, the index counts as used and the gap counter resets.
 /// </summary>
@@ -44,7 +44,7 @@ public interface IContractDiscoveryProvider
 {
     /// <summary>
     /// Short identifier used in log lines and the recovery report
-    /// (e.g. <c>"indexer"</c>, <c>"boarding"</c>, <c>"boltz"</c>).
+    /// (e.g. <c>"indexer"</c>, <c>"boarding"</c>).
     /// </summary>
     string Name { get; }
 
@@ -75,7 +75,7 @@ public interface IContractDiscoveryProvider
 /// </summary>
 /// <param name="Used">
 /// <c>true</c> if the provider found evidence the descriptor at this index has
-/// been used (a VTXO, an on-chain boarding UTXO, a boltz swap, etc.).
+/// been used (a VTXO, an on-chain boarding UTXO, a swap, etc.).
 /// </param>
 /// <param name="Contracts">
 /// Contracts the provider reconstructed and would like the orchestrator to

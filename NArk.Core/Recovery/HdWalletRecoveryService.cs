@@ -12,7 +12,7 @@ namespace NArk.Core.Recovery;
 /// Iteratively probes derivation indices of an HD wallet to recover contracts
 /// that were used before the wallet was imported into local storage. Each
 /// index is probed by every registered <see cref="IContractDiscoveryProvider"/>
-/// (arkd indexer, on-chain boarding, boltz, …) and the union of results
+/// (arkd indexer, on-chain boarding, …) and the union of results
 /// determines whether the index counts as used.
 /// </summary>
 /// <remarks>
@@ -92,7 +92,7 @@ public class HdWalletRecoveryService(
                 network, wallet.AccountDescriptor, index);
 
             // Probe every provider in parallel — they hit different backends
-            // (gRPC to arkd, HTTP to Boltz, HTTP to Esplora etc.) and the
+            // (gRPC to arkd, HTTP to Esplora etc.) and the
             // interface contract requires them to be safe under concurrent use.
             var probes = providersList
                 .Select(p => ProbeAsync(p, wallet, descriptor, index, cancellationToken))
@@ -136,8 +136,8 @@ public class HdWalletRecoveryService(
 
         // Persist discovered contracts. We do this after the scan so we can
         // dedupe by script (one provider may reconstruct a contract another
-        // provider already touched, e.g. boltz reconstructing a VHTLC whose
-        // settled VTXO the indexer also reported).
+        // provider already touched, e.g. a swap provider reconstructing a lockup
+        // whose settled VTXO the indexer also reported).
         await PersistDiscoveriesAsync(wallet, discoveredContracts, serverInfo.SignerKey, cancellationToken);
 
         if (highestUsed >= 0)
