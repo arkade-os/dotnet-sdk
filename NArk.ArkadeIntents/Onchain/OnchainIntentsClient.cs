@@ -188,7 +188,8 @@ public sealed partial class OnchainIntentsClient(
             Convert.ToHexString(preimage).ToLowerInvariant(),
             quote.Profile!.HtlcPubkey,
             quote.Profile.HtlcLocktime,
-            payoutAddress.ToString())).WithSolver(quote.SolverPubkey);
+            payoutAddress.ToString(),
+            quote.Profile.MinConfirmations)).WithSolver(quote.SolverPubkey);
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         var txid = await spendingService.Spend(

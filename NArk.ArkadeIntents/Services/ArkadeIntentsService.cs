@@ -476,7 +476,19 @@ public sealed class ArkadeIntentsService
                         Error: "no onchain corridor is registered to act on this swap");
                 }
 
-                var outcome = await _onchain.ClaimOnchainAsync(swapId, cancellationToken: cancellationToken);
+                // The count the QUOTE named, not this SDK's ceiling. The solver sizes the L1 HTLC's
+                // refund locktime from what it quoted, so waiting longer than that spends a margin
+                // measured out for a shorter wait — and on a chain that only mines on demand it
+                // never finishes at all. Clamped rather than trusted: a quote naming zero would have
+                // us claim an output the solver can still replace, and one naming a hundred would
+                // park the swap past its own deadline. Absent — a row written before this was
+                // recorded — falls back to the option, which is the old behaviour.
+                var quoted = intent.OnchainMetadata().MinConfirmations is { } q
+                    ? Math.Clamp(q, 1, OnchainSendGates.MaxMinConfirmations)
+                    : (int?)null;
+
+                var outcome = await _onchain.ClaimOnchainAsync(
+                    swapId, minConfirmations: quoted, cancellationToken: cancellationToken);
                 if (outcome.Claimed)
                 {
                     _logger?.LogInformation("Swap {SwapId}: claimed on L1 in {Txid}", swapId, outcome.Txid);

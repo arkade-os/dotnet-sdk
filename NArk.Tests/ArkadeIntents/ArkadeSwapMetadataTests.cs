@@ -43,12 +43,32 @@ public class ArkadeSwapMetadataTests
                 Preimage: new string('a', 64),
                 HtlcPubkey: new string('b', 64),
                 HtlcLocktime: 1_800_000_000,
-                PayoutAddress: "bcrt1qpayout"));
+                PayoutAddress: "bcrt1qpayout",
+                MinConfirmations: 3));
 
         await _storage.SaveArkadeSwapIntent(intent);
         var loaded = (await _storage.GetArkadeSwapIntents(id: "swap-1")).Single();
 
         Assert.That(loaded.OnchainMetadata(), Is.EqualTo(intent.OnchainMetadata()));
+    }
+
+    [Test]
+    public async Task AnOffBoardWrittenBeforeConfirmationsWereRecorded_ReadsThemAsAbsent()
+    {
+        // The upgrade path, and the reason the claim pass treats null as "fall back to the option"
+        // rather than as zero: rows negotiated before this key existed are still live swaps holding
+        // money, and reading a missing count as none would have the pass claim an unconfirmed output.
+        var intent = Intent(ArkadeSwapIntentType.BtcToOnchain)
+            .WithOnchainMetadata(new OnchainSwapMetadata(
+                Preimage: new string('a', 64),
+                HtlcPubkey: new string('b', 64),
+                HtlcLocktime: 1_800_000_000,
+                PayoutAddress: "bcrt1qpayout"));
+
+        await _storage.SaveArkadeSwapIntent(intent);
+        var loaded = (await _storage.GetArkadeSwapIntents(id: "swap-1")).Single();
+
+        Assert.That(loaded.OnchainMetadata().MinConfirmations, Is.Null);
     }
 
     [Test]

@@ -38,6 +38,9 @@ public static class ArkadeSwapMetadataKeys
     /// </summary>
     public const string OnchainPayoutAddress = "onchainPayoutAddress";
 
+    /// <summary>Confirmations the quote asked for on the L1 funding, as quoted.</summary>
+    public const string OnchainMinConfirmations = "onchainMinConfirmations";
+
     /// <summary>The solver that quoted this swap, x-only hex.</summary>
     /// <remarks>
     /// Corridor-neutral, so it sits beside the per-corridor records rather than inside one: every
@@ -93,8 +96,15 @@ public sealed record LightningSwapMetadata(string? Invoice, string? Preimage);
 /// commits to it and it has to be remembered: a swap whose row is lost can still be rebuilt, but the
 /// sats land wherever that rebuild names.
 /// </param>
+/// <param name="MinConfirmations">
+/// What the quote asked for on the L1 funding, kept because the counterparty sized its own deadline
+/// from this number and nothing else records it. The off-board's <c>htlcLocktime</c> is computed
+/// from it, so a claim that waits for more confirmations than were quoted is spending a margin the
+/// counterparty measured out for a shorter wait.
+/// </param>
 public sealed record OnchainSwapMetadata(
-    string? Preimage, string? HtlcPubkey, long? HtlcLocktime, string? PayoutAddress);
+    string? Preimage, string? HtlcPubkey, long? HtlcLocktime, string? PayoutAddress,
+    int? MinConfirmations = null);
 
 /// <summary>
 /// Typed views over <see cref="ArkadeSwapIntent.Metadata"/> — one per corridor, so the blob is read
@@ -179,7 +189,10 @@ public static class ArkadeSwapIntentMetadataExtensions
             Get(intent, ArkadeSwapMetadataKeys.HtlcLocktime) is { } locktime
                 ? long.Parse(locktime)
                 : null,
-            Get(intent, ArkadeSwapMetadataKeys.OnchainPayoutAddress));
+            Get(intent, ArkadeSwapMetadataKeys.OnchainPayoutAddress),
+            Get(intent, ArkadeSwapMetadataKeys.OnchainMinConfirmations) is { } confirmations
+                ? int.Parse(confirmations)
+                : null);
     }
 
     /// <summary>Write the onchain-corridor view, replacing whatever those keys held.</summary>
@@ -190,6 +203,7 @@ public static class ArkadeSwapIntentMetadataExtensions
         Set(intent, ArkadeSwapMetadataKeys.HtlcPubkey, metadata.HtlcPubkey);
         Set(intent, ArkadeSwapMetadataKeys.HtlcLocktime, metadata.HtlcLocktime?.ToString());
         Set(intent, ArkadeSwapMetadataKeys.OnchainPayoutAddress, metadata.PayoutAddress);
+        Set(intent, ArkadeSwapMetadataKeys.OnchainMinConfirmations, metadata.MinConfirmations?.ToString());
         return intent;
     }
 
