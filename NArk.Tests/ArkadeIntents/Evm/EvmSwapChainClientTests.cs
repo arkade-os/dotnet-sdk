@@ -6,6 +6,7 @@ namespace NArk.Tests.ArkadeIntents.Evm;
 public class EvmSwapChainClientTests
 {
     private const long Now = 1_800_000_000;
+    private const string TxHash = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     private static readonly byte[] Preimage = Enumerable.Repeat((byte)0xaa, 32).ToArray();
     private static readonly Erc20SwapValues Values = new(
         "e0e77a507412b120f6ede61f62295b1a7b2ff19d3dcc8f7253e51663470c888e",
@@ -65,7 +66,7 @@ public class EvmSwapChainClientTests
             BlockNumber = 100,
             BlockTimestamp = Now - 1,
             Receipt = new EvmTransactionReceipt(
-                "0xtx", true, ClaimLogs()),
+                TxHash, true, ClaimLogs()),
         };
         rpc.SwapResults.Enqueue(Bool(true));
         rpc.SwapResults.Enqueue(Bool(true));
@@ -77,7 +78,7 @@ public class EvmSwapChainClientTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(result.TransactionHash, Is.EqualTo("0xtx"));
+            Assert.That(result.TransactionHash, Is.EqualTo(TxHash));
             Assert.That(result.DeliveredAmount, Is.EqualTo(Values.Amount));
             Assert.That(sender.Request!.To, Is.EqualTo(Policy().SwapContractAddress));
             Assert.That(sender.Request.Data, Is.EqualTo(Erc20SwapCodec.ClaimForCall(Preimage, Values)));
@@ -93,6 +94,47 @@ public class EvmSwapChainClientTests
         var result = await Client(rpc, new FakeSender()).ClaimForAsync(Values, Preimage);
 
         Assert.That(result.DeliveredAmount, Is.EqualTo(Values.Amount));
+    }
+
+    [Test]
+    public async Task ClaimFor_JournalsTheDeterministicHashBeforeBroadcastAndCanResumeVerification()
+    {
+        var events = new List<string>();
+        var rpc = ClaimRpc();
+        var sender = new FakeDurableSender(events);
+        var client = Client(rpc, sender);
+
+        var result = await client.ClaimForAsync(Values, Preimage, (hash, _) =>
+        {
+            events.Add("persist:" + hash);
+            return Task.CompletedTask;
+        });
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.TransactionHash, Is.EqualTo(TxHash));
+            Assert.That(events, Is.EqualTo(new[] { "persist:" + TxHash, "broadcast" }));
+        });
+
+        var resumedRpc = new FakeRpc
+        {
+            Receipt = new EvmTransactionReceipt(TxHash, true, ClaimLogs()),
+        };
+        resumedRpc.SwapResults.Enqueue(Bool(false));
+        var resumed = await Client(resumedRpc, new FakeSender()).VerifyClaimAsync(TxHash, Values, Preimage);
+        Assert.That(resumed.DeliveredAmount, Is.EqualTo(Values.Amount));
+    }
+
+    [Test]
+    public void ClaimFor_RefusesDurableModeBeforeSendingWhenTheSenderCannotJournal()
+    {
+        var rpc = ClaimRpc();
+        var sender = new FakeSender();
+
+        Assert.That(async () => await Client(rpc, sender).ClaimForAsync(
+                Values, Preimage, (_, _) => Task.CompletedTask),
+            Throws.TypeOf<EvmSwapProofException>());
+        Assert.That(sender.Request, Is.Null);
     }
 
     [Test]
@@ -119,7 +161,7 @@ public class EvmSwapChainClientTests
         return result;
     }
 
-    private static EvmSwapChainClient Client(FakeRpc rpc, FakeSender sender, int minConfirmations = 1) =>
+    private static EvmSwapChainClient Client(FakeRpc rpc, IEvmTransactionSender sender, int minConfirmations = 1) =>
         new(rpc, sender, Policy(minConfirmations), new FixedTimeProvider(DateTimeOffset.FromUnixTimeSeconds(Now)));
 
     private static EvmSendPolicy Policy(int minConfirmations = 1) => new()
@@ -150,7 +192,7 @@ public class EvmSwapChainClientTests
         var rpc = new FakeRpc
         {
             BlockNumber = 100, BlockTimestamp = Now - 1,
-            Receipt = new EvmTransactionReceipt("0xtx", true, ClaimLogs()),
+            Receipt = new EvmTransactionReceipt(TxHash, true, ClaimLogs()),
         };
         rpc.SwapResults.Enqueue(Bool(true));
         rpc.SwapResults.Enqueue(Bool(true));
@@ -189,7 +231,21 @@ public class EvmSwapChainClientTests
         public Task<string> SendAsync(EvmTransactionRequest request, CancellationToken cancellationToken = default)
         {
             Request = request;
-            return Task.FromResult("0xtx");
+            return Task.FromResult(TxHash);
+        }
+    }
+
+    private sealed class FakeDurableSender(List<string> events) : IEvmDurableTransactionSender
+    {
+        public Task<string> SendAsync(EvmTransactionRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(TxHash);
+
+        public async Task<string> SendAsync(EvmTransactionRequest request,
+            Func<string, CancellationToken, Task> onPrepared, CancellationToken cancellationToken = default)
+        {
+            await onPrepared(TxHash, cancellationToken);
+            events.Add("broadcast");
+            return TxHash;
         }
     }
 

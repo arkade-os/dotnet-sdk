@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using NArk.ArkadeIntents.Rfq.Profiles.Evm;
 using Nethereum.Model;
 using Nethereum.Signer;
+using Nethereum.Util;
 
 namespace NArk.ArkadeIntents.Evm;
 
@@ -43,7 +44,7 @@ public sealed class EvmTransactionException(string message) : Exception(message)
 /// <remarks>Nonce allocation is serialized by gas-payer address within this process. Assign each
 /// key to one process unless the deployment supplies an external nonce coordinator. The sender
 /// retains signing key material but exposes neither the raw key nor a serialized representation.</remarks>
-public sealed class EvmLocalTransactionSender : IEvmTransactionSender
+public sealed class EvmLocalTransactionSender : IEvmDurableTransactionSender
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> SendGates = new();
     private readonly EvmJsonRpcClient _rpc;
@@ -93,7 +94,23 @@ public sealed class EvmLocalTransactionSender : IEvmTransactionSender
     /// <inheritdoc />
     public async Task<string> SendAsync(
         EvmTransactionRequest request,
+        CancellationToken cancellationToken = default) =>
+        await SendCoreAsync(request, null, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<string> SendAsync(
+        EvmTransactionRequest request,
+        Func<string, CancellationToken, Task> onPrepared,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onPrepared);
+        return await SendCoreAsync(request, onPrepared, cancellationToken);
+    }
+
+    private async Task<string> SendCoreAsync(
+        EvmTransactionRequest request,
+        Func<string, CancellationToken, Task>? onPrepared,
+        CancellationToken cancellationToken)
     {
         await _sendGate.WaitAsync(cancellationToken);
         try
@@ -120,7 +137,16 @@ public sealed class EvmLocalTransactionSender : IEvmTransactionSender
             var raw = new Transaction1559Signer().SignTransaction(_key, transaction);
             if (!raw.StartsWith("0x", StringComparison.Ordinal))
                 raw = "0x" + raw;
-            return await _rpc.SendRawTransactionAsync(raw.ToLowerInvariant(), cancellationToken);
+            raw = raw.ToLowerInvariant();
+            if (onPrepared is null)
+                return await _rpc.SendRawTransactionAsync(raw, cancellationToken);
+
+            var preparedHash = "0x" + new Sha3Keccack().CalculateHashFromHex(raw);
+            await onPrepared(preparedHash, cancellationToken);
+            var submittedHash = await _rpc.SendRawTransactionAsync(raw, cancellationToken);
+            if (!submittedHash.Equals(preparedHash, StringComparison.OrdinalIgnoreCase))
+                throw new EvmTransactionException("node returned a different transaction hash");
+            return preparedHash;
         }
         catch (OverflowException)
         {

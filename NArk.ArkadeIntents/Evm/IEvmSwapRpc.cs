@@ -34,6 +34,19 @@ public interface IEvmTransactionSender
     Task<string> SendAsync(EvmTransactionRequest request, CancellationToken cancellationToken = default);
 }
 
+/// <summary>Signs a transaction, exposes its deterministic hash for durable journaling, then broadcasts it.</summary>
+public interface IEvmDurableTransactionSender : IEvmTransactionSender
+{
+    /// <summary>
+    /// Signs one transaction and invokes <paramref name="onPrepared"/> with its hash before the
+    /// signed bytes can reach the node. Broadcasting starts only after the callback succeeds.
+    /// </summary>
+    Task<string> SendAsync(
+        EvmTransactionRequest request,
+        Func<string, CancellationToken, Task> onPrepared,
+        CancellationToken cancellationToken = default);
+}
+
 /// <summary>A contract call to sign and submit.</summary>
 /// <param name="ChainId">Expected EIP-155 chain identifier.</param>
 /// <param name="To">Destination contract.</param>
