@@ -2,17 +2,16 @@ using System.Text.RegularExpressions;
 
 namespace NArk.ArkadeIntents.Rfq.Profiles.Evm;
 
-internal static partial class EvmWire
+internal static class EvmWire
 {
-    [GeneratedRegex("\\A0x[0-9a-fA-F]{40}\\z", RegexOptions.CultureInvariant)]
-    private static partial Regex AddressPattern();
-
-    [GeneratedRegex("\\A[0-9a-f]{64}\\z", RegexOptions.CultureInvariant)]
-    private static partial Regex Hex32Pattern();
+    private static readonly Regex AddressPattern = new(
+        "\\A0x[0-9a-fA-F]{40}\\z", RegexOptions.CultureInvariant);
+    private static readonly Regex Hex32Pattern = new(
+        "\\A[0-9a-f]{64}\\z", RegexOptions.CultureInvariant);
 
     internal static string RequireAddress(string? value, string name, bool lowerCase = false)
     {
-        if (value is null || !AddressPattern().IsMatch(value) || lowerCase && value != value.ToLowerInvariant())
+        if (value is null || !AddressPattern.IsMatch(value) || lowerCase && value != value.ToLowerInvariant())
             throw new ArgumentException("expected 0x followed by 40 hexadecimal characters", name);
         return value;
     }
@@ -27,7 +26,7 @@ internal static partial class EvmWire
 
     internal static string RequireHex32(string? value, string name)
     {
-        if (value is null || !Hex32Pattern().IsMatch(value))
+        if (value is null || !Hex32Pattern.IsMatch(value))
             throw new ArgumentException("expected 64 lowercase hexadecimal characters", name);
         return value;
     }

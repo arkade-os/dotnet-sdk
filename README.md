@@ -1322,10 +1322,36 @@ can echo `claimFor` calldata and its preimage. Response bytes and JSON depth are
 parsing. See the server-only gateway sample and [EVM send](docs/articles/evm-send.md).
 
 The current solver quotes the nine-leaf `nonInteractiveRefundWithoutReceiver` shape. Setting
-`RequireEmulatorRefundPath` (the default) refuses an older eight-leaf quote, but this SDK slice does
-not yet push the post-locktime emulator refund. Treat unattended recovery as unavailable until a
-host implements and proves that execution path.
+`RequireEmulatorRefundPath` (the default) refuses an older eight-leaf quote. The composed executor
+uses the emulator's non-interactive post-locktime refund path; test that configured service before
+promising unattended recovery.
 
+### Composed Arkade, Lightning, or onchain receive to ERC20
+
+`ComposedSwapClient` joins independent, client-side RFQs; a solver does not compose them. It first
+persists an exact-input Arkade-to-EVM lock `L` with a fresh preimage `P` and hash `H`, then optionally
+creates an exact-output Lightning or onchain ingress lock `M` using that same `H` and a
+non-interactive `M`-to-`L` claim. Create a new `P`/`H` for each payment rail and invoice renewal.
+
+```csharp
+var route = await composer.CreateLightningAsync(
+    walletId, amountSats, merchantEvmAddress, evmSendPolicy,
+    evmRfq, lightningRfq, covclaimdPubkey,
+    cancellationToken: cancellationToken);
+
+// A watch-only server can advance the non-interactive M-to-L claim and EVM claim.
+var progress = await executor.AdvanceAsync(route.Outgoing.RfqId, route.Ingress.RfqId, cancellationToken);
+if (progress.EvmClaimTxid is not null)
+    MarkMerchantPaymentSettled(progress.EvmClaimTxid, progress.DeliveredAmount);
+```
+
+Ingress funding and the `M`-to-`L` claim are not settlement. Only a verified ERC20 `claimFor` receipt
+with the exact transfer is final. `M`-to-`L` reveals `P` before the EVM lock necessarily exists, so
+this route relies on the outgoing solver's EVM state machine. The executor can non-interactively
+refund `L` after its deadline. It journals the deterministic EVM transaction id before broadcast and
+resumes receipt verification after a restart. `P` lives in SDK intent metadata for that recovery, so
+protect intent storage at rest and never log it. See [EVM send](docs/articles/evm-send.md) and the
+gateway `ComposedEvmSettlementExample` sample for the required registrations.
 ### Reaching a solver over its relay set
 
 A corridor card carries `discovery_pubkey` and a **list** of relays, and both halves are required —
