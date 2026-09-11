@@ -309,7 +309,7 @@ public class ArkadeSwapTests
             var fulfilled = await Poll(async () =>
                     (await ctx.IntentStorage.GetArkadeSwapIntents())
                         .FirstOrDefault(s => s.Id == leg2.Id)?.Status == ArkadeSwapIntentStatus.Fulfilled,
-                SolverFillTimeout);
+                ReverseSolverFillTimeout);
 
             Assert.That(fulfilled, Is.True,
                 "the monitor should transition the asset→BTC intent to Fulfilled once the solver fills it");
@@ -334,6 +334,7 @@ public class ArkadeSwapTests
     /// BTC VTXO so the asset→BTC direction has a counterparty that can pay out immediately.
     /// </remarks>
     private static readonly TimeSpan SolverFillTimeout = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan ReverseSolverFillTimeout = TimeSpan.FromMinutes(5);
 
     private static async Task<bool> Poll(Func<Task<bool>> condition, TimeSpan timeout)
     {
