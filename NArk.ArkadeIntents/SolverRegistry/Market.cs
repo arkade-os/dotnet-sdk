@@ -1,16 +1,31 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Numerics;
+using NArk.ArkadeIntents.Rfq.Converters;
 
 namespace NArk.ArkadeIntents.SolverRegistry;
 
 /// <summary>
-/// An asset descriptor (base or quote side of a market), per the Arkade Market Discovery
-/// Protocol v0. JSON keys are snake_case (<c>id</c>, <c>name</c>, <c>ticker</c>, <c>precision</c>).
+/// A v0/v1 market asset descriptor. Canonical identity includes the chain; names and tickers are display-only.
 /// </summary>
 public sealed class AssetDescriptor
 {
-    /// <summary>Asset id — <c>"btc"</c> for Bitcoin, or the asset-id hex for an Arkade asset. This is the pair identity, not the ticker.</summary>
+    /// <summary>Canonical CAIP-19 id in source cards, or the legacy id in compatibility indexes.</summary>
     public required string Id { get; init; }
+
+    /// <summary>Canonical identity retained beside the legacy id in compatibility indexes.</summary>
+    public string? Caip19Id { get; init; }
+
+    /// <summary>Canonical identity when published; otherwise the explicit legacy identifier.</summary>
+    [JsonIgnore]
+    public string CanonicalId => Caip19Id ?? Id;
+
+    /// <summary>BTC or issued-asset identifier for legacy wallet APIs; external assets cannot be projected.</summary>
+    [JsonIgnore]
+    public string LegacyId => !CanonicalId.Contains('/') ? Id
+        : AssetIdentifier.Parse(CanonicalId) is { Namespace: not "eip155" } asset
+            ? asset.Asset.StartsWith("slip44:") ? "btc" : asset.Asset["asset:".Length..]
+            : throw new NotSupportedException("An external asset has no legacy Arkade identifier.");
 
     /// <summary>Human-readable name (e.g. "Tether USD").</summary>
     public string? Name { get; init; }
@@ -40,14 +55,14 @@ public sealed class PriceFeedSchema
 }
 
 /// <summary>
-/// A single market advertised by a solver (Arkade Market Discovery Protocol v0). The same shape
+/// A single market advertised by a solver (discovery v0 or v1). The same shape
 /// appears inside a source <see cref="SolverCard"/> and, tagged with its solver, inside the
 /// per-network index (<see cref="IndexedMarket"/>).
 /// </summary>
 public class SolverMarket
 {
-    /// <summary>Display label (e.g. "BTC/USDT"). Identity is the <c>base_asset.id</c>/<c>quote_asset.id</c> pair, not this.</summary>
-    public required string Pair { get; init; }
+    /// <summary>Optional display label; empty when omitted. Never used as market identity.</summary>
+    public string Pair { get; init; } = "";
 
     public required AssetDescriptor BaseAsset { get; init; }
     public required AssetDescriptor QuoteAsset { get; init; }
@@ -100,39 +115,69 @@ public class SolverMarket
     public string? FeeFlat { get; init; }
 
     /// <summary>The flat fee as a number, or zero when the card declares none.</summary>
+    [JsonIgnore]
     public long FeeFlatAmount =>
-        long.TryParse(FeeFlat, out var flat) && flat > 0 ? flat : 0;
+        checked((long)FeeFlatAtomicAmount);
+
+    /// <summary>The flat fee without narrowing its atomic units to Int64.</summary>
+    [JsonIgnore]
+    public BigInteger FeeFlatAtomicAmount => FeeFlat is null ? BigInteger.Zero
+        : JsonSerializer.Deserialize<BigInteger>(JsonSerializer.Serialize(FeeFlat), AtomicJson);
+
+    private static readonly JsonSerializerOptions AtomicJson = new() { Converters = { new AtomicAmountConverter() } };
 
     /// <summary>Minimum trade size, in base-asset units.</summary>
     /// <remarks>
     /// Serialized as a decimal string: these are base units of an asset whose precision the card
     /// itself declares, and a JSON number would silently lose the large ones.
     /// </remarks>
-    [JsonConverter(typeof(NumericStringConverter))]
-    public long MinBaseAmount { get; init; }
+    [JsonIgnore]
+    public long MinBaseAmount { get => checked((long)MinBaseAtomicAmount); init => MinBaseAtomicAmount = value; }
+
+    /// <summary>Full-width minimum in base atomic units.</summary>
+    [JsonPropertyName("min_base_amount"), JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger MinBaseAtomicAmount { get; init; }
 
     /// <summary>Maximum trade size, in base-asset units.</summary>
-    [JsonConverter(typeof(NumericStringConverter))]
-    public long MaxBaseAmount { get; init; }
+    [JsonIgnore]
+    public long MaxBaseAmount { get => checked((long)MaxBaseAtomicAmount); init => MaxBaseAtomicAmount = value; }
+
+    /// <summary>Full-width maximum in base atomic units.</summary>
+    [JsonPropertyName("max_base_amount"), JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger MaxBaseAtomicAmount { get; init; }
 
     /// <summary>Minimum trade size, in quote-asset units — where a corridor states its bounds.</summary>
-    [JsonConverter(typeof(NumericStringConverter))]
-    public long MinQuoteAmount { get; init; }
+    [JsonIgnore]
+    public long MinQuoteAmount { get => checked((long)MinQuoteAtomicAmount); init => MinQuoteAtomicAmount = value; }
+
+    /// <summary>Full-width minimum in quote atomic units.</summary>
+    [JsonPropertyName("min_quote_amount"), JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger MinQuoteAtomicAmount { get; init; }
 
     /// <summary>Maximum trade size, in quote-asset units.</summary>
-    [JsonConverter(typeof(NumericStringConverter))]
-    public long MaxQuoteAmount { get; init; }
+    [JsonIgnore]
+    public long MaxQuoteAmount { get => checked((long)MaxQuoteAtomicAmount); init => MaxQuoteAtomicAmount = value; }
+
+    /// <summary>Full-width maximum in quote atomic units.</summary>
+    [JsonPropertyName("max_quote_amount"), JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger MaxQuoteAtomicAmount { get; init; }
 
     /// <summary>The arkade corridor, which an absent per-side corridor means.</summary>
     public const string ArkadeCorridor = "arkade";
 
-    /// <summary>A side's corridor, defaulting an absent one to <see cref="ArkadeCorridor"/>.</summary>
+    /// <summary>A side's corridor from its canonical id, or legacy fields; maps bolt11/bitcoin to lightning/onchain.</summary>
     /// <param name="side">Which side to read.</param>
     /// <returns>The corridor name.</returns>
-    public string CorridorOf(MarketSide side) =>
-        (side == MarketSide.Base ? BaseCorridor : QuoteCorridor) is { Length: > 0 } rail
-            ? rail
-            : ArkadeCorridor;
+    public string CorridorOf(MarketSide side)
+    {
+        var id = (side == MarketSide.Base ? BaseAsset : QuoteAsset).CanonicalId;
+        if (id.Contains('/')) return AssetIdentifier.Parse(id).Namespace switch
+        {
+            "bolt11" => "lightning", "bitcoin" => "onchain", var rail => rail,
+        };
+        return (side == MarketSide.Base ? BaseCorridor : QuoteCorridor) is { Length: > 0 } legacy
+            ? legacy : ArkadeCorridor;
+    }
 
     /// <summary>True when either side settles off the arkade corridor.</summary>
     /// <remarks>
@@ -143,13 +188,20 @@ public class SolverMarket
         CorridorOf(MarketSide.Base) != ArkadeCorridor || CorridorOf(MarketSide.Quote) != ArkadeCorridor;
 
     /// <summary>Both sides carry the same asset — the price is identically 1 and no feed applies.</summary>
-    public bool IsSameAsset => BaseAsset.Id == QuoteAsset.Id;
+    public bool IsSameAsset => !BaseAsset.CanonicalId.Contains('/') || !QuoteAsset.CanonicalId.Contains('/')
+        ? BaseAsset.CanonicalId == QuoteAsset.CanonicalId
+        : AssetIdentifier.Parse(BaseAsset.CanonicalId) is var left
+          && AssetIdentifier.Parse(QuoteAsset.CanonicalId) is var right
+          && left.ChainReference == right.ChainReference && left.Asset == right.Asset;
 
-    /// <summary>One side's canonical leg identity, <c>&lt;corridor&gt;:&lt;asset-id&gt;</c>.</summary>
+    /// <summary>One side's full CAIP-19 identity, or a corridor-qualified legacy id when no canonical identity was published.</summary>
     /// <param name="side">Which side to read.</param>
     /// <returns>The leg key.</returns>
-    public string LegKey(MarketSide side) =>
-        $"{CorridorOf(side)}:{(side == MarketSide.Base ? BaseAsset.Id : QuoteAsset.Id)}";
+    public string LegKey(MarketSide side)
+    {
+        var id = (side == MarketSide.Base ? BaseAsset : QuoteAsset).CanonicalId;
+        return id.Contains('/') ? AssetIdentifier.Parse(id).Value : $"{CorridorOf(side)}:{id}";
+    }
 
     /// <summary>
     /// The market's canonical identity: the corridor-qualified leg pair.
@@ -169,7 +221,10 @@ public class SolverMarket
     /// <see cref="FeeBps"/> alone is not a ranking key once <see cref="FeeFlat"/> exists: a market
     /// with a lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
     /// </remarks>
-    public long TotalFeeOn(long amount) => amount * FeeBps / 10_000 + FeeFlatAmount;
+    public long TotalFeeOn(long amount) => checked((long)TotalFeeOn(new BigInteger(amount)));
+
+    /// <summary>The fee in full-width atomic units, without intermediate Int64 overflow.</summary>
+    public BigInteger TotalFeeOn(BigInteger amount) => amount * FeeBps / 10_000 + FeeFlatAtomicAmount;
 }
 
 /// <summary>A <see cref="SolverMarket"/> as published in the per-network index, tagged with its solver.</summary>

@@ -190,7 +190,7 @@
             var markets = await Ark.GetSwapMarkets();
             _markets.Clear();
             // BTC-base markets only — this UI funds with BTC (base) and buys the quote asset.
-            _markets.AddRange(markets.Where(m => m.BaseAsset.Id == "btc"));
+            _markets.AddRange(markets.Where(m => !m.IsCorridor && m.BaseAsset.LegacyId == "btc"));
             _selected = _markets.FirstOrDefault();
             await RefreshPrice();
         }

@@ -93,6 +93,15 @@ the advance pass takes it once `refund_locktime` has passed.
 
 ## On-boarding
 
+The wire model supports the current solver's optional deposit range: set both `MinFromAmount` and
+`MaxFromAmount` on `RfqRequest<OnchainReceiveRequestProfile>`. The quote repeats those bounds at
+the envelope level. `OnchainReceiveStatusProfile.FundedFromAmount` and `FundedToAmount` report the
+observed deposit and adjusted payout in the profile. These funded fields deliberately remain JSON
+numbers in sats, matching the current solver's exception to canonical decimal-string amounts.
+They are advisory: verify chain funding before acting. The existing high-level receive flow remains
+exact-amount; parsing a range does not opt it into variable funding. `ClaimPacket` may be omitted
+when the client performs its own online claim.
+
 ```csharp
 var pending = await intents.ReceiveFromOnchainAsync(
     walletId: "my-wallet",

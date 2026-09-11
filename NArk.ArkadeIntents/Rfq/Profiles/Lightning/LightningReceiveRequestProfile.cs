@@ -29,7 +29,7 @@ public sealed class LightningReceiveRequestProfile
     /// </summary>
     /// <remarks>
     /// Opaque to the solver, which never holds the key that opens it and validates only its shape.
-    /// A client willing to stay online for the claim may send any well-formed filler here.
+    /// Omit when the client performs its own online claim.
     /// </remarks>
-    public required string ClaimPacket { get; init; }
+    public string? ClaimPacket { get; init; }
 }

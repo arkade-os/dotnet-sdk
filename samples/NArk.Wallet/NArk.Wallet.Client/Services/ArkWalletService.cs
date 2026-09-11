@@ -265,7 +265,7 @@ public class ArkWalletService(
         long depositSats, long wantAssetAmount, CancellationToken ct = default)
         => arkadeSwaps.CreateSwap(new NArk.ArkadeIntents.Assets.CreateSwapRequest(
             walletId, NArk.ArkadeIntents.Models.ArkadeSwapIntentType.BtcToAsset,
-            depositSats, wantAssetAmount, AssetId.FromString(market.QuoteAsset.Id)), ct);
+            depositSats, wantAssetAmount, AssetId.FromString(market.QuoteAsset.LegacyId)), ct);
 
     /// <summary>Cancel a pending swap and reclaim the deposit via the covenant's cancel path.</summary>
     public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> CancelAssetSwap(

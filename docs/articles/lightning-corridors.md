@@ -120,6 +120,31 @@ The covclaimd packet is a fallback claimer, not a backup you can read.
 
 Two transports, same payloads.
 
+Discovery supports source cards and indexes at versions 0 and 1. Use full CAIP-19 identities when
+selecting a market; `caip19_id` takes precedence over the legacy `id` in compatibility indexes.
+Cards need no display `pair`, and that label never controls selection. Non-EVM chain references
+must match the selected Arkade network; EIP-155 identities require v1 and retain their chain id.
+
+```csharp
+var markets = await discovery.DiscoverMarketsAsync("regtest", registries: [], localCards: [card]);
+var ranked = SolverDiscoveryService.FilterAndRank(markets,
+    "arkade:regtest/slip44:1", "bolt11:regtest/slip44:1", 50_000);
+var wirePair = LegacyRfqPairAdapter.FromCanonical(
+    AssetIdentifier.Parse("arkade:regtest/slip44:1"),
+    AssetIdentifier.Parse("bolt11:regtest/slip44:1"));
+```
+
+Legacy conversion is explicit and does not support EVM execution. To convert an old bare id, use
+`AssetIdentifier.FromLegacy(id, network, corridor)` with the network you actually selected.
+Generic RFQ and registry amounts expose `BigInteger` properties ending in `AtomicAmount`; existing
+sats properties remain checked `long` accessors. Canonical amount strings have no Int64 ceiling,
+while numeric compatibility input must be a non-negative safe JSON integer.
+
+Both transports validate response version and correlation. A status refusal throws
+`RfqRefusedException`, retaining the full structured diagnostic in `Refusal`; HTTP 404 remains a
+missing negotiation. Unknown states remain non-terminal. A receive request's `ClaimPacket` is
+optional at the wire layer when the client will claim online; do not send filler packets.
+
 `HttpRfqTransport` posts to a solver that happens to expose a port — convenient locally, and what
 the reference solver offers.
 
@@ -219,12 +244,16 @@ The contract is an agreement about bytes, and it is not versioned on the wire: i
 and the solver's ever disagree, the first symptom is funds at an address nobody can spend. The
 defence is a set of golden vectors generated from the counterparty's own implementation.
 
-Regenerate them whenever the solver moves to a newer ts-sdk pin:
+Regenerate the contract vectors and the deterministic current-solver quote fixtures after changing
+the corresponding dependency pins. The latter records the solver commit and exercises the current
+ladder, with equal and distinct covenant destinations:
 
 ```bash
 node NArk.Tests/ArkadeIntents/Fixtures/generate-covenant-vectors.mjs \
   <node-project-with-arkade-sdk> > NArk.Tests/ArkadeIntents/Fixtures/covenant_swap.json
-dotnet test NArk.Tests --filter VHTLCv2ContractTests
+node NArk.Tests/ArkadeIntents/Fixtures/generate-current-quotes.mjs \
+  <built-intent-solver-checkout> > NArk.Tests/ArkadeIntents/Fixtures/current_solver_quotes.json
+dotnet test NArk.Tests
 ```
 
 If the vectors and this SDK disagree, **this SDK is what is wrong** — they come from the side that

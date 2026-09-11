@@ -1239,11 +1239,9 @@ markets. Which solver to trade with is the caller's decision — this only suppl
 ```csharp
 var markets = await discovery.DiscoverMarketsAsync("mutinynet");
 
-// Identity is the corridor-qualified leg pair, so a Lightning corridor and an onchain one are
-// different markets even though both are btc-against-btc.
 var ranked = SolverDiscoveryService.FilterAndRank(
-    markets, baseAssetId: "btc", quoteAssetId: "btc",
-    baseAmount: 30_000, quoteCorridor: "lightning");
+    markets, baseAssetId: "arkade:mutinynet/slip44:1",
+    quoteAssetId: "bolt11:mutinynet/slip44:1", baseAmount: 30_000);
 
 foreach (var m in ranked)
 {
@@ -1255,6 +1253,28 @@ foreach (var m in ranked)
 
 Ranking is by the total fee **at the size being traded**, never by `fee_bps` alone: a market with a
 lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
+
+Discovery accepts v0 and v1 cards, including cards without a display `pair`. Identity comes from
+CAIP-19: `AssetDescriptor.CanonicalId` prefers `caip19_id` in a compatibility index over its legacy
+`id` projection. Network-mismatched markets and v0 external-chain markets are excluded. V1 EIP-155
+identities remain distinct by chain and token; discovery does not add EVM swap execution.
+
+Use an explicit adapter at the current solver's legacy RFQ boundary:
+
+```csharp
+var from = AssetIdentifier.FromLegacy("btc", "mutinynet", "arkade");
+var to = AssetIdentifier.Parse("bolt11:mutinynet/slip44:1");
+var pair = LegacyRfqPairAdapter.FromCanonical(from, to);
+// pair == "arkade:BTC->lightning:BTC"
+```
+
+The adapter refuses a cross-network pair or an external token instead of guessing a ticker.
+RFQ `AtomicAmount`, `FromAtomicAmount`, `ToAtomicAmount` and market `*AtomicAmount` bounds use
+`BigInteger`. They read arbitrary-width canonical decimal strings, accept non-negative safe JSON
+integers for compatibility, and write decimal strings. Existing `long` amount properties remain
+checked accessors for sats APIs: they throw on overflow rather than truncate.
+Quotes and statuses require RFQ v1 and the requested correlation id; refusals retain diagnostics
+through `RfqRefusedException.Refusal`, including `ErrorCode`, `Field`, `Actual`, `Expected` and `Limit`.
 
 ### Reaching a solver over its relay set
 

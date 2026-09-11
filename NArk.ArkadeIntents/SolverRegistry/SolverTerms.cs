@@ -53,8 +53,8 @@ public static class SolverTerms
     /// <param name="pair">The RFQ pair, e.g. <c>arkade:BTC-&gt;lightning:BTC</c>.</param>
     /// <returns>The market, or <c>null</c> when the solver does not serve it.</returns>
     /// <remarks>
-    /// A card states a market key (<c>BTC/lightning:BTC</c>) rather than a direction, because a
-    /// solver that serves a pair serves it both ways. Matching therefore ignores direction.
+    /// Matches asset identities in either direction, never the display label. Current legacy RFQ
+    /// legs are matched through the explicit canonical adapter.
     /// </remarks>
     public static SolverMarket? MarketFor(SolverCard card, string pair) => Resolve(card, pair)?.Market;
 
@@ -74,11 +74,14 @@ public static class SolverTerms
 
         foreach (var market in card.Markets)
         {
-            var rails = market.Pair.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (rails.Length != 2) continue;
-
-            if (Matches(rails[0], from) && Matches(rails[1], to)) return (market, MarketSide.Quote);
-            if (Matches(rails[0], to) && Matches(rails[1], from)) return (market, MarketSide.Base);
+            if ((!from.Contains('/') || !to.Contains('/'))
+                && market.BaseAsset.CanonicalId.Contains('/') && market.QuoteAsset.CanonicalId.Contains('/')
+                && AssetIdentifier.Parse(market.BaseAsset.CanonicalId).ChainReference
+                != AssetIdentifier.Parse(market.QuoteAsset.CanonicalId).ChainReference) continue;
+            if (Matches(market, MarketSide.Base, from) && Matches(market, MarketSide.Quote, to))
+                return (market, MarketSide.Quote);
+            if (Matches(market, MarketSide.Base, to) && Matches(market, MarketSide.Quote, from))
+                return (market, MarketSide.Base);
         }
         return null;
     }
@@ -101,8 +104,8 @@ public static class SolverTerms
         // Sending arkade sats over Lightning is bounded by the quote side; receiving them back is
         // bounded by the base side, and a card whose two sides differ makes the two answers differ.
         var (min, max) = payout == MarketSide.Quote
-            ? (market.MinQuoteAmount, market.MaxQuoteAmount)
-            : (market.MinBaseAmount, market.MaxBaseAmount);
+            ? (market.MinQuoteAtomicAmount, market.MaxQuoteAtomicAmount)
+            : (market.MinBaseAtomicAmount, market.MaxBaseAtomicAmount);
 
         // A zero maximum disables the side: the solver does not pay it out, so this direction is
         // not on offer however small the trade.
@@ -126,7 +129,7 @@ public static class SolverTerms
     }
 
     /// <summary>
-    /// Refuse a quote that charges more than the card advertises.
+    /// Refuse a same-asset quote that charges more than the card advertises; cross-asset quotes need a price-aware check.
     /// </summary>
     /// <typeparam name="TProfile">The corridor's quote-profile shape.</typeparam>
     /// <param name="card">The solver's card.</param>
@@ -149,17 +152,18 @@ public static class SolverTerms
     {
         if (MarketFor(card, quote.Pair) is not { } market) return;
 
-        var charged = quote.FromAmount - quote.ToAmount;
+        if (!market.IsSameAsset) return;
+        var charged = quote.FromAtomicAmount - quote.ToAtomicAmount;
         if (charged <= 0) return;
 
-        var advertised = market.TotalFeeOn(quote.FromAmount);
+        var advertised = market.TotalFeeOn(quote.FromAtomicAmount);
         if (charged > advertised + 1)
         {
-            var flat = market.FeeFlatAmount > 0 ? $" + {market.FeeFlatAmount} flat" : "";
+            var flat = market.FeeFlatAtomicAmount > 0 ? $" + {market.FeeFlatAtomicAmount} flat" : "";
             throw new SolverTermsException(
                 SolverTermsRefusal.FeeAboveAdvertised,
-                $"the quote charges {charged} sats, more than the {market.FeeBps} bps{flat} " +
-                $"({advertised} sats) this solver advertises");
+                $"the quote charges {charged} atomic units, more than the {market.FeeBps} bps{flat} " +
+                $"({advertised} atomic units) this solver advertises");
         }
     }
 
@@ -173,7 +177,16 @@ public static class SolverTerms
     /// A card's rail names the asset alone for arkade (<c>BTC</c>) and prefixes it otherwise
     /// (<c>lightning:BTC</c>), while an RFQ pair always prefixes.
     /// </summary>
-    private static bool Matches(string cardRail, string rfqSide) =>
-        string.Equals(cardRail, rfqSide, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals("arkade:" + cardRail, rfqSide, StringComparison.OrdinalIgnoreCase);
+    private static bool Matches(SolverMarket market, MarketSide side, string rfqSide)
+    {
+        var asset = side == MarketSide.Base ? market.BaseAsset : market.QuoteAsset;
+        var id = asset.CanonicalId;
+        if (id == rfqSide) return true;
+        if (id.Contains('/'))
+        {
+            try { return LegacyRfqPairAdapter.Leg(AssetIdentifier.Parse(id)) == rfqSide; }
+            catch (NotSupportedException) { return false; }
+        }
+        return $"{market.CorridorOf(side)}:{(id == "btc" ? "BTC" : id)}" == rfqSide;
+    }
 }
