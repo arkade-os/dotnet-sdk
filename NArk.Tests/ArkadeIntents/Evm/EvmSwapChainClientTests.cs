@@ -59,6 +59,17 @@ public class EvmSwapChainClientTests
     }
 
     [Test]
+    public void ProveLock_RejectsAnInsufficientRemainingClaimWindow()
+    {
+        var rpc = new FakeRpc { BlockNumber = 100, BlockTimestamp = Now - 10 };
+        rpc.SwapResults.Enqueue(Bool(true));
+        rpc.SwapResults.Enqueue(Bool(true));
+
+        Assert.That(async () => await Client(rpc, new FakeSender(), minimumClaimWindow: 101)
+            .ProveLockAsync(Values), Throws.TypeOf<EvmSwapProofException>());
+    }
+
+    [Test]
     public async Task ClaimFor_VerifiesReceiptEventPreimageBalanceAndConsumedLock()
     {
         var rpc = new FakeRpc
@@ -104,9 +115,9 @@ public class EvmSwapChainClientTests
         var sender = new FakeDurableSender(events);
         var client = Client(rpc, sender);
 
-        var result = await client.ClaimForAsync(Values, Preimage, (hash, _) =>
+        var result = await client.ClaimForAsync(Values, Preimage, (prepared, _) =>
         {
-            events.Add("persist:" + hash);
+            events.Add("persist:" + prepared.TransactionHash);
             return Task.CompletedTask;
         });
 
@@ -123,6 +134,77 @@ public class EvmSwapChainClientTests
         resumedRpc.SwapResults.Enqueue(Bool(false));
         var resumed = await Client(resumedRpc, new FakeSender()).VerifyClaimAsync(TxHash, Values, Preimage);
         Assert.That(resumed.DeliveredAmount, Is.EqualTo(Values.Amount));
+    }
+
+    [Test]
+    public async Task ResumeClaim_MinedAfterBothDeadlinesVerifiesWithoutRebroadcast()
+    {
+        var events = new List<string>();
+        var rpc = new FakeRpc
+        {
+            BlockNumber = Values.TimeoutBlock,
+            Receipt = new EvmTransactionReceipt(TxHash, true, ClaimLogs()),
+        };
+        rpc.SwapResults.Enqueue(Bool(false));
+
+        var result = await Client(rpc, new FakeDurableSender(events)).ResumeClaimAsync(
+            new EvmPreparedTransaction(TxHash, "0x02aa"), Values, Preimage,
+            arkadeRefundLocktime: Now - 1);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.TransactionHash, Is.EqualTo(TxHash));
+            Assert.That(events, Is.Empty);
+            Assert.That(rpc.ReceiptWaits, Is.EqualTo(1));
+        });
+    }
+
+    [TestCase("evm")]
+    [TestCase("arkade")]
+    public void ResumeClaim_UnminedOutsideCurrentWindowRefusesWithoutRebroadcast(string expired)
+    {
+        var events = new List<string>();
+        var rpc = new FakeRpc
+        {
+            BlockNumber = expired == "evm" ? Values.TimeoutBlock : 100,
+            Receipt = new EvmTransactionReceipt(TxHash, true, ClaimLogs()),
+            ReceiptTimeoutsRemaining = 1,
+        };
+
+        Assert.That(async () => await Client(rpc, new FakeDurableSender(events)).ResumeClaimAsync(
+                new EvmPreparedTransaction(TxHash, "0x02aa"), Values, Preimage,
+                arkadeRefundLocktime: expired == "arkade" ? Now - 1 : Now + 20_000),
+            Throws.TypeOf<EvmSwapProofException>());
+        Assert.Multiple(() =>
+        {
+            Assert.That(events, Is.Empty);
+            Assert.That(rpc.ReceiptWaits, Is.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public async Task ResumeClaim_UnminedWithinBothWindowsRebroadcastsExactBytesThenVerifies()
+    {
+        var events = new List<string>();
+        var rpc = new FakeRpc
+        {
+            BlockNumber = 100,
+            Receipt = new EvmTransactionReceipt(TxHash, true, ClaimLogs()),
+            ReceiptTimeoutsRemaining = 1,
+        };
+        rpc.SwapResults.Enqueue(Bool(true));
+        rpc.SwapResults.Enqueue(Bool(false));
+        var prepared = new EvmPreparedTransaction(TxHash, "0x02aa");
+
+        var result = await Client(rpc, new FakeDurableSender(events)).ResumeClaimAsync(
+            prepared, Values, Preimage, arkadeRefundLocktime: Now + 20_000);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.TransactionHash, Is.EqualTo(TxHash));
+            Assert.That(events, Is.EqualTo(new[] { "rebroadcast:0x02aa" }));
+            Assert.That(rpc.ReceiptWaits, Is.EqualTo(2));
+        });
     }
 
     [Test]
@@ -161,10 +243,11 @@ public class EvmSwapChainClientTests
         return result;
     }
 
-    private static EvmSwapChainClient Client(FakeRpc rpc, IEvmTransactionSender sender, int minConfirmations = 1) =>
-        new(rpc, sender, Policy(minConfirmations), new FixedTimeProvider(DateTimeOffset.FromUnixTimeSeconds(Now)));
+    private static EvmSwapChainClient Client(FakeRpc rpc, IEvmTransactionSender sender, int minConfirmations = 1,
+        int minimumClaimWindow = 0) => new(rpc, sender, Policy(minConfirmations, minimumClaimWindow),
+        new FixedTimeProvider(DateTimeOffset.FromUnixTimeSeconds(Now)));
 
-    private static EvmSendPolicy Policy(int minConfirmations = 1) => new()
+    private static EvmSendPolicy Policy(int minConfirmations = 1, int minimumClaimWindow = 0) => new()
     {
         ChainId = 31_337,
         TokenAddress = Values.TokenAddress,
@@ -173,6 +256,7 @@ public class EvmSwapChainClientTests
         SlowestSecondsPerBlock = 1,
         MinConfirmations = minConfirmations,
         MinAgeSeconds = 1,
+        MinimumClaimWindowSeconds = minimumClaimWindow,
     };
 
     private static IReadOnlyList<EvmLog> ClaimLogs() =>
@@ -207,6 +291,8 @@ public class EvmSwapChainClientTests
         public long BlockTimestamp { get; init; }
         public Queue<byte[]> SwapResults { get; } = new();
         public EvmTransactionReceipt? Receipt { get; init; }
+        public int ReceiptTimeoutsRemaining { get; set; }
+        public int ReceiptWaits { get; private set; }
         public List<(string To, byte[] Data, BigInteger? Block)> Calls { get; } = [];
 
         public Task<BigInteger> GetChainIdAsync(CancellationToken cancellationToken = default) =>
@@ -222,7 +308,13 @@ public class EvmSwapChainClientTests
             return Task.FromResult(SwapResults.Dequeue());
         }
         public Task<EvmTransactionReceipt> WaitForReceiptAsync(string transactionHash,
-            CancellationToken cancellationToken = default) => Task.FromResult(Receipt!);
+            CancellationToken cancellationToken = default)
+        {
+            ReceiptWaits++;
+            if (ReceiptTimeoutsRemaining-- > 0)
+                return Task.FromException<EvmTransactionReceipt>(new TimeoutException("not mined"));
+            return Task.FromResult(Receipt!);
+        }
     }
 
     private sealed class FakeSender : IEvmTransactionSender
@@ -241,11 +333,18 @@ public class EvmSwapChainClientTests
             Task.FromResult(TxHash);
 
         public async Task<string> SendAsync(EvmTransactionRequest request,
-            Func<string, CancellationToken, Task> onPrepared, CancellationToken cancellationToken = default)
+            Func<EvmPreparedTransaction, CancellationToken, Task> onPrepared, CancellationToken cancellationToken = default)
         {
-            await onPrepared(TxHash, cancellationToken);
+            await onPrepared(new EvmPreparedTransaction(TxHash, "0x02aa"), cancellationToken);
             events.Add("broadcast");
             return TxHash;
+        }
+
+        public Task<string> ResumeAsync(EvmTransactionRequest request, EvmPreparedTransaction prepared,
+            CancellationToken cancellationToken = default)
+        {
+            events.Add("rebroadcast:" + prepared.SignedTransaction);
+            return Task.FromResult(prepared.TransactionHash);
         }
     }
 

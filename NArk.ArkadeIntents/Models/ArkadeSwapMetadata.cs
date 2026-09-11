@@ -65,6 +65,8 @@ public static class ArkadeSwapMetadataKeys
     public const string EvmSwapContractAddress = "evmSwapContractAddress";
     /// <summary>Signed EVM transaction identity durably recorded before broadcast, not proof of delivery.</summary>
     public const string EvmClaimSubmittedTxid = "evmClaimSubmittedTxid";
+    /// <summary>Signed raw EVM transaction durably recorded before broadcast; contains the route preimage.</summary>
+    public const string EvmClaimPreparedTransaction = "evmClaimPreparedTransaction";
     /// <summary>EVM transaction whose receipt proves exact merchant delivery.</summary>
     public const string EvmClaimTxid = "evmClaimTxid";
     /// <summary>Exact ERC20 amount independently verified from the claim receipt.</summary>

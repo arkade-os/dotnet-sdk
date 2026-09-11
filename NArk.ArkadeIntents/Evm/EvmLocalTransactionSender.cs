@@ -100,7 +100,7 @@ public sealed class EvmLocalTransactionSender : IEvmDurableTransactionSender
     /// <inheritdoc />
     public async Task<string> SendAsync(
         EvmTransactionRequest request,
-        Func<string, CancellationToken, Task> onPrepared,
+        Func<EvmPreparedTransaction, CancellationToken, Task> onPrepared,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(onPrepared);
@@ -109,7 +109,7 @@ public sealed class EvmLocalTransactionSender : IEvmDurableTransactionSender
 
     private async Task<string> SendCoreAsync(
         EvmTransactionRequest request,
-        Func<string, CancellationToken, Task>? onPrepared,
+        Func<EvmPreparedTransaction, CancellationToken, Task>? onPrepared,
         CancellationToken cancellationToken)
     {
         await _sendGate.WaitAsync(cancellationToken);
@@ -142,7 +142,7 @@ public sealed class EvmLocalTransactionSender : IEvmDurableTransactionSender
                 return await _rpc.SendRawTransactionAsync(raw, cancellationToken);
 
             var preparedHash = "0x" + new Sha3Keccack().CalculateHashFromHex(raw);
-            await onPrepared(preparedHash, cancellationToken);
+            await onPrepared(new EvmPreparedTransaction(preparedHash, raw), cancellationToken);
             var submittedHash = await _rpc.SendRawTransactionAsync(raw, cancellationToken);
             if (!submittedHash.Equals(preparedHash, StringComparison.OrdinalIgnoreCase))
                 throw new EvmTransactionException("node returned a different transaction hash");
@@ -156,6 +156,68 @@ public sealed class EvmLocalTransactionSender : IEvmDurableTransactionSender
         {
             _sendGate.Release();
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<string> ResumeAsync(EvmTransactionRequest request, EvmPreparedTransaction prepared,
+        CancellationToken cancellationToken = default)
+    {
+        await _sendGate.WaitAsync(cancellationToken);
+        try
+        {
+            ValidatePrepared(request, prepared);
+            var chainId = await _rpc.GetChainIdAsync(cancellationToken);
+            if (request.ChainId <= 0 || request.ChainId != chainId)
+                throw new EvmTransactionException("transaction chain id differs from the connected EVM node");
+            try
+            {
+                var submitted = await _rpc.SendRawTransactionAsync(prepared.SignedTransaction, cancellationToken);
+                if (!submitted.Equals(prepared.TransactionHash, StringComparison.OrdinalIgnoreCase))
+                    throw new EvmTransactionException("node returned a different transaction hash");
+            }
+            catch (EvmJsonRpcException)
+            {
+                // A node may report an already-known or mined transaction as an RPC error.
+            }
+            return prepared.TransactionHash;
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+    }
+
+    private void ValidatePrepared(EvmTransactionRequest request, EvmPreparedTransaction prepared)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(prepared);
+        ArgumentNullException.ThrowIfNull(request.Data);
+        var raw = prepared.SignedTransaction;
+        if (raw is null || !raw.StartsWith("0x02", StringComparison.Ordinal) || raw != raw.ToLowerInvariant()
+            || raw.Length % 2 != 0 || !raw[2..].All(Uri.IsHexDigit)
+            || prepared.TransactionHash != "0x" + new Sha3Keccack().CalculateHashFromHex(raw))
+            throw new EvmTransactionException("prepared EVM transaction artifact is invalid");
+        Transaction1559 transaction;
+        try
+        {
+            transaction = (Transaction1559)TransactionFactory.CreateTransaction(raw);
+        }
+        catch (Exception exception) when (exception is ArgumentException or FormatException or InvalidCastException)
+        {
+            throw new EvmTransactionException("prepared EVM transaction cannot be decoded");
+        }
+        var expectedTo = EvmWire.RequireNonZeroAddress(request.To, nameof(request.To), lowerCase: true);
+        var sender = EthECKeyBuilderFromSignedTransaction.GetEthECKey(transaction).GetPublicAddress();
+        if (transaction.ChainId != request.ChainId || transaction.ReceiverAddress is null
+            || !transaction.ReceiverAddress.Equals(expectedTo, StringComparison.OrdinalIgnoreCase)
+            || transaction.Amount != BigInteger.Zero
+            || transaction.Data is null
+            || !transaction.Data.Equals("0x" + Convert.ToHexString(request.Data).ToLowerInvariant(), StringComparison.OrdinalIgnoreCase)
+            || !sender.Equals(Address, StringComparison.OrdinalIgnoreCase)
+            || transaction.MaxFeePerGas is null || transaction.MaxFeePerGas > _options.MaxFeePerGasWei
+            || transaction.MaxPriorityFeePerGas is null || transaction.MaxPriorityFeePerGas > _options.MaxPriorityFeePerGasWei
+            || transaction.GasLimit is null || transaction.GasLimit > _options.MaxGasLimit)
+            throw new EvmTransactionException("prepared EVM transaction differs from the requested claim");
     }
 
     /// <inheritdoc />

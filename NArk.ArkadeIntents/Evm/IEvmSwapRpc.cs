@@ -34,16 +34,39 @@ public interface IEvmTransactionSender
     Task<string> SendAsync(EvmTransactionRequest request, CancellationToken cancellationToken = default);
 }
 
-/// <summary>Signs a transaction, exposes its deterministic hash for durable journaling, then broadcasts it.</summary>
+/// <summary>A signed transaction that can be durably stored and rebroadcast byte-for-byte.</summary>
+/// <param name="TransactionHash">Keccak-256 identity of <paramref name="SignedTransaction"/>.</param>
+/// <param name="SignedTransaction">Canonical lower-case type-2 transaction hex, including secret calldata.</param>
+public sealed record EvmPreparedTransaction(string TransactionHash, string SignedTransaction)
+{
+    /// <inheritdoc />
+    public override string ToString() => $"{nameof(EvmPreparedTransaction)} ({TransactionHash})";
+}
+
+/// <summary>Signs a transaction, exposes its recoverable artifact for durable journaling, then broadcasts it.</summary>
 public interface IEvmDurableTransactionSender : IEvmTransactionSender
 {
     /// <summary>
-    /// Signs one transaction and invokes <paramref name="onPrepared"/> with its hash before the
-    /// signed bytes can reach the node. Broadcasting starts only after the callback succeeds.
+    /// Signs one transaction and invokes <paramref name="onPrepared"/> before the signed bytes can
+    /// reach the node. Broadcasting starts only after the callback durably stores the full artifact.
     /// </summary>
+    /// <param name="request">Exact contract call to sign.</param>
+    /// <param name="onPrepared">Durable, secret-safe persistence callback.</param>
+    /// <param name="cancellationToken">Cancels preparation, persistence, or broadcast.</param>
+    /// <returns>The deterministic transaction hash.</returns>
     Task<string> SendAsync(
         EvmTransactionRequest request,
-        Func<string, CancellationToken, Task> onPrepared,
+        Func<EvmPreparedTransaction, CancellationToken, Task> onPrepared,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Validates and rebroadcasts the exact prepared bytes after an uncertain submission.</summary>
+    /// <param name="request">Expected contract call encoded in the artifact.</param>
+    /// <param name="prepared">Previously persisted transaction hash and signed bytes.</param>
+    /// <param name="cancellationToken">Cancels validation or rebroadcast.</param>
+    /// <returns>The original deterministic transaction hash.</returns>
+    Task<string> ResumeAsync(
+        EvmTransactionRequest request,
+        EvmPreparedTransaction prepared,
         CancellationToken cancellationToken = default);
 }
 

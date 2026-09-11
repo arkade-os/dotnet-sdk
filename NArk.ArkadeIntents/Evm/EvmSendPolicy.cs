@@ -63,6 +63,18 @@ public sealed record EvmSendPolicy
         return count * numerator > threshold * denominator;
     }
 
+    internal void RequireExecutionWindow(BigInteger timeoutBlock, BigInteger currentBlock,
+        long? arkadeRefundLocktime, long now)
+    {
+        var remaining = timeoutBlock - currentBlock;
+        if (remaining <= 0 || ProductIsLessThan(remaining, FastestSecondsPerBlock, MinimumClaimWindowSeconds))
+            throw new EvmSwapProofException("ERC20 refund height leaves too little claim time");
+        if (arkadeRefundLocktime is not { } refundAt) return;
+        var available = new BigInteger(refundAt - now) - ArkadeRefundMarginSeconds;
+        if (available < 0 || ProductIsGreaterThan(remaining, SlowestSecondsPerBlock, available))
+            throw new EvmSwapProofException("Arkade refund no longer preserves the configured EVM margin");
+    }
+
     private static (BigInteger Numerator, BigInteger Denominator) Fraction(decimal value)
     {
         var bits = decimal.GetBits(value);

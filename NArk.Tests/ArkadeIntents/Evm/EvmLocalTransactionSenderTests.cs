@@ -57,16 +57,19 @@ public class EvmLocalTransactionSenderTests
     }
 
     [Test]
-    public async Task DurableSendPersistsTheSignedHashBeforeBroadcast()
+    public async Task DurableSendPersistsArtifactBeforeBroadcastAndResumeRebroadcastsExactBytes()
     {
         var events = new List<string>();
         var handler = SenderHandler(onSend: () => events.Add("broadcast"), returnComputedHash: true);
         IEvmDurableTransactionSender sender = Create(handler);
+        EvmPreparedTransaction? artifact = null;
+        var request = new EvmTransactionRequest(31_337, Contract, [0xbc, 0x58]);
 
-        var hash = await sender.SendAsync(new EvmTransactionRequest(31_337, Contract, [0xbc, 0x58]),
+        var hash = await sender.SendAsync(request,
             (prepared, _) =>
             {
-                events.Add("persist:" + prepared);
+                artifact = prepared;
+                events.Add("persist:" + prepared.TransactionHash);
                 return Task.CompletedTask;
             });
 
@@ -74,6 +77,18 @@ public class EvmLocalTransactionSenderTests
         {
             Assert.That(hash, Does.Match("^0x[0-9a-f]{64}$"));
             Assert.That(events, Is.EqualTo(new[] { "persist:" + hash, "broadcast" }));
+            Assert.That(artifact!.ToString(), Does.Not.Contain(artifact.SignedTransaction));
+        });
+
+        var resumedHash = await sender.ResumeAsync(request, artifact!);
+        var broadcasts = handler.Requests
+            .Where(r => r["method"]!.GetValue<string>() == "eth_sendRawTransaction")
+            .Select(r => r["params"]![0]!.GetValue<string>()).ToArray();
+        Assert.Multiple(() =>
+        {
+            Assert.That(resumedHash, Is.EqualTo(hash));
+            Assert.That(broadcasts, Has.Length.EqualTo(2));
+            Assert.That(broadcasts[1], Is.EqualTo(broadcasts[0]));
         });
     }
 
@@ -88,6 +103,47 @@ public class EvmLocalTransactionSenderTests
                 (_, _) => throw new IOException("journal unavailable")),
             Throws.TypeOf<IOException>());
         Assert.That(handler.Requests.Any(r =>
+            r["method"]!.GetValue<string>() == "eth_sendRawTransaction"), Is.False);
+    }
+
+    [Test]
+    public async Task ResumeRejectsAnArtifactForAnotherCallBeforeBroadcast()
+    {
+        var handler = SenderHandler(returnComputedHash: true);
+        IEvmDurableTransactionSender sender = Create(handler);
+        EvmPreparedTransaction? artifact = null;
+        await sender.SendAsync(new EvmTransactionRequest(31_337, Contract, [1]),
+            (prepared, _) =>
+            {
+                artifact = prepared;
+                return Task.CompletedTask;
+            });
+
+        Assert.That(async () => await sender.ResumeAsync(
+                new EvmTransactionRequest(31_337, Contract, [2]), artifact!),
+            Throws.TypeOf<EvmTransactionException>());
+        Assert.That(handler.Requests.Count(r =>
+            r["method"]!.GetValue<string>() == "eth_sendRawTransaction"), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task ResumeChecksTheConnectedChainBeforeSendingSecretCalldata()
+    {
+        var goodHandler = SenderHandler(returnComputedHash: true);
+        IEvmDurableTransactionSender goodSender = Create(goodHandler);
+        EvmPreparedTransaction? artifact = null;
+        var request = new EvmTransactionRequest(31_337, Contract, [1]);
+        await goodSender.SendAsync(request, (prepared, _) =>
+        {
+            artifact = prepared;
+            return Task.CompletedTask;
+        });
+        var wrongChainHandler = SenderHandler(chainId: 1, returnComputedHash: true);
+        IEvmDurableTransactionSender wrongChainSender = Create(wrongChainHandler);
+
+        Assert.That(async () => await wrongChainSender.ResumeAsync(request, artifact!),
+            Throws.TypeOf<EvmTransactionException>());
+        Assert.That(wrongChainHandler.Requests.Any(r =>
             r["method"]!.GetValue<string>() == "eth_sendRawTransaction"), Is.False);
     }
 
@@ -217,9 +273,10 @@ public class EvmLocalTransactionSenderTests
         Action? onSend = null,
         TimeSpan? responseDelay = null,
         string errorMessage = "execution reverted",
+        BigInteger? chainId = null,
         bool returnComputedHash = false) => new(request => request["method"]!.GetValue<string>() switch
         {
-            "eth_chainId" => EvmJsonRpcClientTests.Result(request, "0x7a69"),
+            "eth_chainId" => EvmJsonRpcClientTests.Result(request, "0x" + (chainId ?? 31_337).ToString("x")),
             "eth_getTransactionCount" => EvmJsonRpcClientTests.Result(request, "0x" + (nonce?.Invoke() ?? 5).ToString("x")),
             "eth_maxPriorityFeePerGas" => EvmJsonRpcClientTests.Result(request, "0x3b9aca00"),
             "eth_getBlockByNumber" => EvmJsonRpcClientTests.Result(request,
