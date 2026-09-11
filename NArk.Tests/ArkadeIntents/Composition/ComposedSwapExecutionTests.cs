@@ -242,6 +242,41 @@ public class ComposedSwapExecutionTests
         Assert.That(ctx.Emulator.ArkTx, Is.Not.Null);
     }
 
+    [Test]
+    public async Task Execution_RetriesMissingEvmLockAfterIngressClaimPublishesPreimage()
+    {
+        using var ctx = new Harness(false);
+        var execution = ctx.Execution();
+
+        var ingress = await execution.AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
+        var published = ctx.Emulator.ArkTx!.Inputs.Any(input =>
+            input.GetArkFieldConditionWitness()?.Pushes.Any(push =>
+                push.SequenceEqual(NonInteractiveTestData.Preimage)) == true);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(ingress.IngressStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(ingress.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(published, Is.True);
+        });
+
+        ctx.OutgoingFunded = true;
+        ctx.LockIsPresent = false;
+        Assert.ThrowsAsync<EvmSwapProofException>(() =>
+            execution.AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id));
+        Assert.That(ctx.Outgoing.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+
+        ctx.LockIsPresent = true;
+        var completed = await execution.AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(completed.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(completed.EvmClaimTxid, Is.EqualTo(Harness.ClaimTxid));
+            Assert.That(ctx.Sender.Broadcasts, Is.EqualTo(1));
+        });
+    }
+
     [TestCase(false)]
     [TestCase(true)]
     public async Task Execution_ReconcilesLinkedIngressBeforeAdvancing(bool onchain)

@@ -29,7 +29,11 @@ public sealed record ComposedSwapExecutionResult(string OutgoingSwapId, ArkadeSw
 }
 
 /// <summary>Advances persisted composed routes without disclosing their SDK-held secrets in results.</summary>
-/// <remarks>The host must serialize a route across processes; intent storage does not expose compare-and-swap.</remarks>
+/// <remarks>
+/// The internal gate serializes only calls made through this executor instance. A host running
+/// multiple instances or processes must take a distributed lock keyed by the outgoing swap id;
+/// intent storage does not expose compare-and-swap.
+/// </remarks>
 public sealed class ComposedSwapExecutionClient
 {
     private readonly IArkadeIntentStorage _storage;
@@ -78,6 +82,7 @@ public sealed class ComposedSwapExecutionClient
     /// <param name="ingressSwapId">Persisted Lightning/onchain receive RFQ id, or null for direct Arkade.</param>
     /// <param name="cancellationToken">Cancels reads or submission; prepared EVM identity survives an uncertain broadcast.</param>
     /// <returns>Public lifecycle and verified transaction identity only.</returns>
+    /// <remarks>Callers must serialize this route across executor instances and processes.</remarks>
     public async Task<ComposedSwapExecutionResult> AdvanceAsync(string outgoingSwapId, string? ingressSwapId = null,
         CancellationToken cancellationToken = default)
     {
@@ -154,6 +159,9 @@ public sealed class ComposedSwapExecutionClient
             var preimage = ComposedRouteExecutionGuard.ValidateSecret(outgoing);
             if (submitted is null)
             {
+                // Persist the depth/age proof for recovery diagnostics. ClaimForAsync deliberately
+                // proves again and re-reads latest state immediately before signing; this snapshot
+                // is evidence, not authorization to submit later against a changed lock.
                 var proof = await _chain.ProveLockAsync(values, cancellationToken);
                 outgoing.Metadata[ArkadeSwapMetadataKeys.EvmLockObservedAtBlock] = proof.ObservedAtBlock.ToString(CultureInfo.InvariantCulture);
                 outgoing.Metadata[ArkadeSwapMetadataKeys.EvmLockProvenAtBlock] = proof.ProvenAtBlock.ToString(CultureInfo.InvariantCulture);
