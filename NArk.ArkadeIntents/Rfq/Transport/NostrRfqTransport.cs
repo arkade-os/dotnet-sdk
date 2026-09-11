@@ -243,9 +243,7 @@ public sealed class NostrRfqTransport : IRfqTransport, IDisposable
         };
 
         var reply = await ExchangeAsync(ask.ToJsonString(), cancellationToken);
-        return reply["type"]?.GetValue<string>() == "rfq_status"
-            ? reply.Deserialize<RfqStatus<TStatusProfile>>(RfqProtocol.Json)
-            : null;
+        return RfqProtocol.ReadStatus<TStatusProfile>(reply, rfqId);
     }
 
     /// <summary>What one relay contributed to a negotiation.</summary>

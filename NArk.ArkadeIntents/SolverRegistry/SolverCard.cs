@@ -1,7 +1,7 @@
 namespace NArk.ArkadeIntents.SolverRegistry;
 
 /// <summary>
-/// A solver's source market card (Arkade Market Discovery Protocol v0), stored in a registry repo
+/// A solver's v0 or v1 source market card, stored in a registry repo
 /// at <c>solvers/&lt;network&gt;/&lt;name&gt;.json</c> or supplied locally. The reducer indexes these
 /// into a <see cref="GetSolverRegistryResponse"/>; clients may also merge local cards directly.
 /// </summary>

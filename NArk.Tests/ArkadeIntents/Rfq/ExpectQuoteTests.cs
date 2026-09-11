@@ -64,6 +64,7 @@ public class ExpectQuoteTests
     {
         var refusal = new JsonObject
         {
+            ["v"] = 1,
             ["type"] = "rfq_refusal",
             ["rfq_id"] = RfqId,
             ["reason"] = "rate_limited",
@@ -77,6 +78,7 @@ public class ExpectQuoteTests
 
     private static JsonNode Reply(string rfqId, string pair) => new JsonObject
     {
+        ["v"] = 1,
         ["type"] = "rfq_quote",
         ["rfq_id"] = rfqId,
         ["pair"] = pair,

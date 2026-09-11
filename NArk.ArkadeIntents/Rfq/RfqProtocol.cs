@@ -73,10 +73,11 @@ public static class RfqProtocol
     public static RfqQuote<TQuoteProfile> ExpectQuote<TQuoteProfile>(
         JsonNode payload, string rfqId, string? requestedPair = null)
     {
+        ValidateEnvelope(payload, rfqId);
         if (TypeOf(payload) == "rfq_refusal")
         {
             var refusal = payload.Deserialize<RfqRefusal>(RfqProtocol.Json)!;
-            throw new RfqRefusedException(refusal.Reason, refusal.RfqId ?? rfqId, refusal.Detail);
+            throw new RfqRefusedException(refusal);
         }
 
         if (TypeOf(payload) != "rfq_quote")
@@ -98,7 +99,25 @@ public static class RfqProtocol
         return quote;
     }
 
+    /// <summary>Reads a correlated status or throws a structured refusal; unknown response types return null.</summary>
+    public static RfqStatus<TProfile>? ReadStatus<TProfile>(JsonNode payload, string rfqId)
+    {
+        ValidateEnvelope(payload, rfqId);
+        if (TypeOf(payload) == "rfq_refusal")
+            throw new RfqRefusedException(payload.Deserialize<RfqRefusal>(Json)!);
+        return TypeOf(payload) == "rfq_status" ? payload.Deserialize<RfqStatus<TProfile>>(Json) : null;
+    }
 
+    private static void ValidateEnvelope(JsonNode payload, string rfqId)
+    {
+        if (payload is not JsonObject || payload["v"] is not JsonValue version
+            || !version.TryGetValue<int>(out var v) || v != Version)
+            throw new InvalidOperationException("Unsupported RFQ envelope version.");
+        if (payload["rfq_id"] is { } id && id.GetValue<string>() != rfqId)
+            throw new InvalidOperationException($"RFQ reply does not answer negotiation '{rfqId}'.");
+        if (TypeOf(payload) is "rfq_quote" or "rfq_status" && payload["rfq_id"] is null)
+            throw new InvalidOperationException("RFQ reply is missing its correlation id.");
+    }
 
     /// <summary>The payload's discriminator, or null when it carries none.</summary>
     private static string? TypeOf(System.Text.Json.Nodes.JsonNode? payload) =>

@@ -96,7 +96,8 @@ public sealed class ArkadeLightningService(
 
         var markets = await discovery.DiscoverMarketsAsync(networkName, cancellationToken: cancellationToken);
         var market = markets.FirstOrDefault(m =>
-            string.Equals(m.QuoteCorridor, "lightning", StringComparison.OrdinalIgnoreCase)
+            m.CorridorOf(MarketSide.Quote) == "lightning"
+            && m.CorridorOf(MarketSide.Base) == "arkade" && m.IsSameAsset
             && !string.IsNullOrWhiteSpace(m.DiscoveryPubkey));
 
         if (market?.DiscoveryPubkey is not { Length: > 0 } pubkey) return null;
@@ -109,7 +110,6 @@ public sealed class ArkadeLightningService(
         return _rendezvous = (pubkey, relay);
     }
 
-    /// <summary>Whether a solver has been configured, i.e. whether these corridors are usable at all.</summary>
     /// <summary>Whether a solver serving a Lightning corridor was found on this network.</summary>
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
         await RendezvousAsync(cancellationToken) is not null;

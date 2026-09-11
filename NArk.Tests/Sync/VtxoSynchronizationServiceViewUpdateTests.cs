@@ -27,11 +27,13 @@ public class VtxoSynchronizationServiceViewUpdateTests
     private IVtxoStorage _vtxoStorage = null!;
     private IClientTransport _transport = null!;
     private int _subCounter;
+    private TaskCompletionSource _subscriptionStarted = null!;
 
     [SetUp]
     public void SetUp()
     {
         _subCounter = 0;
+        _subscriptionStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _vtxoStorage = Substitute.For<IVtxoStorage>();
         _transport = Substitute.For<IClientTransport>();
         _transport.GetVtxoByScriptsAsSnapshot(
@@ -57,7 +59,7 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
+        await _subscriptionStarted.Task.WaitAsync(PollTimeout);
 
         // Stream opened with initial scripts and no existing ID.
         _transport.Received().OpenSubscriptionStreamAsync(
@@ -75,7 +77,7 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
+        await _subscriptionStarted.Task.WaitAsync(PollTimeout);
 
         scripts.Add(ScriptC);
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
@@ -99,7 +101,7 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
+        await _subscriptionStarted.Task.WaitAsync(PollTimeout);
 
         scripts.Remove(ScriptB);
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
@@ -122,7 +124,7 @@ public class VtxoSynchronizationServiceViewUpdateTests
         await using var sut = New([provider]);
 
         await sut.StartAsync(CancellationToken.None);
-        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
+        await _subscriptionStarted.Task.WaitAsync(PollTimeout);
 
         scripts.Clear();
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
@@ -148,7 +150,7 @@ public class VtxoSynchronizationServiceViewUpdateTests
 
         await using var sut = New([provider]);
         await sut.StartAsync(CancellationToken.None);
-        await TryWaitFor(() => StreamOpenCount() >= 1, PollTimeout);
+        await _subscriptionStarted.Task.WaitAsync(PollTimeout);
 
         scripts.Add(ScriptC);
         provider.ActiveScriptsChanged += Raise.Event<EventHandler>(provider, EventArgs.Empty);
@@ -232,10 +234,11 @@ public class VtxoSynchronizationServiceViewUpdateTests
         return polled;
     }
 
-    private static async IAsyncEnumerable<VtxoSubscriptionEvent> NewSubscriptionStream(
+    private async IAsyncEnumerable<VtxoSubscriptionEvent> NewSubscriptionStream(
         string id, [EnumeratorCancellation] CancellationToken ct = default)
     {
         yield return new VtxoSubscriptionStarted(id);
+        _subscriptionStarted.TrySetResult();
         var tcs = new TaskCompletionSource();
         await using (ct.Register(() => tcs.TrySetResult()))
             await tcs.Task;
