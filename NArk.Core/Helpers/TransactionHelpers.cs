@@ -72,22 +72,37 @@ public static class TransactionHelpers
         }
 
         /// <summary>
-        /// Constructs an Ark transaction with checkpoint transactions for each input
+        /// Constructs an Arkade transaction with checkpoints, preserving separate ordered payouts for indexed scripts.
         /// </summary>
         /// <param name="coins">Collection of coins and their respective signers</param>
-        /// <param name="outputs">Output transactions</param>
-        /// <param name="serverInfo">Info retrieved from Ark operator</param>
+        /// <param name="outputs">Outputs in payout order; indexed scripts require at least one per input and cannot mix with ordinary inputs.</param>
+        /// <param name="serverInfo">Info retrieved from the Arkade operator</param>
         /// <param name="cancellationToken">Cancellation token</param>
-        /// <returns>The Ark transaction and checkpoint transactions with their input witnesses</returns>
+        /// <returns>The Arkade transaction and checkpoint transactions with their input witnesses</returns>
         public async Task<(PSBT arkTx, SortedSet<IndexedPSBT> checkpoints)> ConstructArkTransaction(
             IEnumerable<ArkCoin> coins,
             TxOut[] outputs,
             ArkServerInfo serverInfo,
             CancellationToken cancellationToken)
         {
+            var coinList = coins.ToList();
+            var indexedOutputs = coinList.Any(c => c.SpendingScriptBuilder is IIndexedOutputScriptBuilder);
+            if (indexedOutputs && (coinList.Any(c => c.SpendingScriptBuilder is not IIndexedOutputScriptBuilder)
+                                   || outputs.Length < coinList.Count))
+                throw new InvalidOperationException("An indexed payout requires all inputs to be indexed and one output per input.");
+            if (indexedOutputs && coinList.GroupBy(c => c.Outpoint).Any(group => group.Count() > 1))
+                throw new InvalidOperationException("Duplicate lockup outpoints cannot contribute to an indexed payout.");
+            if (indexedOutputs)
+                for (var i = 0; i < coinList.Count; i++)
+                {
+                    if (outputs[i].Value < serverInfo.Dust && PayToTaprootTemplate.Instance.CheckScriptPubKey(outputs[i].ScriptPubKey))
+                        throw new InvalidOperationException("An indexed payout cannot be converted to a subdust OP_RETURN.");
+                    ((IIndexedOutputScriptBuilder)coinList[i].SpendingScriptBuilder)
+                        .ValidateIndexedOutput(coinList[i].TxOut, outputs[i]);
+                }
             List<PSBT> checkpoints = [];
             List<ArkCoin> checkpointCoins = [];
-            foreach (var coin in coins)
+            foreach (var coin in coinList)
             {
                 // Create a checkpoint contract
                 var checkpointContract = CreateCheckpointContract(coin, serverInfo.CheckpointTapScript);
@@ -136,6 +151,7 @@ public static class TransactionHelpers
             // Build the Ark transaction that spends from all checkpoint outputs
 
             var arkTx = CreateArkTxBuilder(serverInfo.Network);
+            if (indexedOutputs) arkTx.MergeOutputs = false;
             // arkTx.Send(p2a, Money.Zero);
             // The checkpoint's collaborative leaf preserves the original VTXO leaf's CLTV, so arkd's
             // offchain.buildArkTx re-derives the ark tx's locktime + a non-final input sequence
@@ -218,13 +234,19 @@ public static class TransactionHelpers
 
             var tx = arkTx.BuildPSBT(false, PSBTVersion.PSBTv0);
             var gtx = tx.GetGlobalTransaction();
+            if (indexedOutputs)
+            {
+                var byOutpoint = gtx.Inputs.ToDictionary(input => input.PrevOut);
+                gtx.Inputs.Clear();
+                foreach (var checkpointCoin in checkpointCoins)
+                    gtx.Inputs.Add(byOutpoint[checkpointCoin.Outpoint]);
+            }
             gtx.Outputs.Add(new TxOut(Money.Zero, Constants.ArkP2A));
 
             // NBitcoin's TransactionBuilder may reorder inputs (e.g. by amount) even
             // with ShuffleInputs=false. If asset packets are present, their input
             // indices (vin) must match the actual PSBT input order, not the original
             // coin order used when building the packet. Remap if needed.
-            var coinList = coins.ToList();
             var inputRemapping = new Dictionary<ushort, ushort>();
             var needsRemap = false;
             for (var origIdx = 0; origIdx < coinList.Count; origIdx++)
@@ -254,7 +276,9 @@ public static class TransactionHelpers
                                 Assets.AssetInput.Create(inputRemapping.GetValueOrDefault(inp.Vin, inp.Vin), inp.Amount))
                                 .ToList(),
                             g.Outputs, g.Metadata)).ToList();
-                    var remappedTxOut = Assets.Packet.Create(remappedGroups).ToTxOut();
+                    var remappedPacket = Assets.Packet.Create(remappedGroups);
+                    var remappedTxOut = new Assets.Extension(ext.Packets.Select(p =>
+                        p is Assets.Packet ? remappedPacket : p).ToArray()).ToTxOut();
                     gtx.Outputs[i].ScriptPubKey = remappedTxOut.ScriptPubKey;
                     gtx.Outputs[i].Value = remappedTxOut.Value;
                     break;
@@ -278,6 +302,11 @@ public static class TransactionHelpers
 
             foreach (var (_, coin) in sortedCheckpointCoins)
             {
+                if (coin.SignerDescriptor is null)
+                {
+                    _ = coin.FillPsbtInput(tx);
+                    continue;
+                }
                 var signer = await walletProvider.GetSignerOrThrowAsync(coin.WalletIdentifier, cancellationToken,
                     $"Cannot sign Arkade tx checkpoint input: wallet '{coin.WalletIdentifier}' has no signer (watch-only or remote signer unavailable).");
                 await PsbtHelpers.SignAndFillPsbt(signer, coin, tx, precomputedTransactionData, cancellationToken: cancellationToken);

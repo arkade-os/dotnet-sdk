@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <WarningsAsErrors>nullable</WarningsAsErrors>
+        <PackageDescription>Opt-in Entity Framework Core persistence for Arkade swap intents.</PackageDescription>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\NArk.Storage.EfCore\NArk.Storage.EfCore.csproj" />
+        <ProjectReference Include="..\NArk.ArkadeIntents\NArk.ArkadeIntents.csproj" />
+    </ItemGroup>
+</Project>

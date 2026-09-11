@@ -21,8 +21,8 @@ public enum ArkadeSwapIntentStatus
     Pending,
 
     /// <summary>
-    /// The counterparty funded the covenant and it is ours to spend
-    /// (<see cref="ArkadeSwapIntentType.LightningToBtc"/> only).
+    /// The counterparty funded a receive covenant and it is ours to spend, or an EVM route has
+    /// revealed P at L and now requires a verified ERC20 claim.
     /// </summary>
     /// <remarks>
     /// The receive direction inverts who waits on whom: the solver pays out first, so an unspent

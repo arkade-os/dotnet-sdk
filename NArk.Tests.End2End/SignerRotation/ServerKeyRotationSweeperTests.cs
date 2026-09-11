@@ -106,6 +106,13 @@ public class ServerKeyRotationSweeperTests
         var note = await DockerHelper.CreateArkNote(1_000_000);
         await contractService.ImportContract(walletId, ArkNoteContract.Parse(note));
         await batchTcs.Task.WaitAsync(TimeSpan.FromSeconds(120));
+        await WaitUntilAsync(async () =>
+            {
+                var coins = await spendingService.GetAvailableCoins(walletId);
+                return coins.Count > 0 && coins.All(c => c.Contract.Server is not null);
+            },
+            TimeSpan.FromSeconds(45),
+            "server-backed VTXOs did not appear within 45 seconds after note redemption");
 
         // ── Persist a contract UNDER THE DEPRECATED SIGNER ──────────────────────
         // ContractService.ImportContract rejects non-current server keys, so save the entity directly —

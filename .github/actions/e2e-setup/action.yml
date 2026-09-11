@@ -19,13 +19,17 @@ inputs:
       attempt is torn down with `regtest.mjs clean` so each retry starts from an empty project.
     required: false
     default: '3'
+  env-file:
+    description: Optional regtest environment override file.
+    required: false
+    default: ''
 
 runs:
   using: composite
   steps:
     - uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: 9.0.x
+        dotnet-version: 10.0.x
     - uses: actions/setup-node@v4
       with:
         node-version: '20'
@@ -34,11 +38,14 @@ runs:
       env:
         PROFILE: ${{ inputs.profile }}
         ATTEMPTS: ${{ inputs.start-attempts }}
+        ENV_FILE: ${{ inputs.env-file }}
       run: |
         set -uo pipefail
+        env_args=()
+        [ -z "$ENV_FILE" ] || env_args=(--env "$ENV_FILE")
         for attempt in $(seq 1 "$ATTEMPTS"); do
           echo "::group::regtest start (attempt $attempt/$ATTEMPTS, profiles: $PROFILE)"
-          node regtest/regtest.mjs start --profile "$PROFILE"
+          node regtest/regtest.mjs start "${env_args[@]}" --profile "$PROFILE"
           status=$?
           echo "::endgroup::"
 
@@ -55,7 +62,7 @@ runs:
             # A partial start leaves containers and volumes behind (arkd-wallet keeps its signer
             # state, nbxplorer its half-migrated db). Wipe both so the retry is a true cold boot.
             echo "Tearing down the partial stack before retrying..."
-            node regtest/regtest.mjs clean || true
+            node regtest/regtest.mjs clean "${env_args[@]}" || true
             sleep 10
           fi
         done

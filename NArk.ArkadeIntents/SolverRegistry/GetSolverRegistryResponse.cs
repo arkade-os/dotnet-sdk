@@ -4,12 +4,12 @@ namespace NArk.ArkadeIntents.SolverRegistry;
 
 /// <summary>
 /// A per-network index (the reducer/CI output published as <c>&lt;network&gt;.json</c>) in the Arkade
-/// Market Discovery Protocol v0. Markets are pre-sorted ascending by <c>fee_bps</c> within each
+/// Market Discovery Protocol v0 or v1. Markets are pre-sorted ascending by <c>fee_bps</c> within each
 /// id-pair group.
 /// </summary>
 public sealed class GetSolverRegistryResponse
 {
-    /// <summary>Discovery protocol version (must be <see cref="SolverDiscoveryService.SupportedVersion"/>).</summary>
+    /// <summary>Discovery protocol version, from zero through <see cref="SolverDiscoveryService.SupportedVersion"/>.</summary>
     public int Version { get; init; }
 
     /// <summary>The network this index covers (<c>bitcoin</c>, <c>signet</c> or <c>mutinynet</c>).</summary>

@@ -122,6 +122,23 @@ public class SolverTermsTests
     }
 
     [Test]
+    public void AnExactInputIsCheckedInItsOwnAtomicUnit_NotTheCrossAssetPayoutUnit()
+    {
+        var card = Card(AsymmetricCardJson);
+
+        Assert.Multiple(() =>
+        {
+            Assert.DoesNotThrow(() => SolverTerms.AssertInputWithinLimits(card, SendPair, 30_000));
+            Assert.That(Assert.Throws<SolverTermsException>(
+                    () => SolverTerms.AssertInputWithinLimits(card, SendPair, 50_001))!.Reason,
+                Is.EqualTo(SolverTermsRefusal.AboveMaximum));
+            Assert.That(Assert.Throws<SolverTermsException>(
+                    () => SolverTerms.AssertInputWithinLimits(card, ReceivePair, 30_000))!.Reason,
+                Is.EqualTo(SolverTermsRefusal.AboveMaximum));
+        });
+    }
+
+    [Test]
     public void ADisabledSide_RefusesThatDirectionAtAnySize()
     {
         // CardJson zeroes the base side, so this solver never pays out on Arkade: receiving from

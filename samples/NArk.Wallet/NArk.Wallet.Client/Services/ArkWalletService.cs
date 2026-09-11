@@ -229,10 +229,18 @@ public class ArkWalletService(
         string swapId, CancellationToken ct = default)
         => arkadeLightning.ClaimAsync(swapId, ct);
 
+    /// <summary>Claims through the emulator without a wallet signature.</summary>
+    public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> ClaimLightningSwapNonInteractive(
+        string swapId, CancellationToken ct = default) => arkadeLightning.ClaimNonInteractiveAsync(swapId, ct);
+
     /// <summary>Take back the deposit on a send swap the solver never filled.</summary>
     public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> RefundLightningSwap(
         string swapId, CancellationToken ct = default)
         => arkadeLightning.RefundAsync(swapId, ct);
+
+    /// <summary>Refunds through the emulator; requires the funded ninth covenant leaf.</summary>
+    public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> RefundLightningSwapNonInteractive(
+        string swapId, CancellationToken ct = default) => arkadeLightning.RefundNonInteractiveAsync(swapId, ct);
 
     // ── Arkade asset swaps (covenant + solver market) ──
 
@@ -265,7 +273,7 @@ public class ArkWalletService(
         long depositSats, long wantAssetAmount, CancellationToken ct = default)
         => arkadeSwaps.CreateSwap(new NArk.ArkadeIntents.Assets.CreateSwapRequest(
             walletId, NArk.ArkadeIntents.Models.ArkadeSwapIntentType.BtcToAsset,
-            depositSats, wantAssetAmount, AssetId.FromString(market.QuoteAsset.Id)), ct);
+            depositSats, wantAssetAmount, AssetId.FromString(market.QuoteAsset.LegacyId)), ct);
 
     /// <summary>Cancel a pending swap and reclaim the deposit via the covenant's cancel path.</summary>
     public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> CancelAssetSwap(

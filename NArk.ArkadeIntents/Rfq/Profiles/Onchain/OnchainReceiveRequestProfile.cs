@@ -33,9 +33,9 @@ public sealed class OnchainReceiveRequestProfile
     /// </summary>
     /// <remarks>
     /// Opaque to the solver, which never holds the key that opens it and validates only its shape.
-    /// A client willing to stay online for the claim may send any well-formed filler here.
+    /// Omit when the client performs its own online claim.
     /// </remarks>
-    public required string ClaimPacket { get; init; }
+    public string? ClaimPacket { get; init; }
 
     /// <summary>
     /// The client's x-only key (32 bytes, hex) on the L1 HTLC's refund leaf — the only way back if

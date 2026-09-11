@@ -8,15 +8,15 @@ using NArk.ArkadeIntents.SolverRegistry;
 namespace NArk.ArkadeIntents.Services;
 
 /// <summary>
-/// Client for the Arkade Market Discovery Protocol v0: fetches per-network solver indexes, merges
+/// Client for Arkade Market Discovery v0 and v1: fetches per-network solver indexes, merges
 /// them with local cards, filters/ranks markets for a trade, reads the market's price feed and
 /// derives the maker's <c>wantAmount</c>.
 /// </summary>
 /// <remarks>
 /// The trust anchor is each registry the client follows (PR review is the listing gate, git history
 /// the audit log, HTTPS the transport integrity); clients may follow several registries and add
-/// local cards. Indexes are cached for <see cref="_cacheTtl"/> (spec TTL ~10 min). The dormant v1
-/// (signed quotes over Nostr) is intentionally not implemented.
+/// local cards. Indexes are cached for <see cref="_cacheTtl"/>. Discovery of an external chain does
+/// not imply that this client can execute its swaps.
 /// </remarks>
 public sealed class SolverDiscoveryService
 {
@@ -27,8 +27,8 @@ public sealed class SolverDiscoveryService
     public static readonly Uri MutinynetRegistry = new("https://arkade-os.github.io/solver-registry/mutinynet.json");
     public static readonly Uri RegtestRegistry = new("https://arkade-os.github.io/solver-registry/regtest.json");
 
-    /// <summary>The only discovery protocol version this client understands.</summary>
-    public const int SupportedVersion = 0;
+    /// <summary>The highest supported discovery version; v0 remains supported.</summary>
+    public const int SupportedVersion = 1;
 
     /// <summary>Suggested default client-side safety cushion, in basis points.</summary>
     public const int DefaultSafetyBps = 50;
@@ -159,7 +159,7 @@ public sealed class SolverDiscoveryService
                 continue;
             }
 
-            if (index.Version != SupportedVersion)
+            if (index.Version is < 0 or > SupportedVersion)
             {
                 _logger?.LogWarning("Skipping registry {Registry}: version {Version} != {Supported}",
                     registry, index.Version, SupportedVersion);
@@ -178,12 +178,12 @@ public sealed class SolverDiscoveryService
                 _logger?.LogWarning("Registry {Registry} index is stale (generated {Age} ago)", registry, age);
             }
 
-            markets.AddRange(index.Markets);
+            markets.AddRange(index.Markets.Where(m => IsForNetwork(m, network, index.Version)));
         }
 
         foreach (var card in localCards ?? [])
         {
-            if (card.Version != SupportedVersion)
+            if (card.Version is < 0 or > SupportedVersion)
             {
                 _logger?.LogWarning("Skipping local card '{Name}': version {Version} != {Supported}",
                     card.Name, card.Version, SupportedVersion);
@@ -191,11 +191,24 @@ public sealed class SolverDiscoveryService
             }
             foreach (var market in card.Markets)
             {
-                markets.Add(ToIndexed(market, card));
+                if (IsForNetwork(market, network, card.Version)) markets.Add(ToIndexed(market, card));
             }
         }
 
         return markets;
+    }
+
+    private static bool IsForNetwork(SolverMarket market, string network, int version)
+    {
+        foreach (var asset in new[] { market.BaseAsset, market.QuoteAsset })
+        {
+            if (!asset.CanonicalId.Contains('/')) continue;
+            AssetIdentifier id;
+            try { id = AssetIdentifier.Parse(asset.CanonicalId); }
+            catch (FormatException) { return false; }
+            if (id.Namespace == "eip155" ? version < 1 : id.ChainReference != network) return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -203,8 +216,8 @@ public sealed class SolverDiscoveryService
     /// cheapest first at that size.
     /// </summary>
     /// <param name="markets">The discovered markets.</param>
-    /// <param name="baseAssetId">The base side's asset id — <c>btc</c> or the asset-id hex.</param>
-    /// <param name="quoteAssetId">The quote side's asset id.</param>
+    /// <param name="baseAssetId">The full canonical base id, or an old bare id for legacy-only markets.</param>
+    /// <param name="quoteAssetId">The quote id in the same identity format.</param>
     /// <param name="baseAmount">The size being traded, in base atomic units.</param>
     /// <param name="baseCorridor">The base side's rail; defaults to arkade.</param>
     /// <param name="quoteCorridor">The quote side's rail; defaults to arkade.</param>
@@ -229,12 +242,12 @@ public sealed class SolverDiscoveryService
         string? baseCorridor = null,
         string? quoteCorridor = null)
     {
-        var wanted = $"{baseCorridor ?? SolverMarket.ArkadeCorridor}:{baseAssetId}"
-                     + $"/{quoteCorridor ?? SolverMarket.ArkadeCorridor}:{quoteAssetId}";
+        var wanted = (baseAssetId.Contains('/') ? baseAssetId : $"{baseCorridor ?? SolverMarket.ArkadeCorridor}:{baseAssetId}")
+                     + "/" + (quoteAssetId.Contains('/') ? quoteAssetId : $"{quoteCorridor ?? SolverMarket.ArkadeCorridor}:{quoteAssetId}");
 
         return markets
             .Where(m => m.PairKey() == wanted)
-            .Where(m => m.MaxBaseAmount > 0 && baseAmount >= m.MinBaseAmount && baseAmount <= m.MaxBaseAmount)
+            .Where(m => m.MaxBaseAtomicAmount > 0 && baseAmount >= m.MinBaseAtomicAmount && baseAmount <= m.MaxBaseAtomicAmount)
             .OrderBy(m => m.TotalFeeOn(baseAmount))
             .ToList();
     }
@@ -482,9 +495,9 @@ public sealed class SolverDiscoveryService
         PriceDecimals = m.PriceDecimals,
         FeeBps = m.FeeBps,
         FeeFlat = m.FeeFlat,
-        MinBaseAmount = m.MinBaseAmount,
-        MaxBaseAmount = m.MaxBaseAmount,
-        MinQuoteAmount = m.MinQuoteAmount,
-        MaxQuoteAmount = m.MaxQuoteAmount,
+        MinBaseAtomicAmount = m.MinBaseAtomicAmount,
+        MaxBaseAtomicAmount = m.MaxBaseAtomicAmount,
+        MinQuoteAtomicAmount = m.MinQuoteAtomicAmount,
+        MaxQuoteAtomicAmount = m.MaxQuoteAtomicAmount,
     };
 }

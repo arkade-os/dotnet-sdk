@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NArk.ArkadeIntents.Composition;
 using NArk.ArkadeIntents.Models;
 
 namespace NArk.ArkadeIntents.Services;
@@ -75,6 +76,7 @@ public sealed class ArkadeIntentAdvanceService(
     /// </remarks>
     private async void OnSwapChanged(object? sender, ArkadeSwapIntent swap)
     {
+        if (ComposedRouteExecutionGuard.IsCompositionOwned(swap)) return;
         if (ArkadeIntentPolicy.NextAction(swap) is ArkadeIntentAction.None) return;
 
         try

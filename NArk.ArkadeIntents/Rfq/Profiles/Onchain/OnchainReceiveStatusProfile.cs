@@ -19,6 +19,12 @@ public sealed class OnchainReceiveStatusProfile
     /// <summary>The client's transaction that funded the L1 HTLC, once the solver has seen it.</summary>
     public string? FundingTxid { get; init; }
 
+    /// <summary>Observed onchain deposit in sats when it differs within the accepted range.</summary>
+    public long? FundedFromAmount { get; init; }
+
+    /// <summary>Adjusted Arkade payout in sats for the observed deposit.</summary>
+    public long? FundedToAmount { get; init; }
+
     /// <summary>The transaction that claimed the Arkade lockup — the client's own, or covclaimd's for it.</summary>
     public string? ArkadeClaimTxid { get; init; }
 

@@ -10,6 +10,20 @@ The generated API reference is published at [arkade-os.github.io/dotnet-sdk](htt
 
 ## Packages
 
+Swap persistence is available through the optional `NArk.Storage.EfCore.ArkadeIntents` package.
+Register it alongside core storage and opt into its tables in your context:
+
+```csharp
+services.AddArkEfCoreStorage<MyDbContext>();
+services.AddArkadeEfCoreStorage();
+// MyDbContext.OnModelCreating:
+modelBuilder.ConfigureArkEntities();
+modelBuilder.ConfigureArkadeEntities();
+```
+
+Broadcast asset offers do not authenticate a particular solver; their `SolverPubkey()` metadata
+is absent. RFQ swaps record the solver that quoted them.
+
 | Package | Description |
 |---------|-------------|
 | **NArk.Abstractions** | Interfaces and domain types (`IVtxoStorage`, `IContractStorage`, `IWalletProvider`, `ArkCoin`, `ArkVtxo`, etc.) |
@@ -1225,11 +1239,9 @@ markets. Which solver to trade with is the caller's decision — this only suppl
 ```csharp
 var markets = await discovery.DiscoverMarketsAsync("mutinynet");
 
-// Identity is the corridor-qualified leg pair, so a Lightning corridor and an onchain one are
-// different markets even though both are btc-against-btc.
 var ranked = SolverDiscoveryService.FilterAndRank(
-    markets, baseAssetId: "btc", quoteAssetId: "btc",
-    baseAmount: 30_000, quoteCorridor: "lightning");
+    markets, baseAssetId: "arkade:mutinynet/slip44:1",
+    quoteAssetId: "bolt11:mutinynet/slip44:1", baseAmount: 30_000);
 
 foreach (var m in ranked)
 {
@@ -1242,6 +1254,104 @@ foreach (var m in ranked)
 Ranking is by the total fee **at the size being traded**, never by `fee_bps` alone: a market with a
 lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
 
+Discovery accepts v0 and v1 cards, including cards without a display `pair`. Identity comes from
+CAIP-19: `AssetDescriptor.CanonicalId` prefers `caip19_id` in a compatibility index over its legacy
+`id` projection. Network-mismatched markets and v0 external-chain markets are excluded. V1 EIP-155
+identities remain distinct by chain and token. The EVM send primitives below bind that identity to
+the RFQ and chain proof; discovery itself still does not execute a swap.
+
+Use an explicit adapter at the current solver's legacy RFQ boundary:
+
+```csharp
+var from = AssetIdentifier.FromLegacy("btc", "mutinynet", "arkade");
+var to = AssetIdentifier.Parse("bolt11:mutinynet/slip44:1");
+var pair = LegacyRfqPairAdapter.FromCanonical(from, to);
+// pair == "arkade:BTC->lightning:BTC"
+```
+
+The generic adapter refuses a cross-network pair instead of guessing a ticker. For an explicit
+EIP-155 ERC20 identity it emits the current solver's legacy `arkade:BTC->ethereum:0x…` spelling;
+native EVM assets remain unsupported.
+RFQ `AtomicAmount`, `FromAtomicAmount`, `ToAtomicAmount` and market `*AtomicAmount` bounds use
+`BigInteger`. They read arbitrary-width canonical decimal strings, accept non-negative safe JSON
+integers for compatibility, and write decimal strings. Existing `long` amount properties remain
+checked accessors for sats APIs: they throw on overflow rather than truncate.
+Quotes and statuses require RFQ v1 and the requested correlation id; refusals retain diagnostics
+through `RfqRefusedException.Refusal`, including `ErrorCode`, `Field`, `Actual`, `Expected` and `Limit`.
+
+### Sending Arkade BTC to an ERC20
+
+`EvmSendProfile.Request` preserves the current wire contract: Arkade satoshis are a JSON number on
+the `from` side, while the quoted ERC20 atomic amount remains a full-width `BigInteger` decimal
+string. Before funding, validate the quote twice: `EvmSendQuoteValidator` binds the amount, payment
+hash, chain, token, swap contract, proof depth/age and cross-chain deadlines;
+`EvmArkadeLockupValidator` rebuilds the VHTLCv2 from live operator data and the local refund script.
+
+Once the Arkade lockup is funded and EVM state proves the solver's matching lock,
+`EvmSwapChainClient` checks `swaps(key)` at tip and at the configured depth, checks block age and
+timeout, and submits `claimFor` with the client's stored preimage through a host-provided signer.
+It accepts delivery only after the receipt, canonical `Claim` event/preimage, exact configured-token
+`Transfer` event and consumed swap state agree. The public EVM RFQ status route currently returns 404, so
+applications must derive progress from Arkade and EVM state rather than inventing solver status.
+
+Server applications can use `EvmJsonRpcClient` for bounded HTTP JSON-RPC and
+`EvmLocalTransactionSender` for locally signed EIP-1559 transactions. Configure explicit fee and gas
+ceilings, a receipt timeout, and the expected address derived from the gas-payer key. Load the 32-byte
+key into a short-lived buffer from a secret provider, construct the sender, then clear the caller's
+buffer. Never bind the key through application configuration, JSON options, or logging.
+
+```csharp
+builder.Services.AddEvmSwapChainExample(
+    new Uri(evmRpcUrl),
+    _ => gasKeyVault.ReadPrivateKey(),
+    rpcOptions,
+    senderOptions,
+    evmSendPolicy,
+    configureHttpClient: client => client.DefaultRequestHeaders.Authorization = rpcAuthorizationHeader);
+```
+
+The server-only gateway sample contains the full registration factory, including immediate clearing
+of the key buffer returned by the secret provider. URI userinfo alone is not an authentication
+guarantee: configure authentication headers on `HttpClient`, or use a provider-issued endpoint query
+token. Do not log the configured endpoint, headers, or secret values.
+
+Nonce allocation is serialized by gas-payer address inside one process. Give that key exclusively to
+one BTCPay process; multiple processes or external writers require an external nonce coordinator.
+RPC error bodies and node error messages are intentionally discarded because an estimate-gas error
+can echo `claimFor` calldata and its preimage. Response bytes and JSON depth are bounded before
+parsing. See the server-only gateway sample and [EVM send](docs/articles/evm-send.md).
+
+The current solver quotes the nine-leaf `nonInteractiveRefundWithoutReceiver` shape. Setting
+`RequireEmulatorRefundPath` (the default) refuses an older eight-leaf quote. The composed executor
+uses the emulator's non-interactive post-locktime refund path; test that configured service before
+promising unattended recovery.
+
+### Composed Arkade, Lightning, or onchain receive to ERC20
+
+`ComposedSwapClient` joins independent, client-side RFQs; a solver does not compose them. It first
+persists an exact-input Arkade-to-EVM lock `L` with a fresh preimage `P` and hash `H`, then optionally
+creates an exact-output Lightning or onchain ingress lock `M` using that same `H` and a
+non-interactive `M`-to-`L` claim. Create a new `P`/`H` for each payment rail and invoice renewal.
+
+```csharp
+var route = await composer.CreateLightningAsync(
+    walletId, amountSats, merchantEvmAddress, evmSendPolicy,
+    evmRfq, lightningRfq, covclaimdPubkey,
+    cancellationToken: cancellationToken);
+
+// A watch-only server can advance the non-interactive M-to-L claim and EVM claim.
+var progress = await executor.AdvanceAsync(route.Outgoing.RfqId, route.Ingress.RfqId, cancellationToken);
+if (progress.EvmClaimTxid is not null)
+    MarkMerchantPaymentSettled(progress.EvmClaimTxid, progress.DeliveredAmount);
+```
+
+Ingress funding and the `M`-to-`L` claim are not settlement. Only a verified ERC20 `claimFor` receipt
+with the exact transfer is final. `M`-to-`L` reveals `P` before the EVM lock necessarily exists, so
+this route relies on the outgoing solver's EVM state machine. The executor can non-interactively
+refund `L` after its deadline. It journals the deterministic EVM transaction id before broadcast and
+resumes receipt verification after a restart. `P` lives in SDK intent metadata for that recovery, so
+protect intent storage at rest and never log it. See [EVM send](docs/articles/evm-send.md) and the
+gateway `ComposedEvmSettlementExample` sample for the required registrations.
 ### Reaching a solver over its relay set
 
 A corridor card carries `discovery_pubkey` and a **list** of relays, and both halves are required —
@@ -1367,6 +1477,12 @@ reaches anyone. Nothing is at risk without it — the amount that lands on Arkad
 separately — but a customer handed an invoice for more than the order they approved is a payment
 their wallet may refuse outright.
 
+Registration copies every supplied `ArkadeIntentsOptions` value, including
+`OnchainClaimConfirmations` for automatic off-board claims (default: six). An explicit options
+object replaces earlier configured values, including null/default values. With no object, previously
+configured payer and confirmation limits are retained. The WASM sample uses manual registration
+and keeps the default corridor settings; a custom client factory must pass its options explicitly.
+
 ### The covenant co-signer
 
 Every swap contract on both corridors commits to a co-signer key, and every party to the swap has to
@@ -1401,12 +1517,51 @@ var agrees = EmulatorPubKeys.AgreesWithPin(serverInfo.NetworkName, (await emulat
 
 That comparison is a diagnostic only — nothing in the corridors reads the reported key.
 
+### Explicit watch-only claims and refunds
+
+Register the emulator spend integration alongside the intent clients. The emulator must hold the
+key committed by the funded contract; registering an endpoint does not change that commitment.
+
+```csharp
+services.AddArkadeIntentsServices();
+services.AddArkadeEmulator(o => o.ServerUrl = "http://localhost:7073");
+
+await intents.ClaimLightningReceiveNonInteractiveAsync(lightningSwapId);
+await intents.ClaimOnchainReceiveNonInteractiveAsync(onchainSwapId);
+await intents.RefundNonInteractiveAsync(outgoingSwapId);
+```
+
+These explicit methods do not request a wallet signer when the receive preimage is stored. They
+spend the covenant leaf through the emulator and preserve one pinned, full-value payout per input,
+including split funding. Claims refuse underfunding before submitting the preimage. Asset-bearing,
+duplicate, subdust, or per-input strict-floor-violating lockups are refused by these BTC corridor APIs.
+The existing claim/refund methods remain cooperative and require the wallet signer.
+
+Submitting a claim reveals the preimage to the emulator even if the transaction is rejected.
+Paying another lockup with the same hash does not keep that secret private or guarantee delivery
+on another leg. Callers must secure any downstream obligations before claiming; these primitives
+do not verify an EVM lock or orchestrate a composed swap.
+
+The refund needs the **funded ninth leaf**, `nonInteractiveRefundWithoutReceiver`, and waits for
+its locktime to mature. Eight-leaf contracts cannot acquire this capability after funding. A
+watch-only route must verify that leaf before funding; server and emulator availability are still
+required. This is not a unilateral onchain exit or EVM execution API.
+
+For custom orchestration, `VHTLCv2Contract.ToNonInteractiveClaimCoin(walletId, vtxo, preimage)` and
+`ToNonInteractiveRefundWithoutReceiverCoin(walletId, vtxo)` expose the same leaves. These helpers
+are BTC-only and reject asset covenants or VTXOs with attached assets before building a witness. Supply one
+corresponding payout per input, exactly to the stored claim/refund script; check complete funding
+before claiming and chain maturity before refunding. Do not mix indexed and ordinary inputs.
+
 ### In the sample wallet
 
 `samples/NArk.Wallet` runs both corridors in the browser — Send pays a BOLT11 or an LNURL address,
 Receive mints an invoice, and the Swap page claims and refunds. It is the Boltz submarine and
 reverse swaps this sample used to run, replaced; the Boltz chain swaps stay, having no intent
 corridor yet.
+
+The Swap page's signerless checkbox explicitly selects the emulator-backed claim/refund methods;
+it is off by default and reports a missing ninth refund leaf as an error.
 
 The wiring is `Services/ArkadeLightningService.cs`, and all of it is one options object:
 

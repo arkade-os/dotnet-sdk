@@ -96,7 +96,8 @@ public sealed class ArkadeLightningService(
 
         var markets = await discovery.DiscoverMarketsAsync(networkName, cancellationToken: cancellationToken);
         var market = markets.FirstOrDefault(m =>
-            string.Equals(m.QuoteCorridor, "lightning", StringComparison.OrdinalIgnoreCase)
+            m.CorridorOf(MarketSide.Quote) == "lightning"
+            && m.CorridorOf(MarketSide.Base) == "arkade" && m.IsSameAsset
             && !string.IsNullOrWhiteSpace(m.DiscoveryPubkey));
 
         if (market?.DiscoveryPubkey is not { Length: > 0 } pubkey) return null;
@@ -109,7 +110,6 @@ public sealed class ArkadeLightningService(
         return _rendezvous = (pubkey, relay);
     }
 
-    /// <summary>Whether a solver has been configured, i.e. whether these corridors are usable at all.</summary>
     /// <summary>Whether a solver serving a Lightning corridor was found on this network.</summary>
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
         await RendezvousAsync(cancellationToken) is not null;
@@ -178,6 +178,10 @@ public sealed class ArkadeLightningService(
         string swapId, CancellationToken cancellationToken = default) =>
         intents.ClaimLightningReceiveAsync(swapId, cancellationToken);
 
+    /// <summary>Claims through the pinned covenant and emulator without a wallet signature.</summary>
+    public Task<ArkadeSwapIntent> ClaimNonInteractiveAsync(string swapId, CancellationToken cancellationToken = default) =>
+        intents.ClaimLightningReceiveNonInteractiveAsync(swapId, cancellationToken);
+
     /// <summary>Take back the deposit on a send swap the solver never filled.</summary>
     /// <param name="swapId">The swap to refund.</param>
     /// <param name="cancellationToken">Cancels before the spend.</param>
@@ -189,6 +193,10 @@ public sealed class ArkadeLightningService(
     public Task<ArkadeSwapIntent> RefundAsync(
         string swapId, CancellationToken cancellationToken = default) =>
         intents.RefundLightningSendAsync(swapId, cancellationToken);
+
+    /// <summary>Refunds through the ninth covenant leaf; fails if the funded contract lacks it.</summary>
+    public Task<ArkadeSwapIntent> RefundNonInteractiveAsync(string swapId, CancellationToken cancellationToken = default) =>
+        intents.RefundNonInteractiveAsync(swapId, cancellationToken);
 
     /// <summary>Every Lightning swap this wallet has, newest first.</summary>
     /// <param name="walletId">The wallet.</param>

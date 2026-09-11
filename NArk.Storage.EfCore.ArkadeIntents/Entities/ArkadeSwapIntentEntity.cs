@@ -43,7 +43,7 @@ public class ArkadeSwapIntentEntity
     /// <summary>Corridor-specific state, stored as one JSON column.</summary>
     public Dictionary<string, string> Metadata { get; set; } = new();
 
-    /// <summary>The ark tx that fulfilled the swap; set once fulfilled.</summary>
+    /// <summary>The Arkade transaction that fulfilled the swap.</summary>
     public string? SpentTxid { get; set; }
 
     public static void Configure(EntityTypeBuilder<ArkadeSwapIntentEntity> builder, ArkStorageOptions options)

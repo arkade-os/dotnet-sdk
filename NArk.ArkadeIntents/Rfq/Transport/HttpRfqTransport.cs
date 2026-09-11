@@ -52,18 +52,32 @@ public sealed class HttpRfqTransport : IRfqTransport
         new(JsonSerializer.Serialize(payload, RfqProtocol.Json), Encoding.UTF8, "application/json");
 
     /// <inheritdoc />
+    public Task<RfqQuote<Profiles.Evm.EvmSendQuoteProfile>> RequestEvmSendQuoteAsync(
+        Profiles.Evm.EvmSendRfqRequest request,
+        CancellationToken cancellationToken = default) =>
+        RequestQuoteCoreAsync<Profiles.Evm.EvmSendQuoteProfile>(request, request.RfqId, request.Pair, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<RfqQuote<TQuoteProfile>> RequestQuoteAsync<TRequestProfile, TQuoteProfile>(
         RfqRequest<TRequestProfile> request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RequestQuoteCoreAsync<TQuoteProfile>(request, request.RfqId, request.Pair, cancellationToken);
+
+    private async Task<RfqQuote<TQuoteProfile>> RequestQuoteCoreAsync<TQuoteProfile>(
+        object request,
+        string rfqId,
+        string pair,
+        CancellationToken cancellationToken)
     {
-        var response = await _http.PostAsync(
-            new Uri(_baseAddress, "v1/swap"), Serialize(request), cancellationToken);
+        using var content = Serialize(request);
+        using var response = await _http.PostAsync(
+            new Uri(_baseAddress, "v1/swap"), content, cancellationToken);
 
         var payload = await ReadPayloadAsync(response, cancellationToken)
             ?? throw new InvalidOperationException(
                 $"solver returned {(int)response.StatusCode} with no RFQ payload");
 
-        return RfqProtocol.ExpectQuote<TQuoteProfile>(payload, request.RfqId, request.Pair);
+        return RfqProtocol.ExpectQuote<TQuoteProfile>(payload, rfqId, pair);
     }
 
     /// <inheritdoc />
@@ -71,13 +85,13 @@ public sealed class HttpRfqTransport : IRfqTransport
         string rfqId,
         CancellationToken cancellationToken = default)
     {
-        var response = await _http.GetAsync(new Uri(_baseAddress, $"v1/rfq/{rfqId}"), cancellationToken);
+        using var response = await _http.GetAsync(new Uri(_baseAddress, $"v1/rfq/{Uri.EscapeDataString(rfqId)}"), cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
 
         var payload = await ReadPayloadAsync(response, cancellationToken);
-        return TypeOf(payload) == "rfq_status"
-            ? payload.Deserialize<RfqStatus<TStatusProfile>>(RfqProtocol.Json)
-            : null;
+        if (payload is null)
+            throw new InvalidOperationException($"solver returned {(int)response.StatusCode} with no RFQ payload");
+        return RfqProtocol.ReadStatus<TStatusProfile>(payload, rfqId);
     }
 
     private static async Task<JsonNode?> ReadPayloadAsync(HttpResponseMessage response, CancellationToken ct)

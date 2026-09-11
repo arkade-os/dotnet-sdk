@@ -257,7 +257,8 @@ public class EfCoreArkadeIntentStorageTests
     private sealed class TestDb(DbContextOptions<TestDb> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.ConfigureArkEntities(o => o.StoreDateTimeOffsetAsTicks = true);
+            => modelBuilder.ConfigureArkEntities(o => o.StoreDateTimeOffsetAsTicks = true)
+                .ConfigureArkadeEntities(o => o.StoreDateTimeOffsetAsTicks = true);
     }
 
     private sealed class TestDbFactory(DbContextOptions<TestDb> options) : IArkDbContextFactory
