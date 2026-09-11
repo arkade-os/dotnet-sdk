@@ -163,6 +163,7 @@ jobs:
     permissions:
       contents: read
     env:
+      INTENT_SOLVER_EVM_IMAGE: intent-solver:evm-policy-ci
       ARKADE_EVM_SEND_SOLVER_URL: http://localhost:28787
       ARKADE_EVM_ARKD_URL: http://localhost:27070
       ARKADE_EVM_RPC_URL: http://localhost:28545
@@ -173,6 +174,8 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
+      - name: Build intent-solver EVM policy image
+        run: docker build -f packages/solver-app/Dockerfile -t intent-solver:evm-policy-ci 'https://github.com/arkade-os/intent-solver.git#fbe2935c49009041de4f19ea2ea8643aa5820e6b'
       - uses: ./.github/actions/e2e-setup
         with:
           profile: evm-e2e
