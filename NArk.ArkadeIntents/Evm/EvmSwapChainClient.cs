@@ -62,8 +62,8 @@ public sealed class EvmSwapChainClient
         var tip = await _rpc.GetBlockNumberAsync(cancellationToken);
         if (tip < 0)
             throw new EvmSwapProofException("connected RPC returned a negative block height");
-        if (values.TimeoutBlock <= tip)
-            throw new EvmSwapProofException("ERC20 refund height has passed");
+        _policy.RequireExecutionWindow(
+            values.TimeoutBlock, tip, null, _time.GetUtcNow().ToUnixTimeSeconds());
         if (!await IsLockedAsync(values, null, cancellationToken))
             throw new EvmSwapProofException("ERC20Swap lock is absent at the current tip");
 
@@ -90,21 +90,40 @@ public sealed class EvmSwapChainClient
         CancellationToken cancellationToken = default) =>
         await ClaimForAsync(values, preimage, null, cancellationToken);
 
-    /// <summary>Claims while durably journaling the deterministic transaction hash before broadcast.</summary>
+    /// <summary>Claims while durably journaling the signed transaction before broadcast.</summary>
     /// <param name="values">Validated six-field swap tuple.</param>
     /// <param name="preimage">The 32-byte swap preimage.</param>
-    /// <param name="onPrepared">Must durably save the transaction hash before returning.</param>
+    /// <param name="onPrepared">Must durably save the full signed transaction before returning.</param>
     /// <param name="cancellationToken">Cancels proof, preparation, persistence, broadcast, or verification.</param>
+    /// <returns>Verified transaction-local delivery.</returns>
     public async Task<EvmClaimResult> ClaimForAsync(
         Erc20SwapValues values,
         byte[] preimage,
-        Func<string, CancellationToken, Task>? onPrepared,
+        Func<EvmPreparedTransaction, CancellationToken, Task>? onPrepared,
+        CancellationToken cancellationToken = default) =>
+        await ClaimForAsync(values, preimage, onPrepared, null, cancellationToken);
+
+    /// <summary>Claims while also rechecking the Arkade refund margin at execution time.</summary>
+    /// <param name="values">Validated six-field swap tuple.</param>
+    /// <param name="preimage">The 32-byte swap preimage.</param>
+    /// <param name="onPrepared">Must durably save the full signed transaction before returning.</param>
+    /// <param name="arkadeRefundLocktime">Absolute Arkade refund time, when composing both legs.</param>
+    /// <param name="cancellationToken">Cancels proof, preparation, persistence, broadcast, or verification.</param>
+    /// <returns>Verified transaction-local delivery.</returns>
+    public async Task<EvmClaimResult> ClaimForAsync(
+        Erc20SwapValues values,
+        byte[] preimage,
+        Func<EvmPreparedTransaction, CancellationToken, Task>? onPrepared,
+        long? arkadeRefundLocktime,
         CancellationToken cancellationToken = default)
     {
         await ProveLockAsync(values, cancellationToken);
         var currentBlock = await _rpc.GetBlockNumberAsync(cancellationToken);
-        if (currentBlock < 0 || values.TimeoutBlock <= currentBlock
-            || !await IsLockedAsync(values, null, cancellationToken))
+        if (currentBlock < 0)
+            throw new EvmSwapProofException("ERC20Swap lock is not claimable immediately before signing");
+        _policy.RequireExecutionWindow(values.TimeoutBlock, currentBlock, arkadeRefundLocktime,
+            _time.GetUtcNow().ToUnixTimeSeconds());
+        if (!await IsLockedAsync(values, null, cancellationToken))
             throw new EvmSwapProofException("ERC20Swap lock is not claimable immediately before signing");
         var data = Erc20SwapCodec.ClaimForCall(preimage, values);
         var request = new EvmTransactionRequest(_policy.ChainId, _policy.SwapContractAddress, data);
@@ -117,6 +136,57 @@ public sealed class EvmSwapChainClient
         return await VerifyClaimAsync(txid, values, preimage, cancellationToken);
     }
 
+    /// <summary>Verifies a prepared claim, or safely rebroadcasts its exact bytes while both windows remain open.</summary>
+    /// <param name="prepared">Previously persisted transaction hash and signed bytes.</param>
+    /// <param name="values">Validated six-field swap tuple.</param>
+    /// <param name="preimage">The 32-byte swap preimage.</param>
+    /// <param name="arkadeRefundLocktime">Absolute Arkade refund time, when composing both legs.</param>
+    /// <param name="cancellationToken">Cancels receipt lookup, safety checks, rebroadcast, or verification.</param>
+    /// <returns>Verified transaction-local delivery.</returns>
+    /// <remarks>
+    /// Receipt verification deliberately precedes current deadline checks: a transaction mined before
+    /// or at a deadline is still authoritative after the host restarts. Only a receipt timeout permits
+    /// rebroadcast, and then only after rechecking both the EVM claim window and Arkade refund margin.
+    /// </remarks>
+    public async Task<EvmClaimResult> ResumeClaimAsync(EvmPreparedTransaction prepared,
+        Erc20SwapValues values, byte[] preimage, long? arkadeRefundLocktime,
+        CancellationToken cancellationToken = default)
+    {
+        if (_sender is not IEvmDurableTransactionSender durable)
+            throw new EvmSwapProofException("the configured EVM sender cannot resume a prepared transaction");
+        await AssertChainAsync(cancellationToken);
+        ValidateValues(values);
+        ValidateTransactionHash(prepared.TransactionHash);
+
+        EvmTransactionReceipt? receipt = null;
+        try
+        {
+            receipt = await _rpc.WaitForReceiptAsync(prepared.TransactionHash, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            // No receipt was observed within the bounded lookup. Safety may still permit replaying
+            // the exact signed bytes; every other verification/RPC failure remains terminal here.
+        }
+        if (receipt is not null)
+            return await VerifyClaimReceiptAsync(prepared.TransactionHash, receipt, values, preimage, cancellationToken);
+
+        var currentBlock = await _rpc.GetBlockNumberAsync(cancellationToken);
+        if (currentBlock < 0)
+            throw new EvmSwapProofException("ERC20Swap lock is not claimable before prepared transaction recovery");
+        _policy.RequireExecutionWindow(values.TimeoutBlock, currentBlock, arkadeRefundLocktime,
+            _time.GetUtcNow().ToUnixTimeSeconds());
+        if (!await IsLockedAsync(values, null, cancellationToken))
+            throw new EvmSwapProofException("ERC20Swap lock is not claimable before prepared transaction recovery");
+
+        var request = new EvmTransactionRequest(
+            _policy.ChainId, _policy.SwapContractAddress, Erc20SwapCodec.ClaimForCall(preimage, values));
+        var txid = await durable.ResumeAsync(request, prepared, cancellationToken);
+        if (!txid.Equals(prepared.TransactionHash, StringComparison.OrdinalIgnoreCase))
+            throw new EvmSwapProofException("resumed EVM sender returned a different transaction hash");
+        return await VerifyClaimAsync(txid, values, preimage, cancellationToken);
+    }
+
     /// <summary>Resumes receipt verification for a previously journaled claim transaction.</summary>
     public async Task<EvmClaimResult> VerifyClaimAsync(
         string transactionHash,
@@ -126,11 +196,15 @@ public sealed class EvmSwapChainClient
     {
         await AssertChainAsync(cancellationToken);
         ValidateValues(values);
-        if (transactionHash is null || transactionHash.Length != 66
-            || !transactionHash.StartsWith("0x", StringComparison.Ordinal)
-            || !transactionHash[2..].All(Uri.IsHexDigit))
-            throw new EvmSwapProofException("claim transaction hash is not canonical");
+        ValidateTransactionHash(transactionHash);
         var receipt = await _rpc.WaitForReceiptAsync(transactionHash, cancellationToken);
+        return await VerifyClaimReceiptAsync(transactionHash, receipt, values, preimage, cancellationToken);
+    }
+
+    private async Task<EvmClaimResult> VerifyClaimReceiptAsync(string transactionHash,
+        EvmTransactionReceipt receipt, Erc20SwapValues values, byte[] preimage,
+        CancellationToken cancellationToken)
+    {
         if (!receipt.Succeeded || !receipt.TransactionHash.Equals(transactionHash, StringComparison.OrdinalIgnoreCase))
             throw new EvmSwapProofException("claimFor transaction did not succeed");
         var revealed = VerifyClaimEvent(receipt, values, _policy.SwapContractAddress);
@@ -141,6 +215,14 @@ public sealed class EvmSwapChainClient
         if (await IsLockedAsync(values, null, cancellationToken))
             throw new EvmSwapProofException("ERC20Swap lock remains active after the claim");
         return new EvmClaimResult(transactionHash, delivered, revealed);
+    }
+
+    private static void ValidateTransactionHash(string transactionHash)
+    {
+        if (transactionHash is null || transactionHash.Length != 66
+            || !transactionHash.StartsWith("0x", StringComparison.Ordinal)
+            || !transactionHash[2..].All(Uri.IsHexDigit))
+            throw new EvmSwapProofException("claim transaction hash is not canonical");
     }
 
     private async Task AssertChainAsync(CancellationToken cancellationToken)

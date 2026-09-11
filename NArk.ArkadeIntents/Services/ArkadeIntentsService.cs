@@ -11,6 +11,7 @@ using NArk.ArkadeIntents.SolverRegistry;
 using NBitcoin;
 
 using NArk.ArkadeIntents.Assets;
+using NArk.ArkadeIntents.Composition;
 namespace NArk.ArkadeIntents.Services;
 
 /// <summary>What <see cref="ArkadeIntentsService.AdvanceAsync"/> did about one swap.</summary>
@@ -464,6 +465,8 @@ public sealed class ArkadeIntentsService
     /// swaps and one that cannot proceed must not stop the others. A swap that needs nothing comes
     /// back with <see cref="ArkadeIntentAction.None"/> and <c>Acted: false</c>, which is a normal
     /// answer rather than a problem.
+    /// Linked receive claims are also returned as no-ops: <see cref="ComposedSwapExecutionClient"/>
+    /// owns their validated non-interactive M-to-L transition and prevents competing spend locks.
     /// </remarks>
     public async Task<ArkadeIntentAdvance> AdvanceAsync(
         string swapId, CancellationToken cancellationToken = default)
@@ -476,6 +479,8 @@ public sealed class ArkadeIntentsService
         {
             return new ArkadeIntentAdvance(swapId, action, Acted: false);
         }
+        if (action == ArkadeIntentAction.ClaimReceive && ComposedRouteExecutionGuard.IsLinked(intent))
+            return new ArkadeIntentAdvance(swapId, ArkadeIntentAction.None, Acted: false);
 
         try
         {
@@ -723,7 +728,10 @@ public sealed class ArkadeIntentsService
                 await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
             }
 
-            if (ArkadeIntentPolicy.NextAction(intent) == ArkadeIntentAction.None) continue;
+            var action = ArkadeIntentPolicy.NextAction(intent);
+            if (action == ArkadeIntentAction.None
+                || action == ArkadeIntentAction.ClaimReceive && ComposedRouteExecutionGuard.IsLinked(intent))
+                continue;
             results.Add(await AdvanceAsync(intent.Id, cancellationToken));
         }
 

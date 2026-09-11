@@ -11,6 +11,7 @@ using NArk.ArkadeIntents.Evm;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Onchain;
+using NArk.ArkadeIntents.Services;
 using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Tests.Arkade;
@@ -68,6 +69,32 @@ public class ComposedSwapExecutionTests
         Assert.That(ctx.Emulator.ArkTx!.Outputs.Take(2).Select(o => o.Value.Satoshi),
             Is.EqualTo(new long[] { 30_000, 70_000 }));
         Assert.That(ctx.Emulator.ArkTx.Outputs.Take(2).All(o => o.ScriptPubKey == ctx.L.GetScriptPubKey()), Is.True);
+        await ctx.Wallet.DidNotReceive().GetSignerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task BackgroundAdvance_LeavesLinkedIngressToComposedExecutor(bool onchain)
+    {
+        using var ctx = new Harness(onchain);
+        var service = new ArkadeIntentsService(
+            null!, ctx.Lightning, ctx.Storage, ctx.VtxoStorage, ctx.Transport, ctx.Onchain,
+            time: new FixedClock());
+
+        var result = await service.AdvanceAsync(ctx.Ingress.Id);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Action, Is.EqualTo(ArkadeIntentAction.None));
+            Assert.That(result.Acted, Is.False);
+            Assert.That(result.Error, Is.Null);
+            Assert.That(ctx.Ingress.Status, Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
+            Assert.That(ctx.Emulator.ArkTx, Is.Null);
+        });
+        Assert.That(await service.AdvanceAllAsync(), Is.Empty);
+        var composed = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
+        Assert.That(composed.IngressStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        Assert.That(ctx.Emulator.ArkTx, Is.Not.Null);
         await ctx.Wallet.DidNotReceive().GetSignerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -145,6 +172,28 @@ public class ComposedSwapExecutionTests
         Assert.That(ctx.Rpc.ReceivedCalls(), Is.Empty);
     }
 
+    [TestCase("unrolled")]
+    [TestCase("unconfirmed")]
+    [TestCase("expired")]
+    public void EvmClaim_PendingOutgoingRejectsUnspendableFunding(string state)
+    {
+        using var ctx = new Harness(false);
+        ctx.SetUnspendableOutgoingFunding(state);
+
+        Assert.ThrowsAsync<InvalidOperationException>(() => ctx.Execution().AdvanceAsync(ctx.Outgoing.Id));
+        Assert.That(ctx.Sender.Calls, Is.Zero);
+    }
+
+    [Test]
+    public void EvmClaim_RejectsWhenArkadeRefundMarginWasConsumed()
+    {
+        using var ctx = new Harness(false) { OutgoingFunded = true };
+        ctx.Outgoing.RefundLocktime = 1_799_997_299;
+
+        Assert.ThrowsAsync<EvmSwapProofException>(() => ctx.Execution().AdvanceAsync(ctx.Outgoing.Id));
+        Assert.That(ctx.Sender.Calls, Is.Zero);
+    }
+
     /// <summary>Source delivery advances ingress without prematurely claiming ERC20.</summary>
     [TestCase(false)]
     [TestCase(true)]
@@ -182,7 +231,7 @@ public class ComposedSwapExecutionTests
         Assert.That(ctx.Sender.Calls, Is.EqualTo(1));
     }
 
-    /// <summary>A prepared transaction resumes by receipt lookup, never another submission.</summary>
+    /// <summary>A legacy hash-only journal resumes by receipt lookup without signing another transaction.</summary>
     [Test]
     public async Task Restart_VerifiesPreparedTransactionWithoutAnotherSubmission()
     {
@@ -208,9 +257,63 @@ public class ComposedSwapExecutionTests
         Assert.That(ctx.Sender.Calls, Is.Zero);
     }
 
-    /// <summary>Uncertain verification retains the prepared identity across process restarts.</summary>
     [Test]
-    public async Task UncertainReceipt_RemainsClaimableAndRestartOnlyVerifies()
+    public async Task PreparedClaim_MinedAfterDeadlineIsReconciledBeforeArkadeRefundWithoutBroadcast()
+    {
+        using var ctx = new Harness(false) { OutgoingFunded = true, LockIsPresent = false };
+        ctx.Outgoing.Status = ArkadeSwapIntentStatus.Refundable;
+        ctx.Outgoing.RefundLocktime = 1_799_989_999;
+        ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = Harness.ClaimTxid;
+        ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+
+        var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
+
+        Assert.That(result.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        Assert.That(result.EvmClaimTxid, Is.EqualTo(Harness.ClaimTxid));
+        Assert.That(ctx.Emulator.ArkTx, Is.Null);
+        Assert.That(ctx.Sender.Broadcasts, Is.Zero);
+    }
+
+    [Test]
+    public void PreparedClaim_UnminedAfterDeadlineIsNeitherRebroadcastNorRefunded()
+    {
+        using var ctx = new Harness(false) { OutgoingFunded = true, RequireBroadcastForReceipt = true };
+        ctx.Outgoing.Status = ArkadeSwapIntentStatus.Refundable;
+        ctx.Outgoing.RefundLocktime = 1_799_989_999;
+        ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = Harness.ClaimTxid;
+        ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+
+        Assert.ThrowsAsync<EvmSwapProofException>(() => ctx.Execution().AdvanceAsync(ctx.Outgoing.Id));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(ctx.Outgoing.Status, Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+            Assert.That(ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid],
+                Is.EqualTo(Harness.ClaimTxid));
+            Assert.That(ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction],
+                Is.EqualTo("0x02aa"));
+            Assert.That(ctx.Sender.Broadcasts, Is.Zero);
+            Assert.That(ctx.Emulator.ArkTx, Is.Null);
+        });
+    }
+
+    [Test]
+    public async Task Restart_RebroadcastsTheExactPreparedTransaction()
+    {
+        using var ctx = new Harness(false) { OutgoingFunded = true, RequireBroadcastForReceipt = true };
+        ctx.Sender.FailAfterPrepareOnce = true;
+
+        Assert.ThrowsAsync<IOException>(() => ctx.Execution().AdvanceAsync(ctx.Outgoing.Id));
+        var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
+
+        Assert.That(result.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        Assert.That(ctx.Sender.Broadcasts, Is.EqualTo(1));
+        Assert.That(ctx.Sender.ResumedPrepared, Is.EqualTo(new EvmPreparedTransaction(Harness.ClaimTxid, "0x02aa")));
+    }
+
+    /// <summary>A receipt found on restart is verified without needlessly replaying prepared bytes.</summary>
+    [Test]
+    public async Task UncertainReceipt_RemainsClaimableAndRestartVerifiesBeforeRebroadcast()
     {
         using var ctx = new Harness(false);
         ctx.Outgoing.Status = ArkadeSwapIntentStatus.Claimable;
@@ -223,7 +326,11 @@ public class ComposedSwapExecutionTests
         ctx.FailReceipt = false;
         var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
         Assert.That(result.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
-        Assert.That(ctx.Sender.Calls, Is.EqualTo(1));
+        Assert.Multiple(() =>
+        {
+            Assert.That(ctx.Sender.Calls, Is.EqualTo(1));
+            Assert.That(ctx.Sender.Broadcasts, Is.EqualTo(1));
+        });
     }
 
     /// <summary>Composition rejects inconsistent persisted legs before revealing their secret.</summary>
@@ -334,9 +441,9 @@ public class ComposedSwapExecutionTests
         Assert.That(ctx.Outgoing.Status, Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
     }
 
-    /// <summary>A failed final write resumes verification of the same prepared transaction.</summary>
+    /// <summary>A failed final write verifies the already-mined prepared transaction without replay.</summary>
     [Test]
-    public async Task CompletionPersistenceFailure_RetryVerifiesWithoutResubmission()
+    public async Task CompletionPersistenceFailure_RetryVerifiesPreparedTransactionWithoutRebroadcast()
     {
         using var ctx = new Harness(false);
         ctx.Outgoing.Status = ArkadeSwapIntentStatus.Claimable;
@@ -383,6 +490,7 @@ public class ComposedSwapExecutionTests
         internal readonly IVtxoStorage VtxoStorage = Substitute.For<IVtxoStorage>();
         internal readonly IContractStorage Contracts = Substitute.For<IContractStorage>();
         internal readonly IClientTransport Transport = Substitute.For<IClientTransport>();
+        internal readonly IBitcoinBlockchain Blockchain = Substitute.For<IBitcoinBlockchain>();
         internal readonly RecordingEmulator Emulator = new();
         internal readonly LightningIntentsClient Lightning;
         internal readonly OnchainIntentsClient Onchain;
@@ -394,6 +502,7 @@ public class ComposedSwapExecutionTests
         internal bool ReceiptSucceeded = true;
         internal bool LockIsPresent = true;
         internal bool OutgoingFunded;
+        internal bool RequireBroadcastForReceipt;
         internal Erc20SwapValues Values => new(Outgoing.PaymentHash!, 1_000_000,
             "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222",
             "0x3333333333333333333333333333333333333333", 200);
@@ -439,13 +548,13 @@ public class ComposedSwapExecutionTests
             Storage.GetArkadeSwapIntents().ReturnsForAnyArgs(call => new[] { Outgoing, Ingress }
                 .Where(i => call.ArgAt<string?>(0) is not { } id || id == i.Id).ToArray());
             Transport.GetServerInfoAsync(Arg.Any<CancellationToken>()).Returns(NonInteractiveTestData.ServerInfo());
-            var blockchain = Substitute.For<IBitcoinBlockchain>();
-            blockchain.GetChainTime(default).ReturnsForAnyArgs(new TimeHeight(DateTimeOffset.FromUnixTimeSeconds(1_800_000_001), 200));
+            Blockchain.GetChainTime(default).ReturnsForAnyArgs(
+                new TimeHeight(DateTimeOffset.FromUnixTimeSeconds(1_800_000_001), 200));
             var spending = NonInteractiveTestData.Spending(Wallet, funding, Emulator);
             Lightning = new LightningIntentsClient(Transport, Substitute.For<IContractService>(), spending,
-                Storage, Contracts, VtxoStorage, Wallet, blockchain: blockchain, time: new FixedClock());
+                Storage, Contracts, VtxoStorage, Wallet, blockchain: Blockchain, time: new FixedClock());
             Onchain = new OnchainIntentsClient(Transport, Substitute.For<IContractService>(), spending,
-                Storage, Contracts, VtxoStorage, Wallet, blockchain, time: new FixedClock());
+                Storage, Contracts, VtxoStorage, Wallet, Blockchain, time: new FixedClock());
             Sender = new Sender(this);
             Storage.WhenForAnyArgs(s => s.SaveArkadeSwapIntent(default!, default)).Do(call =>
             {
@@ -465,6 +574,7 @@ public class ComposedSwapExecutionTests
             Rpc.WaitForReceiptAsync(default!, default).ReturnsForAnyArgs(_ =>
             {
                 if (FailReceipt) throw new TimeoutException();
+                if (RequireBroadcastForReceipt && Sender.Broadcasts == 0) throw new TimeoutException();
                 LockIsPresent = false;
                 return new EvmTransactionReceipt(ClaimTxid, ReceiptSucceeded,
                 [
@@ -484,9 +594,10 @@ public class ComposedSwapExecutionTests
             FastestSecondsPerBlock = 1,
             SlowestSecondsPerBlock = 1,
             MinConfirmations = 1,
-            MinAgeSeconds = 1
+            MinAgeSeconds = 1,
+            MinimumClaimWindowSeconds = 0
         };
-        internal ComposedSwapExecutionClient Execution() => new(Storage, VtxoStorage, Contracts, Transport, Lightning, Onchain,
+        internal ComposedSwapExecutionClient Execution() => new(Storage, VtxoStorage, Blockchain, Contracts, Transport, Lightning, Onchain,
             Rpc, Sender, Policy, new FixedClock());
         private static string Topic(string address) => "0x" + new string('0', 24) + address[2..];
 
@@ -499,6 +610,23 @@ public class ComposedSwapExecutionTests
                 NonInteractiveTestData.Funding(L, 30_000, 70_000 + delta));
             if (asset)
                 vtxos[0] = vtxos[0] with { Assets = [new VtxoAsset(new string('f', 68), 1)] };
+            VtxoStorage.GetVtxos().ReturnsForAnyArgs(vtxos);
+        }
+
+        internal void SetUnspendableOutgoingFunding(string state)
+        {
+            var vtxos = NonInteractiveTestData.Vtxos(L,
+                NonInteractiveTestData.Funding(L, 30_000, 70_000));
+            vtxos[0] = state switch
+            {
+                "unrolled" => vtxos[0] with { Unrolled = true },
+                "unconfirmed" => vtxos[0] with
+                {
+                    Metadata = new Dictionary<string, string> { [ArkVtxo.ConfirmedMetadataKey] = bool.FalseString }
+                },
+                "expired" => vtxos[0] with { ExpiresAt = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000) },
+                _ => throw new ArgumentOutOfRangeException(nameof(state))
+            };
             VtxoStorage.GetVtxos().ReturnsForAnyArgs(vtxos);
         }
 
@@ -526,18 +654,35 @@ public class ComposedSwapExecutionTests
     {
         internal int Calls;
         internal int Broadcasts;
+        internal bool FailAfterPrepareOnce;
+        internal EvmPreparedTransaction? ResumedPrepared;
         internal EvmTransactionRequest? Request;
         public Task<string> SendAsync(EvmTransactionRequest request, CancellationToken cancellationToken = default) =>
             throw new AssertionException("composed execution must journal before broadcast");
         public async Task<string> SendAsync(EvmTransactionRequest request,
-            Func<string, CancellationToken, Task> onPrepared, CancellationToken cancellationToken = default)
+            Func<EvmPreparedTransaction, CancellationToken, Task> onPrepared, CancellationToken cancellationToken = default)
         {
             Calls++;
             Request = request;
-            await onPrepared(Harness.ClaimTxid, cancellationToken);
+            await onPrepared(new EvmPreparedTransaction(Harness.ClaimTxid, "0x02aa"), cancellationToken);
+            if (FailAfterPrepareOnce)
+            {
+                FailAfterPrepareOnce = false;
+                throw new IOException("process stopped before broadcast");
+            }
             Broadcasts++;
             Assert.That(harness.SavedStates.Last(), Is.EqualTo((harness.Outgoing.Status, Harness.ClaimTxid, (string?)null)));
             return Harness.ClaimTxid;
+        }
+
+        public Task<string> ResumeAsync(EvmTransactionRequest request, EvmPreparedTransaction prepared,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            Request = request;
+            ResumedPrepared = prepared;
+            Broadcasts++;
+            return Task.FromResult(prepared.TransactionHash);
         }
     }
 

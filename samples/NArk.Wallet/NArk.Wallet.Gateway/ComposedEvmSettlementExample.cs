@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents;
@@ -29,6 +30,7 @@ internal static class ComposedEvmSettlementExample
         services.AddSingleton(serviceProvider => new ComposedSwapExecutionClient(
             serviceProvider.GetRequiredService<IArkadeIntentStorage>(),
             serviceProvider.GetRequiredService<IVtxoStorage>(),
+            serviceProvider.GetRequiredService<IBitcoinBlockchain>(),
             serviceProvider.GetRequiredService<IContractStorage>(),
             serviceProvider.GetRequiredService<IClientTransport>(),
             serviceProvider.GetRequiredService<LightningIntentsClient>(),

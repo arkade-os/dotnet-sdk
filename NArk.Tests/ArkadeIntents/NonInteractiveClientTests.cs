@@ -29,6 +29,44 @@ public class NonInteractiveClientTests
         Assert.That(ctx.Emulator.ArkTx, Is.Null);
     }
 
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task BackgroundAdvance_OrdinaryReceiveRemainsCooperative(bool onchain)
+    {
+        using var ctx = new Harness(onchain);
+        ctx.Intent.Status = ArkadeSwapIntentStatus.Claimable;
+
+        var result = await ctx.Service.AdvanceAsync(ctx.Intent.Id);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Action, Is.EqualTo(ArkadeIntentAction.ClaimReceive));
+            Assert.That(result.Acted, Is.False);
+            Assert.That(result.Error, Does.Contain("no signer"));
+            Assert.That(ctx.Emulator.ArkTx, Is.Null);
+        });
+    }
+
+    [Test]
+    public async Task BackgroundAdvance_LinkedOnchainRefundIsNotDelegatedToComposedExecutor()
+    {
+        using var ctx = new Harness(onchain: true);
+        ctx.Intent.Metadata[ArkadeSwapMetadataKeys.ComposedOutgoingSwapId] = "outgoing-swap";
+
+        var direct = await ctx.Service.AdvanceAsync(ctx.Intent.Id);
+        var sweep = await ctx.Service.AdvanceAllAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(direct.Action, Is.EqualTo(ArkadeIntentAction.RefundOnchain));
+            Assert.That(direct.Acted, Is.False,
+                "the fixture has no recorded L1 leg, but the refund corridor must still be called");
+            Assert.That(direct.Error, Does.Contain("not recorded"));
+            Assert.That(sweep, Has.Count.EqualTo(1));
+            Assert.That(sweep[0].Action, Is.EqualTo(ArkadeIntentAction.RefundOnchain));
+        });
+    }
+
     [Test]
     public void CooperativeRefund_DoesNotSilentlySwitchToSignerless()
     {
