@@ -1451,6 +1451,12 @@ reaches anyone. Nothing is at risk without it — the amount that lands on Arkad
 separately — but a customer handed an invoice for more than the order they approved is a payment
 their wallet may refuse outright.
 
+Registration copies every supplied `ArkadeIntentsOptions` value, including
+`OnchainClaimConfirmations` for automatic off-board claims (default: six). An explicit options
+object replaces earlier configured values, including null/default values. With no object, previously
+configured payer and confirmation limits are retained. The WASM sample uses manual registration
+and keeps the default corridor settings; a custom client factory must pass its options explicitly.
+
 ### The covenant co-signer
 
 Every swap contract on both corridors commits to a co-signer key, and every party to the swap has to

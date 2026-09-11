@@ -67,6 +67,11 @@ await intents.RefundLightningSendAsync(funded.RfqId);
 
 ## Receiving: be paid over Lightning, take delivery on Arkade
 
+Pass `new ArkadeIntentsOptions { MaxPayAmountSats = 250_000 }` to
+`AddArkadeIntentsServices(...)` to cap the receive quote's payer amount. All supplied options reach
+the registered clients, including a null ceiling. Omitting the options object retains a ceiling
+already set through `Configure<ArkadeIntentsOptions>`.
+
 ```csharp
 var pending = await intents.ReceiveFromLightningAsync(
     walletId: "my-wallet",

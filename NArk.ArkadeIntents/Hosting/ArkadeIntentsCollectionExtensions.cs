@@ -24,14 +24,21 @@ public static class ArkadeIntentsCollectionExtensions
     /// </summary>
     /// <param name="services">The container.</param>
     /// <param name="options">
-    /// Shared corridor settings, or <c>null</c> for the defaults. Registered here so both corridors
-    /// read the same ones.
+    /// All supplied corridor settings are copied, including payer limits and L1 confirmation policy.
+    /// With <c>null</c>, existing limits remain unchanged and the default emulator key is selected.
     /// </param>
     public static IServiceCollection AddArkadeIntentsServices(
         this IServiceCollection services, ArkadeIntentsOptions? options = null)
     {
         services.Configure<ArkadeIntentsOptions>(configured =>
-            configured.EmulatorPubkeyOverride = options?.EmulatorPubkeyOverride);
+        {
+            configured.EmulatorPubkeyOverride = options?.EmulatorPubkeyOverride;
+            if (options is not null)
+            {
+                configured.MaxPayAmountSats = options.MaxPayAmountSats;
+                configured.OnchainClaimConfirmations = options.OnchainClaimConfirmations;
+            }
+        });
         // Singleton, not AddHttpClient<T>: that registers the client TRANSIENT, and the service
         // caches each registry index in an instance field. A fresh instance per injection means the
         // TTL never hits and every discovery call re-fetches every registry.
