@@ -99,7 +99,9 @@ jobs:
       # Seconds-typed timelocks — see this file's header for why the RFQ corridors cannot run on
       # the block-typed defaults. All five are set and all are ≥ 512 so arkd reads them as seconds;
       # a mixed set is not a thing arkd will serve.
-      ARKD_VTXO_TREE_EXPIRY: '7200'
+      # The solver quotes a 7200-second refund horizon. Its funding coins must outlive that lock,
+      # including startup and quote latency; equality makes otherwise identical runs timing-sensitive.
+      ARKD_VTXO_TREE_EXPIRY: '21600'
       ARKD_BOARDING_EXIT_DELAY: '4096'
       ARKD_UNILATERAL_EXIT_DELAY: '2048'
       ARKD_PUBLIC_UNILATERAL_EXIT_DELAY: '2048'
