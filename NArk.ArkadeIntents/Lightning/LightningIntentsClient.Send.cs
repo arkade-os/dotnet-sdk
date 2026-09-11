@@ -486,7 +486,18 @@ public sealed partial class LightningIntentsClient
         }
     }
 
-    public async Task<ArkadeSwapIntent> RefundSwap(string swapId, CancellationToken cancellationToken = default)
+    /// <summary>Refunds an outgoing corridor cooperatively with the sender's wallet signer after maturity.</summary>
+    public Task<ArkadeSwapIntent> RefundSwap(string swapId, CancellationToken cancellationToken = default) =>
+        RefundCoreAsync(swapId, false, cancellationToken);
+
+    /// <summary>Refunds an outgoing corridor through its ninth covenant leaf without a wallet signer or preimage.</summary>
+    /// <param name="swapId">The recorded outgoing swap; its funded contract must include the ninth leaf.</param>
+    /// <param name="cancellationToken">Cancels before submission.</param>
+    /// <returns>The cancelled intent after the emulator submits the pinned refund.</returns>
+    public Task<ArkadeSwapIntent> RefundNonInteractiveAsync(string swapId, CancellationToken cancellationToken = default) =>
+        RefundCoreAsync(swapId, true, cancellationToken);
+
+    private async Task<ArkadeSwapIntent> RefundCoreAsync(string swapId, bool nonInteractive, CancellationToken cancellationToken)
     {
         var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
                      ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
@@ -519,13 +530,14 @@ public sealed partial class LightningIntentsClient
             var vtxos = await _vtxoStorage.GetVtxos(
                 scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
             var refundable = SelectRefundable(vtxos, swapId);
+            var pinnedOutputs = nonInteractive ? NonInteractiveVhtlcSpend.Outputs(contract, refundable, serverInfo, refund: true) : null;
+            if (nonInteractive)
+                await AssertLocktimeReachedAsync(swapId, contract.RefundLocktime.Value, cancellationToken);
 
-            // `refundWithoutReceiver`: our own key plus the server, once the locktime checked above
-            // has passed. Deliberately not the faster `nonInteractiveRefund` leaf — that one needs
-            // the solver's signature, so it is a path the two of us take by agreement, not one we
-            // can take alone. This is the exit that depends on no counterparty.
+            // Neither path requires the receiver; only the ninth leaf also removes the sender signature.
             var coins = refundable
-                .Select(v => contract.ToRefundWithoutReceiverCoin(intent.WalletId, v))
+                .Select(v => nonInteractive ? contract.ToNonInteractiveRefundWithoutReceiverCoin(intent.WalletId, v)
+                    : contract.ToRefundWithoutReceiverCoin(intent.WalletId, v))
                 .ToArray();
             var total = refundable.Aggregate(0UL, (sum, v) => sum + v.Amount);
 
@@ -535,7 +547,7 @@ public sealed partial class LightningIntentsClient
             var destination = RefundAddressOf(contract, serverInfo.SignerKey.ToXOnlyPubKey());
             var output = new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)total), destination);
 
-            var txid = await _spendingService.Spend(intent.WalletId, coins, [output], cancellationToken);
+            var txid = await _spendingService.Spend(intent.WalletId, coins, pinnedOutputs ?? [output], cancellationToken);
 
             intent.Status = ArkadeSwapIntentStatus.Cancelled;
             intent.SpentTxid = txid.ToString();

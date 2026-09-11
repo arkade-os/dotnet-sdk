@@ -1485,12 +1485,51 @@ var agrees = EmulatorPubKeys.AgreesWithPin(serverInfo.NetworkName, (await emulat
 
 That comparison is a diagnostic only — nothing in the corridors reads the reported key.
 
+### Explicit watch-only claims and refunds
+
+Register the emulator spend integration alongside the intent clients. The emulator must hold the
+key committed by the funded contract; registering an endpoint does not change that commitment.
+
+```csharp
+services.AddArkadeIntentsServices();
+services.AddArkadeEmulator(o => o.ServerUrl = "http://localhost:7073");
+
+await intents.ClaimLightningReceiveNonInteractiveAsync(lightningSwapId);
+await intents.ClaimOnchainReceiveNonInteractiveAsync(onchainSwapId);
+await intents.RefundNonInteractiveAsync(outgoingSwapId);
+```
+
+These explicit methods do not request a wallet signer when the receive preimage is stored. They
+spend the covenant leaf through the emulator and preserve one pinned, full-value payout per input,
+including split funding. Claims refuse underfunding before submitting the preimage. Asset-bearing,
+duplicate, subdust, or per-input strict-floor-violating lockups are refused by these BTC corridor APIs.
+The existing claim/refund methods remain cooperative and require the wallet signer.
+
+Submitting a claim reveals the preimage to the emulator even if the transaction is rejected.
+Paying another lockup with the same hash does not keep that secret private or guarantee delivery
+on another leg. Callers must secure any downstream obligations before claiming; these primitives
+do not verify an EVM lock or orchestrate a composed swap.
+
+The refund needs the **funded ninth leaf**, `nonInteractiveRefundWithoutReceiver`, and waits for
+its locktime to mature. Eight-leaf contracts cannot acquire this capability after funding. A
+watch-only route must verify that leaf before funding; server and emulator availability are still
+required. This is not a unilateral onchain exit or EVM execution API.
+
+For custom orchestration, `VHTLCv2Contract.ToNonInteractiveClaimCoin(walletId, vtxo, preimage)` and
+`ToNonInteractiveRefundWithoutReceiverCoin(walletId, vtxo)` expose the same leaves. These helpers
+are BTC-only and reject asset covenants or VTXOs with attached assets before building a witness. Supply one
+corresponding payout per input, exactly to the stored claim/refund script; check complete funding
+before claiming and chain maturity before refunding. Do not mix indexed and ordinary inputs.
+
 ### In the sample wallet
 
 `samples/NArk.Wallet` runs both corridors in the browser — Send pays a BOLT11 or an LNURL address,
 Receive mints an invoice, and the Swap page claims and refunds. It is the Boltz submarine and
 reverse swaps this sample used to run, replaced; the Boltz chain swaps stay, having no intent
 corridor yet.
+
+The Swap page's signerless checkbox explicitly selects the emulator-backed claim/refund methods;
+it is off by default and reports a missing ninth refund leaf as an error.
 
 The wiring is `Services/ArkadeLightningService.cs`, and all of it is one options object:
 

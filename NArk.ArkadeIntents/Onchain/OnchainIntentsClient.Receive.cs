@@ -385,7 +385,7 @@ public sealed partial class OnchainIntentsClient
     }
 
     /// <summary>
-    /// Take delivery: spend the Arkade lockup the solver funded, revealing the preimage.
+    /// Take delivery cooperatively using the receiver's wallet signer, revealing the preimage.
     /// </summary>
     /// <param name="swapId">The negotiation's correlation id.</param>
     /// <param name="cancellationToken">Cancels before the spend; after it the claim is live regardless.</param>
@@ -400,8 +400,18 @@ public sealed partial class OnchainIntentsClient
     /// direction — leave it unclaimed and the solver reclaims its lockup, after which our only move
     /// is the L1 refund.
     /// </remarks>
-    public async Task<ArkadeSwapIntent> ClaimOnchainReceiveAsync(
-        string swapId, CancellationToken cancellationToken = default)
+    public Task<ArkadeSwapIntent> ClaimOnchainReceiveAsync(
+        string swapId, CancellationToken cancellationToken = default) => ClaimReceiveCoreAsync(swapId, false, cancellationToken);
+
+    /// <summary>Claims the funded Arkade side of an on-board without a wallet signer, through its pinned covenant payout.</summary>
+    /// <param name="swapId">The recorded on-board, including its stored preimage for watch-only wallets.</param>
+    /// <param name="cancellationToken">Cancels before submission; submission reveals the preimage.</param>
+    /// <returns>The fulfilled intent after the emulator submits the claim.</returns>
+    /// <remarks>Submission discloses the preimage even if it fails; callers must secure any other obligations sharing its hash first.</remarks>
+    public Task<ArkadeSwapIntent> ClaimNonInteractiveAsync(
+        string swapId, CancellationToken cancellationToken = default) => ClaimReceiveCoreAsync(swapId, true, cancellationToken);
+
+    private async Task<ArkadeSwapIntent> ClaimReceiveCoreAsync(string swapId, bool nonInteractive, CancellationToken cancellationToken)
     {
         var intent = await intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
             ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
@@ -431,13 +441,15 @@ public sealed partial class OnchainIntentsClient
         var contract = await LightningCorridor.LoadLockupAsync(
             contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
 
-        var preimage = await ResolvePreimageAsync(intent, contract, cancellationToken);
-
         var vtxos = await vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
         var claimable = LightningIntentsClient.SelectClaimable(
             vtxos, (ulong)intent.WantAmount.Satoshi, swapId);
-        var coins = claimable.Select(v => contract.ToClaimCoin(intent.WalletId, v, preimage)).ToArray();
+        var pinnedOutputs = nonInteractive ? NonInteractiveVhtlcSpend.Outputs(contract, claimable, serverInfo) : null;
+        var preimage = await ResolvePreimageAsync(intent, contract, cancellationToken);
+        var coins = claimable.Select(v => nonInteractive
+            ? contract.ToNonInteractiveClaimCoin(intent.WalletId, v, preimage)
+            : contract.ToClaimCoin(intent.WalletId, v, preimage)).ToArray();
         var total = claimable.Aggregate(0UL, (sum, v) => sum + v.Amount);
 
         // Where the claim pays was fixed at negotiation time, in the leaf that pins our payout.
@@ -452,7 +464,7 @@ public sealed partial class OnchainIntentsClient
 
         var txid = await spendingService.Spend(
             intent.WalletId, coins,
-            [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)total), destination)],
+            pinnedOutputs ?? [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis((long)total), destination)],
             cancellationToken);
 
         intent.Status = ArkadeSwapIntentStatus.Fulfilled;

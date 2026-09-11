@@ -99,6 +99,10 @@
         @if (_lightning.Count > 0)
         {
             <p style="font-size:13px;font-weight:600;margin:4px 0 8px;">Lightning</p>
+            <label class="input-label">
+                <input type="checkbox" @bind="_nonInteractive" /> Use signerless covenant claims and refunds
+            </label>
+            <p class="text-secondary" style="font-size:11px;">Requires an emulator; refunds also require the funded ninth leaf.</p>
             @foreach (var s in _lightning)
             {
                 <div class="glass-card mb-8" style="padding:12px 14px;">
@@ -173,6 +177,7 @@
     private decimal? _price;
     private bool _loadingMarkets = true;
     private bool _busy;
+    private bool _nonInteractive;
     private string? _error;
 
     protected override async Task OnInitializedAsync()
@@ -221,7 +226,8 @@
         _busy = true; _error = null;
         try
         {
-            await Ark.ClaimLightningSwap(swapId);
+            if (_nonInteractive) await Ark.ClaimLightningSwapNonInteractive(swapId);
+            else await Ark.ClaimLightningSwap(swapId);
             await LoadSwaps();
         }
         catch (Exception ex) { _error = ex.Message; }
@@ -233,7 +239,8 @@
         _busy = true; _error = null;
         try
         {
-            await Ark.RefundLightningSwap(swapId);
+            if (_nonInteractive) await Ark.RefundLightningSwapNonInteractive(swapId);
+            else await Ark.RefundLightningSwap(swapId);
             await LoadSwaps();
         }
         catch (Exception ex) { _error = ex.Message; }

@@ -37,8 +37,7 @@ other than the one asked for is otherwise undetectable from the client.
 
 ```csharp
 // One service over every corridor. Register it once and reach all of them through it.
-var intents = new ArkadeIntentsService(
-    assetSwaps, lightningSend, lightningReceive, intentStorage, vtxoStorage, TimeProvider.System);
+var intents = serviceProvider.GetRequiredService<ArkadeIntentsService>();
 
 var funded = await intents.SendToLightningAsync(
     walletId: "my-wallet",
@@ -80,6 +79,31 @@ Console.WriteLine($"have the payer settle: {pending.Invoice}");
 // Once the solver funds the lockup — the monitor moves the intent to Claimable:
 await intents.ClaimLightningReceiveAsync(pending.RfqId);
 ```
+
+### Watch-only execution
+
+With `AddArkadeEmulator(...)` registered, explicitly call
+`intents.ClaimLightningReceiveNonInteractiveAsync(swapId)` to spend the covenant claim without a
+wallet signature. A watch-only receive must retain its preimage; without it, losing the signer also
+removes the ability to rederive the secret. The existing `ClaimLightningReceiveAsync` stays cooperative.
+
+The signerless path reads its destination from the funded contract, checks the total against the
+promised amount before submission, and preserves a separate full-value payout for every input.
+The BTC corridor rejects attached assets, duplicated inputs, subdust outputs, and inputs below a
+strict covenant's per-input floor. The low-level NI coin helpers also reject asset-bearing lockups.
+The emulator and Arkade server co-sign; no participant key is used.
+
+Submission reveals the preimage to the emulator even if rejected. A payout into another lockup
+sharing the hash does not preserve secrecy: establish any downstream obligations before claiming.
+This primitive does not verify another leg's funding or provide composed-swap guarantees.
+
+`intents.RefundNonInteractiveAsync(swapId)` similarly spends the ninth leaf after its refund
+locktime matures, without a preimage. It refuses eight-leaf contracts: the ninth leaf must be present
+before funding, not added to the reconstruction later. Both the stored contract and its pinned refund
+script remain authoritative. This capability does not provide a signerless unilateral onchain exit.
+
+`WatchOnlyVhtlcTests` covers stored, split-funded contracts through a real local emulator; this is
+separate from the solver-negotiated RFQ corridor E2E suite.
 
 Here **you** choose the secret and send only its hash, plus a copy sealed to covclaimd that the
 solver cannot open ([`ClaimPacket`](xref:NArk.ArkadeIntents.Lightning.ClaimPacket)). That asymmetry
