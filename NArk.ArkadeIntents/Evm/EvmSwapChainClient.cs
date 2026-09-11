@@ -264,7 +264,8 @@ public sealed class EvmSwapChainClient
         if (matches.Count != 1)
             throw new EvmSwapProofException("receipt does not contain exactly one matching Claim event");
         var data = matches[0].Data;
-        if (!data.StartsWith("0x", StringComparison.Ordinal) || data.Length != 66)
+        if (!data.StartsWith("0x", StringComparison.Ordinal) || data.Length != 66
+            || !data[2..].All(Uri.IsHexDigit))
             throw new EvmSwapProofException("Claim event data is not a 32-byte preimage");
         var preimage = Convert.FromHexString(data[2..]);
         if (!SHA256.HashData(preimage).SequenceEqual(Erc20SwapCodec.Hex32(values.PaymentHash)))

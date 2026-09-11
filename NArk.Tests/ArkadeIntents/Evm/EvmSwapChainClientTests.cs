@@ -108,6 +108,20 @@ public class EvmSwapChainClientTests
     }
 
     [Test]
+    public void VerifyClaim_MalformedClaimEventHexUsesDomainError()
+    {
+        var logs = ClaimLogs().ToArray();
+        logs[0] = logs[0] with { Data = "0x" + new string('g', 64) };
+        var rpc = new FakeRpc
+        {
+            Receipt = new EvmTransactionReceipt(TxHash, true, logs),
+        };
+
+        Assert.That(async () => await Client(rpc, new FakeSender()).VerifyClaimAsync(TxHash, Values, Preimage),
+            Throws.TypeOf<EvmSwapProofException>());
+    }
+
+    [Test]
     public async Task ClaimFor_JournalsTheDeterministicHashBeforeBroadcastAndCanResumeVerification()
     {
         var events = new List<string>();

@@ -105,6 +105,29 @@ public class NonInteractiveTransactionTests
         Assert.That(error!.Message, Does.Contain("indexed"));
     }
 
+    [Test]
+    public void IndexedSpend_RejectsDuplicateOutpointsWithDomainError()
+    {
+        var contract = NonInteractiveTestData.Contract();
+        var vtxo = NonInteractiveTestData.Vtxos(
+            contract, NonInteractiveTestData.Funding(contract, 100_000)).Single();
+        var coin = contract.ToNonInteractiveClaimCoin(
+            "watch-only", vtxo, NonInteractiveTestData.Preimage);
+        var builder = new TransactionHelpers.ArkTransactionBuilder(Substitute.For<IClientTransport>(),
+            Substitute.For<ISafetyService>(), Substitute.For<IWalletProvider>(), Substitute.For<IIntentStorage>());
+        TxOut[] outputs =
+        [
+            new(Money.Satoshis(100_000), new Script(contract.NonInteractiveClaim!.ReceiverPkScript)),
+            new(Money.Satoshis(100_000), new Script(contract.NonInteractiveClaim.ReceiverPkScript)),
+        ];
+
+        var error = Assert.ThrowsAsync<InvalidOperationException>(() =>
+            builder.ConstructArkTransaction(
+                [coin, new ArkCoin(coin)], outputs, NonInteractiveTestData.ServerInfo(), CancellationToken.None));
+
+        Assert.That(error!.Message, Does.Contain("Duplicate lockup outpoints"));
+    }
+
     [TestCase(30_000, 70_000)]
     [TestCase(70_000, 30_000)]
     public async Task SignerlessClaim_ReachesEmulatorWithAlignedUnmergedOutputs(long first, long second)

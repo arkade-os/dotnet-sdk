@@ -90,6 +90,8 @@ public static class TransactionHelpers
             if (indexedOutputs && (coinList.Any(c => c.SpendingScriptBuilder is not IIndexedOutputScriptBuilder)
                                    || outputs.Length < coinList.Count))
                 throw new InvalidOperationException("An indexed payout requires all inputs to be indexed and one output per input.");
+            if (indexedOutputs && coinList.GroupBy(c => c.Outpoint).Any(group => group.Count() > 1))
+                throw new InvalidOperationException("Duplicate lockup outpoints cannot contribute to an indexed payout.");
             if (indexedOutputs)
                 for (var i = 0; i < coinList.Count; i++)
                 {
