@@ -55,4 +55,10 @@ public enum ArkadeSwapIntentType
     /// </para>
     /// </remarks>
     OnchainToBtc,
+
+    /// <summary>
+    /// Deposit Arkade BTC and receive an ERC20 on a configured EVM chain. Verified token delivery,
+    /// rather than Arkade funding or spending, settles a merchant payment using this corridor.
+    /// </summary>
+    BtcToEvm,
 }

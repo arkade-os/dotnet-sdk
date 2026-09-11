@@ -114,7 +114,9 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
     {
         if (!vtxo.IsSpent()
             || swap.PaymentHash is not { Length: > 0 } hash
-            || swap.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc))
+            || swap.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc
+                or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc
+                or ArkadeSwapIntentType.BtcToEvm))
         {
             return false;
         }

@@ -43,7 +43,7 @@ namespace NArk.ArkadeIntents.Lightning;
 /// See <c>LightningIntentsClient.Send.cs</c> and <c>LightningIntentsClient.Receive.cs</c> for each direction.
 /// </para>
 /// </remarks>
-public sealed partial class LightningIntentsClient
+public sealed partial class LightningIntentsClient : Composition.ILightningIngressQuoteClient
 {
     private readonly IClientTransport _transport;
     private readonly IContractService _contractService;

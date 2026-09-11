@@ -76,7 +76,7 @@ public sealed partial class OnchainIntentsClient(
     IAesGcmCipher? cipher = null,
     IOptions<ArkadeIntentsOptions>? options = null,
     TimeProvider? time = null,
-    ILogger<OnchainIntentsClient>? logger = null)
+    ILogger<OnchainIntentsClient>? logger = null) : Composition.IOnchainIngressQuoteClient
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ArkadeIntentsOptions _options = options?.Value ?? new ArkadeIntentsOptions();
