@@ -25,7 +25,7 @@ public interface ILightningIngressQuoteClient
     /// <summary>Creates M with its non-interactive claim pinned to L.</summary>
     Task<PendingLightningReceive> ReceiveFromLightningIntoAsync(string walletId, long amountSats,
         IRfqTransport rfqTransport, string covclaimdPubKey, SwapLinkSecret secret,
-        ArkAddress payoutAddress, ArkContract receiverContract, SolverCard? solverCard = null,
+        ArkAddress payoutAddress, ArkContract receiverContract, string outgoingSwapId, SolverCard? solverCard = null,
         string? rfqId = null, CancellationToken cancellationToken = default);
 }
 
@@ -35,7 +35,7 @@ public interface IOnchainIngressQuoteClient
     /// <summary>Creates the L1 HTLC and M with its non-interactive claim pinned to L.</summary>
     Task<PendingOnchainReceive> ReceiveFromOnchainIntoAsync(string walletId, long amountSats,
         IRfqTransport rfqTransport, string covclaimdPubKey, BitcoinAddress l1RefundAddress,
-        SwapLinkSecret secret, ArkAddress payoutAddress, ArkContract receiverContract,
+        SwapLinkSecret secret, ArkAddress payoutAddress, ArkContract receiverContract, string outgoingSwapId,
         SolverCard? solverCard = null, string? rfqId = null,
         CancellationToken cancellationToken = default);
 }
@@ -120,7 +120,7 @@ public sealed class ComposedSwapClient(
             outgoingTransport, secret, outgoingRfqId, outgoingCard, cancellationToken: cancellationToken);
         var ingress = await lightning.ReceiveFromLightningIntoAsync(
             walletId, amountSats, ingressTransport, covclaimdPubKey, secret,
-            outgoing.Contract.GetArkAddress(), outgoing.RefundContract, ingressCard, ingressRfqId,
+            outgoing.Contract.GetArkAddress(), outgoing.RefundContract, outgoing.RfqId, ingressCard, ingressRfqId,
             cancellationToken);
         var expiry = ValidateLinked(outgoing, ingress.RfqId, ingress.PaymentHash,
             ingress.Quote.FromAmount, ingress.Quote.ToAmount, ingress.PayoutAddress,
@@ -143,7 +143,7 @@ public sealed class ComposedSwapClient(
             outgoingTransport, secret, outgoingRfqId, outgoingCard, cancellationToken: cancellationToken);
         var ingress = await onchain.ReceiveFromOnchainIntoAsync(
             walletId, amountSats, ingressTransport, covclaimdPubKey, l1RefundAddress, secret,
-            outgoing.Contract.GetArkAddress(), outgoing.RefundContract, ingressCard, ingressRfqId,
+            outgoing.Contract.GetArkAddress(), outgoing.RefundContract, outgoing.RfqId, ingressCard, ingressRfqId,
             cancellationToken);
         var expiry = ValidateLinked(outgoing, ingress.RfqId, ingress.PaymentHash,
             ingress.Quote.FromAmount, ingress.Quote.ToAmount, ingress.PayoutAddress,

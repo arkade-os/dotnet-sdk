@@ -91,6 +91,7 @@ public sealed partial class OnchainIntentsClient
     /// <param name="secret">Client-owned outgoing route secret, reused for this ingress.</param>
     /// <param name="payoutAddress">Already-verified outgoing Arkade lock L.</param>
     /// <param name="receiverContract">Wallet-owned contract supplying M's receiver and L1 refund key.</param>
+    /// <param name="outgoingSwapId">Already-persisted outgoing RFQ id; exact linkage is retained for automatic claims.</param>
     /// <param name="solverCard">Optional published ingress terms.</param>
     /// <param name="rfqId">Caller-reserved global RFQ identity, or null to generate one.</param>
     /// <param name="cancellationToken">Cancels negotiation; this method funds neither rail.</param>
@@ -99,6 +100,7 @@ public sealed partial class OnchainIntentsClient
     public async Task<PendingOnchainReceive> ReceiveFromOnchainIntoAsync(
         string walletId, long amountSats, IRfqTransport rfqTransport, string covclaimdPubKey,
         BitcoinAddress l1RefundAddress, SwapLinkSecret secret, ArkAddress payoutAddress, ArkContract receiverContract,
+        string outgoingSwapId,
         SolverCard? solverCard = null, string? rfqId = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(secret);
@@ -109,7 +111,7 @@ public sealed partial class OnchainIntentsClient
         if (rfqId is not null && (rfqId.Length != 64 || rfqId.Any(c => !(c is >= '0' and <= '9' or >= 'a' and <= 'f'))))
             throw new ArgumentException("a prepared RFQ id must be 64 lowercase hexadecimal characters", nameof(rfqId));
         return await ReceiveFromOnchainCoreAsync(walletId, amountSats, rfqTransport, covclaimdPubKey,
-            l1RefundAddress, RfqAmountSide.To, solverCard, receiverContract, secret, payoutAddress, rfqId, cancellationToken);
+            l1RefundAddress, RfqAmountSide.To, solverCard, receiverContract, secret, payoutAddress, rfqId, outgoingSwapId, cancellationToken);
     }
 
     /// <summary>
@@ -199,12 +201,12 @@ public sealed partial class OnchainIntentsClient
         ArkContract? payoutContract = null,
         CancellationToken cancellationToken = default) => await ReceiveFromOnchainCoreAsync(
             walletId, amountSats, rfqTransport, covclaimdPubKey, l1RefundAddress, amountSide, solverCard, payoutContract,
-            linkedSecret: null, linkedPayout: null, linkedRfqId: null, cancellationToken);
+            linkedSecret: null, linkedPayout: null, linkedRfqId: null, outgoingSwapId: null, cancellationToken);
 
     private async Task<PendingOnchainReceive> ReceiveFromOnchainCoreAsync(
         string walletId, long amountSats, IRfqTransport rfqTransport, string covclaimdPubKey,
         BitcoinAddress l1RefundAddress, RfqAmountSide amountSide, SolverCard? solverCard, ArkContract? payoutContract,
-        SwapLinkSecret? linkedSecret, ArkAddress? linkedPayout, string? linkedRfqId, CancellationToken cancellationToken)
+        SwapLinkSecret? linkedSecret, ArkAddress? linkedPayout, string? linkedRfqId, string? outgoingSwapId, CancellationToken cancellationToken)
     {
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
 
@@ -217,6 +219,13 @@ public sealed partial class OnchainIntentsClient
         var payoutAddress = payoutArkAddress.ToString(isMainnet);
         var payoutDescriptor = UserKeyOf(payout);
         var clientXOnly = Convert.ToHexString(payoutDescriptor.ToXOnlyPubKey().ToBytes()).ToLowerInvariant();
+        if (linkedSecret is not null)
+        {
+            var outgoing = await ComposedRouteExecutionGuard.PreparedOutgoingAsync(intentStorage, outgoingSwapId!,
+                walletId, amountSats, linkedSecret.PaymentHash, payoutArkAddress.ScriptPubKey.ToHex(), cancellationToken);
+            if (outgoing.Status != ArkadeSwapIntentStatus.Pending || outgoing.Id == linkedRfqId)
+                throw new InvalidOperationException("linked receive requires an independent pending outgoing quote");
+        }
 
         // The negotiation id first: for a wallet whose key repeats across swaps it doubles as the
         // preimage salt, so it has to exist before the preimage does.
@@ -305,6 +314,7 @@ public sealed partial class OnchainIntentsClient
             quote.Profile.HtlcLocktime,
             l1RefundAddress.ToString(),
             quote.Profile.MinConfirmations)).WithSolver(quote.SolverPubkey);
+        ComposedRouteExecutionGuard.Bind(intent, outgoingSwapId, payoutArkAddress.ScriptPubKey.ToHex());
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
         logger?.LogInformation(
@@ -333,7 +343,7 @@ public sealed partial class OnchainIntentsClient
                 "the quote carries no claim_pubkey, so the L1 claim leaf cannot be reconstructed");
 
         return OnchainHtlc.Derive(
-// `lendian: false`, and it is load-bearing. The claim leaf commits to
+            // `lendian: false`, and it is load-bearing. The claim leaf commits to
             // RIPEMD160(paymentHash.ToBytes(false)) and the script computes HASH160 over the
             // preimage the witness pushes, so those two agree only when `ToBytes(false)` gives
             // back the raw SHA-256. The byte-array constructor defaults to little-endian and
@@ -407,7 +417,7 @@ public sealed partial class OnchainIntentsClient
     /// <param name="swapId">The recorded on-board, including its stored preimage for watch-only wallets.</param>
     /// <param name="cancellationToken">Cancels before submission; submission reveals the preimage.</param>
     /// <returns>The fulfilled intent after the emulator submits the claim.</returns>
-    /// <remarks>Submission discloses the preimage even if it fails; callers must secure any other obligations sharing its hash first.</remarks>
+    /// <remarks>Linked routes require exact funding and validated H/M-to-L linkage; submission discloses P even if it fails.</remarks>
     public Task<ArkadeSwapIntent> ClaimNonInteractiveAsync(
         string swapId, CancellationToken cancellationToken = default) => ClaimReceiveCoreAsync(swapId, true, cancellationToken);
 
@@ -420,6 +430,8 @@ public sealed partial class OnchainIntentsClient
         {
             throw new InvalidOperationException($"Swap '{swapId}' is not an on-board ({intent.Type}).");
         }
+        if (ComposedRouteExecutionGuard.IsLinked(intent) && intent.Status == ArkadeSwapIntentStatus.Fulfilled)
+            return intent;
         if (intent.RefundLocktime is not { } locktime)
         {
             throw new InvalidOperationException($"Swap '{swapId}' has no refund locktime recorded.");
@@ -441,10 +453,12 @@ public sealed partial class OnchainIntentsClient
         var contract = await LightningCorridor.LoadLockupAsync(
             contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
 
+        var linked = await ComposedRouteExecutionGuard.ValidateIngressAsync(
+            intentStorage, contractStorage, intent, contract, serverInfo.Network, now, cancellationToken);
         var vtxos = await vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
         var claimable = LightningIntentsClient.SelectClaimable(
-            vtxos, (ulong)intent.WantAmount.Satoshi, swapId);
+            vtxos, (ulong)intent.WantAmount.Satoshi, swapId, linked);
         var pinnedOutputs = nonInteractive ? NonInteractiveVhtlcSpend.Outputs(contract, claimable, serverInfo) : null;
         var preimage = await ResolvePreimageAsync(intent, contract, cancellationToken);
         var coins = claimable.Select(v => nonInteractive
@@ -542,7 +556,7 @@ public sealed partial class OnchainIntentsClient
         var clientKey = contract.Receiver;
 
         var htlc = OnchainHtlc.Derive(
-// `lendian: false`, and it is load-bearing. The claim leaf commits to
+            // `lendian: false`, and it is load-bearing. The claim leaf commits to
             // RIPEMD160(paymentHash.ToBytes(false)) and the script computes HASH160 over the
             // preimage the witness pushes, so those two agree only when `ToBytes(false)` gives
             // back the raw SHA-256. The byte-array constructor defaults to little-endian and

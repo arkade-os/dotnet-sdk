@@ -486,11 +486,11 @@ public sealed partial class LightningIntentsClient
         }
     }
 
-    /// <summary>Refunds an outgoing corridor cooperatively with the sender's wallet signer after maturity.</summary>
+    /// <summary>Refunds an outgoing Lightning, onchain or EVM corridor cooperatively with the sender's wallet signer after maturity.</summary>
     public Task<ArkadeSwapIntent> RefundSwap(string swapId, CancellationToken cancellationToken = default) =>
         RefundCoreAsync(swapId, false, cancellationToken);
 
-    /// <summary>Refunds an outgoing corridor through its ninth covenant leaf without a wallet signer or preimage.</summary>
+    /// <summary>Refunds an outgoing Lightning, onchain or EVM corridor through its ninth covenant leaf without a wallet signer or preimage.</summary>
     /// <param name="swapId">The recorded outgoing swap; its funded contract must include the ninth leaf.</param>
     /// <param name="cancellationToken">Cancels before submission.</param>
     /// <returns>The cancelled intent after the emulator submits the pinned refund.</returns>
@@ -502,12 +502,7 @@ public sealed partial class LightningIntentsClient
         var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
                      ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
 
-        // Both send legs, because from here they are the same swap: one VHTLCv2 covenant, one
-        // `refundWithoutReceiver` leaf, one destination read back off the contract. Nothing below
-        // this line reads a Lightning field. The off-board used to reach here and be turned away by
-        // this check, which left its Arkade refund — the only recourse it has once the L1 window
-        // shuts — unreachable through the very action the policy routes to it.
-        if (intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain))
+        if (intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.BtcToEvm))
             throw new InvalidOperationException(
                 $"Swap '{swapId}' is not a corridor swap this refund applies to ({intent.Type}).");
         if (intent.Status is not (ArkadeSwapIntentStatus.Refundable or ArkadeSwapIntentStatus.Pending))
