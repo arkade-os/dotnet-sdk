@@ -63,7 +63,7 @@ public sealed class ComposedSwapExecutionClient
         _chain = new EvmSwapChainClient(rpc, sender, policy, _time);
     }
 
-    /// <summary>Advances one route; pending observations do nothing and verified completion is repeatable.</summary>
+    /// <summary>Advances one route; exact funding can trigger a pending EVM leg and verified completion is repeatable.</summary>
     /// <param name="outgoingSwapId">Persisted BtcToEvm RFQ id.</param>
     /// <param name="ingressSwapId">Persisted Lightning/onchain receive RFQ id, or null for direct Arkade.</param>
     /// <param name="cancellationToken">Cancels reads or submission; prepared EVM identity survives an uncertain broadcast.</param>
