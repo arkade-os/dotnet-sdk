@@ -22,6 +22,20 @@ public class CurrentWireContractTests
     }
 
     [Test]
+    public void EvmQuote_AcceptsNumericChainAndTimeoutFromTheCurrentSolver()
+    {
+        var quote = RfqProtocol.ExpectQuote<NArk.ArkadeIntents.Rfq.Profiles.Evm.EvmSendQuoteProfile>(
+            JsonNode.Parse("""
+                {"v":1,"type":"rfq_quote","rfq_id":"id","pair":"arkade:BTC->ethereum:token",
+                 "from_amount":100000,"to_amount":"1000000000000000","solver_pubkey":"key",
+                 "profile":{"evm_timeout_block":1822,"evm_chain_id":31337}}
+                """)!, "id", "arkade:BTC->ethereum:token");
+
+        Assert.That(quote.Profile!.EvmTimeoutBlock, Is.EqualTo(new BigInteger(1_822)));
+        Assert.That(quote.Profile.EvmChainId, Is.EqualTo(new BigInteger(31_337)));
+    }
+
+    [Test]
     public void Request_RoundTripsFullWidthAtomicAmounts()
     {
         var json = $$$"""{"rfq_id":"id","pair":"pair","amount_side":"from","amount":"{{{Amount}}}","profile":{}}""";
