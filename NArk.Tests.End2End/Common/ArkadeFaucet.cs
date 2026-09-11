@@ -127,6 +127,14 @@ public static class ArkadeFaucet
         }
     }
 
+    internal static bool IsTransient(Exception e) =>
+        e is AlreadyLockedVtxoException ||
+        (e is RpcException rpc &&
+         (rpc.Status.Detail.Contains("VTXO_RECOVERABLE", StringComparison.Ordinal)
+          || (rpc.StatusCode == StatusCode.AlreadyExists &&
+              System.Text.RegularExpressions.Regex.IsMatch(rpc.Status.Detail,
+                  @"\AVTXO_ALREADY_REGISTERED \(4\): [0-9a-f]{64}:[0-9]+ already registered\z"))));
+
     private sealed class Faucet(string walletId, IContractService contracts, ISpendingService spending)
     {
         public string WalletId { get; } = walletId;
@@ -221,15 +229,6 @@ public static class ArkadeFaucet
                 $"Faucet could not send {amountSats} sats in {MaxSendAttempts} attempts: every attempt hit " +
                 "a locked or already-recoverable coin. Renewal is not keeping ahead of VTXO expiry.");
         }
-
-        /// <summary>
-        /// A coin is unusable for a reason that passes: it is locked by an in-flight spend or
-        /// renewal, or arkd has already declared it recoverable. Retrying with a fresh selection is
-        /// the correct response to both.
-        /// </summary>
-        private static bool IsTransient(Exception e) =>
-            e is AlreadyLockedVtxoException ||
-            (e is RpcException rpc && rpc.Status.Detail.Contains("VTXO_RECOVERABLE", StringComparison.Ordinal));
 
         /// <summary>
         /// Selects coins covering <paramref name="needed"/> sats, or null when the spendable set
