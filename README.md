@@ -1294,10 +1294,37 @@ It accepts delivery only after the receipt, canonical `Claim` event/preimage, ex
 `Transfer` event and consumed swap state agree. The public EVM RFQ status route currently returns 404, so
 applications must derive progress from Arkade and EVM state rather than inventing solver status.
 
+Server applications can use `EvmJsonRpcClient` for bounded HTTP JSON-RPC and
+`EvmLocalTransactionSender` for locally signed EIP-1559 transactions. Configure explicit fee and gas
+ceilings, a receipt timeout, and the expected address derived from the gas-payer key. Load the 32-byte
+key into a short-lived buffer from a secret provider, construct the sender, then clear the caller's
+buffer. Never bind the key through application configuration, JSON options, or logging.
+
+```csharp
+builder.Services.AddEvmSwapChainExample(
+    new Uri(evmRpcUrl),
+    _ => gasKeyVault.ReadPrivateKey(),
+    rpcOptions,
+    senderOptions,
+    evmSendPolicy,
+    configureHttpClient: client => client.DefaultRequestHeaders.Authorization = rpcAuthorizationHeader);
+```
+
+The server-only gateway sample contains the full registration factory, including immediate clearing
+of the key buffer returned by the secret provider. URI userinfo alone is not an authentication
+guarantee: configure authentication headers on `HttpClient`, or use a provider-issued endpoint query
+token. Do not log the configured endpoint, headers, or secret values.
+
+Nonce allocation is serialized by gas-payer address inside one process. Give that key exclusively to
+one BTCPay process; multiple processes or external writers require an external nonce coordinator.
+RPC error bodies and node error messages are intentionally discarded because an estimate-gas error
+can echo `claimFor` calldata and its preimage. Response bytes and JSON depth are bounded before
+parsing. See the server-only gateway sample and [EVM send](docs/articles/evm-send.md).
+
 The current solver quotes the nine-leaf `nonInteractiveRefundWithoutReceiver` shape. Setting
 `RequireEmulatorRefundPath` (the default) refuses an older eight-leaf quote, but this SDK slice does
 not yet push the post-locktime emulator refund. Treat unattended recovery as unavailable until a
-host implements and proves that execution path. See [EVM send](docs/articles/evm-send.md).
+host implements and proves that execution path.
 
 ### Reaching a solver over its relay set
 

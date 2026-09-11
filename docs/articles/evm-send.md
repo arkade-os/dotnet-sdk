@@ -39,14 +39,47 @@ separate capability and must be proven before an application promises unattended
 
 ## Prove and claim
 
-Provide narrow adapters for the application's EVM RPC and signer. The SDK owns ABI encoding and
-verification but never handles a private EVM key.
+The proof client continues to accept narrow RPC and signer interfaces. Server applications may use
+the concrete HTTP and local-signing adapters:
 
 ```csharp
-var chain = new EvmSwapChainClient(rpc, signer, policy);
+var rpc = new EvmJsonRpcClient(httpClient, new Uri(evmRpcUrl), new EvmJsonRpcOptions
+{
+    ReceiptPollInterval = TimeSpan.FromSeconds(1),
+    ReceiptTimeout = TimeSpan.FromMinutes(2),
+    MaxResponseBytes = 1_048_576,
+    MaxJsonDepth = 32,
+});
+var sender = new EvmLocalTransactionSender(rpc, privateKeyBuffer, new EvmTransactionSenderOptions
+{
+    ExpectedSenderAddress = gasPayerAddress,
+    MaxFeePerGasWei = 100_000_000_000,
+    MaxPriorityFeePerGasWei = 10_000_000_000,
+    MaxGasLimit = 500_000,
+});
+CryptographicOperations.ZeroMemory(privateKeyBuffer);
+var chain = new EvmSwapChainClient(rpc, sender, policy);
 var proof = await chain.ProveLockAsync(swap, cancellationToken);
 var delivered = await chain.ClaimForAsync(swap, preimage, cancellationToken);
 ```
+
+Obtain the key buffer directly from a server-side secret provider. Do not place it in JSON options,
+serialize the sender, or log it. The sender checks that the key derives the configured address, reads
+the connected chain id and pending nonce, applies configured EIP-1559 fee and gas caps, signs locally,
+and broadcasts only a type-2 transaction. Same-address sends are serialized across sender instances
+inside one process. The same key must not be used by another process or external transaction writer
+without an external nonce coordinator.
+
+An RPC URI containing userinfo does not itself guarantee that `HttpClient` will send the intended
+authentication. Configure the externally managed client's authorization headers explicitly, or use
+the query-token endpoint supplied by the RPC provider. Keep the full URI, headers, and tokens out of
+logs.
+
+JSON-RPC responses are stream-read under byte and nesting-depth limits. Node error messages and
+response bodies are never included in SDK exceptions: `eth_estimateGas` failures can otherwise echo
+the unpublished preimage inside `claimFor` calldata. Receipt polling distinguishes caller
+cancellation from its configured timeout; a mined status zero remains a failed receipt for the proof
+client to reject.
 
 `ProveLockAsync` verifies the configured chain and calls `swaps(key)` both at the current tip and at
 the block proving the configured depth and age. `ClaimForAsync` re-reads the timeout and live swap
