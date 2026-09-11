@@ -84,8 +84,7 @@ public class ComposedSwapExecutionTests
         await ctx.Wallet.DidNotReceive().GetSignerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
-    /// <summary>Only the observer-proven outgoing claim state permits EVM work.</summary>
-    [TestCase(ArkadeSwapIntentStatus.Pending)]
+    /// <summary>Only a funded pending lock or an observer-proven claim state permits EVM work.</summary>
     [TestCase(ArkadeSwapIntentStatus.Funding)]
     [TestCase(ArkadeSwapIntentStatus.Cancelled)]
     [TestCase(ArkadeSwapIntentStatus.Resolved)]
@@ -97,6 +96,51 @@ public class ComposedSwapExecutionTests
         var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
         Assert.That(result.OutgoingStatus, Is.EqualTo(status));
         Assert.That(result.EvmClaimTxid, Is.Null);
+        Assert.That(ctx.Sender.Calls, Is.Zero);
+        Assert.That(ctx.Rpc.ReceivedCalls(), Is.Empty);
+    }
+
+    /// <summary>A funded L triggers the EVM claim before the solver can spend L with the revealed preimage.</summary>
+    [Test]
+    public async Task EvmClaim_FundedPendingOutgoingBreaksThePreimageHandshake()
+    {
+        using var ctx = new Harness(false) { OutgoingFunded = true };
+        var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
+        Assert.That(result.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        Assert.That(result.EvmClaimTxid, Is.EqualTo(Harness.ClaimTxid));
+        Assert.That(ctx.Sender.Calls, Is.EqualTo(1));
+    }
+
+    /// <summary>An unfunded L remains pending without touching the EVM chain.</summary>
+    [Test]
+    public async Task EvmClaim_UnfundedPendingOutgoingIsANoOp()
+    {
+        using var ctx = new Harness(false);
+        var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
+        Assert.That(result.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+        Assert.That(ctx.Sender.Calls, Is.Zero);
+        Assert.That(ctx.Rpc.ReceivedCalls(), Is.Empty);
+    }
+
+    /// <summary>Both sides of the outgoing exact-funding boundary refuse to reveal the secret.</summary>
+    [TestCase(-1)]
+    [TestCase(1)]
+    public void EvmClaim_PendingOutgoingRequiresExactFunding(int delta)
+    {
+        using var ctx = new Harness(false);
+        ctx.SetOutgoingFunding(delta);
+        Assert.ThrowsAsync<InvalidOperationException>(() => ctx.Execution().AdvanceAsync(ctx.Outgoing.Id));
+        Assert.That(ctx.Sender.Calls, Is.Zero);
+        Assert.That(ctx.Rpc.ReceivedCalls(), Is.Empty);
+    }
+
+    /// <summary>An Arkade asset on L cannot masquerade as the quoted BTC funding.</summary>
+    [Test]
+    public void EvmClaim_PendingOutgoingRejectsAssetFunding()
+    {
+        using var ctx = new Harness(false);
+        ctx.SetOutgoingFunding(asset: true);
+        Assert.ThrowsAsync<InvalidOperationException>(() => ctx.Execution().AdvanceAsync(ctx.Outgoing.Id));
         Assert.That(ctx.Sender.Calls, Is.Zero);
         Assert.That(ctx.Rpc.ReceivedCalls(), Is.Empty);
     }
@@ -145,6 +189,18 @@ public class ComposedSwapExecutionTests
         using var ctx = new Harness(false);
         ctx.Outgoing.Status = ArkadeSwapIntentStatus.Claimable;
         ctx.Outgoing.SpentTxid = new string('c', 64);
+        ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = Harness.ClaimTxid;
+        ctx.LockIsPresent = false;
+        var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
+        Assert.That(result.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        Assert.That(ctx.Sender.Calls, Is.Zero);
+    }
+
+    /// <summary>A prepared pending claim remains recoverable after the solver consumes L.</summary>
+    [Test]
+    public async Task Restart_VerifiesPreparedPendingTransactionAfterFundingIsSpent()
+    {
+        using var ctx = new Harness(false);
         ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = Harness.ClaimTxid;
         ctx.LockIsPresent = false;
         var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
@@ -337,6 +393,7 @@ public class ComposedSwapExecutionTests
         internal bool FailReceipt;
         internal bool ReceiptSucceeded = true;
         internal bool LockIsPresent = true;
+        internal bool OutgoingFunded;
         internal Erc20SwapValues Values => new(Outgoing.PaymentHash!, 1_000_000,
             "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222",
             "0x3333333333333333333333333333333333333333", 200);
@@ -353,7 +410,16 @@ public class ComposedSwapExecutionTests
                 L.NonInteractiveRefund);
             var contract = refund ? L : M;
             var funding = NonInteractiveTestData.Funding(contract, 30_000, 70_000 + delta);
-            VtxoStorage.GetVtxos().ReturnsForAnyArgs(NonInteractiveTestData.Vtxos(contract, funding));
+            OutgoingFunded = refund;
+            var ingressVtxos = NonInteractiveTestData.Vtxos(contract, funding);
+            var outgoingVtxos = NonInteractiveTestData.Vtxos(L, NonInteractiveTestData.Funding(L, 30_000, 70_000));
+            VtxoStorage.GetVtxos().ReturnsForAnyArgs(call =>
+            {
+                var scripts = call.ArgAt<IReadOnlyCollection<string>?>(0);
+                return scripts?.Contains(L.GetScriptPubKey().ToHex(), StringComparer.OrdinalIgnoreCase) == true
+                    ? OutgoingFunded ? outgoingVtxos : []
+                    : ingressVtxos;
+            });
             Contracts.GetContracts().ReturnsForAnyArgs(call =>
             {
                 var scripts = call.ArgAt<string[]?>(1);
@@ -420,12 +486,21 @@ public class ComposedSwapExecutionTests
             MinConfirmations = 1,
             MinAgeSeconds = 1
         };
-        internal ComposedSwapExecutionClient Execution() => new(Storage, Contracts, Transport, Lightning, Onchain,
+        internal ComposedSwapExecutionClient Execution() => new(Storage, VtxoStorage, Contracts, Transport, Lightning, Onchain,
             Rpc, Sender, Policy, new FixedClock());
         private static string Topic(string address) => "0x" + new string('0', 24) + address[2..];
 
         internal Task<ArkadeSwapIntent> ClaimIngress() => _onchain
             ? Onchain.ClaimNonInteractiveAsync(Ingress.Id) : Lightning.ClaimNonInteractiveAsync(Ingress.Id);
+
+        internal void SetOutgoingFunding(int delta = 0, bool asset = false)
+        {
+            var vtxos = NonInteractiveTestData.Vtxos(L,
+                NonInteractiveTestData.Funding(L, 30_000, 70_000 + delta));
+            if (asset)
+                vtxos[0] = vtxos[0] with { Assets = [new VtxoAsset(new string('f', 68), 1)] };
+            VtxoStorage.GetVtxos().ReturnsForAnyArgs(vtxos);
+        }
 
         private static ArkadeSwapIntent Intent(string id, VHTLCv2Contract contract,
             ArkadeSwapIntentType type, ArkadeSwapIntentStatus status) => new()
@@ -461,7 +536,7 @@ public class ComposedSwapExecutionTests
             Request = request;
             await onPrepared(Harness.ClaimTxid, cancellationToken);
             Broadcasts++;
-            Assert.That(harness.SavedStates.Last(), Is.EqualTo((ArkadeSwapIntentStatus.Claimable, Harness.ClaimTxid, (string?)null)));
+            Assert.That(harness.SavedStates.Last(), Is.EqualTo((harness.Outgoing.Status, Harness.ClaimTxid, (string?)null)));
             return Harness.ClaimTxid;
         }
     }

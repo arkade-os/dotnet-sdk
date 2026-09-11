@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents.Evm;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
@@ -26,6 +27,7 @@ public sealed record ComposedSwapExecutionResult(string OutgoingSwapId, ArkadeSw
 public sealed class ComposedSwapExecutionClient
 {
     private readonly IArkadeIntentStorage _storage;
+    private readonly IVtxoStorage _vtxos;
     private readonly IContractStorage _contracts;
     private readonly IClientTransport _transport;
     private readonly LightningIntentsClient _lightning;
@@ -37,6 +39,7 @@ public sealed class ComposedSwapExecutionClient
 
     /// <summary>Creates an executor using existing NI clients and host-controlled EVM proof and durable signing adapters.</summary>
     /// <param name="storage">SDK recovery storage containing the intents and their secrets.</param>
+    /// <param name="vtxos">Synchronized VTXOs used to prove exact funding of the outgoing Arkade lock.</param>
     /// <param name="contracts">Imported covenant descriptors.</param>
     /// <param name="transport">Arkade network facts.</param>
     /// <param name="lightning">NI Lightning receive and outgoing refund implementation.</param>
@@ -45,11 +48,12 @@ public sealed class ComposedSwapExecutionClient
     /// <param name="sender">Host sender that saves a deterministic transaction identity before broadcast.</param>
     /// <param name="policy">Expected chain, token, contract and proof bounds.</param>
     /// <param name="timeProvider">Clock used to enforce safety windows.</param>
-    public ComposedSwapExecutionClient(IArkadeIntentStorage storage, IContractStorage contracts,
+    public ComposedSwapExecutionClient(IArkadeIntentStorage storage, IVtxoStorage vtxos, IContractStorage contracts,
         IClientTransport transport, LightningIntentsClient lightning, OnchainIntentsClient? onchain,
         IEvmSwapRpc rpc, IEvmDurableTransactionSender sender, EvmSendPolicy policy, TimeProvider? timeProvider = null)
     {
         _storage = storage;
+        _vtxos = vtxos;
         _contracts = contracts;
         _transport = transport;
         _lightning = lightning;
@@ -106,13 +110,17 @@ public sealed class ComposedSwapExecutionClient
                 outgoing = await LoadAsync(outgoing.Id, cancellationToken);
             }
 
-            if (outgoing.Status != ArkadeSwapIntentStatus.Claimable)
+            var submitted = outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid);
+            if (outgoing.Status == ArkadeSwapIntentStatus.Pending && submitted is null
+                && !await HasExactOutgoingFundingAsync(outgoing, cancellationToken))
                 return Result(outgoing, ingress);
-            if (string.IsNullOrEmpty(outgoing.SpentTxid))
+            if (outgoing.Status is not (ArkadeSwapIntentStatus.Pending or ArkadeSwapIntentStatus.Claimable))
+                return Result(outgoing, ingress);
+            if (outgoing.Status == ArkadeSwapIntentStatus.Claimable && string.IsNullOrEmpty(outgoing.SpentTxid))
                 throw new InvalidOperationException("outgoing Claimable requires a proven Arkade spend");
+            var executionStatus = outgoing.Status;
             var values = Values(outgoing);
             var preimage = ComposedRouteExecutionGuard.ValidateSecret(outgoing);
-            var submitted = outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid);
             if (submitted is null)
             {
                 var proof = await _chain.ProveLockAsync(values, cancellationToken);
@@ -124,10 +132,12 @@ public sealed class ComposedSwapExecutionClient
             var verified = submitted is not null
                 ? await _chain.VerifyClaimAsync(submitted, values, preimage, cancellationToken)
                 : await _chain.ClaimForAsync(values, preimage,
-                    (txid, token) => SavePreparedAsync(outgoing.Id, values, txid, token), cancellationToken);
+                    (txid, token) => SavePreparedAsync(outgoing.Id, values, executionStatus, txid, token), cancellationToken);
             outgoing = await LoadAsync(outgoing.Id, cancellationToken);
-            if (Values(outgoing) != values || outgoing.Status != ArkadeSwapIntentStatus.Claimable)
+            if (Values(outgoing) != values
+                || outgoing.Status is not (ArkadeSwapIntentStatus.Pending or ArkadeSwapIntentStatus.Claimable))
                 throw new InvalidOperationException("outgoing route changed during EVM claim verification");
+            var verifiedStatus = outgoing.Status;
             var previous = outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmClaimTxid);
             var previousAmount = outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmDeliveredAmount);
             outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimTxid] = verified.TransactionHash;
@@ -139,7 +149,7 @@ public sealed class ComposedSwapExecutionClient
             }
             catch
             {
-                outgoing.Status = ArkadeSwapIntentStatus.Claimable;
+                outgoing.Status = verifiedStatus;
                 if (previous is null) outgoing.Metadata.Remove(ArkadeSwapMetadataKeys.EvmClaimTxid);
                 else outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimTxid] = previous;
                 if (previousAmount is null) outgoing.Metadata.Remove(ArkadeSwapMetadataKeys.EvmDeliveredAmount);
@@ -154,13 +164,14 @@ public sealed class ComposedSwapExecutionClient
         }
     }
 
-    private async Task SavePreparedAsync(string id, Erc20SwapValues values, string txid, CancellationToken cancellationToken)
+    private async Task SavePreparedAsync(string id, Erc20SwapValues values, ArkadeSwapIntentStatus executionStatus,
+        string txid, CancellationToken cancellationToken)
     {
         if (txid.Length != 66 || !txid.StartsWith("0x", StringComparison.Ordinal) || !txid[2..].All(Uri.IsHexDigit))
             throw new InvalidOperationException("prepared EVM claim transaction identity is invalid");
         var intent = await LoadAsync(id, cancellationToken);
         var previous = intent.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid);
-        if (intent.Status != ArkadeSwapIntentStatus.Claimable || Values(intent) != values
+        if (intent.Status != executionStatus || Values(intent) != values
             || previous is not null && previous != txid)
             throw new InvalidOperationException("outgoing route already has a different prepared claim or state");
         intent.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = txid;
@@ -173,6 +184,22 @@ public sealed class ComposedSwapExecutionClient
             if (previous is null) intent.Metadata.Remove(ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid);
             throw;
         }
+    }
+
+    private async Task<bool> HasExactOutgoingFundingAsync(ArkadeSwapIntent outgoing,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await _vtxos.GetVtxos(scripts: [outgoing.SwapPkScript], includeSpent: true,
+            cancellationToken: cancellationToken);
+        var live = candidates.Where(vtxo => !vtxo.IsSpent() && !vtxo.Swept).ToArray();
+        if (live.Length == 0) return false;
+        if (live.Any(vtxo => !string.Equals(vtxo.Script, outgoing.SwapPkScript, StringComparison.OrdinalIgnoreCase)
+                             || vtxo.Assets is { Count: > 0 }))
+            throw new InvalidOperationException("outgoing lock funding contains an unexpected script or asset");
+        var total = live.Aggregate(0UL, (sum, vtxo) => checked(sum + vtxo.Amount));
+        if (total != checked((ulong)outgoing.OfferAmount.Satoshi))
+            throw new InvalidOperationException("outgoing lock funding must equal the exact Arkade-to-EVM quote amount");
+        return true;
     }
 
     private Erc20SwapValues Values(ArkadeSwapIntent outgoing)
