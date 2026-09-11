@@ -59,6 +59,54 @@ public class EvmSwapChainClientTests
     }
 
     [Test]
+    public async Task ProveLock_UsesAProbeOldEnoughForTheConfiguredAge()
+    {
+        var rpc = new FakeRpc
+        {
+            BlockNumber = 100,
+            BlockTimestampAt = block => Now - (long)(100 - block),
+        };
+        rpc.SwapResults.Enqueue(Bool(true));
+        rpc.SwapResults.Enqueue(Bool(true));
+
+        var proof = await Client(rpc, new FakeSender(), minAgeSeconds: 3).ProveLockAsync(Values);
+
+        Assert.That(proof.ProvenAtBlock, Is.EqualTo(new BigInteger(97)));
+        Assert.That(rpc.Calls[1].Block, Is.EqualTo(new BigInteger(97)));
+    }
+
+    [Test]
+    public async Task ProveLock_UsesActualTimestampsWhenBlocksAreSlowerThanPolicyMinimum()
+    {
+        var rpc = new FakeRpc
+        {
+            BlockNumber = 100,
+            BlockTimestampAt = block => Now - (long)(100 - block) * 15,
+        };
+        rpc.SwapResults.Enqueue(Bool(true));
+        rpc.SwapResults.Enqueue(Bool(true));
+
+        var proof = await Client(rpc, new FakeSender(), minAgeSeconds: 3).ProveLockAsync(Values);
+
+        Assert.That(proof.ProvenAtBlock, Is.EqualTo(new BigInteger(99)));
+        Assert.That(rpc.Calls[1].Block, Is.EqualTo(new BigInteger(99)));
+    }
+
+    [Test]
+    public void ProveLock_RejectsAChainYoungerThanTheConfiguredAge()
+    {
+        var rpc = new FakeRpc
+        {
+            BlockNumber = 100,
+            BlockTimestampAt = _ => Now,
+        };
+        rpc.SwapResults.Enqueue(Bool(true));
+
+        Assert.That(async () => await Client(rpc, new FakeSender(), minAgeSeconds: 3)
+            .ProveLockAsync(Values), Throws.TypeOf<EvmSwapProofException>());
+    }
+
+    [Test]
     public void ProveLock_RejectsAnInsufficientRemainingClaimWindow()
     {
         var rpc = new FakeRpc { BlockNumber = 100, BlockTimestamp = Now - 10 };
@@ -258,10 +306,12 @@ public class EvmSwapChainClientTests
     }
 
     private static EvmSwapChainClient Client(FakeRpc rpc, IEvmTransactionSender sender, int minConfirmations = 1,
-        int minimumClaimWindow = 0) => new(rpc, sender, Policy(minConfirmations, minimumClaimWindow),
+        int minimumClaimWindow = 0, int minAgeSeconds = 1) => new(rpc, sender,
+        Policy(minConfirmations, minimumClaimWindow, minAgeSeconds),
         new FixedTimeProvider(DateTimeOffset.FromUnixTimeSeconds(Now)));
 
-    private static EvmSendPolicy Policy(int minConfirmations = 1, int minimumClaimWindow = 0) => new()
+    private static EvmSendPolicy Policy(int minConfirmations = 1, int minimumClaimWindow = 0,
+        int minAgeSeconds = 1) => new()
     {
         ChainId = 31_337,
         TokenAddress = Values.TokenAddress,
@@ -269,7 +319,7 @@ public class EvmSwapChainClientTests
         FastestSecondsPerBlock = 1,
         SlowestSecondsPerBlock = 1,
         MinConfirmations = minConfirmations,
-        MinAgeSeconds = 1,
+        MinAgeSeconds = minAgeSeconds,
         MinimumClaimWindowSeconds = minimumClaimWindow,
     };
 
@@ -303,6 +353,7 @@ public class EvmSwapChainClientTests
     {
         public BigInteger BlockNumber { get; init; }
         public long BlockTimestamp { get; init; }
+        public Func<BigInteger, long>? BlockTimestampAt { get; init; }
         public Queue<byte[]> SwapResults { get; } = new();
         public EvmTransactionReceipt? Receipt { get; init; }
         public int ReceiptTimeoutsRemaining { get; set; }
@@ -314,7 +365,7 @@ public class EvmSwapChainClientTests
         public Task<BigInteger> GetBlockNumberAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(BlockNumber);
         public Task<long> GetBlockTimestampAsync(BigInteger blockNumber, CancellationToken cancellationToken = default) =>
-            Task.FromResult(BlockTimestamp);
+            Task.FromResult(BlockTimestampAt?.Invoke(blockNumber) ?? BlockTimestamp);
         public Task<byte[]> CallAsync(string to, byte[] data, BigInteger? blockNumber = null,
             CancellationToken cancellationToken = default)
         {
