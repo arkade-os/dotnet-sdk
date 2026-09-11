@@ -256,6 +256,24 @@ pass proposes its onchain actions on every tick rather than on a trigger. It ret
 seen when the time runs out rather than throwing, so "it never arrived" stays an answer to branch on —
 and it comes back as `Empty` when nothing arrived while this was watching.
 
+## Watch-only Arkade claims
+
+Register `AddArkadeEmulator(...)` and use
+`intents.ClaimOnchainReceiveNonInteractiveAsync(swapId)` (or
+`OnchainIntentsClient.ClaimNonInteractiveAsync`) for an explicitly signerless Arkade claim. This
+retains the on-board claim-window margin and full-funding gate, reads the destination from the
+stored covenant, and pays every input to a separate aligned output. A watch-only wallet must retain
+the stored preimage; the generic `ClaimOnchainReceiveAsync` still uses the receiver's signer.
+
+Submission reveals the preimage to the emulator even if rejected. If another lockup shares its
+hash, secure that leg's obligations before claiming; this primitive does not verify downstream
+funding, including an EVM lock, or provide composed-swap guarantees.
+
+For an outgoing Arkade lockup, `intents.RefundNonInteractiveAsync(swapId)` requires its funded ninth
+leaf and mature refund locktime. It cannot retrofit a signerless refund onto an eight-leaf contract.
+These methods affect only Arkade VTXOs. Claiming or refunding a Bitcoin L1 HTLC still needs its
+existing chain-signing path, and EVM execution is not provided here.
+
 ## Testing
 
 Unit coverage sits at the boundaries that can be decided without a chain:

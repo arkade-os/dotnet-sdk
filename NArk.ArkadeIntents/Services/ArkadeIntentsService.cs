@@ -259,6 +259,11 @@ public sealed class ArkadeIntentsService
         string swapId, CancellationToken cancellationToken = default) =>
         _lightning.RefundSwap(swapId, cancellationToken);
 
+    /// <inheritdoc cref="LightningIntentsClient.RefundNonInteractiveAsync"/>
+    public Task<ArkadeSwapIntent> RefundNonInteractiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        _lightning.RefundNonInteractiveAsync(swapId, cancellationToken);
+
     /// <summary>
     /// Resolve an unfinished send swap: read what the chain says, and refund only if nothing else
     /// already ended it.
@@ -324,6 +329,11 @@ public sealed class ArkadeIntentsService
     public Task<ArkadeSwapIntent> ClaimLightningReceiveAsync(
         string swapId, CancellationToken cancellationToken = default) =>
         _lightning.ClaimAsync(swapId, cancellationToken);
+
+    /// <inheritdoc cref="LightningIntentsClient.ClaimNonInteractiveAsync"/>
+    public Task<ArkadeSwapIntent> ClaimLightningReceiveNonInteractiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        _lightning.ClaimNonInteractiveAsync(swapId, cancellationToken);
 
     /// <summary>
     /// Off-board an Arkade balance to Bitcoin L1.
@@ -407,6 +417,11 @@ public sealed class ArkadeIntentsService
     public Task<ArkadeSwapIntent> ClaimOnchainReceiveAsync(
         string swapId, CancellationToken cancellationToken = default) =>
         RequireOnchain().ClaimOnchainReceiveAsync(swapId, cancellationToken);
+
+    /// <inheritdoc cref="OnchainIntentsClient.ClaimNonInteractiveAsync"/>
+    public Task<ArkadeSwapIntent> ClaimOnchainReceiveNonInteractiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        RequireOnchain().ClaimNonInteractiveAsync(swapId, cancellationToken);
 
     /// <summary>
     /// Take back an on-board's L1 funding once its refund leaf has matured.
