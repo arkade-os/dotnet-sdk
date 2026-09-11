@@ -276,7 +276,9 @@ public static class TransactionHelpers
                                 Assets.AssetInput.Create(inputRemapping.GetValueOrDefault(inp.Vin, inp.Vin), inp.Amount))
                                 .ToList(),
                             g.Outputs, g.Metadata)).ToList();
-                    var remappedTxOut = Assets.Packet.Create(remappedGroups).ToTxOut();
+                    var remappedPacket = Assets.Packet.Create(remappedGroups);
+                    var remappedTxOut = new Assets.Extension(ext.Packets.Select(p =>
+                        p is Assets.Packet ? remappedPacket : p).ToArray()).ToTxOut();
                     gtx.Outputs[i].ScriptPubKey = remappedTxOut.ScriptPubKey;
                     gtx.Outputs[i].Value = remappedTxOut.Value;
                     break;
