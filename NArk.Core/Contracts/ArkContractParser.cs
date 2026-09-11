@@ -7,7 +7,7 @@ public class ArkContractParser
 {
     private static readonly object RegistrationGate = new();
 
-    private static IReadOnlyList<IArkContractParser> _parsers =
+    private static volatile IReadOnlyList<IArkContractParser> _parsers =
     [
         new GenericArkContractParser(ArkPaymentContract.ContractType, ArkPaymentContract.Parse),
         new GenericArkContractParser(ArkBoardingContract.ContractType, ArkBoardingContract.Parse),

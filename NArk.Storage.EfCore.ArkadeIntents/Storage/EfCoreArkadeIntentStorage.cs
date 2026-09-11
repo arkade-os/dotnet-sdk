@@ -6,7 +6,7 @@ using NBitcoin;
 
 namespace NArk.Storage.EfCore.Storage;
 
-/// <summary>EF Core-backed <see cref="IArkadeIntentStorage"/> for non-interactive swap intents.</summary>
+/// <summary>Opt-in EF Core storage for non-interactive swap intents.</summary>
 public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
 {
     private readonly IArkDbContextFactory _dbContextFactory;

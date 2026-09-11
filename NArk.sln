@@ -28,6 +28,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NArk.Arkade", "NArk.Arkade\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NArk.ArkadeIntents", "NArk.ArkadeIntents\NArk.ArkadeIntents.csproj", "{368EF325-C029-48E4-97E7-6B229EC9D0C6}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NArk.Storage.EfCore.ArkadeIntents", "NArk.Storage.EfCore.ArkadeIntents\NArk.Storage.EfCore.ArkadeIntents.csproj", "{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -182,6 +184,18 @@ Global
 		{368EF325-C029-48E4-97E7-6B229EC9D0C6}.Release|x64.Build.0 = Release|Any CPU
 		{368EF325-C029-48E4-97E7-6B229EC9D0C6}.Release|x86.ActiveCfg = Release|Any CPU
 		{368EF325-C029-48E4-97E7-6B229EC9D0C6}.Release|x86.Build.0 = Release|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Debug|x64.Build.0 = Debug|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Debug|x86.Build.0 = Debug|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Release|x64.ActiveCfg = Release|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Release|x64.Build.0 = Release|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Release|x86.ActiveCfg = Release|Any CPU
+		{CDA36DF4-2D99-478A-8C71-F5C2FAA120A1}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -147,6 +147,17 @@ public class ArkadeSwapMetadataTests
         Assert.That(ex!.Message, Does.Contain("no offer"));
     }
 
+    [Test]
+    public async Task BroadcastAssetOffer_RoundTripsWithoutInventingASolver()
+    {
+        var intent = Intent(ArkadeSwapIntentType.BtcToAsset)
+            .WithAssetMetadata(new AssetSwapMetadata("deadbeef", "wpkh(maker)"));
+        await _storage.SaveArkadeSwapIntent(intent);
+        var reloaded = await _storage.GetArkadeSwapIntent(intent.Id);
+        Assert.That(reloaded!.SolverPubkey(), Is.Null);
+        Assert.That(reloaded.AssetMetadata().OfferHex, Is.EqualTo("deadbeef"));
+    }
+
     private static ArkadeSwapIntent Intent(ArkadeSwapIntentType type) => new()
     {
         Id = "swap-1",
@@ -163,7 +174,8 @@ public class ArkadeSwapMetadataTests
     private sealed class TestDb(DbContextOptions<TestDb> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.ConfigureArkEntities(o => o.StoreDateTimeOffsetAsTicks = true);
+            => modelBuilder.ConfigureArkEntities(o => o.StoreDateTimeOffsetAsTicks = true)
+                .ConfigureArkadeEntities(o => o.StoreDateTimeOffsetAsTicks = true);
     }
 
     private sealed class TestDbFactory(DbContextOptions<TestDb> options) : IArkDbContextFactory

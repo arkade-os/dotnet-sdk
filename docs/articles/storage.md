@@ -42,6 +42,22 @@ services.AddArkEfCoreStorage<MyDbContext>(opts =>
 
 `ArkWalletEntity` carries a generic `Metadata` JSON column for per-wallet bookkeeping the SDK accumulates over time without requiring a column-add migration per concern. `VtxoSynchronizationService` uses key `vtxo.lastFullPollAt` to persist a cursor that bounds the cold-start catch-up window — on first startup it reads `MIN(per-wallet vtxo.lastFullPollAt)` as the `after` filter so wallets with long history don't refetch every VTXO on every cold start. Routine polls write the same `StartedAt` timestamp to every wallet on success. A failure-then-success sequence cannot advance the cursor past the catch-up window: routine-poll writes are gated until the cold-start catch-up has succeeded at least once. Use `IWalletStorage.SetMetadataValue` for sparse updates so concurrent writers for different concerns (sync, recovery, ...) don't clobber each other.
 
+## Swap Storage (Opt-In)
+
+Reference `NArk.Storage.EfCore.ArkadeIntents` to persist swaps. Core storage does not depend on the
+swap implementation or create its table. Existing swap users must add both opt-in calls:
+
+```csharp
+services.AddArkEfCoreStorage<MyDbContext>();
+services.AddArkadeEfCoreStorage();
+// In MyDbContext.OnModelCreating:
+modelBuilder.ConfigureArkEntities();
+modelBuilder.ConfigureArkadeEntities();
+```
+
+Pass the same schema and `StoreDateTimeOffsetAsTicks` settings to both mappings. The package move
+preserves the table and column names, so opting in retains existing swap data.
+
 `ArkadeSwapIntentEntity` (table `ArkadeSwapIntents`) stores its `Type` and `Status` enums as their
 member **names**, not as the ordinals EF Core would default to — so the columns are `TEXT`/`nvarchar`,
 not `INTEGER`. An ordinal is positional: adding a corridor or a status anywhere but the end of its

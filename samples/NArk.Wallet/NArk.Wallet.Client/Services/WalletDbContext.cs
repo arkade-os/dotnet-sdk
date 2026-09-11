@@ -13,6 +13,7 @@ public class WalletDbContext(DbContextOptions<WalletDbContext> options) : DbCont
         // storage so paged queries that ORDER BY a DateTimeOffset column (GetVtxos,
         // GetIntents, etc.) work. See docs/articles/storage.md for the trade-offs.
         modelBuilder.ConfigureArkEntities(o => o.StoreDateTimeOffsetAsTicks = true);
+        modelBuilder.ConfigureArkadeEntities(o => o.StoreDateTimeOffsetAsTicks = true);
         modelBuilder.ConfigureArkPaymentEntities(o => o.StoreDateTimeOffsetAsTicks = true);
         modelBuilder.ConfigureArkExitEntities(o => o.StoreDateTimeOffsetAsTicks = true);
     }
