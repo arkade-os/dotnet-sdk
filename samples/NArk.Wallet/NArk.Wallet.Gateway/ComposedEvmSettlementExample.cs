@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Composition;
 using NArk.ArkadeIntents.Evm;
@@ -27,6 +28,7 @@ internal static class ComposedEvmSettlementExample
             options));
         services.AddSingleton(serviceProvider => new ComposedSwapExecutionClient(
             serviceProvider.GetRequiredService<IArkadeIntentStorage>(),
+            serviceProvider.GetRequiredService<IVtxoStorage>(),
             serviceProvider.GetRequiredService<IContractStorage>(),
             serviceProvider.GetRequiredService<IClientTransport>(),
             serviceProvider.GetRequiredService<LightningIntentsClient>(),
