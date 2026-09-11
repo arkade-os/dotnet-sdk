@@ -306,14 +306,12 @@ public class ArkadeSwapTests
     /// </summary>
     /// <remarks>
     /// A healthy fill lands in ~1–3s, so this is headroom for jitter rather than a budget to be
-    /// spent. It is not sized to wait out a solver settlement round: an offer the solver cannot
-    /// fund is delayed by however many settlement cycles it takes to free the funds — measured
-    /// at 91s once and just over 4 minutes on another run — which no fixed timeout can bound
-    /// safely. <see cref="SolverLiquidityHelper"/> instead hands the solver its own unencumbered
-    /// BTC VTXO so the asset→BTC direction has a counterparty that can pay out immediately.
+    /// spent. The reverse test is different: its first leg can leave the solver's BTC float behind
+    /// two scheduled settlement cycles. Its separate timeout covers two observed ~2m42 cycles plus
+    /// runner jitter without slowing the ordinary one-leg tests.
     /// </remarks>
     private static readonly TimeSpan SolverFillTimeout = TimeSpan.FromMinutes(2);
-    private static readonly TimeSpan ReverseSolverFillTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ReverseSolverFillTimeout = TimeSpan.FromMinutes(7);
 
     private static async Task<bool> Poll(Func<Task<bool>> condition, TimeSpan timeout)
     {
