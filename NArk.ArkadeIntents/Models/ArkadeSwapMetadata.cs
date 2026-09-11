@@ -63,6 +63,22 @@ public static class ArkadeSwapMetadataKeys
     public const string EvmTimeoutBlock = "evmTimeoutBlock";
     /// <summary>Configured ERC20Swap contract.</summary>
     public const string EvmSwapContractAddress = "evmSwapContractAddress";
+    /// <summary>Signed EVM transaction identity durably recorded before broadcast, not proof of delivery.</summary>
+    public const string EvmClaimSubmittedTxid = "evmClaimSubmittedTxid";
+    /// <summary>EVM transaction whose receipt proves exact merchant delivery.</summary>
+    public const string EvmClaimTxid = "evmClaimTxid";
+    /// <summary>Exact ERC20 amount independently verified from the claim receipt.</summary>
+    public const string EvmDeliveredAmount = "evmDeliveredAmount";
+    /// <summary>Tip at which the pre-claim EVM lock was observed.</summary>
+    public const string EvmLockObservedAtBlock = "evmLockObservedAtBlock";
+    /// <summary>Historical block proving the configured EVM lock depth.</summary>
+    public const string EvmLockProvenAtBlock = "evmLockProvenAtBlock";
+    /// <summary>Unix timestamp of the age-proving EVM block.</summary>
+    public const string EvmLockProvenBlockTimestamp = "evmLockProvenBlockTimestamp";
+    /// <summary>Persisted outgoing RFQ identity linking an ingress to its independent EVM leg.</summary>
+    public const string ComposedOutgoingSwapId = "composedOutgoingSwapId";
+    /// <summary>Exact script L pinned by a linked ingress claim; its presence requires route validation.</summary>
+    public const string ComposedPayoutPkScript = "composedPayoutPkScript";
 }
 
 /// <summary>What an Arkade BTC↔asset swap keeps beyond the fields every corridor has.</summary>

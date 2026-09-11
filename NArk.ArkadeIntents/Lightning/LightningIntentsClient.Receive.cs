@@ -110,7 +110,7 @@ public sealed partial class LightningIntentsClient
         RfqAmountSide amountSide = RfqAmountSide.To,
         CancellationToken cancellationToken = default) => await ReceiveFromLightningCoreAsync(
             walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, amountSide,
-            linkedSecret: null, linkedPayout: null, linkedReceiver: null, linkedRfqId: null,
+            linkedSecret: null, linkedPayout: null, linkedReceiver: null, linkedRfqId: null, outgoingSwapId: null,
             cancellationToken);
 
     /// <summary>Negotiates a receive whose non-interactive claim funds another Arkade swap.</summary>
@@ -121,6 +121,7 @@ public sealed partial class LightningIntentsClient
     /// <param name="secret">The outgoing route's client-owned secret.</param>
     /// <param name="payoutAddress">The already-verified outgoing Arkade lock L.</param>
     /// <param name="receiverContract">A wallet-owned contract supplying M's receiver key.</param>
+    /// <param name="outgoingSwapId">Already-persisted outgoing RFQ id; exact linkage is retained for automatic claims.</param>
     /// <param name="solverCard">Optional published ingress terms.</param>
     /// <param name="rfqId">Caller-reserved global RFQ identity, or null to generate one.</param>
     /// <param name="cancellationToken">Cancels before the quote is published.</param>
@@ -138,11 +139,12 @@ public sealed partial class LightningIntentsClient
         SwapLinkSecret secret,
         ArkAddress payoutAddress,
         ArkContract receiverContract,
+        string outgoingSwapId,
         SolverCard? solverCard = null,
         string? rfqId = null,
         CancellationToken cancellationToken = default) => await ReceiveFromLightningCoreAsync(
             walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, RfqAmountSide.To,
-            secret, payoutAddress, receiverContract, rfqId, cancellationToken);
+            secret, payoutAddress, receiverContract, rfqId, outgoingSwapId, cancellationToken);
 
     private async Task<PendingLightningReceive> ReceiveFromLightningCoreAsync(
         string walletId,
@@ -155,6 +157,7 @@ public sealed partial class LightningIntentsClient
         ArkAddress? linkedPayout,
         ArkContract? linkedReceiver,
         string? linkedRfqId,
+        string? outgoingSwapId,
         CancellationToken cancellationToken)
     {
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
@@ -169,6 +172,13 @@ public sealed partial class LightningIntentsClient
         var payoutPkScript = payoutArkAddress.ScriptPubKey.ToBytes();
         var payoutAddress = payoutArkAddress.ToString(serverInfo.Network == Network.Main);
         var payoutDescriptor = UserKeyOf(payout, "payout");
+        if (linkedSecret is not null)
+        {
+            var outgoing = await ComposedRouteExecutionGuard.PreparedOutgoingAsync(_intentStorage, outgoingSwapId!,
+                walletId, amountSats, linkedSecret.PaymentHash, payoutArkAddress.ScriptPubKey.ToHex(), cancellationToken);
+            if (outgoing.Status != ArkadeSwapIntentStatus.Pending || outgoing.Id == linkedRfqId)
+                throw new InvalidOperationException("linked receive requires an independent pending outgoing quote");
+        }
 
         // The negotiation id first: for a wallet whose claim key repeats across swaps it is also
         // the preimage salt, so it has to exist before the preimage does.
@@ -238,7 +248,7 @@ public sealed partial class LightningIntentsClient
             metadata: new Dictionary<string, string> { ["Source"] = $"lightning-receive:{request.RfqId}" },
             cancellationToken: cancellationToken);
 
-        await _intentStorage.SaveArkadeSwapIntent(new ArkadeSwapIntent
+        var receiveIntent = new ArkadeSwapIntent
         {
             Id = request.RfqId,
             WalletId = walletId,
@@ -257,8 +267,9 @@ public sealed partial class LightningIntentsClient
             // from the imported contract rather than from a wire offer.
         }.WithLightningMetadata(new LightningSwapMetadata(
                 invoice.ToString(), Convert.ToHexString(sealed_.Preimage).ToLowerInvariant()))
-            .WithSolver(quote.SolverPubkey),
-            cancellationToken);
+            .WithSolver(quote.SolverPubkey);
+        ComposedRouteExecutionGuard.Bind(receiveIntent, outgoingSwapId, payoutArkAddress.ScriptPubKey.ToHex());
+        await _intentStorage.SaveArkadeSwapIntent(receiveIntent, cancellationToken);
 
         _logger?.LogInformation(
             "Receive swap {RfqId} negotiated: {Amount} sats to {Payout}, lockup {Lockup}",
@@ -270,7 +281,7 @@ public sealed partial class LightningIntentsClient
     }
 
     /// <summary>
-    /// Take delivery cooperatively using the receiver's wallet signer, revealing the preimage.
+    /// Take delivery cooperatively using the receiver's wallet signer; linked routes require exact funding before revealing the preimage.
     /// </summary>
     /// <param name="swapId">The negotiation's correlation id.</param>
     /// <param name="cancellationToken">Cancels before the spend; after it the claim is live regardless.</param>
@@ -292,7 +303,7 @@ public sealed partial class LightningIntentsClient
     /// <param name="swapId">The recorded receive swap, including its stored preimage for watch-only wallets.</param>
     /// <param name="cancellationToken">Cancels before submission; submission reveals the preimage.</param>
     /// <returns>The fulfilled intent after the emulator submits the claim.</returns>
-    /// <remarks>Submission discloses the preimage even if it fails; callers must secure any other obligations sharing its hash first.</remarks>
+    /// <remarks>Linked routes require exact funding and validated H/M-to-L linkage; submission discloses P even if it fails.</remarks>
     public Task<ArkadeSwapIntent> ClaimNonInteractiveAsync(
         string swapId, CancellationToken cancellationToken = default) => ClaimCoreAsync(swapId, true, cancellationToken);
 
@@ -303,6 +314,8 @@ public sealed partial class LightningIntentsClient
 
         if (intent.Type != ArkadeSwapIntentType.LightningToBtc)
             throw new InvalidOperationException($"Swap '{swapId}' is not a Lightning receive ({intent.Type}).");
+        if (ComposedRouteExecutionGuard.IsLinked(intent) && intent.Status == ArkadeSwapIntentStatus.Fulfilled)
+            return intent;
         if (intent.RefundLocktime is not { } locktime)
             throw new InvalidOperationException($"Swap '{swapId}' has no refund locktime recorded.");
 
@@ -319,9 +332,11 @@ public sealed partial class LightningIntentsClient
         var contract = await LightningCorridor.LoadLockupAsync(
             _contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
 
+        var linked = await ComposedRouteExecutionGuard.ValidateIngressAsync(
+            _intentStorage, _contractStorage, intent, contract, serverInfo.Network, now, cancellationToken);
         var vtxos = await _vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-        var claimable = SelectClaimable(vtxos, (ulong)intent.WantAmount.Satoshi, swapId);
+        var claimable = SelectClaimable(vtxos, (ulong)intent.WantAmount.Satoshi, swapId, linked);
         var pinnedOutputs = nonInteractive ? NonInteractiveVhtlcSpend.Outputs(contract, claimable, serverInfo) : null;
         var preimage = intent.LightningMetadata().Preimage is { Length: > 0 } preimageHex
             ? Convert.FromHexString(preimageHex)
@@ -460,7 +475,7 @@ public sealed partial class LightningIntentsClient
     }
 
     internal static IReadOnlyList<ArkVtxo> SelectClaimable(
-        IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId)
+        IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId, bool requireExact = false)
     {
         var live = vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
         if (live.Count == 0)
@@ -469,7 +484,9 @@ public sealed partial class LightningIntentsClient
                 $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet.");
         }
 
-        var total = live.Aggregate(0UL, (sum, v) => sum + v.Amount);
+        var total = live.Aggregate(0UL, (sum, v) => checked(sum + v.Amount));
+        if (requireExact && total != expectedSats)
+            throw new InvalidOperationException("composed ingress live funding must equal the exact outgoing quote amount");
         if (total < expectedSats)
         {
             throw new InvalidOperationException(

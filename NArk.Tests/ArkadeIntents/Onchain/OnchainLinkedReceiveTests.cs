@@ -30,6 +30,7 @@ public class OnchainLinkedReceiveTests
 {
     private const long Now = 1_800_000_000;
     private const string PreparedRfqId = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    private const string OutgoingRfqId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     /// <summary>The wire request must pin H, exact output, L, and the merchant's receiver/refund key.</summary>
     [Test]
@@ -74,6 +75,8 @@ public class OnchainLinkedReceiveTests
             Assert.That(imported.NonInteractiveClaim!.ReceiverPkScript, Is.EqualTo(ctx.Outgoing.ScriptPubKey.ToBytes()));
             Assert.That(imported.ReceiverKey.ToBytes(), Is.EqualTo(Convert.FromHexString(KeyHex(4))));
             Assert.That(saved.Id, Is.EqualTo(PreparedRfqId));
+            Assert.That(saved.Metadata[ArkadeSwapMetadataKeys.ComposedOutgoingSwapId], Is.EqualTo(OutgoingRfqId));
+            Assert.That(saved.Metadata[ArkadeSwapMetadataKeys.ComposedPayoutPkScript], Is.EqualTo(ctx.Outgoing.ScriptPubKey.ToHex()));
             Assert.That(saved.WalletId, Is.EqualTo("wallet-1"));
             Assert.That(saved.Type, Is.EqualTo(ArkadeSwapIntentType.OnchainToBtc));
             Assert.That(saved.PaymentHash, Is.EqualTo(ctx.Secret.PaymentHash));
@@ -140,7 +143,7 @@ public class OnchainLinkedReceiveTests
 
     private static Task<PendingOnchainReceive> Receive(Harness ctx, string? rfqId = PreparedRfqId, long amount = 50_000) =>
         ctx.Client.ReceiveFromOnchainIntoAsync("wallet-1", amount, ctx.Rfq, KeyFor(11).PubKey.Compress().ToHex(),
-            RefundAddress, ctx.Secret, ctx.Outgoing, ctx.Receiver, rfqId: rfqId);
+            RefundAddress, ctx.Secret, ctx.Outgoing, ctx.Receiver, OutgoingRfqId, rfqId: rfqId);
 
     private static Harness Context(long quoteDelta = 0)
     {
@@ -162,6 +165,21 @@ public class OnchainLinkedReceiveTests
             imported.Add((VHTLCv2Contract)call.ArgAt<ArkContract>(1));
         });
         var intents = Substitute.For<IArkadeIntentStorage>();
+        var outgoingIntent = new ArkadeSwapIntent
+        {
+            Id = OutgoingRfqId,
+            WalletId = "wallet-1",
+            Type = ArkadeSwapIntentType.BtcToEvm,
+            OfferAmount = Money.Satoshis(50_000),
+            WantAmount = Money.Zero,
+            Status = ArkadeSwapIntentStatus.Pending,
+            CreatedAt = DateTimeOffset.FromUnixTimeSeconds(Now),
+            SwapPkScript = outgoing.ScriptPubKey.ToHex(),
+            SwapAddress = outgoing.ToString(false),
+            PaymentHash = SwapLinkSecret.FromPreimage(Enumerable.Repeat((byte)0x42, 32).ToArray()).PaymentHash,
+            Metadata = new() { [ArkadeSwapMetadataKeys.Preimage] = string.Concat(Enumerable.Repeat("42", 32)) }
+        };
+        intents.GetArkadeSwapIntents().ReturnsForAnyArgs([outgoingIntent]);
         intents.WhenForAnyArgs(i => i.SaveArkadeSwapIntent(default!, default)).Do(call =>
         {
             events.Add("save");
@@ -189,13 +207,22 @@ public class OnchainLinkedReceiveTests
                     new VHTLCv2NonInteractiveClaim(ArkAddress.Parse(profile.PayoutAddress).ScriptPubKey.ToBytes(), emulator), refundScript, emulator);
                 return new RfqQuote<OnchainReceiveQuoteProfile>
                 {
-                    V = 1, Type = "rfq_quote", RfqId = request.RfqId, Pair = request.Pair,
-                    FromAmount = 50_150, ToAmount = 50_000 + quoteDelta, SolverPubkey = KeyHex(5),
-                    ValidUntil = Now + 600, RefundLocktime = Now + 21_600,
+                    V = 1,
+                    Type = "rfq_quote",
+                    RfqId = request.RfqId,
+                    Pair = request.Pair,
+                    FromAmount = 50_150,
+                    ToAmount = 50_000 + quoteDelta,
+                    SolverPubkey = KeyHex(5),
+                    ValidUntil = Now + 600,
+                    RefundLocktime = Now + 21_600,
                     Profile = new OnchainReceiveQuoteProfile
                     {
-                        HtlcAddress = htlc.Address.ToString(), HtlcLocktime = Now + 43_200, MinConfirmations = 1,
-                        ClaimPubkey = KeyHex(6), LockupAddress = candidates.NineLeaf.GetArkAddress().ToString(false),
+                        HtlcAddress = htlc.Address.ToString(),
+                        HtlcLocktime = Now + 43_200,
+                        MinConfirmations = 1,
+                        ClaimPubkey = KeyHex(6),
+                        LockupAddress = candidates.NineLeaf.GetArkAddress().ToString(false),
                         SolverRefundPkScript = Convert.ToHexString(refundScript).ToLowerInvariant()
                     }
                 };

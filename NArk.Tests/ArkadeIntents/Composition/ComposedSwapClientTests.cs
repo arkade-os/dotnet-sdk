@@ -246,13 +246,14 @@ public class ComposedSwapClientTests
                     return HoldOutgoing ? OutgoingGate.Task : Task.FromResult(PendingOutgoing);
                 });
             var lightning = Substitute.For<ILightningIngressQuoteClient>();
-            lightning.ReceiveFromLightningIntoAsync(default!, default, default!, default!, default!, default!, default!, default, default, default)
+            lightning.ReceiveFromLightningIntoAsync(default!, default, default!, default!, default!, default!, default!, default!, default, default, default)
                 .ReturnsForAnyArgs(call =>
                 {
                     Events.Add("lightning");
                     var input = new IngressCall(call.ArgAt<string>(0), call.ArgAt<long>(1), call.ArgAt<IRfqTransport>(2),
                         call.ArgAt<string>(3), call.ArgAt<SwapLinkSecret>(4), call.ArgAt<ArkAddress>(5),
-                        call.ArgAt<ArkContract>(6), call.ArgAt<string?>(8), call.ArgAt<SolverCard?>(7), null);
+                        call.ArgAt<ArkContract>(6), call.ArgAt<string?>(9), call.ArgAt<SolverCard?>(8), null);
+                    Assert.That(call.ArgAt<string>(7), Is.EqualTo(PendingOutgoing!.RfqId));
                     IngressCalls.Add(input);
                     var facts = Ingress(input);
                     var quote = new RfqQuote<LightningReceiveQuoteProfile>
@@ -278,13 +279,14 @@ public class ComposedSwapClientTests
                         facts.Hash, facts.Contract, quote.Profile.LockupAddress!, facts.Payout);
                 });
             var onchain = Substitute.For<IOnchainIngressQuoteClient>();
-            onchain.ReceiveFromOnchainIntoAsync(default!, default, default!, default!, default!, default!, default!, default!, default, default, default)
+            onchain.ReceiveFromOnchainIntoAsync(default!, default, default!, default!, default!, default!, default!, default!, default!, default, default, default)
                 .ReturnsForAnyArgs(call =>
                 {
                     Events.Add("onchain");
                     var input = new IngressCall(call.ArgAt<string>(0), call.ArgAt<long>(1), call.ArgAt<IRfqTransport>(2),
                         call.ArgAt<string>(3), call.ArgAt<SwapLinkSecret>(5), call.ArgAt<ArkAddress>(6),
-                        call.ArgAt<ArkContract>(7), call.ArgAt<string?>(9), call.ArgAt<SolverCard?>(8), call.ArgAt<BitcoinAddress>(4));
+                        call.ArgAt<ArkContract>(7), call.ArgAt<string?>(10), call.ArgAt<SolverCard?>(9), call.ArgAt<BitcoinAddress>(4));
+                    Assert.That(call.ArgAt<string>(8), Is.EqualTo(PendingOutgoing!.RfqId));
                     IngressCalls.Add(input);
                     var facts = Ingress(input);
                     var htlc = OnchainHtlc.Derive(new uint256(Convert.FromHexString(facts.Hash), false),
