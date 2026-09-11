@@ -291,7 +291,7 @@ public class VirtualTxServiceTests
         return new ArkServerInfo(
             Dust: Money.Satoshis(546),
             SignerKey: signerKey,
-            DeprecatedSigners: new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+            DeprecatedSigners: new Dictionary<NBitcoin.Secp256k1.ECXOnlyPubKey, long>(),
             Network: Network.RegTest,
             UnilateralExit: new Sequence(144),
             BoardingExit: new Sequence(144),

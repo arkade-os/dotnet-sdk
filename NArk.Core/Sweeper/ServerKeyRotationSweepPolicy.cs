@@ -27,7 +27,7 @@ public class ServerKeyRotationSweepPolicy(IClientTransport clientTransport) : IS
         var recoverableKeys = serverInfo.DeprecatedSigners
             .Where(ds => ds.Value > now || ds.Value == 0)
             .Select(ds => ds.Key)
-            .ToHashSet(ECXOnlyPubKeyComparer.Instance);
+            .ToHashSet();
 
         // Match on the contract's SERVER signer key (Contract.Server) — the key that rotates and is
         // recorded in the Arkade address. SignerDescriptor holds the USER key, not the server key, so

@@ -30,7 +30,7 @@ public class HdWalletRecoveryServiceTests
     private static readonly ArkServerInfo TestServerInfo = new(
         Dust: Money.Satoshis(330),
         SignerKey: TestServerKey,
-        DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+        DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
         Network: Network.RegTest,
         UnilateralExit: new Sequence(144),
         BoardingExit: new Sequence(144),
