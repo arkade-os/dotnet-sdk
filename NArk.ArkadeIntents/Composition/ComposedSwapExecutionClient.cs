@@ -7,6 +7,7 @@ using NArk.ArkadeIntents.Evm;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Onchain;
+using NArk.ArkadeIntents.Services;
 using NArk.Core.Transport;
 
 namespace NArk.ArkadeIntents.Composition;
@@ -21,7 +22,11 @@ namespace NArk.ArkadeIntents.Composition;
 /// <param name="DeliveredAmount">Receipt-verified ERC20 atomic amount as canonical decimal, or null.</param>
 public sealed record ComposedSwapExecutionResult(string OutgoingSwapId, ArkadeSwapIntentStatus OutgoingStatus,
     string? IngressSwapId, ArkadeSwapIntentStatus? IngressStatus, string? EvmClaimTxid,
-    EvmLockProof? LockProof = null, string? DeliveredAmount = null);
+    EvmLockProof? LockProof = null, string? DeliveredAmount = null)
+{
+    /// <summary>Latest ingress refund failure or incomplete outcome, or null.</summary>
+    public string? IngressError { get; init; }
+}
 
 /// <summary>Advances persisted composed routes without disclosing their SDK-held secrets in results.</summary>
 /// <remarks>The host must serialize a route across processes; intent storage does not expose compare-and-swap.</remarks>
@@ -91,17 +96,11 @@ public sealed class ComposedSwapExecutionClient
                 throw new InvalidOperationException("composed outgoing intent is not a positive Arkade-to-EVM quote");
             var ingress = ingressSwapId is null ? null : await LoadAsync(ingressSwapId, cancellationToken);
             ValidateIdentity(outgoing, ingress);
+            outgoing = await ReconcileAsync(outgoing, cancellationToken);
+            if (ingress is not null) ingress = await ReconcileAsync(ingress, cancellationToken);
             var submitted = outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid);
             var preparedRaw = outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction);
-            if (outgoing.Status == ArkadeSwapIntentStatus.Fulfilled)
-            {
-                if (!outgoing.Metadata.ContainsKey(ArkadeSwapMetadataKeys.EvmClaimTxid))
-                    throw new InvalidOperationException("completed EVM route has no verified claim transaction");
-                return Result(outgoing, ingress);
-            }
-            if (outgoing.Status == ArkadeSwapIntentStatus.Refundable && submitted is null)
-                return Result(await _lightning.RefundNonInteractiveAsync(outgoing.Id, cancellationToken), ingress);
-
+            string? ingressError = null;
             if (outgoing.Status == ArkadeSwapIntentStatus.Pending && ingress?.Status == ArkadeSwapIntentStatus.Claimable)
             {
                 Values(outgoing);
@@ -116,13 +115,38 @@ public sealed class ComposedSwapExecutionClient
                         .ClaimNonInteractiveAsync(ingress.Id, cancellationToken);
                 outgoing = await LoadAsync(outgoing.Id, cancellationToken);
             }
+            if (ingress is not null
+                && ArkadeIntentPolicy.NextAction(ingress) == ArkadeIntentAction.RefundOnchain)
+            {
+                try
+                {
+                    var refund = await (_onchain
+                        ?? throw new InvalidOperationException("onchain ingress client is unavailable"))
+                        .RefundOnchainReceiveAsync(ingress.Id, cancellationToken: cancellationToken);
+                    ingressError = refund.Refunded ? null : refund.Detail;
+                    ingress = await LoadAsync(ingress.Id, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    ingressError = ex.Message;
+                }
+            }
+            if (outgoing.Status == ArkadeSwapIntentStatus.Fulfilled)
+            {
+                if (!outgoing.Metadata.ContainsKey(ArkadeSwapMetadataKeys.EvmClaimTxid))
+                    throw new InvalidOperationException("completed EVM route has no verified claim transaction");
+                return Result(outgoing, ingress, ingressError);
+            }
+            if (outgoing.Status == ArkadeSwapIntentStatus.Refundable && submitted is null)
+                return Result(await _lightning.RefundNonInteractiveAsync(outgoing.Id, cancellationToken), ingress,
+                    ingressError);
 
             if (outgoing.Status == ArkadeSwapIntentStatus.Pending && submitted is null
                 && !await HasExactOutgoingFundingAsync(outgoing, cancellationToken))
-                return Result(outgoing, ingress);
+                return Result(outgoing, ingress, ingressError);
             if (submitted is null
                 && outgoing.Status is not (ArkadeSwapIntentStatus.Pending or ArkadeSwapIntentStatus.Claimable))
-                return Result(outgoing, ingress);
+                return Result(outgoing, ingress, ingressError);
             if (outgoing.Status == ArkadeSwapIntentStatus.Claimable && string.IsNullOrEmpty(outgoing.SpentTxid))
                 throw new InvalidOperationException("outgoing Claimable requires a proven Arkade spend");
             var executionStatus = outgoing.Status;
@@ -169,7 +193,7 @@ public sealed class ComposedSwapExecutionClient
                 else outgoing.Metadata[ArkadeSwapMetadataKeys.EvmDeliveredAmount] = previousAmount;
                 throw;
             }
-            return Result(outgoing, ingress);
+            return Result(outgoing, ingress, ingressError);
         }
         finally
         {
@@ -224,6 +248,61 @@ public sealed class ComposedSwapExecutionClient
         return true;
     }
 
+    private async Task<ArkadeSwapIntent> ReconcileAsync(
+        ArkadeSwapIntent intent, CancellationToken cancellationToken)
+    {
+        var uncertainOutgoing = intent.Type == ArkadeSwapIntentType.BtcToEvm
+                                && intent.Status == ArkadeSwapIntentStatus.Resolved;
+        if (!uncertainOutgoing && ArkadeSwapStateMachine.Terminal.Contains(intent.Status)
+            || intent.Metadata.ContainsKey(ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid))
+            return intent;
+
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
+        var candidates = await _vtxos.GetVtxos(
+            scripts: [intent.SwapPkScript], includeSpent: true, cancellationToken: cancellationToken);
+        var lockup = candidates.FirstOrDefault(v => !v.IsSpent() && !v.Swept) ?? candidates.FirstOrDefault();
+        ArkadeSwapIntentStatus? next;
+        if (lockup is null)
+        {
+            next = ArkadeSwapStateMachine.NextOnClock(
+                intent.Type, intent.Status, now, intent.RefundLocktime);
+        }
+        else
+        {
+            if (intent.Status == ArkadeSwapIntentStatus.Refundable
+                && !lockup.IsSpent() && !lockup.Swept)
+                return intent;
+            var spender = lockup.SpentByTransactionId ?? lockup.SettledByTransactionId;
+            var revealed = lockup.IsSpent()
+                && intent.PaymentHash is { Length: > 0 } hash
+                && spender is { Length: > 0 }
+                && await SwapPreimageReader.FindAsync(
+                    _transport, lockup.OutPoint, spender, hash, cancellationToken) is not null;
+            next = uncertainOutgoing && revealed
+                ? ArkadeSwapIntentStatus.Claimable
+                : ArkadeSwapStateMachine.Next(intent.Type, intent.Status,
+                    SwapObservation.From(lockup, now, intent.RefundLocktime, revealed));
+        }
+        if (next is null || next == intent.Status) return intent;
+
+        var previousStatus = intent.Status;
+        var previousSpentTxid = intent.SpentTxid;
+        intent.Status = next.Value;
+        if (lockup?.IsSpent() == true)
+            intent.SpentTxid ??= lockup.ArkTxid ?? lockup.SpentByTransactionId;
+        try
+        {
+            await _storage.SaveArkadeSwapIntent(intent, cancellationToken);
+        }
+        catch
+        {
+            intent.Status = previousStatus;
+            intent.SpentTxid = previousSpentTxid;
+            throw;
+        }
+        return intent;
+    }
+
     private Erc20SwapValues Values(ArkadeSwapIntent outgoing)
     {
         var metadata = outgoing.EvmMetadata();
@@ -252,10 +331,14 @@ public sealed class ComposedSwapExecutionClient
         await _storage.GetArkadeSwapIntent(id, cancellationToken)
         ?? throw new InvalidOperationException("composed route intent is not available");
 
-    private static ComposedSwapExecutionResult Result(ArkadeSwapIntent outgoing, ArkadeSwapIntent? ingress) =>
+    private static ComposedSwapExecutionResult Result(
+        ArkadeSwapIntent outgoing, ArkadeSwapIntent? ingress, string? ingressError = null) =>
         new(outgoing.Id, outgoing.Status, ingress?.Id, ingress?.Status,
             outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmClaimTxid), ReadProof(outgoing),
-            outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmDeliveredAmount));
+            outgoing.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.EvmDeliveredAmount))
+        {
+            IngressError = ingressError
+        };
 
     private static EvmLockProof? ReadProof(ArkadeSwapIntent intent)
     {

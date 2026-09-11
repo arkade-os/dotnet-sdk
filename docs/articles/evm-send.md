@@ -37,9 +37,10 @@ and the quoted covenant script before a route can be shown.
 A BTCPay-style server can use a watch-only Arkade wallet: it does not need the merchant's Arkade
 spending key to move a funded `M`. Configure the emulator service and pass the live covclaimd public
 key at quote time. Once the ingress is claimable, the executor uses the non-interactive emulator path
-to claim `M` into `L`. Schedule `ComposedSwapExecutionClient.AdvanceAsync` for each open route; the
-generic `ArkadeIntentsService.AdvanceAsync` and `AdvanceAllAsync` deliberately leave linked receive
-claims alone so their signer-backed receive loop cannot race the composed executor's spend lock.
+to claim `M` into `L`. Schedule `ComposedSwapExecutionClient.AdvanceAsync` for each open route.
+All `BtcToEvm` intents and linked ingress intents are composition-owned: generic monitoring,
+reconciliation, and direct or bulk advancement leave them untouched. The composed executor performs
+their status reconciliation, clock transitions, claims, and refunds while holding the route lock.
 
 ```csharp
 var progress = await executor.AdvanceAsync(

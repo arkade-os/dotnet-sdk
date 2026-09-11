@@ -48,7 +48,7 @@ public class NonInteractiveClientTests
     }
 
     [Test]
-    public async Task BackgroundAdvance_LinkedOnchainRefundIsNotDelegatedToComposedExecutor()
+    public async Task BackgroundAdvance_LinkedOnchainRefundIsLeftToRouteOwner()
     {
         using var ctx = new Harness(onchain: true);
         ctx.Intent.Metadata[ArkadeSwapMetadataKeys.ComposedOutgoingSwapId] = "outgoing-swap";
@@ -58,12 +58,11 @@ public class NonInteractiveClientTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(direct.Action, Is.EqualTo(ArkadeIntentAction.RefundOnchain));
-            Assert.That(direct.Acted, Is.False,
-                "the fixture has no recorded L1 leg, but the refund corridor must still be called");
-            Assert.That(direct.Error, Does.Contain("not recorded"));
-            Assert.That(sweep, Has.Count.EqualTo(1));
-            Assert.That(sweep[0].Action, Is.EqualTo(ArkadeIntentAction.RefundOnchain));
+            Assert.That(direct.Action, Is.EqualTo(ArkadeIntentAction.None));
+            Assert.That(direct.Acted, Is.False);
+            Assert.That(direct.Error, Is.Null);
+            Assert.That(sweep, Is.Empty);
+            Assert.That(ctx.Intent.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
         });
     }
 
