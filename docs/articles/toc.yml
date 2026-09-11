@@ -16,6 +16,8 @@
   href: lightning-corridors.md
 - name: Onchain Corridors
   href: onchain-corridors.md
+- name: EVM Send
+  href: evm-send.md
 - name: Settlement
   href: settlement.md
 - name: ArkadeScript & Emulator

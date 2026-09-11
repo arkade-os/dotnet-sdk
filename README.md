@@ -1257,7 +1257,8 @@ lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
 Discovery accepts v0 and v1 cards, including cards without a display `pair`. Identity comes from
 CAIP-19: `AssetDescriptor.CanonicalId` prefers `caip19_id` in a compatibility index over its legacy
 `id` projection. Network-mismatched markets and v0 external-chain markets are excluded. V1 EIP-155
-identities remain distinct by chain and token; discovery does not add EVM swap execution.
+identities remain distinct by chain and token. The EVM send primitives below bind that identity to
+the RFQ and chain proof; discovery itself still does not execute a swap.
 
 Use an explicit adapter at the current solver's legacy RFQ boundary:
 
@@ -1268,13 +1269,35 @@ var pair = LegacyRfqPairAdapter.FromCanonical(from, to);
 // pair == "arkade:BTC->lightning:BTC"
 ```
 
-The adapter refuses a cross-network pair or an external token instead of guessing a ticker.
+The generic adapter refuses a cross-network pair instead of guessing a ticker. For an explicit
+EIP-155 ERC20 identity it emits the current solver's legacy `arkade:BTC->ethereum:0x…` spelling;
+native EVM assets remain unsupported.
 RFQ `AtomicAmount`, `FromAtomicAmount`, `ToAtomicAmount` and market `*AtomicAmount` bounds use
 `BigInteger`. They read arbitrary-width canonical decimal strings, accept non-negative safe JSON
 integers for compatibility, and write decimal strings. Existing `long` amount properties remain
 checked accessors for sats APIs: they throw on overflow rather than truncate.
 Quotes and statuses require RFQ v1 and the requested correlation id; refusals retain diagnostics
 through `RfqRefusedException.Refusal`, including `ErrorCode`, `Field`, `Actual`, `Expected` and `Limit`.
+
+### Sending Arkade BTC to an ERC20
+
+`EvmSendProfile.Request` preserves the current wire contract: Arkade satoshis are a JSON number on
+the `from` side, while the quoted ERC20 atomic amount remains a full-width `BigInteger` decimal
+string. Before funding, validate the quote twice: `EvmSendQuoteValidator` binds the amount, payment
+hash, chain, token, swap contract, proof depth/age and cross-chain deadlines;
+`EvmArkadeLockupValidator` rebuilds the VHTLCv2 from live operator data and the local refund script.
+
+Once the Arkade lockup is funded and EVM state proves the solver's matching lock,
+`EvmSwapChainClient` checks `swaps(key)` at tip and at the configured depth, checks block age and
+timeout, and submits `claimFor` with the client's stored preimage through a host-provided signer.
+It accepts delivery only after the receipt, canonical `Claim` event/preimage, exact configured-token
+`Transfer` event and consumed swap state agree. The public EVM RFQ status route currently returns 404, so
+applications must derive progress from Arkade and EVM state rather than inventing solver status.
+
+The current solver quotes the nine-leaf `nonInteractiveRefundWithoutReceiver` shape. Setting
+`RequireEmulatorRefundPath` (the default) refuses an older eight-leaf quote, but this SDK slice does
+not yet push the post-locktime emulator refund. Treat unattended recovery as unavailable until a
+host implements and proves that execution path. See [EVM send](docs/articles/evm-send.md).
 
 ### Reaching a solver over its relay set
 

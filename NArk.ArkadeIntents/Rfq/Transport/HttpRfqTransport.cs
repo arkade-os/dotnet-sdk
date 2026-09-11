@@ -52,9 +52,22 @@ public sealed class HttpRfqTransport : IRfqTransport
         new(JsonSerializer.Serialize(payload, RfqProtocol.Json), Encoding.UTF8, "application/json");
 
     /// <inheritdoc />
+    public Task<RfqQuote<Profiles.Evm.EvmSendQuoteProfile>> RequestEvmSendQuoteAsync(
+        Profiles.Evm.EvmSendRfqRequest request,
+        CancellationToken cancellationToken = default) =>
+        RequestQuoteCoreAsync<Profiles.Evm.EvmSendQuoteProfile>(request, request.RfqId, request.Pair, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<RfqQuote<TQuoteProfile>> RequestQuoteAsync<TRequestProfile, TQuoteProfile>(
         RfqRequest<TRequestProfile> request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RequestQuoteCoreAsync<TQuoteProfile>(request, request.RfqId, request.Pair, cancellationToken);
+
+    private async Task<RfqQuote<TQuoteProfile>> RequestQuoteCoreAsync<TQuoteProfile>(
+        object request,
+        string rfqId,
+        string pair,
+        CancellationToken cancellationToken)
     {
         using var content = Serialize(request);
         using var response = await _http.PostAsync(
@@ -64,7 +77,7 @@ public sealed class HttpRfqTransport : IRfqTransport
             ?? throw new InvalidOperationException(
                 $"solver returned {(int)response.StatusCode} with no RFQ payload");
 
-        return RfqProtocol.ExpectQuote<TQuoteProfile>(payload, request.RfqId, request.Pair);
+        return RfqProtocol.ExpectQuote<TQuoteProfile>(payload, rfqId, pair);
     }
 
     /// <inheritdoc />

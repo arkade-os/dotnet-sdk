@@ -220,14 +220,27 @@ public sealed class NostrRfqTransport : IRfqTransport, IDisposable
     }
 
     /// <inheritdoc />
+    public Task<RfqQuote<Profiles.Evm.EvmSendQuoteProfile>> RequestEvmSendQuoteAsync(
+        Profiles.Evm.EvmSendRfqRequest request,
+        CancellationToken cancellationToken = default) =>
+        RequestQuoteCoreAsync<Profiles.Evm.EvmSendQuoteProfile>(request, request.RfqId, request.Pair, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<RfqQuote<TQuoteProfile>> RequestQuoteAsync<TRequestProfile, TQuoteProfile>(
         RfqRequest<TRequestProfile> request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RequestQuoteCoreAsync<TQuoteProfile>(request, request.RfqId, request.Pair, cancellationToken);
+
+    private async Task<RfqQuote<TQuoteProfile>> RequestQuoteCoreAsync<TQuoteProfile>(
+        object request,
+        string rfqId,
+        string pair,
+        CancellationToken cancellationToken)
     {
         var reply = await ExchangeAsync(
             JsonSerializer.Serialize(request, RfqProtocol.Json), cancellationToken);
 
-        return RfqProtocol.ExpectQuote<TQuoteProfile>(reply, request.RfqId, request.Pair);
+        return RfqProtocol.ExpectQuote<TQuoteProfile>(reply, rfqId, pair);
     }
 
     /// <inheritdoc />
