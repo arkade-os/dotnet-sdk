@@ -114,6 +114,7 @@ public sealed class ComposedSwapExecutionClient
                     ingress.Id, server.Network, cancellationToken);
                 await ComposedRouteExecutionGuard.ValidateIngressAsync(
                     _storage, _contracts, ingress, contract, server.Network, _time.GetUtcNow().ToUnixTimeSeconds(), cancellationToken);
+                // M-to-L reveals P so the solver can create the EVM lock; its fixed claim address keeps any later claim pinned to this recipient.
                 ingress = ingress.Type == ArkadeSwapIntentType.LightningToBtc
                     ? await _lightning.ClaimNonInteractiveAsync(ingress.Id, cancellationToken)
                     : await (_onchain ?? throw new InvalidOperationException("onchain ingress client is unavailable"))
