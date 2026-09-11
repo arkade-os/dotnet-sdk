@@ -35,6 +35,17 @@ public class EvmJsonRpcClientTests
     }
 
     [Test]
+    public async Task SerializesBlockNumbersAsCanonicalRpcQuantities()
+    {
+        var handler = new RpcHandler(request => Result(request,
+            new JsonObject { ["timestamp"] = "0x3e8" }));
+
+        await Client(handler).GetBlockTimestampAsync(150);
+
+        Assert.That(handler.Requests.Single()["params"]![0]!.GetValue<string>(), Is.EqualTo("0x96"));
+    }
+
+    [Test]
     public void RpcErrorPreservesCodeButNeverNodeTextThatCouldContainAPreimage()
     {
         var secret = new string('a', 64);

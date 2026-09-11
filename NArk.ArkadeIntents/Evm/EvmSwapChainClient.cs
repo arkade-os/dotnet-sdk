@@ -62,21 +62,48 @@ public sealed class EvmSwapChainClient
         var tip = await _rpc.GetBlockNumberAsync(cancellationToken);
         if (tip < 0)
             throw new EvmSwapProofException("connected RPC returned a negative block height");
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
         _policy.RequireExecutionWindow(
-            values.TimeoutBlock, tip, null, _time.GetUtcNow().ToUnixTimeSeconds());
+            values.TimeoutBlock, tip, null, now);
         if (!await IsLockedAsync(values, null, cancellationToken))
             throw new EvmSwapProofException("ERC20Swap lock is absent at the current tip");
 
-        var probe = tip - _policy.MinConfirmations + 1;
-        if (probe < 0)
+        var latestProbe = tip - _policy.MinConfirmations + 1;
+        if (latestProbe < 0)
             throw new EvmSwapProofException("chain is not deep enough for the requested proof");
+        var (probe, timestamp) = await FindAgeQualifiedProbeAsync(latestProbe, now, cancellationToken);
         if (!await IsLockedAsync(values, probe, cancellationToken))
             throw new EvmSwapProofException("ERC20Swap lock is absent at the depth-proving block");
-        var timestamp = await _rpc.GetBlockTimestampAsync(probe, cancellationToken);
-        var age = _time.GetUtcNow().ToUnixTimeSeconds() - timestamp;
+        var age = now - timestamp;
         if (age < _policy.MinAgeSeconds)
             throw new EvmSwapProofException("depth-proving block is too recent");
         return new EvmLockProof(tip, probe, timestamp);
+    }
+
+    private async Task<(BigInteger Block, long Timestamp)> FindAgeQualifiedProbeAsync(
+        BigInteger latestProbe, long now, CancellationToken cancellationToken)
+    {
+        var latestTimestamp = await _rpc.GetBlockTimestampAsync(latestProbe, cancellationToken);
+        var threshold = now - _policy.MinAgeSeconds;
+        if (latestTimestamp <= threshold)
+            return (latestProbe, latestTimestamp);
+
+        var earliestTimestamp = await _rpc.GetBlockTimestampAsync(BigInteger.Zero, cancellationToken);
+        if (earliestTimestamp > threshold)
+            throw new EvmSwapProofException("depth-proving block is too recent");
+
+        var low = BigInteger.Zero;
+        var high = latestProbe - 1;
+        while (low < high)
+        {
+            var middle = (low + high + 1) / 2;
+            var timestamp = await _rpc.GetBlockTimestampAsync(middle, cancellationToken);
+            if (timestamp <= threshold)
+                low = middle;
+            else
+                high = middle - 1;
+        }
+        return (low, await _rpc.GetBlockTimestampAsync(low, cancellationToken));
     }
 
     /// <summary>Claims after proving the lock, then verifies receipt, events, and consumed state.</summary>

@@ -300,8 +300,13 @@ public sealed class EvmJsonRpcClient : IEvmSwapRpc
         return value;
     }
     private static string Data(byte[] value) => "0x" + Convert.ToHexString(value).ToLowerInvariant();
-    private static string Hex(BigInteger value) => value >= 0 ? "0x" + value.ToString("x")
-        : throw new ArgumentOutOfRangeException(nameof(value));
+    private static string Hex(BigInteger value)
+    {
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(nameof(value));
+        var quantity = value.ToString("x").TrimStart('0');
+        return "0x" + (quantity.Length == 0 ? "0" : quantity);
+    }
     private static bool IsEvenHex(string value) => value.Length % 2 == 0 && value.All(IsLowerHex);
     private static bool IsLowerHex(char value) => value is >= '0' and <= '9' or >= 'a' and <= 'f';
 }
