@@ -130,7 +130,8 @@ public static class ArkadeFaucet
     internal static bool IsTransient(Exception e) =>
         e is AlreadyLockedVtxoException ||
         (e is RpcException rpc &&
-         (rpc.Status.Detail.Contains("VTXO_RECOVERABLE", StringComparison.Ordinal)
+         ((rpc.StatusCode == StatusCode.FailedPrecondition &&
+           rpc.Status.Detail.Contains("VTXO_RECOVERABLE", StringComparison.Ordinal))
           || (rpc.StatusCode == StatusCode.AlreadyExists &&
               System.Text.RegularExpressions.Regex.IsMatch(rpc.Status.Detail,
                   @"\AVTXO_ALREADY_REGISTERED \(4\): [0-9a-f]{64}:[0-9]+ already registered\z"))));

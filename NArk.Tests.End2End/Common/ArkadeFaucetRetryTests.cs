@@ -24,6 +24,7 @@ public class ArkadeFaucetRetryTests
     [TestCase(StatusCode.AlreadyExists, "vtxo_already_registered", false)]
     [TestCase(StatusCode.AlreadyExists, "", false)]
     [TestCase(StatusCode.FailedPrecondition, "VTXO_RECOVERABLE", true)]
+    [TestCase(StatusCode.Unknown, "VTXO_RECOVERABLE", false)]
     public void ClassifiesGrpcFundingContention(StatusCode code, string detail, bool retryable)
     {
         var error = new RpcException(new Status(code, detail));
