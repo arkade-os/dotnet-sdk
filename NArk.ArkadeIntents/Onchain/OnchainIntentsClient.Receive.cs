@@ -6,6 +6,7 @@ using NArk.Abstractions.Wallets;
 using NArk.Abstractions.Extensions;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
+using NArk.ArkadeIntents.Composition;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
@@ -35,11 +36,11 @@ namespace NArk.ArkadeIntents.Onchain;
 /// <param name="LockupAddress">The Arkade covenant the solver will fund, and we will claim.</param>
 /// <param name="PaymentHash"><c>sha256(Preimage)</c>, hex.</param>
 /// <param name="Preimage">
-/// The secret that settles both rails. Kept on the row and re-derivable from the wallet, but worth
-/// holding on to: nothing else can move the Arkade lockup.
+/// The secret that settles both rails. Linked routes reuse caller-owned P, which requires retained
+/// SDK intent storage rather than wallet-only recovery.
 /// </param>
 /// <param name="Contract">The Arkade covenant, derived locally.</param>
-/// <param name="PayoutAddress">Our own Arkade address the claim pays out to.</param>
+/// <param name="PayoutAddress">Arkade claim destination: the wallet or a linked outgoing lock L.</param>
 public sealed record PendingOnchainReceive(
     string RfqId,
     RfqQuote<OnchainReceiveQuoteProfile> Quote,
@@ -81,6 +82,36 @@ public sealed record OnchainRefundOutcome(bool Refunded, string? Detail = null, 
 /// </remarks>
 public sealed partial class OnchainIntentsClient
 {
+    /// <summary>Negotiates exact-output onchain ingress whose non-interactive claim pays outgoing Arkade lock L.</summary>
+    /// <param name="walletId">Wallet owning M's receiver key and recovery state.</param>
+    /// <param name="amountSats">Exact Arkade amount required by L.</param>
+    /// <param name="rfqTransport">Ingress solver transport.</param>
+    /// <param name="covclaimdPubKey">Emulator encryption key for the claim packet.</param>
+    /// <param name="l1RefundAddress">Merchant's destination if the source HTLC must be refunded.</param>
+    /// <param name="secret">Client-owned outgoing route secret, reused for this ingress.</param>
+    /// <param name="payoutAddress">Already-verified outgoing Arkade lock L.</param>
+    /// <param name="receiverContract">Wallet-owned contract supplying M's receiver and L1 refund key.</param>
+    /// <param name="solverCard">Optional published ingress terms.</param>
+    /// <param name="rfqId">Caller-reserved global RFQ identity, or null to generate one.</param>
+    /// <param name="cancellationToken">Cancels negotiation; this method funds neither rail.</param>
+    /// <returns>The source HTLC and verified M covenant, imported with P saved in SDK intent storage.</returns>
+    /// <remarks>Claiming M reveals P while creating L, before downstream settlement; ingress is not merchant settlement.</remarks>
+    public async Task<PendingOnchainReceive> ReceiveFromOnchainIntoAsync(
+        string walletId, long amountSats, IRfqTransport rfqTransport, string covclaimdPubKey,
+        BitcoinAddress l1RefundAddress, SwapLinkSecret secret, ArkAddress payoutAddress, ArkContract receiverContract,
+        SolverCard? solverCard = null, string? rfqId = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(secret);
+        ArgumentNullException.ThrowIfNull(payoutAddress);
+        ArgumentNullException.ThrowIfNull(receiverContract);
+        ArgumentNullException.ThrowIfNull(l1RefundAddress);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amountSats);
+        if (rfqId is not null && (rfqId.Length != 64 || rfqId.Any(c => !(c is >= '0' and <= '9' or >= 'a' and <= 'f'))))
+            throw new ArgumentException("a prepared RFQ id must be 64 lowercase hexadecimal characters", nameof(rfqId));
+        return await ReceiveFromOnchainCoreAsync(walletId, amountSats, rfqTransport, covclaimdPubKey,
+            l1RefundAddress, RfqAmountSide.To, solverCard, receiverContract, secret, payoutAddress, rfqId, cancellationToken);
+    }
+
     /// <summary>
     /// Negotiate an on-board and verify everything the solver sent back.
     /// </summary>
@@ -166,26 +197,21 @@ public sealed partial class OnchainIntentsClient
         RfqAmountSide amountSide = RfqAmountSide.From,
         SolverCard? solverCard = null,
         ArkContract? payoutContract = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) => await ReceiveFromOnchainCoreAsync(
+            walletId, amountSats, rfqTransport, covclaimdPubKey, l1RefundAddress, amountSide, solverCard, payoutContract,
+            linkedSecret: null, linkedPayout: null, linkedRfqId: null, cancellationToken);
+
+    private async Task<PendingOnchainReceive> ReceiveFromOnchainCoreAsync(
+        string walletId, long amountSats, IRfqTransport rfqTransport, string covclaimdPubKey,
+        BitcoinAddress l1RefundAddress, RfqAmountSide amountSide, SolverCard? solverCard, ArkContract? payoutContract,
+        SwapLinkSecret? linkedSecret, ArkAddress? linkedPayout, string? linkedRfqId, CancellationToken cancellationToken)
     {
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
 
-        // One derivation, three roles again — the covenant's `receiver` (so we can claim without
-        // covclaimd), the destination its claim leaf is pinned to, and the L1 HTLC's refund key.
-        // All on the chain the wallet already recovers, so none of them needs storage to survive.
-        //
-        // The three coincide here because this leg pays its own wallet, and that is the only reason.
-        // They are separable, and the seam is worth naming before something needs it: chaining this
-        // leg into a second swap — taking the payout in a stablecoin, say, by letting the next hop's
-        // solver be paid directly — means the DESTINATION becomes somebody else's lockup while the
-        // claim key and the L1 refund key stay ours. `nonInteractiveClaim` already pins the
-        // destination as a script rather than deriving it at claim time, and `ClaimOnchainReceiveAsync`
-        // reads that script back, so the covenant side needs nothing new: what it takes is letting a
-        // caller supply `payoutPkScript` instead of deriving it, and no longer spelling all three
-        // roles with one descriptor.
+        // A linked destination is L, while M's receiver and the source HTLC's refund key stay ours.
         var payout = payoutContract ?? await contractService.DeriveContract(
             walletId, NextContractPurpose.Receive, cancellationToken: cancellationToken);
-        var payoutArkAddress = payout.GetArkAddress();
+        var payoutArkAddress = linkedPayout ?? payout.GetArkAddress();
         var payoutPkScript = payoutArkAddress.ScriptPubKey.ToBytes();
         var isMainnet = serverInfo.Network == Network.Main;
         var payoutAddress = payoutArkAddress.ToString(isMainnet);
@@ -194,8 +220,9 @@ public sealed partial class OnchainIntentsClient
 
         // The negotiation id first: for a wallet whose key repeats across swaps it doubles as the
         // preimage salt, so it has to exist before the preimage does.
-        var rfqId = RfqProtocol.NewRfqId();
-        var preimage = await ProvisionPreimageAsync(walletId, payoutDescriptor, rfqId, cancellationToken);
+        var rfqId = linkedRfqId ?? RfqProtocol.NewRfqId();
+        var preimage = linkedSecret?.ExportPreimage()
+            ?? await ProvisionPreimageAsync(walletId, payoutDescriptor, rfqId, cancellationToken);
         var sealed_ = await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken);
 
         if (solverCard is not null)
@@ -210,6 +237,10 @@ public sealed partial class OnchainIntentsClient
         var quote = await rfqTransport
             .RequestQuoteAsync<OnchainReceiveRequestProfile, OnchainReceiveQuoteProfile>(
                 request, cancellationToken);
+
+        if (linkedSecret is not null && quote.ToAtomicAmount != amountSats)
+            throw new OnchainReceiveNotFundableException(OnchainReceiveRefusalReason.IncompleteQuote,
+                "the linked receive quote does not provide the exact outgoing lock amount");
 
         if (solverCard is not null)
         {

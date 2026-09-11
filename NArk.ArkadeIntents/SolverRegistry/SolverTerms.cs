@@ -128,6 +128,32 @@ public static class SolverTerms
         }
     }
 
+    /// <summary>Refuses an exact-input size outside the advertised bounds for the request's from leg.</summary>
+    /// <param name="card">The solver's card.</param>
+    /// <param name="pair">Directional RFQ pair.</param>
+    /// <param name="amount">Atomic units of the pair's from leg.</param>
+    /// <exception cref="SolverTermsException">The corridor or input size is not advertised.</exception>
+    public static void AssertInputWithinLimits(SolverCard card, string pair, long amount)
+    {
+        var (market, payout) = Resolve(card, pair)
+            ?? throw new SolverTermsException(
+                SolverTermsRefusal.UnservedCorridor, $"this solver publishes no market for {pair}");
+        var input = payout == MarketSide.Quote ? MarketSide.Base : MarketSide.Quote;
+        var (min, max) = input == MarketSide.Base
+            ? (market.MinBaseAtomicAmount, market.MaxBaseAtomicAmount)
+            : (market.MinQuoteAtomicAmount, market.MaxQuoteAtomicAmount);
+        if (min > 0 && amount < min)
+            throw new SolverTermsException(SolverTermsRefusal.BelowMinimum,
+                $"{amount} atomic units is below this solver's {min} input minimum");
+        if (max <= 0 || amount > max)
+            throw new SolverTermsException(max <= 0
+                    ? SolverTermsRefusal.DirectionNotServed
+                    : SolverTermsRefusal.AboveMaximum,
+                max <= 0
+                    ? $"this solver does not accept the sending side of {pair}"
+                    : $"{amount} atomic units is above this solver's {max} input maximum");
+    }
+
     /// <summary>
     /// Refuse a same-asset quote that charges more than the card advertises; cross-asset quotes need a price-aware check.
     /// </summary>

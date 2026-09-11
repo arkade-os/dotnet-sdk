@@ -50,6 +50,19 @@ public static class ArkadeSwapMetadataKeys
     /// configuration.
     /// </remarks>
     public const string SolverPubkey = "solverPubkey";
+
+    /// <summary>Exact ERC20 atomic output amount.</summary>
+    public const string EvmAmount = "evmAmount";
+    /// <summary>ERC20 token contract.</summary>
+    public const string EvmTokenAddress = "evmTokenAddress";
+    /// <summary>Merchant ERC20 destination.</summary>
+    public const string EvmClaimAddress = "evmClaimAddress";
+    /// <summary>Solver EVM refund destination.</summary>
+    public const string EvmRefundAddress = "evmRefundAddress";
+    /// <summary>EVM refund block.</summary>
+    public const string EvmTimeoutBlock = "evmTimeoutBlock";
+    /// <summary>Configured ERC20Swap contract.</summary>
+    public const string EvmSwapContractAddress = "evmSwapContractAddress";
 }
 
 /// <summary>What an Arkade BTC↔asset swap keeps beyond the fields every corridor has.</summary>
@@ -105,6 +118,17 @@ public sealed record LightningSwapMetadata(string? Invoice, string? Preimage);
 public sealed record OnchainSwapMetadata(
     string? Preimage, string? HtlcPubkey, long? HtlcLocktime, string? PayoutAddress,
     int? MinConfirmations = null);
+
+/// <summary>Recovery data and immutable public tuple for an Arkade-to-EVM leg.</summary>
+/// <param name="Preimage">Client secret, lowercase hex. The host must protect SDK storage at rest.</param>
+/// <param name="Amount">ERC20 atomic output.</param>
+/// <param name="TokenAddress">ERC20 contract.</param>
+/// <param name="ClaimAddress">Merchant destination.</param>
+/// <param name="RefundAddress">Expired EVM lock destination.</param>
+/// <param name="TimeoutBlock">EVM refund height.</param>
+/// <param name="SwapContractAddress">Configured ERC20Swap contract.</param>
+public sealed record EvmSwapMetadata(string Preimage, string Amount, string TokenAddress,
+    string ClaimAddress, string RefundAddress, string TimeoutBlock, string SwapContractAddress);
 
 /// <summary>
 /// Typed views over <see cref="ArkadeSwapIntent.Metadata"/> — one per corridor, so the blob is read
@@ -207,8 +231,38 @@ public static class ArkadeSwapIntentMetadataExtensions
         return intent;
     }
 
+    /// <summary>Read the Arkade-to-EVM recovery view.</summary>
+    public static EvmSwapMetadata EvmMetadata(this ArkadeSwapIntent intent)
+    {
+        Require(intent, ArkadeSwapIntentType.BtcToEvm);
+        return new EvmSwapMetadata(
+            Required(intent, ArkadeSwapMetadataKeys.Preimage),
+            Required(intent, ArkadeSwapMetadataKeys.EvmAmount),
+            Required(intent, ArkadeSwapMetadataKeys.EvmTokenAddress),
+            Required(intent, ArkadeSwapMetadataKeys.EvmClaimAddress),
+            Required(intent, ArkadeSwapMetadataKeys.EvmRefundAddress),
+            Required(intent, ArkadeSwapMetadataKeys.EvmTimeoutBlock),
+            Required(intent, ArkadeSwapMetadataKeys.EvmSwapContractAddress));
+    }
+
+    /// <summary>Write the Arkade-to-EVM recovery view.</summary>
+    public static ArkadeSwapIntent WithEvmMetadata(this ArkadeSwapIntent intent, EvmSwapMetadata metadata)
+    {
+        Set(intent, ArkadeSwapMetadataKeys.Preimage, metadata.Preimage);
+        Set(intent, ArkadeSwapMetadataKeys.EvmAmount, metadata.Amount);
+        Set(intent, ArkadeSwapMetadataKeys.EvmTokenAddress, metadata.TokenAddress);
+        Set(intent, ArkadeSwapMetadataKeys.EvmClaimAddress, metadata.ClaimAddress);
+        Set(intent, ArkadeSwapMetadataKeys.EvmRefundAddress, metadata.RefundAddress);
+        Set(intent, ArkadeSwapMetadataKeys.EvmTimeoutBlock, metadata.TimeoutBlock);
+        Set(intent, ArkadeSwapMetadataKeys.EvmSwapContractAddress, metadata.SwapContractAddress);
+        return intent;
+    }
+
     private static string? Get(ArkadeSwapIntent intent, string key) =>
         intent.Metadata.TryGetValue(key, out var value) && value.Length > 0 ? value : null;
+
+    private static string Required(ArkadeSwapIntent intent, string key) => Get(intent, key)
+        ?? throw new InvalidOperationException($"swap '{intent.Id}' carries no {key}");
 
     // A null writes nothing rather than an empty string: "the corridor has no such value" and "the
     // corridor has an empty one" are different, and only the first should read back as absent.

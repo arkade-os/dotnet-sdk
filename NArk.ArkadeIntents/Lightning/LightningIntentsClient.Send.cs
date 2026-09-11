@@ -278,7 +278,8 @@ public sealed partial class LightningIntentsClient
         var intent = await _intentStorage.GetArkadeSwapIntent(swapId, cancellationToken)
                      ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
 
-        if (intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain))
+        if (intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain
+            or ArkadeSwapIntentType.BtcToEvm))
         {
             throw new InvalidOperationException(
                 $"Swap '{swapId}' is a {intent.Type}; only a leg that funded an Arkade covenant has "

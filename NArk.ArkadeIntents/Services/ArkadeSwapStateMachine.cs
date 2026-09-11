@@ -196,6 +196,11 @@ public static class ArkadeSwapStateMachine
                 or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc =>
                 o.PreimageRevealed ? ArkadeSwapIntentStatus.Fulfilled : ArkadeSwapIntentStatus.Resolved,
 
+            // Spending L with P proves only that the outgoing Arkade leg moved. Merchant settlement
+            // is the later, independently verified ERC20 claim, so never label this Fulfilled here.
+            ArkadeSwapIntentType.BtcToEvm =>
+                o.PreimageRevealed ? ArkadeSwapIntentStatus.Claimable : ArkadeSwapIntentStatus.Resolved,
+
             // The asset corridors have no preimage to prove anything with, so a spend is read as the
             // fill. That is right for every spend this SDK can currently tell apart, and it is worth
             // being precise about the one it cannot: the covenant's `cancel` and `exit` leaves also
@@ -217,14 +222,16 @@ public static class ArkadeSwapStateMachine
         {
             // We funded and are waiting on the solver. Once the refund path opens the money is ours
             // to take back, and nobody else will do it.
-            (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain)
+            (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain
+                or ArkadeSwapIntentType.BtcToEvm)
                 when o.PastLocktime =>
                 Changed(current, ArkadeSwapIntentStatus.Refundable),
 
             // Seeing the lockup at all is proof the funding spend landed, which is the only
             // confirmation a swap recorded before its own spend ever gets. From Pending this is a
             // no-op; from Funding it is the promotion.
-            ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain =>
+            ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToOnchain
+                or ArkadeSwapIntentType.BtcToEvm =>
                 Changed(current, ArkadeSwapIntentStatus.Pending),
 
             // The solver funded and only our preimage moves it. An unspent lockup here is not a swap
@@ -277,6 +284,9 @@ public static class ArkadeSwapStateMachine
             (ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentStatus.Pending) =>
                 ArkadeSwapIntentStatus.Refundable,
 
+            (ArkadeSwapIntentType.BtcToEvm, ArkadeSwapIntentStatus.Pending) =>
+                ArkadeSwapIntentStatus.Refundable,
+
             // The claim window is closed and the claim itself refuses to race the reclaim, so
             // keeping the swap actionable would just retry a spend that throws, forever. The
             // on-board's L1 sats are NOT written off with it: nothing here is terminal for that
@@ -318,7 +328,8 @@ public static class ArkadeSwapStateMachine
         (ArkadeSwapIntentType.LightningToBtc or ArkadeSwapIntentType.OnchainToBtc,
             ArkadeSwapIntentStatus.Claimable) =>
             ArkadeIntentAction.ClaimReceive,
-        (ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Refundable) =>
+        (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.BtcToEvm,
+            ArkadeSwapIntentStatus.Refundable) =>
             ArkadeIntentAction.RefundSend,
         (ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentStatus.Pending) =>
             ArkadeIntentAction.ClaimOnchain,

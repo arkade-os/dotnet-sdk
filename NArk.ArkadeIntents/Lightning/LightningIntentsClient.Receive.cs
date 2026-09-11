@@ -19,6 +19,7 @@ using NArk.Core;
 using NBitcoin.Scripting;
 using NBitcoin;
 using System.Security.Cryptography;
+using NArk.ArkadeIntents.Composition;
 
 namespace NArk.ArkadeIntents.Lightning;
 
@@ -107,23 +108,73 @@ public sealed partial class LightningIntentsClient
         string covclaimdPubKey,
         SolverCard? solverCard = null,
         RfqAmountSide amountSide = RfqAmountSide.To,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) => await ReceiveFromLightningCoreAsync(
+            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, amountSide,
+            linkedSecret: null, linkedPayout: null, linkedReceiver: null, linkedRfqId: null,
+            cancellationToken);
+
+    /// <summary>Negotiates a receive whose non-interactive claim funds another Arkade swap.</summary>
+    /// <param name="walletId">Wallet owning the receiver key and recovery state.</param>
+    /// <param name="amountSats">Exact Arkade amount required by the outgoing lock.</param>
+    /// <param name="rfqTransport">How to reach the ingress solver.</param>
+    /// <param name="covclaimdPubKey">Emulator encryption key for the claim packet.</param>
+    /// <param name="secret">The outgoing route's client-owned secret.</param>
+    /// <param name="payoutAddress">The already-verified outgoing Arkade lock L.</param>
+    /// <param name="receiverContract">A wallet-owned contract supplying M's receiver key.</param>
+    /// <param name="solverCard">Optional published ingress terms.</param>
+    /// <param name="rfqId">Caller-reserved global RFQ identity, or null to generate one.</param>
+    /// <param name="cancellationToken">Cancels before the quote is published.</param>
+    /// <returns>The Lightning invoice and verified M covenant whose claim is pinned to L.</returns>
+    /// <remarks>
+    /// This creates a second, independent RFQ after the outgoing quote. It reuses only H. Claiming
+    /// M publishes P while creating L, before an EVM lock is necessarily visible; callers must
+    /// enforce the downstream solver policy and must never treat the ingress claim as settlement.
+    /// </remarks>
+    public async Task<PendingLightningReceive> ReceiveFromLightningIntoAsync(
+        string walletId,
+        long amountSats,
+        IRfqTransport rfqTransport,
+        string covclaimdPubKey,
+        SwapLinkSecret secret,
+        ArkAddress payoutAddress,
+        ArkContract receiverContract,
+        SolverCard? solverCard = null,
+        string? rfqId = null,
+        CancellationToken cancellationToken = default) => await ReceiveFromLightningCoreAsync(
+            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, RfqAmountSide.To,
+            secret, payoutAddress, receiverContract, rfqId, cancellationToken);
+
+    private async Task<PendingLightningReceive> ReceiveFromLightningCoreAsync(
+        string walletId,
+        long amountSats,
+        IRfqTransport rfqTransport,
+        string covclaimdPubKey,
+        SolverCard? solverCard,
+        RfqAmountSide amountSide,
+        SwapLinkSecret? linkedSecret,
+        ArkAddress? linkedPayout,
+        ArkContract? linkedReceiver,
+        string? linkedRfqId,
+        CancellationToken cancellationToken)
     {
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
 
         // The payout contract is the client's own fresh receive address, and its key is what claims
         // the swap — on this corridor the client is the covenant's `receiver`.
-        var payout = await _contractService.DeriveContract(
+        if ((linkedSecret is null) != (linkedPayout is null) || (linkedSecret is null) != (linkedReceiver is null))
+            throw new ArgumentException("a linked receive requires its secret, payout, and receiver together");
+        var payout = linkedReceiver ?? await _contractService.DeriveContract(
             walletId, NextContractPurpose.Receive, cancellationToken: cancellationToken);
-        var payoutArkAddress = payout.GetArkAddress();
+        var payoutArkAddress = linkedPayout ?? payout.GetArkAddress();
         var payoutPkScript = payoutArkAddress.ScriptPubKey.ToBytes();
         var payoutAddress = payoutArkAddress.ToString(serverInfo.Network == Network.Main);
         var payoutDescriptor = UserKeyOf(payout, "payout");
 
         // The negotiation id first: for a wallet whose claim key repeats across swaps it is also
         // the preimage salt, so it has to exist before the preimage does.
-        var rfqId = RfqProtocol.NewRfqId();
-        var preimage = await ProvisionClaimPreimageAsync(walletId, payoutDescriptor, rfqId, cancellationToken);
+        var rfqId = linkedRfqId ?? RfqProtocol.NewRfqId();
+        var preimage = linkedSecret?.ExportPreimage()
+            ?? await ProvisionClaimPreimageAsync(walletId, payoutDescriptor, rfqId, cancellationToken);
         var sealed_ = await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken);
 
         var request = LightningReceiveProfile.Request(

@@ -8,6 +8,7 @@ using NArk.ArkadeIntents.Services;
 using NArk.ArkadeIntents;
 
 using NArk.ArkadeIntents.Assets;
+using NArk.ArkadeIntents.Evm;
 namespace NArk.ArkadeIntents.Hosting;
 
 public static class ArkadeIntentsCollectionExtensions
@@ -40,6 +41,7 @@ public static class ArkadeIntentsCollectionExtensions
             sp.GetService<ILogger<SolverDiscoveryService>>()));
         services.AddSingleton<AssetIntentsManager>();
         services.AddSingleton<LightningIntentsClient>();
+        services.TryAddSingleton<EvmIntentsClient>();
         // TryAdd, not Add: the off-board corridor needs IBitcoinBlockchain, and a deployment with no
         // L1 access should get an ArkadeIntentsService without it rather than a resolution failure.
         services.TryAddSingleton<OnchainIntentsClient>();

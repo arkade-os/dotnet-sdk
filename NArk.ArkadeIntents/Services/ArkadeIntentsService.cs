@@ -565,7 +565,8 @@ public sealed class ArkadeIntentsService
         if (!lockup.IsSpent()
             || intent.PaymentHash is not { Length: > 0 } hash
             || intent.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc
-                or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc))
+                or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc
+                or ArkadeSwapIntentType.BtcToEvm))
         {
             return null;
         }
