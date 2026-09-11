@@ -178,6 +178,53 @@ public class ArkadeIntentsReconciliationTests
         });
     }
 
+    [TestCase(ArkadeSwapIntentType.BtcToEvm, false)]
+    [TestCase(ArkadeSwapIntentType.LightningToBtc, true)]
+    public async Task CompositionOwnedSwap_IsNotReconciledOutsideRouteLock(
+        ArkadeSwapIntentType type, bool linked)
+    {
+        var intent = Intent(type, ArkadeSwapIntentStatus.Claimable, withPaymentHash: true);
+        intent.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+        if (linked)
+            intent.Metadata[ArkadeSwapMetadataKeys.ComposedOutgoingSwapId] = "outgoing-swap";
+        var (service, storage) = Build(intent, Vtxo(spentBy: "spendtx", arkTxid: "arktx"),
+            TransportReturning(SpendOf(LockupOutpoint, Preimage)));
+
+        var result = await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Updated, Is.Empty);
+            Assert.That(result.FundingUnconfirmed, Is.Empty);
+            Assert.That(storage.Saved, Is.Empty);
+            Assert.That(intent.Status, Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
+            Assert.That(intent.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction], Is.EqualTo("0x02aa"));
+        });
+    }
+
+    [Test]
+    public async Task FulfilledEvmSwap_IsNeverRewrittenByGenericRecovery()
+    {
+        var intent = Intent(ArkadeSwapIntentType.BtcToEvm, ArkadeSwapIntentStatus.Fulfilled,
+            withPaymentHash: true);
+        intent.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = "0x" + new string('d', 64);
+        intent.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+        intent.Metadata[ArkadeSwapMetadataKeys.EvmClaimTxid] = "0x" + new string('d', 64);
+        var (service, storage) = Build(intent, Vtxo());
+
+        var reconciliation = await service.ReconcileAsync();
+        var advances = await service.AdvanceAllAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(reconciliation.Updated, Is.Empty);
+            Assert.That(advances, Is.Empty);
+            Assert.That(storage.Saved, Is.Empty);
+            Assert.That(intent.Status, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(intent.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction], Is.EqualTo("0x02aa"));
+        });
+    }
+
     [Test]
     public async Task AReceiveSwapPastItsClaimWindow_IsResolvedOnTheAdvancePass()
     {

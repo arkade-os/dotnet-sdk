@@ -9,6 +9,9 @@ namespace NArk.ArkadeIntents.Composition;
 
 internal static class ComposedRouteExecutionGuard
 {
+    internal static bool IsCompositionOwned(ArkadeSwapIntent intent) =>
+        intent.Type == ArkadeSwapIntentType.BtcToEvm || IsLinked(intent);
+
     internal static bool IsLinked(ArkadeSwapIntent intent) =>
         intent.Metadata.ContainsKey(ArkadeSwapMetadataKeys.ComposedOutgoingSwapId)
         || intent.Metadata.ContainsKey(ArkadeSwapMetadataKeys.ComposedPayoutPkScript);

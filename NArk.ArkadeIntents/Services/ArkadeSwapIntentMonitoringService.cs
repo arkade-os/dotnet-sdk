@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.VTXOs;
+using NArk.ArkadeIntents.Composition;
 using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
 using NArk.Core.Transport;
@@ -71,7 +72,7 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
 
             // A Lightning swap's covenant has a refund leaf, so the same VTXO state means different
             // things either side of its deadline; the asset directions have no such leaf.
-            if (swap is null) return;
+            if (swap is null || ComposedRouteExecutionGuard.IsCompositionOwned(swap)) return;
 
             // A spent Lightning lockup is a fill only when the spend revealed the preimage —
             // otherwise it is the counterparty's refund, and the two must never read alike.

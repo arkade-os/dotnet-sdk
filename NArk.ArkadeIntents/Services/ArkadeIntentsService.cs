@@ -465,8 +465,8 @@ public sealed class ArkadeIntentsService
     /// swaps and one that cannot proceed must not stop the others. A swap that needs nothing comes
     /// back with <see cref="ArkadeIntentAction.None"/> and <c>Acted: false</c>, which is a normal
     /// answer rather than a problem.
-    /// Linked receive claims are also returned as no-ops: <see cref="ComposedSwapExecutionClient"/>
-    /// owns their validated non-interactive M-to-L transition and prevents competing spend locks.
+    /// Composition-owned swaps are also returned as no-ops: <see cref="ComposedSwapExecutionClient"/>
+    /// owns their recovery, refund, and validated non-interactive transitions under the route lock.
     /// </remarks>
     public async Task<ArkadeIntentAdvance> AdvanceAsync(
         string swapId, CancellationToken cancellationToken = default)
@@ -474,14 +474,14 @@ public sealed class ArkadeIntentsService
         var intent = await GetAsync(swapId, cancellationToken)
             ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
 
+        if (ComposedRouteExecutionGuard.IsCompositionOwned(intent))
+            return new ArkadeIntentAdvance(swapId, ArkadeIntentAction.None, Acted: false);
+
         var action = ArkadeIntentPolicy.NextAction(intent);
         if (action == ArkadeIntentAction.None)
         {
             return new ArkadeIntentAdvance(swapId, action, Acted: false);
         }
-        if (action == ArkadeIntentAction.ClaimReceive && ComposedRouteExecutionGuard.IsLinked(intent))
-            return new ArkadeIntentAdvance(swapId, ArkadeIntentAction.None, Acted: false);
-
         try
         {
             // Handled apart from the others because its ordinary answer is "not yet": the L1 leg it
@@ -648,6 +648,8 @@ public sealed class ArkadeIntentsService
 
         foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
         {
+            if (ComposedRouteExecutionGuard.IsCompositionOwned(intent)) continue;
+
             // Resolved is the one terminal status worth re-examining: it may have been recorded on
             // a transient read failure, before the spending transaction was fetchable, and a
             // preimage found now upgrades it to the fill it always was.
@@ -714,6 +716,7 @@ public sealed class ArkadeIntentsService
         foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (ComposedRouteExecutionGuard.IsCompositionOwned(intent)) continue;
 
             // Deadlines raise no chain event, so the monitor never sees them: a lockup sitting
             // unspent past its locktime is only ever noticed by a pass that checks the clock.
@@ -728,10 +731,7 @@ public sealed class ArkadeIntentsService
                 await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
             }
 
-            var action = ArkadeIntentPolicy.NextAction(intent);
-            if (action == ArkadeIntentAction.None
-                || action == ArkadeIntentAction.ClaimReceive && ComposedRouteExecutionGuard.IsLinked(intent))
-                continue;
+            if (ArkadeIntentPolicy.NextAction(intent) == ArkadeIntentAction.None) continue;
             results.Add(await AdvanceAsync(intent.Id, cancellationToken));
         }
 

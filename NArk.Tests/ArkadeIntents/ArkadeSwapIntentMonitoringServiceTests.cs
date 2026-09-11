@@ -64,6 +64,26 @@ public class ArkadeSwapIntentMonitoringServiceTests
         Assert.That(intents.Updates, Is.Empty);
     }
 
+    [TestCase(ArkadeSwapIntentType.BtcToEvm, false)]
+    [TestCase(ArkadeSwapIntentType.LightningToBtc, true)]
+    public async Task CompositionOwnedVtxoChange_DoesNotUpdateStatus(
+        ArkadeSwapIntentType type, bool linked)
+    {
+        var (vtxos, intents, svc) = Build(type, linked: linked);
+        intents.Swaps["script1"].Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+        await svc.StartAsync(default);
+
+        vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx"));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(intents.Updates, Is.Empty);
+            Assert.That(intents.Swaps["script1"].Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(intents.Swaps["script1"].Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction],
+                Is.EqualTo("0x02aa"));
+        });
+    }
+
     [Test]
     public async Task StoppedMonitor_IgnoresChanges()
     {
@@ -158,7 +178,8 @@ public class ArkadeSwapIntentMonitoringServiceTests
     private static (FakeVtxoStorage, FakeIntentStorage, ArkadeSwapIntentMonitoringService) Build(
         ArkadeSwapIntentType type = ArkadeSwapIntentType.BtcToAsset,
         long? refundLocktime = null,
-        IClientTransport? transport = null)
+        IClientTransport? transport = null,
+        bool linked = false)
     {
         var vtxos = new FakeVtxoStorage();
         var intents = new FakeIntentStorage();
@@ -177,6 +198,8 @@ public class ArkadeSwapIntentMonitoringServiceTests
             RefundLocktime = refundLocktime,
             PaymentHash = isLightning ? PaymentHash : null,
         };
+        if (linked)
+            intents.Swaps["script1"].Metadata[ArkadeSwapMetadataKeys.ComposedOutgoingSwapId] = "outgoing-swap";
         return (vtxos, intents, new ArkadeSwapIntentMonitoringService(
             vtxos, intents, transport ?? TransportReturning()));
     }

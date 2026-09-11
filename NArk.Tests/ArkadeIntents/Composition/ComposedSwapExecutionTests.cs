@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Security.Cryptography;
+using NArk.Abstractions.Helpers;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.VTXOs;
@@ -95,6 +96,39 @@ public class ComposedSwapExecutionTests
         var composed = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
         Assert.That(composed.IngressStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
         Assert.That(ctx.Emulator.ArkTx, Is.Not.Null);
+        await ctx.Wallet.DidNotReceive().GetSignerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [TestCase(ArkadeSwapIntentStatus.Pending, true)]
+    [TestCase(ArkadeSwapIntentStatus.Refundable, false)]
+    public async Task GenericAdvance_NeverMutatesOrRefundsPreparedEvmOutgoing(
+        ArkadeSwapIntentStatus status, bool expired)
+    {
+        using var ctx = new Harness(false);
+        ctx.Outgoing.Status = status;
+        if (expired) ctx.Outgoing.RefundLocktime = 1_799_989_999;
+        ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = Harness.ClaimTxid;
+        ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+        var service = new ArkadeIntentsService(
+            null!, ctx.Lightning, ctx.Storage, ctx.VtxoStorage, ctx.Transport, ctx.Onchain,
+            time: new FixedClock());
+
+        var direct = await service.AdvanceAsync(ctx.Outgoing.Id);
+        var sweep = await service.AdvanceAllAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(direct.Action, Is.EqualTo(ArkadeIntentAction.None));
+            Assert.That(direct.Acted, Is.False);
+            Assert.That(sweep, Is.Empty);
+            Assert.That(ctx.Outgoing.Status, Is.EqualTo(status));
+            Assert.That(ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid],
+                Is.EqualTo(Harness.ClaimTxid));
+            Assert.That(ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction],
+                Is.EqualTo("0x02aa"));
+            Assert.That(ctx.SavedStates, Is.Empty);
+            Assert.That(ctx.Emulator.ArkTx, Is.Null);
+        });
         await ctx.Wallet.DidNotReceive().GetSignerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -206,6 +240,107 @@ public class ComposedSwapExecutionTests
         Assert.That(result.EvmClaimTxid, Is.Null);
         Assert.That(ctx.Sender.Calls, Is.Zero);
         Assert.That(ctx.Emulator.ArkTx, Is.Not.Null);
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task Execution_ReconcilesLinkedIngressBeforeAdvancing(bool onchain)
+    {
+        using var ctx = new Harness(onchain);
+        ctx.Ingress.Status = ArkadeSwapIntentStatus.Pending;
+
+        var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
+
+        Assert.That(result.IngressStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        Assert.That(ctx.Emulator.ArkTx, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task Execution_ClockOpensAndRefundsOutgoingUnderRouteLock()
+    {
+        using var ctx = new Harness(false, refund: true);
+        ctx.Outgoing.Status = ArkadeSwapIntentStatus.Pending;
+        ctx.Outgoing.RefundLocktime = 1_799_989_999;
+        ctx.Outgoing.Metadata.Remove(ArkadeSwapMetadataKeys.Preimage);
+
+        var result = await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id);
+
+        Assert.That(result.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
+        Assert.That(ctx.Emulator.ArkTx, Is.Not.Null);
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task Execution_RefundsMatureOnchainIngressBeforeTerminalOrFailingOutgoing(bool outgoingRefundFails)
+    {
+        using var ctx = new Harness(true, refund: outgoingRefundFails);
+        ctx.ConfigureMatureOnchainIngressRefund();
+        if (outgoingRefundFails)
+        {
+            ctx.Outgoing.Status = ArkadeSwapIntentStatus.Refundable;
+            ctx.SetOutgoingFunding(asset: true);
+            Assert.ThrowsAsync<InvalidOperationException>(() =>
+                ctx.Execution().AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id));
+        }
+        else
+        {
+            ctx.Outgoing.Status = ArkadeSwapIntentStatus.Fulfilled;
+            ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimTxid] = Harness.ClaimTxid;
+            await ctx.Execution().AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
+        }
+
+        Assert.That(ctx.Ingress.Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
+        await ctx.Blockchain.ReceivedWithAnyArgs(1).BroadcastAsync(default!, default);
+    }
+
+    [Test]
+    public async Task Execution_ReexaminesResolvedOutgoingWhenSpenderProofBecomesReadable()
+    {
+        using var ctx = new Harness(false);
+        ctx.ConfigureSpentOutgoingWithTransientPreimageRead();
+        var execution = ctx.Execution();
+
+        var first = await execution.AdvanceAsync(ctx.Outgoing.Id);
+        var second = await execution.AdvanceAsync(ctx.Outgoing.Id);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(first.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+            Assert.That(second.OutgoingStatus, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(ctx.SavedStates.Select(s => s.Item1), Does.Contain(ArkadeSwapIntentStatus.Claimable));
+            Assert.That(ctx.Sender.Broadcasts, Is.EqualTo(1));
+        });
+    }
+
+    [TestCase("prepared")]
+    [TestCase("refund")]
+    public async Task Execution_IngressRefundFailureDoesNotBlockIndependentOutgoing(string outgoingPath)
+    {
+        using var ctx = new Harness(true, refund: outgoingPath == "refund");
+        ctx.ConfigureMatureOnchainIngressRefund(signerAvailable: false);
+        if (outgoingPath == "prepared")
+        {
+            ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimSubmittedTxid] = Harness.ClaimTxid;
+            ctx.Outgoing.Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+            ctx.LockIsPresent = false;
+        }
+
+        var execution = ctx.Execution();
+        var first = await execution.AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
+        var repeated = await execution.AdvanceAsync(ctx.Outgoing.Id, ctx.Ingress.Id);
+        var expected = outgoingPath == "prepared"
+            ? ArkadeSwapIntentStatus.Fulfilled
+            : ArkadeSwapIntentStatus.Cancelled;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(first.OutgoingStatus, Is.EqualTo(expected));
+            Assert.That(first.IngressStatus, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(first.IngressError, Does.Contain("cannot sign"));
+            Assert.That(repeated.IngressError, Does.Contain("cannot sign"));
+            Assert.That(ctx.Ingress.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+        });
+        await ctx.Wallet.ReceivedWithAnyArgs(2).GetSignerAsync(default!, default);
     }
 
     /// <summary>Only verified delivery is durable completion and subsequent execution is a no-op.</summary>
@@ -502,7 +637,9 @@ public class ComposedSwapExecutionTests
         internal bool ReceiptSucceeded = true;
         internal bool LockIsPresent = true;
         internal bool OutgoingFunded;
+        internal bool IngressFunded = true;
         internal bool RequireBroadcastForReceipt;
+        private ArkVtxo[]? _outgoingVtxos;
         internal Erc20SwapValues Values => new(Outgoing.PaymentHash!, 1_000_000,
             "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222",
             "0x3333333333333333333333333333333333333333", 200);
@@ -526,8 +663,8 @@ public class ComposedSwapExecutionTests
             {
                 var scripts = call.ArgAt<IReadOnlyCollection<string>?>(0);
                 return scripts?.Contains(L.GetScriptPubKey().ToHex(), StringComparer.OrdinalIgnoreCase) == true
-                    ? OutgoingFunded ? outgoingVtxos : []
-                    : ingressVtxos;
+                    ? _outgoingVtxos ?? (OutgoingFunded ? outgoingVtxos : [])
+                    : IngressFunded ? ingressVtxos : [];
             });
             Contracts.GetContracts().ReturnsForAnyArgs(call =>
             {
@@ -610,7 +747,7 @@ public class ComposedSwapExecutionTests
                 NonInteractiveTestData.Funding(L, 30_000, 70_000 + delta));
             if (asset)
                 vtxos[0] = vtxos[0] with { Assets = [new VtxoAsset(new string('f', 68), 1)] };
-            VtxoStorage.GetVtxos().ReturnsForAnyArgs(vtxos);
+            _outgoingVtxos = vtxos;
         }
 
         internal void SetUnspendableOutgoingFunding(string state)
@@ -627,7 +764,63 @@ public class ComposedSwapExecutionTests
                 "expired" => vtxos[0] with { ExpiresAt = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000) },
                 _ => throw new ArgumentOutOfRangeException(nameof(state))
             };
-            VtxoStorage.GetVtxos().ReturnsForAnyArgs(vtxos);
+            _outgoingVtxos = vtxos;
+        }
+
+        internal void ConfigureMatureOnchainIngressRefund(bool signerAvailable = true)
+        {
+            IngressFunded = false;
+            Ingress.Status = ArkadeSwapIntentStatus.Pending;
+            Ingress.WithOnchainMetadata(new OnchainSwapMetadata(
+                Convert.ToHexString(NonInteractiveTestData.Preimage).ToLowerInvariant(),
+                Convert.ToHexString(NonInteractiveTestData.KeyBytes(8)).ToLowerInvariant(),
+                1_799_980_000,
+                "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"));
+            Blockchain.GetUtxosAsync(default!, default).ReturnsForAnyArgs([
+                new BoardingUtxo(new string('7', 64), 0, 100_000, true, 100, 1_799_970_000)
+            ]);
+            Blockchain.EstimateFeeRateAsync(default, default)
+                .ReturnsForAnyArgs(new FeeRate(Money.Satoshis(2), 1));
+            Blockchain.BroadcastAsync(default!, default).ReturnsForAnyArgs(true);
+            var key = NBitcoin.Secp256k1.ECPrivKey.Create(
+                new Key(Enumerable.Repeat((byte)4, 32).ToArray()).ToBytes());
+            var signer = Substitute.For<IArkadeWalletSigner>();
+            signer.Sign(default!, default!, default).ReturnsForAnyArgs(call =>
+            {
+                var hash = call.ArgAt<uint256>(1);
+                return Task.FromResult((key.CreateXOnlyPubKey(), key.SignBIP340(hash.ToBytes(false))));
+            });
+            if (signerAvailable)
+                Wallet.GetSignerAsync(default!, default).ReturnsForAnyArgs(signer);
+            else
+                Wallet.GetSignerAsync(default!, default).ReturnsForAnyArgs((IArkadeWalletSigner?)null);
+        }
+
+        internal void ConfigureSpentOutgoingWithTransientPreimageRead()
+        {
+            var funding = NonInteractiveTestData.Funding(L, 100_000);
+            var spent = NonInteractiveTestData.Vtxos(L, funding).Single() with
+            {
+                SpentByTransactionId = new string('c', 64)
+            };
+            _outgoingVtxos = [spent];
+            var psbt = SpendOf(spent.OutPoint, NonInteractiveTestData.Preimage);
+            var reads = 0;
+            Transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
+                .Returns(_ => ++reads == 1
+                    ? throw new HttpRequestException("indexer unavailable")
+                    : Task.FromResult<IReadOnlyList<string>>([psbt]));
+        }
+
+        private static string SpendOf(OutPoint prevOut, byte[] preimage)
+        {
+            var tx = Network.Main.CreateTransaction();
+            tx.Inputs.Add(new TxIn(prevOut));
+            tx.Outputs.Add(new TxOut(Money.Satoshis(1000),
+                new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
+            var psbt = PSBT.FromTransaction(tx, Network.Main);
+            psbt.Inputs[0].SetArkFieldConditionWitness(new WitScript(Op.GetPushOp(preimage)));
+            return psbt.ToBase64();
         }
 
         private static ArkadeSwapIntent Intent(string id, VHTLCv2Contract contract,
