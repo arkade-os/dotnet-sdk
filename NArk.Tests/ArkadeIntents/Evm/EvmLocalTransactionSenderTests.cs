@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using NArk.ArkadeIntents.Evm;
 using Nethereum.Model;
 using Nethereum.Signer;
+using Nethereum.Util;
 
 namespace NArk.Tests.ArkadeIntents.Evm;
 
@@ -53,6 +54,41 @@ public class EvmLocalTransactionSenderTests
             .Select(r => (Transaction1559)TransactionFactory.CreateTransaction(
                 r["params"]![0]!.GetValue<string>())).Select(t => t.Nonce).ToArray();
         Assert.That(nonces, Is.EqualTo(new BigInteger?[] { 5, 6 }));
+    }
+
+    [Test]
+    public async Task DurableSendPersistsTheSignedHashBeforeBroadcast()
+    {
+        var events = new List<string>();
+        var handler = SenderHandler(onSend: () => events.Add("broadcast"), returnComputedHash: true);
+        IEvmDurableTransactionSender sender = Create(handler);
+
+        var hash = await sender.SendAsync(new EvmTransactionRequest(31_337, Contract, [0xbc, 0x58]),
+            (prepared, _) =>
+            {
+                events.Add("persist:" + prepared);
+                return Task.CompletedTask;
+            });
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(hash, Does.Match("^0x[0-9a-f]{64}$"));
+            Assert.That(events, Is.EqualTo(new[] { "persist:" + hash, "broadcast" }));
+        });
+    }
+
+    [Test]
+    public void DurableSendNeverBroadcastsWhenTheJournalCallbackFails()
+    {
+        var handler = SenderHandler(returnComputedHash: true);
+        IEvmDurableTransactionSender sender = Create(handler);
+
+        Assert.That(async () => await sender.SendAsync(
+                new EvmTransactionRequest(31_337, Contract, [1]),
+                (_, _) => throw new IOException("journal unavailable")),
+            Throws.TypeOf<IOException>());
+        Assert.That(handler.Requests.Any(r =>
+            r["method"]!.GetValue<string>() == "eth_sendRawTransaction"), Is.False);
     }
 
     [Test]
@@ -180,7 +216,8 @@ public class EvmLocalTransactionSenderTests
         bool estimateError = false,
         Action? onSend = null,
         TimeSpan? responseDelay = null,
-        string errorMessage = "execution reverted") => new(request => request["method"]!.GetValue<string>() switch
+        string errorMessage = "execution reverted",
+        bool returnComputedHash = false) => new(request => request["method"]!.GetValue<string>() switch
         {
             "eth_chainId" => EvmJsonRpcClientTests.Result(request, "0x7a69"),
             "eth_getTransactionCount" => EvmJsonRpcClientTests.Result(request, "0x" + (nonce?.Invoke() ?? 5).ToString("x")),
@@ -193,13 +230,16 @@ public class EvmLocalTransactionSenderTests
                 ["error"] = new JsonObject { ["code"] = -32_000, ["message"] = errorMessage },
             },
             "eth_estimateGas" => EvmJsonRpcClientTests.Result(request, "0x5208"),
-            "eth_sendRawTransaction" => Sent(request, onSend),
+            "eth_sendRawTransaction" => Sent(request, onSend, returnComputedHash),
             _ => throw new AssertionException("unexpected RPC method"),
         }, responseDelay);
 
-    private static JsonObject Sent(JsonObject request, Action? onSend)
+    private static JsonObject Sent(JsonObject request, Action? onSend, bool returnComputedHash)
     {
         onSend?.Invoke();
-        return EvmJsonRpcClientTests.Result(request, "0x" + new string('f', 64));
+        var result = returnComputedHash
+            ? "0x" + new Sha3Keccack().CalculateHashFromHex(request["params"]![0]!.GetValue<string>())
+            : "0x" + new string('f', 64);
+        return EvmJsonRpcClientTests.Result(request, result);
     }
 }
