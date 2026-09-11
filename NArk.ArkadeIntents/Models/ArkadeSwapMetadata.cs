@@ -158,9 +158,7 @@ public static class ArkadeSwapIntentMetadataExtensions
         return intent;
     }
 
-    /// <summary>Read the onchain-corridor view.</summary>
-    /// <exception cref="InvalidOperationException">This intent is not an onchain corridor swap.</exception>
-    /// <summary>The solver that quoted this swap, or <c>null</c> on a row that never recorded one.</summary>
+    /// <summary>The RFQ solver that quoted this swap; broadcast asset offers carry no authenticated solver identity.</summary>
     /// <param name="intent">The swap.</param>
     public static string? SolverPubkey(this ArkadeSwapIntent intent) =>
         intent.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.SolverPubkey) is { Length: > 0 } key
@@ -180,6 +178,8 @@ public static class ArkadeSwapIntentMetadataExtensions
         return intent;
     }
 
+    /// <summary>Read the onchain-corridor view.</summary>
+    /// <exception cref="InvalidOperationException">This intent is not an onchain corridor swap.</exception>
     public static OnchainSwapMetadata OnchainMetadata(this ArkadeSwapIntent intent)
     {
         Require(intent, ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentType.OnchainToBtc);

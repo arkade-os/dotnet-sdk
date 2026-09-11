@@ -10,6 +10,20 @@ The generated API reference is published at [arkade-os.github.io/dotnet-sdk](htt
 
 ## Packages
 
+Swap persistence is available through the optional `NArk.Storage.EfCore.ArkadeIntents` package.
+Register it alongside core storage and opt into its tables in your context:
+
+```csharp
+services.AddArkEfCoreStorage<MyDbContext>();
+services.AddArkadeEfCoreStorage();
+// MyDbContext.OnModelCreating:
+modelBuilder.ConfigureArkEntities();
+modelBuilder.ConfigureArkadeEntities();
+```
+
+Broadcast asset offers do not authenticate a particular solver; their `SolverPubkey()` metadata
+is absent. RFQ swaps record the solver that quoted them.
+
 | Package | Description |
 |---------|-------------|
 | **NArk.Abstractions** | Interfaces and domain types (`IVtxoStorage`, `IContractStorage`, `IWalletProvider`, `ArkCoin`, `ArkVtxo`, etc.) |
