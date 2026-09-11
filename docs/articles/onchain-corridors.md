@@ -12,6 +12,12 @@ Both need an `IBitcoinBlockchain` registered. `AddArkadeIntentsServices()` wires
 when one is present, so a Lightning-only deployment is unaffected — and a caller that reaches for it
 anyway gets an error naming what is missing rather than a null reference from inside a facade.
 
+`AddArkadeIntentsServices(new ArkadeIntentsOptions { OnchainClaimConfirmations = 6 })`
+sets the confirmation policy used by automatic off-board claims. Registration copies this value
+alongside the payer ceiling and emulator override. Six is the conservative default; a custom value
+must satisfy the route's funding-confirmation requirements. Manually driven L1 claims retain their
+explicit confirmation-count argument.
+
 ## The shape of the thing
 
 Two contracts on two rails, linked by one secret.
