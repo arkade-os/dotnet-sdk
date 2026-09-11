@@ -49,7 +49,8 @@ public static class EvmSendQuoteValidator
             Refuse("quote payment hash does not match the request");
         if (profile.EvmChainId != policy.ChainId)
             Refuse("quote names an unexpected EVM chain");
-        if (profile.EvmContractAddress is null || !SameAddress(profile.EvmContractAddress, policy.SwapContractAddress))
+        if (profile.EvmContractAddress is null
+            || NormalizeQuotedAddress(profile.EvmContractAddress) != configured.SwapContractAddress)
             Refuse("quote names an unexpected ERC20Swap contract");
         if (request.Pair != $"arkade:BTC->ethereum:{configured.TokenAddress}")
             Refuse("request pair does not name the configured token");
@@ -66,7 +67,6 @@ public static class EvmSendQuoteValidator
         var refundAddress = EvmWire.RequireNonZeroAddress(
             profile.EvmRefundAddress, nameof(profile.EvmRefundAddress))
             .ToLowerInvariant();
-        EvmWire.RequireNonZeroAddress(profile.EvmContractAddress, nameof(profile.EvmContractAddress));
         EvmWire.RequireHex32(quote.SolverPubkey, nameof(quote.SolverPubkey));
 
         var remaining = timeout - currentBlock;
@@ -90,9 +90,9 @@ public static class EvmSendQuoteValidator
         return values;
     }
 
-    private static bool SameAddress(string left, string right) =>
-        EvmWire.RequireAddress(left, nameof(left)).Equals(
-            EvmWire.RequireAddress(right, nameof(right)), StringComparison.OrdinalIgnoreCase);
+    private static string NormalizeQuotedAddress(string value) => EvmWire.RequireNonZeroAddress(
+        value.StartsWith("0x", StringComparison.Ordinal) ? value : "0x" + value,
+        nameof(value), lowerCase: true);
 
     private static bool IsP2tr(string value) => value.Length == 68 && value.StartsWith("5120", StringComparison.Ordinal)
         && value[4..].All(Uri.IsHexDigit);

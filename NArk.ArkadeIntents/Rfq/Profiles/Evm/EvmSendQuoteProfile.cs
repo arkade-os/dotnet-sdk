@@ -1,4 +1,6 @@
 using System.Numerics;
+using System.Text.Json.Serialization;
+using NArk.ArkadeIntents.Rfq.Converters;
 
 namespace NArk.ArkadeIntents.Rfq.Profiles.Evm;
 
@@ -15,6 +17,7 @@ public sealed class EvmSendQuoteProfile
     public string? ReceiverPkScript { get; init; }
 
     /// <summary>EVM block height at which the solver's ERC20 refund opens.</summary>
+    [JsonConverter(typeof(AtomicAmountConverter))]
     public BigInteger? EvmTimeoutBlock { get; init; }
 
     /// <summary>Solver address that receives an expired ERC20 lock.</summary>
@@ -24,6 +27,7 @@ public sealed class EvmSendQuoteProfile
     public string? EvmContractAddress { get; init; }
 
     /// <summary>EIP-155 chain identifier.</summary>
+    [JsonConverter(typeof(AtomicAmountConverter))]
     public BigInteger? EvmChainId { get; init; }
 
     /// <summary>Required EVM lock confirmations.</summary>

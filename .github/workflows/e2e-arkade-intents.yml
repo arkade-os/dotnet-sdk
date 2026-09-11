@@ -154,3 +154,42 @@ jobs:
       - name: Stop infrastructure
         if: always()
         run: node regtest/regtest.mjs clean || true
+
+  evm-send:
+    name: Arkade to EVM Corridor E2E
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ARKADE_EVM_SEND_SOLVER_URL: http://localhost:28787
+      ARKADE_EVM_ARKD_URL: http://localhost:27070
+      ARKADE_EVM_RPC_URL: http://localhost:28545
+      ARKADE_EVM_ARKD_CONTAINER: arkade-regtest-evm-e2e-arkd
+      ARKADE_EVM_CLIENT_PRIVATE_KEY: 5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: ./.github/actions/e2e-setup
+        with:
+          profile: evm-e2e
+          env-file: regtest/.env.evm-e2e
+      - name: Run Arkade to EVM corridor E2E test
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=EvmSendCorridor"
+        timeout-minutes: 10
+      - name: Collect scoped docker logs on failure
+        if: failure()
+        run: |
+          for service in arkd emulator anvil evm-init intent-solver-evm-send; do
+            docker logs "arkade-regtest-evm-e2e-$service" > "/tmp/$service-logs.txt" 2>&1 || true
+          done
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evm-send-corridor-docker-logs
+          path: /tmp/*-logs.txt
+      - name: Stop isolated EVM infrastructure
+        if: always()
+        run: node regtest/regtest.mjs clean --env regtest/.env.evm-e2e || true

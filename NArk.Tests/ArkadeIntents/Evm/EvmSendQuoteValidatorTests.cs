@@ -28,6 +28,13 @@ public class EvmSendQuoteValidatorTests
         });
     }
 
+    [Test]
+    public void CurrentSolverBareContractAddressMatchesTheCanonicalPolicyAddress()
+    {
+        Assert.That(() => EvmSendQuoteValidator.Validate(
+            Request(), Quote(contractAddress: Contract[2..]), Policy(), Now, 100), Throws.Nothing);
+    }
+
     [TestCase("0x0000000000000000000000000000000000000001", 31337, TestName = "Wrong_token_is_refused")]
     [TestCase(Token, 1, TestName = "Wrong_chain_is_refused")]
     public void ConfiguredChainAndTokenAreBinding(string token, long chainId)
@@ -106,7 +113,8 @@ public class EvmSendQuoteValidatorTests
         token,
         new string('c', 64));
 
-    private static RfqQuote<EvmSendQuoteProfile> Quote(long chainId = 31_337, long timeoutBlock = 7_300) => new()
+    private static RfqQuote<EvmSendQuoteProfile> Quote(
+        long chainId = 31_337, long timeoutBlock = 7_300, string contractAddress = Contract) => new()
     {
         V = 1,
         Type = "rfq_quote",
@@ -124,7 +132,7 @@ public class EvmSendQuoteValidatorTests
             ReceiverPkScript = "5120" + new string('e', 64),
             EvmTimeoutBlock = timeoutBlock,
             EvmRefundAddress = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
-            EvmContractAddress = Contract,
+            EvmContractAddress = contractAddress,
             EvmChainId = chainId,
             MinConfirmations = 1,
             MinAgeSeconds = 1,
