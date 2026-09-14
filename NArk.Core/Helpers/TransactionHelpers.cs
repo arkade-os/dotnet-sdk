@@ -244,17 +244,8 @@ public static class TransactionHelpers
                 for (var i = 0; i < gtx.Outputs.Count; i++)
                 {
                     if (!Assets.Extension.IsExtension(gtx.Outputs[i].ScriptPubKey)) continue;
-                    var ext = Assets.Extension.FromScript(gtx.Outputs[i].ScriptPubKey);
-                    var packet = ext.GetAssetPacket();
-                    if (packet is null) continue;
-                    var remappedGroups = packet.Groups.Select(g =>
-                        Assets.AssetGroup.Create(
-                            g.AssetId, g.ControlAsset,
-                            g.Inputs.Select(inp =>
-                                Assets.AssetInput.Create(inputRemapping.GetValueOrDefault(inp.Vin, inp.Vin), inp.Amount))
-                                .ToList(),
-                            g.Outputs, g.Metadata)).ToList();
-                    var remappedTxOut = Assets.Packet.Create(remappedGroups).ToTxOut();
+                    if (RemapExtensionInputs(gtx.Outputs[i].ScriptPubKey, inputRemapping) is not { } remappedTxOut)
+                        continue;
                     gtx.Outputs[i].ScriptPubKey = remappedTxOut.ScriptPubKey;
                     gtx.Outputs[i].Value = remappedTxOut.Value;
                     break;
@@ -460,6 +451,41 @@ public static class TransactionHelpers
             }
 
             return arkTx;
+        }
+
+        /// <summary>
+        /// Re-point an extension's asset inputs at their new vins, keeping every other packet.
+        /// </summary>
+        /// <param name="extensionScript">The OP_RETURN script carrying the extension.</param>
+        /// <param name="inputRemapping">Original vin → the vin it ended up at in the PSBT.</param>
+        /// <returns>The rewritten output, or <c>null</c> when there is no asset packet to remap.</returns>
+        /// <remarks>
+        /// One OP_RETURN carries every packet a spend needs — the asset packet, an Arkade offer, the
+        /// emulator's — so this rebuilds the WHOLE extension with the remapped asset groups swapped
+        /// in, rather than writing a fresh asset-only packet over the output. Doing the latter kept
+        /// the asset groups and silently dropped the rest, and an offer lost that way costs money
+        /// without erroring: the funding transaction is valid and confirms, the covenant holds the
+        /// deposit, and every solver ignores it because there is no offer in the transaction to
+        /// match a market against. Nothing logs, on either side.
+        /// </remarks>
+        internal static TxOut? RemapExtensionInputs(
+            Script extensionScript, IReadOnlyDictionary<ushort, ushort> inputRemapping)
+        {
+            var ext = Assets.Extension.FromScript(extensionScript);
+            if (ext.GetAssetPacket() is not { } packet) return null;
+
+            var remappedGroups = packet.Groups.Select(g =>
+                Assets.AssetGroup.Create(
+                    g.AssetId, g.ControlAsset,
+                    g.Inputs.Select(inp =>
+                        Assets.AssetInput.Create(inputRemapping.GetValueOrDefault(inp.Vin, inp.Vin), inp.Amount))
+                        .ToList(),
+                    g.Outputs, g.Metadata)).ToList();
+
+            var remapped = Assets.Packet.Create(remappedGroups);
+            return new Assets.Extension(
+                    ext.Packets.Select(p => p.PacketType == Assets.Packet.PacketTypeId ? remapped : p).ToList())
+                .ToTxOut();
         }
 
         public async Task<PSBT> ConstructForfeitTx(ArkServerInfo arkServerInfo, ArkCoin coin, Coin? connector,
