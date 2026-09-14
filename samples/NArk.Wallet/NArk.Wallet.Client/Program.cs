@@ -38,18 +38,6 @@ builder.Services.AddArkPaymentTracking();
 builder.Services.AddArkCoreServices();
 builder.Services.AddArkRestTransport(networkConfig);
 
-// ── NArk SDK swap services ──
-builder.Services.AddArkSwapServices();
-// In full ASP.NET hosts, AddHttpClient<BoltzClient>() provides the HttpClient. In WASM we must
-// register CachedBoltzClient (and its BoltzClient base) with a plain HttpClient ourselves.
-builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.CachedBoltzClient>(sp =>
-{
-    var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<NArk.Swaps.Boltz.Models.BoltzClientOptions>>();
-    return new NArk.Swaps.Boltz.Client.CachedBoltzClient(new HttpClient(), opts);
-});
-builder.Services.AddSingleton<NArk.Swaps.Boltz.Client.BoltzClient>(sp =>
-    sp.GetRequiredService<NArk.Swaps.Boltz.Client.CachedBoltzClient>());
-
 // ── SDK infrastructure ──
 builder.Services.Configure<NArk.Core.Models.Options.SimpleIntentSchedulerOptions>(opts =>
 {
@@ -94,7 +82,6 @@ builder.Services.AddSingleton<ISettlementConfigProvider, LocalSettlementConfigAd
 // ── Wallet service (replaces gateway API client) ──
 builder.Services.AddSingleton<ArkWalletService>();
 builder.Services.AddSingleton<WalletState>();
-builder.Services.AddSingleton(new LnurlHelper(new HttpClient()));
 
 var host = builder.Build();
 
