@@ -111,6 +111,22 @@ public class ArkadeLightningTests
 
         // Reconciliation is what a restarted client would run, so driving the end state through it
         // checks the observation path too rather than only the chain.
+        //
+        // It reads IVtxoStorage, not the indexer — and the polls above read the indexer, so passing
+        // them says nothing about what reconcile can see. In a running app
+        // VtxoSynchronizationService keeps that storage fed from the intent storage's active
+        // scripts; without it here the lockup is either absent from the wallet's own view or still
+        // recorded unspent, and reconcile then reports no change at all rather than a wrong one —
+        // which reads as a broken corridor instead of a test observing the wrong side.
+        await using var sync = new VtxoSynchronizationService(
+            ctx.VtxoStorage, ctx.Transport, [ctx.IntentStorage]);
+        await sync.StartAsync(default);
+
+        var spentLocally = await Poll(async () => (await ctx.VtxoStorage.GetVtxos(
+                scripts: [funded.LockupPkScript], includeSpent: true))
+            .Any(v => v.IsSpent()), SolverTimeout);
+        Assert.That(spentLocally, Is.True, "the spend reached the wallet's own view of the chain");
+
         var reconciled = await ctx.Intents.ReconcileAsync();
         Assert.That(
             reconciled.Updated.SingleOrDefault(u => u.SwapId == funded.RfqId)?.To,
