@@ -107,13 +107,20 @@ public class ArkadeSwapTests
 
         var assetIdHex = market.QuoteAsset;
 
-        // The solver must hold the asset to pay it out.
-        if (!await Poll(async () => (await solver.GetAssetBalancesAsync()).GetValueOrDefault(assetIdHex) > 0,
+        var deposit = (long)Math.Clamp((ulong)DepositSats, market.MinBaseAmount, Math.Min(market.MaxBaseAmount, 200_000UL));
+
+        // ENOUGH of the asset, not merely some. `> 0` let a drained market through — solver-init
+        // seeds a fixed supply and every run of this file spends a slice of it — and the swap then
+        // failed on the fill poll two minutes later, which reads like a broken corridor rather than
+        // an exhausted fixture. The amount wanted is known here, so the skip can be honest.
+        var needed = (ulong)SolverDiscoveryService.ComputeWantAmount(deposit, price: 1m, feeBps: 0);
+        if (!await Poll(async () => (await solver.GetAssetBalancesAsync()).GetValueOrDefault(assetIdHex) >= needed,
                 TimeSpan.FromSeconds(30)))
-            Assert.Ignore("solver has no asset inventory for the pair");
+            Assert.Ignore(
+                $"solver holds too little of {assetIdHex[..12]}… to fill {needed} units — seeded supply is spent, "
+                + "restart the stack to re-seed it");
 
         var ctx = await SetUpAsync();
-        var deposit = (long)Math.Clamp((ulong)DepositSats, market.MinBaseAmount, Math.Min(market.MaxBaseAmount, 200_000UL));
 
         // The solver rejects any offer whose price deviates more than the pair's slippage
         // (default ±1%) from the feed, so we must ask for the fair amount — not "very little"
@@ -284,6 +291,20 @@ public class ArkadeSwapTests
             var want2 = SolverDiscoveryService.ComputeWantAmount(depositAsset, price: 1m, feeBps: 0);
             var leg2 = await ctx.Manager.CreateSwap(new CreateSwapRequest(
                 ctx.WalletId, ArkadeSwapIntentType.AssetToBtc, depositAsset, want2, asset));
+
+            {
+                var prevX = new NArk.Arkade.Emulator.PrevArkTxProvider(ctx.Transport);
+                var siX = await ctx.Transport.GetServerInfoAsync();
+                var txidX = NBitcoin.uint256.Parse(leg2.Id);
+                var txX = (await prevX.ResolveAsync([txidX], siX.Network))[txidX];
+                TestContext.Out.WriteLine($"DIAG leg2 txid={leg2.Id}");
+                for (var i = 0; i < txX.Outputs.Count; i++)
+                {
+                    var spkX = Convert.ToHexString(txX.Outputs[i].ScriptPubKey.ToBytes()).ToLowerInvariant();
+                    if (spkX.StartsWith("6a"))
+                        TestContext.Out.WriteLine($"DIAG onchain OP_RETURN len={spkX.Length / 2} spk={spkX[..Math.Min(24, spkX.Length)]}");
+                }
+            }
 
             var fulfilled = await Poll(async () =>
                     (await ctx.IntentStorage.GetArkadeSwapIntents())
