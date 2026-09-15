@@ -2,6 +2,7 @@ using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NArk.Abstractions;
+using NArk.Abstractions.Intents;
 using NArk.Core;
 using NArk.Core.Contracts;
 using NArk.Core.Models.Options;
@@ -77,6 +78,20 @@ public static class ArkadeFaucet
     /// </summary>
     private const int MaxSendAttempts = 6;
 
+    /// <summary>
+    /// How long a request may wait for renewal to hand back coins it holds in an intent. A renewal
+    /// batch session is 30s, so this covers one that has just started plus the round-trip after it.
+    /// </summary>
+    private static readonly TimeSpan RenewalWaitTimeout = TimeSpan.FromSeconds(90);
+
+    /// <summary>Intent states in which arkd holds the intent's inputs and refuses to spend them.</summary>
+    private static readonly ArkIntentState[] InputHoldingStates =
+    [
+        ArkIntentState.WaitingToSubmit,
+        ArkIntentState.WaitingForBatch,
+        ArkIntentState.BatchInProgress,
+    ];
+
     private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
 
     /// <summary>Deadline for a top-up to settle and show up as spendable.</summary>
@@ -127,7 +142,11 @@ public static class ArkadeFaucet
         }
     }
 
-    private sealed class Faucet(string walletId, IContractService contracts, ISpendingService spending)
+    private sealed class Faucet(
+        string walletId,
+        IContractService contracts,
+        ISpendingService spending,
+        IIntentStorage intents)
     {
         public string WalletId { get; } = walletId;
         public ISpendingService Spending { get; } = spending;
@@ -165,10 +184,10 @@ public static class ArkadeFaucet
             var walletId = await wallets.CreateTestWallet();
 
             var faucet = new Faucet(
-
                 walletId,
                 host.Services.GetRequiredService<IContractService>(),
-                host.Services.GetRequiredService<ISpendingService>());
+                host.Services.GetRequiredService<ISpendingService>(),
+                host.Services.GetRequiredService<IIntentStorage>());
 
             await faucet.TopUp(ct);
             return faucet;
@@ -191,10 +210,21 @@ public static class ArkadeFaucet
             var needed = amountSats + Math.Max(amountSats / 10, 10_000);
             ArkTxOut[] outputs = [new(ArkTxOutType.Vtxo, Money.Satoshis(amountSats), destination)];
             var topUps = 0;
+            var renewalWaitUntil = DateTimeOffset.UtcNow + RenewalWaitTimeout;
 
             for (var attempt = 1; attempt <= MaxSendAttempts; attempt++)
             {
-                var coins = await PickCoins(needed, ct);
+                var (coins, heldByRenewal) = await PickCoins(needed, ct);
+                if (coins is null && heldByRenewal && DateTimeOffset.UtcNow < renewalWaitUntil)
+                {
+                    // The balance is there, just inside a renewal intent. Minting would not help —
+                    // the note settles through a batch too — so wait for renewal to return the coins.
+                    // Not counted as an attempt: nothing was submitted.
+                    attempt--;
+                    await Task.Delay(RetryDelay, ct);
+                    continue;
+                }
+
                 if (coins is null)
                 {
                     if (topUps++ >= MaxTopUps)
@@ -223,35 +253,53 @@ public static class ArkadeFaucet
         }
 
         /// <summary>
-        /// A coin is unusable for a reason that passes: it is locked by an in-flight spend or
-        /// renewal, or arkd has already declared it recoverable. Retrying with a fresh selection is
-        /// the correct response to both.
+        /// A coin is unusable for a reason that passes: it is locked by an in-flight spend, it was
+        /// registered in a renewal intent between selection and submit, or arkd has already declared
+        /// it recoverable. Retrying with a fresh selection is the correct response to all three.
         /// </summary>
         private static bool IsTransient(Exception e) =>
             e is AlreadyLockedVtxoException ||
-            (e is RpcException rpc && rpc.Status.Detail.Contains("VTXO_RECOVERABLE", StringComparison.Ordinal));
+            (e is RpcException rpc &&
+             (rpc.Status.Detail.Contains("VTXO_RECOVERABLE", StringComparison.Ordinal) ||
+              rpc.Status.Detail.Contains("VTXO_ALREADY_REGISTERED", StringComparison.Ordinal)));
 
         /// <summary>
-        /// Selects coins covering <paramref name="needed"/> sats, or null when the spendable set
-        /// cannot cover it and the faucet has to mint.
+        /// Selects coins covering <paramref name="needed"/> sats. Coins are null when the free set
+        /// cannot cover it; <c>HeldByRenewal</c> then says whether it could once renewal releases the
+        /// coins it holds, in which case waiting beats minting.
         /// </summary>
-        private async Task<ArkCoin[]?> PickCoins(long needed, CancellationToken ct)
+        /// <remarks>
+        /// Coins held by one of the faucet's own renewal intents are skipped. arkd counts them as
+        /// registered from the moment the intent is submitted and rejects any offchain spend of them
+        /// with <c>VTXO_ALREADY_REGISTERED</c>, yet they stay in the available set until the batch
+        /// settles. Renewal claims a coin 45s before expiry and the spend cut-off is 20s, so without
+        /// this every coin spends a stretch of its life looking spendable while it is not.
+        /// </remarks>
+        private async Task<(ArkCoin[]? Coins, bool HeldByRenewal)> PickCoins(long needed, CancellationToken ct)
         {
-            var usable = (await Spending.GetAvailableCoins(WalletId, ct))
+            var spendable = (await Spending.GetAvailableCoins(WalletId, ct))
                 .Where(IsSpendable)
-                .OrderByDescending(c => c.Amount.Satoshi)
                 .ToArray();
+
+            var held = (await intents.GetIntents(walletIds: [WalletId], states: InputHoldingStates,
+                    cancellationToken: ct))
+                .SelectMany(i => i.IntentVtxos)
+                .ToHashSet();
+
+            var free = spendable
+                .Where(c => !held.Contains(c.Outpoint))
+                .OrderByDescending(c => c.Amount.Satoshi);
 
             var picked = new List<ArkCoin>();
             var total = 0L;
-            foreach (var coin in usable)
+            foreach (var coin in free)
             {
                 picked.Add(coin);
                 total += coin.Amount.Satoshi;
-                if (total >= needed) return picked.ToArray();
+                if (total >= needed) return (picked.ToArray(), false);
             }
 
-            return null;
+            return (null, spendable.Sum(c => c.Amount.Satoshi) >= needed);
         }
 
         /// <summary>
