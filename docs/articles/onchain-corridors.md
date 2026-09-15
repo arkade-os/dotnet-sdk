@@ -12,6 +12,12 @@ Both need an `IBitcoinBlockchain` registered. `AddArkadeIntentsServices()` wires
 when one is present, so a Lightning-only deployment is unaffected — and a caller that reaches for it
 anyway gets an error naming what is missing rather than a null reference from inside a facade.
 
+`AddArkadeIntentsServices(new ArkadeIntentsOptions { OnchainClaimConfirmations = 6 })`
+sets the confirmation policy used by automatic off-board claims. Registration copies this value
+alongside the payer ceiling and emulator override. Six is the conservative default; a custom value
+must satisfy the route's funding-confirmation requirements. Manually driven L1 claims retain their
+explicit confirmation-count argument.
+
 ## The shape of the thing
 
 Two contracts on two rails, linked by one secret.
@@ -92,6 +98,15 @@ If the solver never delivers, the Arkade covenant's `refundWithoutReceiver` leaf
 the advance pass takes it once `refund_locktime` has passed.
 
 ## On-boarding
+
+The wire model supports the current solver's optional deposit range: set both `MinFromAmount` and
+`MaxFromAmount` on `RfqRequest<OnchainReceiveRequestProfile>`. The quote repeats those bounds at
+the envelope level. `OnchainReceiveStatusProfile.FundedFromAmount` and `FundedToAmount` report the
+observed deposit and adjusted payout in the profile. These funded fields deliberately remain JSON
+numbers in sats, matching the current solver's exception to canonical decimal-string amounts.
+They are advisory: verify chain funding before acting. The existing high-level receive flow remains
+exact-amount; parsing a range does not opt it into variable funding. `ClaimPacket` may be omitted
+when the client performs its own online claim.
 
 ```csharp
 var pending = await intents.ReceiveFromOnchainAsync(
@@ -246,6 +261,24 @@ Polling, because an L1 funding raises no event this SDK subscribes to — the sa
 pass proposes its onchain actions on every tick rather than on a trigger. It returns the last status
 seen when the time runs out rather than throwing, so "it never arrived" stays an answer to branch on —
 and it comes back as `Empty` when nothing arrived while this was watching.
+
+## Watch-only Arkade claims
+
+Register `AddArkadeEmulator(...)` and use
+`intents.ClaimOnchainReceiveNonInteractiveAsync(swapId)` (or
+`OnchainIntentsClient.ClaimNonInteractiveAsync`) for an explicitly signerless Arkade claim. This
+retains the on-board claim-window margin and full-funding gate, reads the destination from the
+stored covenant, and pays every input to a separate aligned output. A watch-only wallet must retain
+the stored preimage; the generic `ClaimOnchainReceiveAsync` still uses the receiver's signer.
+
+Submission reveals the preimage to the emulator even if rejected. If another lockup shares its
+hash, secure that leg's obligations before claiming; this primitive does not verify downstream
+funding, including an EVM lock, or provide composed-swap guarantees.
+
+For an outgoing Arkade lockup, `intents.RefundNonInteractiveAsync(swapId)` requires its funded ninth
+leaf and mature refund locktime. It cannot retrofit a signerless refund onto an eight-leaf contract.
+These methods affect only Arkade VTXOs. Claiming or refunding a Bitcoin L1 HTLC still needs its
+existing chain-signing path, and EVM execution is not provided here.
 
 ## Testing
 

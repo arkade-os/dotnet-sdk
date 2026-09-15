@@ -64,6 +64,26 @@ public class ArkadeSwapIntentMonitoringServiceTests
         Assert.That(intents.Updates, Is.Empty);
     }
 
+    [TestCase(ArkadeSwapIntentType.BtcToEvm, false)]
+    [TestCase(ArkadeSwapIntentType.LightningToBtc, true)]
+    public async Task CompositionOwnedVtxoChange_DoesNotUpdateStatus(
+        ArkadeSwapIntentType type, bool linked)
+    {
+        var (vtxos, intents, svc) = Build(type, linked: linked);
+        intents.Swaps["script1"].Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction] = "0x02aa";
+        await svc.StartAsync(default);
+
+        vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx"));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(intents.Updates, Is.Empty);
+            Assert.That(intents.Swaps["script1"].Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(intents.Swaps["script1"].Metadata[ArkadeSwapMetadataKeys.EvmClaimPreparedTransaction],
+                Is.EqualTo("0x02aa"));
+        });
+    }
+
     [Test]
     public async Task StoppedMonitor_IgnoresChanges()
     {
@@ -76,13 +96,16 @@ public class ArkadeSwapIntentMonitoringServiceTests
         Assert.That(intents.Updates, Is.Empty);
     }
 
-    // ─── Lightning: a spend is a fill only when the preimage proves it ──
+    // ─── Preimage corridors: a spend is a fill only when the preimage proves it ──
 
-    [Test]
-    public async Task SpentLightningLockup_WithRevealedPreimage_IsFulfilled()
+    [TestCase(ArkadeSwapIntentType.BtcToLightning)]
+    [TestCase(ArkadeSwapIntentType.BtcToOnchain)]
+    [TestCase(ArkadeSwapIntentType.OnchainToBtc)]
+    public async Task SpentPreimageCorridorLockup_WithRevealedPreimage_IsFulfilled(
+        ArkadeSwapIntentType type)
     {
         var (vtxos, intents, svc) = Build(
-            ArkadeSwapIntentType.BtcToLightning,
+            type,
             transport: TransportReturning(SpendOf(LockupOutpoint, Preimage)));
         await svc.StartAsync(default);
 
@@ -92,13 +115,16 @@ public class ArkadeSwapIntentMonitoringServiceTests
         Assert.That(intents.Updates[0], Is.EqualTo(("script1", ArkadeSwapIntentStatus.Fulfilled, "arktx")));
     }
 
-    [Test]
-    public async Task SpentLightningLockup_WithoutAPreimage_IsResolvedNotFulfilled()
+    [TestCase(ArkadeSwapIntentType.BtcToLightning)]
+    [TestCase(ArkadeSwapIntentType.BtcToOnchain)]
+    [TestCase(ArkadeSwapIntentType.OnchainToBtc)]
+    public async Task SpentPreimageCorridorLockup_WithoutAPreimage_IsResolvedNotFulfilled(
+        ArkadeSwapIntentType type)
     {
         // The covenant's non-interactive refund carries no timelock and no preimage, so a bare
         // spend says the script moved, not that the invoice was paid.
         var (vtxos, intents, svc) = Build(
-            ArkadeSwapIntentType.BtcToLightning,
+            type,
             transport: TransportReturning(SpendOf(LockupOutpoint)));
         await svc.StartAsync(default);
 
@@ -158,11 +184,13 @@ public class ArkadeSwapIntentMonitoringServiceTests
     private static (FakeVtxoStorage, FakeIntentStorage, ArkadeSwapIntentMonitoringService) Build(
         ArkadeSwapIntentType type = ArkadeSwapIntentType.BtcToAsset,
         long? refundLocktime = null,
-        IClientTransport? transport = null)
+        IClientTransport? transport = null,
+        bool linked = false)
     {
         var vtxos = new FakeVtxoStorage();
         var intents = new FakeIntentStorage();
-        var isLightning = type is ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc;
+        var hasPaymentHash = type is ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc
+            or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc;
         intents.Swaps["script1"] = new ArkadeSwapIntent
         {
             Id = "swap-1",
@@ -175,8 +203,10 @@ public class ArkadeSwapIntentMonitoringServiceTests
             SwapPkScript = "script1",
             SwapAddress = "tark1example",
             RefundLocktime = refundLocktime,
-            PaymentHash = isLightning ? PaymentHash : null,
+            PaymentHash = hasPaymentHash ? PaymentHash : null,
         };
+        if (linked)
+            intents.Swaps["script1"].Metadata[ArkadeSwapMetadataKeys.ComposedOutgoingSwapId] = "outgoing-swap";
         return (vtxos, intents, new ArkadeSwapIntentMonitoringService(
             vtxos, intents, transport ?? TransportReturning()));
     }

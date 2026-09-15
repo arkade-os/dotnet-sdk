@@ -50,6 +50,37 @@ public static class ArkadeSwapMetadataKeys
     /// configuration.
     /// </remarks>
     public const string SolverPubkey = "solverPubkey";
+
+    /// <summary>Exact ERC20 atomic output amount.</summary>
+    public const string EvmAmount = "evmAmount";
+    /// <summary>ERC20 token contract.</summary>
+    public const string EvmTokenAddress = "evmTokenAddress";
+    /// <summary>Merchant ERC20 destination.</summary>
+    public const string EvmClaimAddress = "evmClaimAddress";
+    /// <summary>Solver EVM refund destination.</summary>
+    public const string EvmRefundAddress = "evmRefundAddress";
+    /// <summary>EVM refund block.</summary>
+    public const string EvmTimeoutBlock = "evmTimeoutBlock";
+    /// <summary>Configured ERC20Swap contract.</summary>
+    public const string EvmSwapContractAddress = "evmSwapContractAddress";
+    /// <summary>Signed EVM transaction identity durably recorded before broadcast, not proof of delivery.</summary>
+    public const string EvmClaimSubmittedTxid = "evmClaimSubmittedTxid";
+    /// <summary>Signed raw EVM transaction durably recorded before broadcast; contains the route preimage.</summary>
+    public const string EvmClaimPreparedTransaction = "evmClaimPreparedTransaction";
+    /// <summary>EVM transaction whose receipt proves exact merchant delivery.</summary>
+    public const string EvmClaimTxid = "evmClaimTxid";
+    /// <summary>Exact ERC20 amount independently verified from the claim receipt.</summary>
+    public const string EvmDeliveredAmount = "evmDeliveredAmount";
+    /// <summary>Tip at which the pre-claim EVM lock was observed.</summary>
+    public const string EvmLockObservedAtBlock = "evmLockObservedAtBlock";
+    /// <summary>Historical block proving the configured EVM lock depth.</summary>
+    public const string EvmLockProvenAtBlock = "evmLockProvenAtBlock";
+    /// <summary>Unix timestamp of the age-proving EVM block.</summary>
+    public const string EvmLockProvenBlockTimestamp = "evmLockProvenBlockTimestamp";
+    /// <summary>Persisted outgoing RFQ identity linking an ingress to its independent EVM leg.</summary>
+    public const string ComposedOutgoingSwapId = "composedOutgoingSwapId";
+    /// <summary>Exact script L pinned by a linked ingress claim; its presence requires route validation.</summary>
+    public const string ComposedPayoutPkScript = "composedPayoutPkScript";
 }
 
 /// <summary>What an Arkade BTC↔asset swap keeps beyond the fields every corridor has.</summary>
@@ -106,6 +137,17 @@ public sealed record OnchainSwapMetadata(
     string? Preimage, string? HtlcPubkey, long? HtlcLocktime, string? PayoutAddress,
     int? MinConfirmations = null);
 
+/// <summary>Recovery data and immutable public tuple for an Arkade-to-EVM leg.</summary>
+/// <param name="Preimage">Client secret, lowercase hex. The host must protect SDK storage at rest.</param>
+/// <param name="Amount">ERC20 atomic output.</param>
+/// <param name="TokenAddress">ERC20 contract.</param>
+/// <param name="ClaimAddress">Merchant destination.</param>
+/// <param name="RefundAddress">Expired EVM lock destination.</param>
+/// <param name="TimeoutBlock">EVM refund height.</param>
+/// <param name="SwapContractAddress">Configured ERC20Swap contract.</param>
+public sealed record EvmSwapMetadata(string Preimage, string Amount, string TokenAddress,
+    string ClaimAddress, string RefundAddress, string TimeoutBlock, string SwapContractAddress);
+
 /// <summary>
 /// Typed views over <see cref="ArkadeSwapIntent.Metadata"/> — one per corridor, so the blob is read
 /// and written through a shape rather than through string keys at each call site.
@@ -158,9 +200,7 @@ public static class ArkadeSwapIntentMetadataExtensions
         return intent;
     }
 
-    /// <summary>Read the onchain-corridor view.</summary>
-    /// <exception cref="InvalidOperationException">This intent is not an onchain corridor swap.</exception>
-    /// <summary>The solver that quoted this swap, or <c>null</c> on a row that never recorded one.</summary>
+    /// <summary>The RFQ solver that quoted this swap; broadcast asset offers carry no authenticated solver identity.</summary>
     /// <param name="intent">The swap.</param>
     public static string? SolverPubkey(this ArkadeSwapIntent intent) =>
         intent.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.SolverPubkey) is { Length: > 0 } key
@@ -180,6 +220,8 @@ public static class ArkadeSwapIntentMetadataExtensions
         return intent;
     }
 
+    /// <summary>Read the onchain-corridor view.</summary>
+    /// <exception cref="InvalidOperationException">This intent is not an onchain corridor swap.</exception>
     public static OnchainSwapMetadata OnchainMetadata(this ArkadeSwapIntent intent)
     {
         Require(intent, ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentType.OnchainToBtc);
@@ -207,8 +249,38 @@ public static class ArkadeSwapIntentMetadataExtensions
         return intent;
     }
 
+    /// <summary>Read the Arkade-to-EVM recovery view.</summary>
+    public static EvmSwapMetadata EvmMetadata(this ArkadeSwapIntent intent)
+    {
+        Require(intent, ArkadeSwapIntentType.BtcToEvm);
+        return new EvmSwapMetadata(
+            Required(intent, ArkadeSwapMetadataKeys.Preimage),
+            Required(intent, ArkadeSwapMetadataKeys.EvmAmount),
+            Required(intent, ArkadeSwapMetadataKeys.EvmTokenAddress),
+            Required(intent, ArkadeSwapMetadataKeys.EvmClaimAddress),
+            Required(intent, ArkadeSwapMetadataKeys.EvmRefundAddress),
+            Required(intent, ArkadeSwapMetadataKeys.EvmTimeoutBlock),
+            Required(intent, ArkadeSwapMetadataKeys.EvmSwapContractAddress));
+    }
+
+    /// <summary>Write the Arkade-to-EVM recovery view.</summary>
+    public static ArkadeSwapIntent WithEvmMetadata(this ArkadeSwapIntent intent, EvmSwapMetadata metadata)
+    {
+        Set(intent, ArkadeSwapMetadataKeys.Preimage, metadata.Preimage);
+        Set(intent, ArkadeSwapMetadataKeys.EvmAmount, metadata.Amount);
+        Set(intent, ArkadeSwapMetadataKeys.EvmTokenAddress, metadata.TokenAddress);
+        Set(intent, ArkadeSwapMetadataKeys.EvmClaimAddress, metadata.ClaimAddress);
+        Set(intent, ArkadeSwapMetadataKeys.EvmRefundAddress, metadata.RefundAddress);
+        Set(intent, ArkadeSwapMetadataKeys.EvmTimeoutBlock, metadata.TimeoutBlock);
+        Set(intent, ArkadeSwapMetadataKeys.EvmSwapContractAddress, metadata.SwapContractAddress);
+        return intent;
+    }
+
     private static string? Get(ArkadeSwapIntent intent, string key) =>
         intent.Metadata.TryGetValue(key, out var value) && value.Length > 0 ? value : null;
+
+    private static string Required(ArkadeSwapIntent intent, string key) => Get(intent, key)
+        ?? throw new InvalidOperationException($"swap '{intent.Id}' carries no {key}");
 
     // A null writes nothing rather than an empty string: "the corridor has no such value" and "the
     // corridor has an empty one" are different, and only the first should read back as absent.

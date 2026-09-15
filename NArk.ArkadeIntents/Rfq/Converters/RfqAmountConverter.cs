@@ -5,8 +5,7 @@ using System.Text.Json.Serialization;
 namespace NArk.ArkadeIntents.Rfq.Converters;
 
 /// <summary>
-/// Reads and writes an amount the way RFQ v1 § 2.1 states it: atomic units of one named asset, as a
-/// canonical decimal string.
+/// Int64 compatibility converter for non-negative canonical atomic amounts. Use AtomicAmountConverter for full width.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,10 +22,6 @@ namespace NArk.ArkadeIntents.Rfq.Converters;
 /// only a value a double carries exactly. A number past that ceiling is refused rather than read,
 /// because the sender cannot have produced it reliably and this is the funding path — reading it
 /// would mean funding a figure neither side can prove was the one quoted.
-/// </para>
-/// <para>
-/// Distinct from the registry's <c>NumericStringConverter</c>, which is deliberately looser: a
-/// hand-written market card is a browsing aid, while these are the amounts money moves by.
 /// </para>
 /// </remarks>
 public sealed class RfqAmountConverter : JsonConverter<long>
@@ -56,11 +51,11 @@ public sealed class RfqAmountConverter : JsonConverter<long>
             // counterparty applies on the way in, so both sides agree on precisely which numbers are
             // legible rather than each guessing.
             case JsonTokenType.Number when reader.TryGetInt64(out var number):
-                if (Math.Abs(number) > MaxSafeInteger)
+                if (number < 0 || number > MaxSafeInteger)
                 {
                     throw new JsonException(
                         $"the amount {number} is outside the range a JSON number carries exactly " +
-                        $"(±{MaxSafeInteger}); it must be sent as a decimal string");
+                        $"(0..{MaxSafeInteger}); use a non-negative decimal string");
                 }
 
                 return number;
@@ -75,9 +70,10 @@ public sealed class RfqAmountConverter : JsonConverter<long>
 
     /// <inheritdoc />
     public override void Write(Utf8JsonWriter writer, long value, JsonSerializerOptions options)
-        // Invariant by construction: a long renders as ASCII digits with no separators, and the
-        // negative case cannot reach the wire because no amount field is ever negative.
-        => writer.WriteStringValue(value.ToString(CultureInfo.InvariantCulture));
+    {
+        if (value < 0) throw new JsonException("An atomic amount cannot be negative.");
+        writer.WriteStringValue(value.ToString(CultureInfo.InvariantCulture));
+    }
 
     /// <summary>The largest integer a JSON number carries exactly — JavaScript's MAX_SAFE_INTEGER.</summary>
     private const long MaxSafeInteger = 9007199254740991L;

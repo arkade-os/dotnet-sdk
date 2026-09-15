@@ -12,6 +12,14 @@ namespace NArk.ArkadeIntents.Rfq;
 /// </remarks>
 public interface IRfqTransport
 {
+    /// <summary>Asks for an Arkade-to-ERC20 quote using its current numeric-sats wire shape.</summary>
+    /// <param name="request">Strict exact-input EVM send request.</param>
+    /// <param name="cancellationToken">Cancels the round trip.</param>
+    /// <returns>The solver's binding terms.</returns>
+    Task<RfqQuote<Profiles.Evm.EvmSendQuoteProfile>> RequestEvmSendQuoteAsync(
+        Profiles.Evm.EvmSendRfqRequest request,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Ask for a quote and return the solver's binding terms.
     /// </summary>

@@ -3,6 +3,10 @@ namespace NArk.ArkadeIntents.Rfq;
 /// <summary>Thrown when a solver declines a request.</summary>
 public sealed class RfqRefusedException : Exception
 {
+    /// <summary>Creates an exception retaining the solver's complete structured diagnostic.</summary>
+    public RfqRefusedException(RfqRefusal refusal)
+        : this(refusal.Reason, refusal.RfqId, refusal.Detail) => Refusal = refusal;
+
     /// <summary>Creates the exception from a refusal payload.</summary>
     /// <param name="reason">The reason from the closed set; unrecognised wire values arrive as <see cref="RfqRefusalReason.Unknown"/>.</param>
     /// <param name="rfqId">The correlation id refused, when the solver echoed one.</param>
@@ -13,6 +17,7 @@ public sealed class RfqRefusedException : Exception
         Reason = reason;
         RfqId = rfqId;
         Detail = detail;
+        Refusal = new RfqRefusal { Reason = reason, RfqId = rfqId, Detail = detail };
     }
 
     /// <summary>Why the solver declined.</summary>
@@ -23,4 +28,7 @@ public sealed class RfqRefusedException : Exception
 
     /// <summary>The solver's optional elaboration, for humans and logs only.</summary>
     public string? Detail { get; }
+
+    /// <summary>The structured refusal, including optional error code and limits.</summary>
+    public RfqRefusal Refusal { get; }
 }

@@ -11,6 +11,7 @@ using NArk.ArkadeIntents.SolverRegistry;
 using NBitcoin;
 
 using NArk.ArkadeIntents.Assets;
+using NArk.ArkadeIntents.Composition;
 namespace NArk.ArkadeIntents.Services;
 
 /// <summary>What <see cref="ArkadeIntentsService.AdvanceAsync"/> did about one swap.</summary>
@@ -259,6 +260,11 @@ public sealed class ArkadeIntentsService
         string swapId, CancellationToken cancellationToken = default) =>
         _lightning.RefundSwap(swapId, cancellationToken);
 
+    /// <inheritdoc cref="LightningIntentsClient.RefundNonInteractiveAsync"/>
+    public Task<ArkadeSwapIntent> RefundNonInteractiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        _lightning.RefundNonInteractiveAsync(swapId, cancellationToken);
+
     /// <summary>
     /// Resolve an unfinished send swap: read what the chain says, and refund only if nothing else
     /// already ended it.
@@ -324,6 +330,11 @@ public sealed class ArkadeIntentsService
     public Task<ArkadeSwapIntent> ClaimLightningReceiveAsync(
         string swapId, CancellationToken cancellationToken = default) =>
         _lightning.ClaimAsync(swapId, cancellationToken);
+
+    /// <inheritdoc cref="LightningIntentsClient.ClaimNonInteractiveAsync"/>
+    public Task<ArkadeSwapIntent> ClaimLightningReceiveNonInteractiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        _lightning.ClaimNonInteractiveAsync(swapId, cancellationToken);
 
     /// <summary>
     /// Off-board an Arkade balance to Bitcoin L1.
@@ -408,6 +419,11 @@ public sealed class ArkadeIntentsService
         string swapId, CancellationToken cancellationToken = default) =>
         RequireOnchain().ClaimOnchainReceiveAsync(swapId, cancellationToken);
 
+    /// <inheritdoc cref="OnchainIntentsClient.ClaimNonInteractiveAsync"/>
+    public Task<ArkadeSwapIntent> ClaimOnchainReceiveNonInteractiveAsync(
+        string swapId, CancellationToken cancellationToken = default) =>
+        RequireOnchain().ClaimNonInteractiveAsync(swapId, cancellationToken);
+
     /// <summary>
     /// Take back an on-board's L1 funding once its refund leaf has matured.
     /// </summary>
@@ -449,6 +465,8 @@ public sealed class ArkadeIntentsService
     /// swaps and one that cannot proceed must not stop the others. A swap that needs nothing comes
     /// back with <see cref="ArkadeIntentAction.None"/> and <c>Acted: false</c>, which is a normal
     /// answer rather than a problem.
+    /// Composition-owned swaps are also returned as no-ops: <see cref="ComposedSwapExecutionClient"/>
+    /// owns their recovery, refund, and validated non-interactive transitions under the route lock.
     /// </remarks>
     public async Task<ArkadeIntentAdvance> AdvanceAsync(
         string swapId, CancellationToken cancellationToken = default)
@@ -456,12 +474,14 @@ public sealed class ArkadeIntentsService
         var intent = await GetAsync(swapId, cancellationToken)
             ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
 
+        if (ComposedRouteExecutionGuard.IsCompositionOwned(intent))
+            return new ArkadeIntentAdvance(swapId, ArkadeIntentAction.None, Acted: false);
+
         var action = ArkadeIntentPolicy.NextAction(intent);
         if (action == ArkadeIntentAction.None)
         {
             return new ArkadeIntentAdvance(swapId, action, Acted: false);
         }
-
         try
         {
             // Handled apart from the others because its ordinary answer is "not yet": the L1 leg it
@@ -627,6 +647,8 @@ public sealed class ArkadeIntentsService
 
         foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
         {
+            if (ComposedRouteExecutionGuard.IsCompositionOwned(intent)) continue;
+
             // Resolved is the one terminal status worth re-examining: it may have been recorded on
             // a transient read failure, before the spending transaction was fetchable, and a
             // preimage found now upgrades it to the fill it always was.
@@ -693,6 +715,7 @@ public sealed class ArkadeIntentsService
         foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (ComposedRouteExecutionGuard.IsCompositionOwned(intent)) continue;
 
             // Deadlines raise no chain event, so the monitor never sees them: a lockup sitting
             // unspent past its locktime is only ever noticed by a pass that checks the clock.

@@ -7,7 +7,6 @@ using NArk.Abstractions.Scripts;
 using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Services;
-using NArk.ArkadeIntents;
 using NArk.Storage.EfCore.Storage;
 
 namespace NArk.Storage.EfCore.Hosting;
@@ -43,10 +42,6 @@ public static class StorageServiceCollectionExtensions
         services.AddSingleton<EfCoreIntentStorage>();
         services.AddSingleton<IIntentStorage>(sp => sp.GetRequiredService<EfCoreIntentStorage>());
 
-
-        services.AddSingleton<EfCoreArkadeIntentStorage>();
-        services.AddSingleton<IArkadeIntentStorage>(sp => sp.GetRequiredService<EfCoreArkadeIntentStorage>());
-        services.AddSingleton<IActiveScriptsProvider>(sp => sp.GetRequiredService<EfCoreArkadeIntentStorage>());
 
         services.AddSingleton<EfCoreWalletStorage>();
         services.AddSingleton<IWalletStorage>(sp => sp.GetRequiredService<EfCoreWalletStorage>());

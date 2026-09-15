@@ -46,7 +46,7 @@ namespace NArk.Arkade.Contracts;
 /// trader that claims. Both corridors build this same class.
 /// </para>
 /// </remarks>
-public class VHTLCv2Contract : ArkContract
+public partial class VHTLCv2Contract : ArkContract
 {
     /// <summary>Every claim-family leaf gates the preimage to this length before hashing it.</summary>
     public const int PreimageSize = 32;

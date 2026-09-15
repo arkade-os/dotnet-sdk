@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Numerics;
 using NArk.ArkadeIntents.Rfq.Converters;
 
 namespace NArk.ArkadeIntents.Rfq;
@@ -29,8 +30,20 @@ public sealed class RfqRequest<TProfile>
     /// The amount in atomic units of the named leg. Omitted by profiles where something else is
     /// authoritative — sending a value that disagrees with it is <c>unsupported_payload</c>.
     /// </summary>
-    [JsonConverter(typeof(RfqAmountConverter))]
-    public long? Amount { get; init; }
+    [JsonIgnore]
+    public long? Amount { get => AtomicAmount is { } value ? checked((long)value) : null; init => AtomicAmount = value; }
+
+    /// <summary>Full-width atomic amount. Serializes as a canonical decimal string.</summary>
+    [JsonPropertyName("amount"), JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger? AtomicAmount { get; init; }
+
+    /// <summary>Optional minimum onchain receive deposit; requires MaxFromAmount.</summary>
+    [JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger? MinFromAmount { get; init; }
+
+    /// <summary>Optional maximum onchain receive deposit; requires MinFromAmount.</summary>
+    [JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger? MaxFromAmount { get; init; }
 
     /// <summary>The corridor-specific fields.</summary>
     public required TProfile Profile { get; init; }

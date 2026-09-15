@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Numerics;
 using NArk.ArkadeIntents.Rfq.Converters;
 
 namespace NArk.ArkadeIntents.Rfq;
@@ -30,12 +31,28 @@ public sealed class RfqQuote<TProfile>
     public string? Pair { get; init; }
 
     /// <summary>What the client pays, in atomic units of the from-leg.</summary>
-    [JsonConverter(typeof(RfqAmountConverter))]
-    public long FromAmount { get; init; }
+    [JsonIgnore]
+    public long FromAmount { get => checked((long)FromAtomicAmount); init => FromAtomicAmount = value; }
+
+    /// <summary>The from-leg amount without narrowing to the sats API's Int64 range.</summary>
+    [JsonPropertyName("from_amount"), JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger FromAtomicAmount { get; init; }
 
     /// <summary>What the client receives, in atomic units of the to-leg. The solver's fee is the spread.</summary>
-    [JsonConverter(typeof(RfqAmountConverter))]
-    public long ToAmount { get; init; }
+    [JsonIgnore]
+    public long ToAmount { get => checked((long)ToAtomicAmount); init => ToAtomicAmount = value; }
+
+    /// <summary>The to-leg amount without narrowing to the sats API's Int64 range.</summary>
+    [JsonPropertyName("to_amount"), JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger ToAtomicAmount { get; init; }
+
+    /// <summary>Optional lower bound on the onchain receive deposit, in atomic units.</summary>
+    [JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger? MinFromAmount { get; init; }
+
+    /// <summary>Optional upper bound on the onchain receive deposit, in atomic units.</summary>
+    [JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger? MaxFromAmount { get; init; }
 
     /// <summary>The solver's x-only settlement key (hex).</summary>
     public required string SolverPubkey { get; init; }

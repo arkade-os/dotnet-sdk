@@ -14,6 +14,8 @@
     <ItemGroup>
       <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.11" />
       <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
+      <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+      <PackageReference Include="Nethereum.Signer" Version="6.1.0" />
       <!-- BOLT11 decoding: the send leg's gates all check facts the invoice itself carries. -->
       <PackageReference Include="BTCPayServer.Lightning.Common" Version="1.5.3" />
     </ItemGroup>

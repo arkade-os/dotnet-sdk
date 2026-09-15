@@ -37,8 +37,7 @@ other than the one asked for is otherwise undetectable from the client.
 
 ```csharp
 // One service over every corridor. Register it once and reach all of them through it.
-var intents = new ArkadeIntentsService(
-    assetSwaps, lightningSend, lightningReceive, intentStorage, vtxoStorage, TimeProvider.System);
+var intents = serviceProvider.GetRequiredService<ArkadeIntentsService>();
 
 var funded = await intents.SendToLightningAsync(
     walletId: "my-wallet",
@@ -68,6 +67,11 @@ await intents.RefundLightningSendAsync(funded.RfqId);
 
 ## Receiving: be paid over Lightning, take delivery on Arkade
 
+Pass `new ArkadeIntentsOptions { MaxPayAmountSats = 250_000 }` to
+`AddArkadeIntentsServices(...)` to cap the receive quote's payer amount. All supplied options reach
+the registered clients, including a null ceiling. Omitting the options object retains a ceiling
+already set through `Configure<ArkadeIntentsOptions>`.
+
 ```csharp
 var pending = await intents.ReceiveFromLightningAsync(
     walletId: "my-wallet",
@@ -80,6 +84,31 @@ Console.WriteLine($"have the payer settle: {pending.Invoice}");
 // Once the solver funds the lockup — the monitor moves the intent to Claimable:
 await intents.ClaimLightningReceiveAsync(pending.RfqId);
 ```
+
+### Watch-only execution
+
+With `AddArkadeEmulator(...)` registered, explicitly call
+`intents.ClaimLightningReceiveNonInteractiveAsync(swapId)` to spend the covenant claim without a
+wallet signature. A watch-only receive must retain its preimage; without it, losing the signer also
+removes the ability to rederive the secret. The existing `ClaimLightningReceiveAsync` stays cooperative.
+
+The signerless path reads its destination from the funded contract, checks the total against the
+promised amount before submission, and preserves a separate full-value payout for every input.
+The BTC corridor rejects attached assets, duplicated inputs, subdust outputs, and inputs below a
+strict covenant's per-input floor. The low-level NI coin helpers also reject asset-bearing lockups.
+The emulator and Arkade server co-sign; no participant key is used.
+
+Submission reveals the preimage to the emulator even if rejected. A payout into another lockup
+sharing the hash does not preserve secrecy: establish any downstream obligations before claiming.
+This primitive does not verify another leg's funding or provide composed-swap guarantees.
+
+`intents.RefundNonInteractiveAsync(swapId)` similarly spends the ninth leaf after its refund
+locktime matures, without a preimage. It refuses eight-leaf contracts: the ninth leaf must be present
+before funding, not added to the reconstruction later. Both the stored contract and its pinned refund
+script remain authoritative. This capability does not provide a signerless unilateral onchain exit.
+
+`WatchOnlyVhtlcTests` covers stored, split-funded contracts through a real local emulator; this is
+separate from the solver-negotiated RFQ corridor E2E suite.
 
 Here **you** choose the secret and send only its hash, plus a copy sealed to covclaimd that the
 solver cannot open ([`ClaimPacket`](xref:NArk.ArkadeIntents.Lightning.ClaimPacket)). That asymmetry
@@ -119,6 +148,31 @@ The covclaimd packet is a fallback claimer, not a backup you can read.
 ## Reaching a solver
 
 Two transports, same payloads.
+
+Discovery supports source cards and indexes at versions 0 and 1. Use full CAIP-19 identities when
+selecting a market; `caip19_id` takes precedence over the legacy `id` in compatibility indexes.
+Cards need no display `pair`, and that label never controls selection. Non-EVM chain references
+must match the selected Arkade network; EIP-155 identities require v1 and retain their chain id.
+
+```csharp
+var markets = await discovery.DiscoverMarketsAsync("regtest", registries: [], localCards: [card]);
+var ranked = SolverDiscoveryService.FilterAndRank(markets,
+    "arkade:regtest/slip44:1", "bolt11:regtest/slip44:1", 50_000);
+var wirePair = LegacyRfqPairAdapter.FromCanonical(
+    AssetIdentifier.Parse("arkade:regtest/slip44:1"),
+    AssetIdentifier.Parse("bolt11:regtest/slip44:1"));
+```
+
+Legacy conversion is explicit and does not support EVM execution. To convert an old bare id, use
+`AssetIdentifier.FromLegacy(id, network, corridor)` with the network you actually selected.
+Generic RFQ and registry amounts expose `BigInteger` properties ending in `AtomicAmount`; existing
+sats properties remain checked `long` accessors. Canonical amount strings have no Int64 ceiling,
+while numeric compatibility input must be a non-negative safe JSON integer.
+
+Both transports validate response version and correlation. A status refusal throws
+`RfqRefusedException`, retaining the full structured diagnostic in `Refusal`; HTTP 404 remains a
+missing negotiation. Unknown states remain non-terminal. A receive request's `ClaimPacket` is
+optional at the wire layer when the client will claim online; do not send filler packets.
 
 `HttpRfqTransport` posts to a solver that happens to expose a port — convenient locally, and what
 the reference solver offers.
@@ -219,12 +273,16 @@ The contract is an agreement about bytes, and it is not versioned on the wire: i
 and the solver's ever disagree, the first symptom is funds at an address nobody can spend. The
 defence is a set of golden vectors generated from the counterparty's own implementation.
 
-Regenerate them whenever the solver moves to a newer ts-sdk pin:
+Regenerate the contract vectors and the deterministic current-solver quote fixtures after changing
+the corresponding dependency pins. The latter records the solver commit and exercises the current
+ladder, with equal and distinct covenant destinations:
 
 ```bash
 node NArk.Tests/ArkadeIntents/Fixtures/generate-covenant-vectors.mjs \
   <node-project-with-arkade-sdk> > NArk.Tests/ArkadeIntents/Fixtures/covenant_swap.json
-dotnet test NArk.Tests --filter VHTLCv2ContractTests
+node NArk.Tests/ArkadeIntents/Fixtures/generate-current-quotes.mjs \
+  <built-intent-solver-checkout> > NArk.Tests/ArkadeIntents/Fixtures/current_solver_quotes.json
+dotnet test NArk.Tests
 ```
 
 If the vectors and this SDK disagree, **this SDK is what is wrong** — they come from the side that

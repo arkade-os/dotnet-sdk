@@ -34,6 +34,7 @@ builder.Services.AddBesqlDbContextFactory<WalletDbContext>(options =>
     options.UseSqlite("Data Source=ArkadeWallet.db");
 });
 builder.Services.AddArkEfCoreStorage<WalletDbContext>();
+builder.Services.AddArkadeEfCoreStorage();
 builder.Services.AddArkPaymentTracking();
 
 // ── NArk SDK core services ──
@@ -44,11 +45,11 @@ builder.Services.AddArkRestTransport(networkConfig);
 // The maker funds a covenant offer (TLV offer packet in the funding tx); a solver on the
 // public market fulfils it. Needs the network emulator (covenant co-signer whose key the
 // offer embeds) + solver-registry discovery. Emulator URL is per-network; Mutinynet's is:
-builder.Services.AddEmulatorClient(opts =>
+builder.Services.AddArkadeEmulator(opts =>
     opts.ServerUrl = networkConfig == ArkNetworkConfig.Mainnet
         ? "https://emulator.arkade.sh"
         : "https://emulator.mutinynet.arkade.sh");
-// AddEmulatorClient pins a SocketsHttpHandler, which is right on a server and unusable here:
+// The emulator client pins a SocketsHttpHandler, which is right on a server and unusable here:
 // the browser runtime has no sockets to pool, and merely setting PooledConnectionLifetime throws
 // PlatformNotSupportedException from inside the DI factory — surfacing as a component that fails
 // to render rather than as anything naming this line. Overriding the registration afterwards is
