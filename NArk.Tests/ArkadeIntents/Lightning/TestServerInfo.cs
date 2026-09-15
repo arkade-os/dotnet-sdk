@@ -20,7 +20,7 @@ internal static class TestServerInfo
     internal static ArkServerInfo With(Sequence unilateralExit) => new(
         Dust: Money.Satoshis(546),
         SignerKey: KeyExtensions.ParseOutputDescriptor(new Key().PubKey.ToHex(), Network.RegTest),
-        DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+        DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
         Network: Network.RegTest,
         UnilateralExit: unilateralExit,
         BoardingExit: new Sequence(144),

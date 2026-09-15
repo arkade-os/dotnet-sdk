@@ -10,11 +10,17 @@
 
     <ItemGroup>
       <PackageReference Include="Cel" Version="0.3.2" />
-      <PackageReference Include="NBitcoin" Version="10.0.1" />
-      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.0" />
+      <PackageReference Include="NBitcoin" Version="10.0.9" />
+      <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.1" />
       <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.11" />
       <!-- From NArk.Blockchain.NBXplorer -->
       <PackageReference Include="NBXplorer.Client" Version="5.0.6" />
+      <!-- Lifted from the 6.0.3 that NBXplorer.Client 5.0.6 pulls in, to match the 6.0.4 the
+           BTCPay Server host provides. NBXplorer.Client itself stays on 5.0.6: 5.0.7+ declares a
+           Microsoft.AspNetCore.Mvc.NewtonsoftJson dependency its assembly never references, which
+           drags a Microsoft.AspNetCore.App framework reference into every consumer and breaks
+           Blazor WebAssembly builds (NETSDK1082). -->
+      <PackageReference Include="NBitcoin.Altcoins" Version="6.0.4" />
       <!-- From NArk.Safety.AsyncKeyedLock -->
       <PackageReference Include="AsyncKeyedLock" Version="8.0.2" />
       <!-- From NArk.Transport.GrpcClient -->
