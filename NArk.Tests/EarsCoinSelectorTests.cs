@@ -213,12 +213,13 @@ public class RgliStrategyTests
             RandomTopK: randomTopK,
             MaxLocalSearchIterations: maxIterations);
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void LocalImprovement_RemovesExcessCoin()
     {
-        // Worst seed [2000,2500,3000] → greedy picks all 3 (change=2500).
-        // Local improve: remove 2000 → [2500,3000] change=500, then swap 2500→2000 → [3000,2000] change=0.
-        // Any seed converges to waste≤500 after improvement, so single TrySelect suffices.
+        // Only the shuffles that put 3000 and 2000 first give the 2-coin answer. [3000,2500,…] is
+        // rejected (500 sub-dust change), and [2500,2000,3000] / [2000,2500,3000] take all 3 coins:
+        // dropping 2000 leaves 500 sub-dust change and there is no unused coin to swap in. With
+        // RandomTopK=10 every shuffle misses with probability (4/6)^10 ≈ 1.7%, hence the retry.
         var candidates = new[]
         {
             EarsTestHelpers.Candidate(3000, expiry: 100u),
@@ -235,7 +236,7 @@ public class RgliStrategyTests
         Assert.That(result.SelectedCoins.Count, Is.LessThanOrEqualTo(2));
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void LocalImprovement_FindsExactMatch_ViaSwap()
     {
         // Worst seed [1000,6000,5000] → greedy picks [1000+6000]=7000 (change=2000).
@@ -254,7 +255,7 @@ public class RgliStrategyTests
         Assert.That(result.SelectedCoins, Has.Count.EqualTo(1));
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void ReturnsValidResult_ChangeAboveDustOrZero()
     {
         var candidates = new[]
@@ -271,7 +272,7 @@ public class RgliStrategyTests
             $"Change {result.Change} must be zero or >= dust");
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void ReturnsNull_WhenInsufficientFunds()
     {
         var candidates = new[] { EarsTestHelpers.Candidate(1000, expiry: 100u) };
@@ -281,7 +282,7 @@ public class RgliStrategyTests
         Assert.That(result, Is.Null);
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void RespectsExpiry_ReturnsNull_WhenMixingDisabledAndNoGroupSufficient()
     {
         var candidates = new[]
@@ -295,7 +296,7 @@ public class RgliStrategyTests
         Assert.That(result, Is.Null);
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void CombinesGroups_WhenMixingEnabled()
     {
         var candidates = new[]
@@ -579,7 +580,7 @@ public class SingleRandomDrawStrategyTests
     private static CoinSelectionPolicy Policy(bool allowMixingFallback = false) =>
         new(AllowExpiryMixingFallback: allowMixingFallback);
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void ReturnsValidResult_CoveringTarget()
     {
         var candidates = new[]
@@ -595,7 +596,7 @@ public class SingleRandomDrawStrategyTests
         Assert.That(result.TotalValue, Is.GreaterThanOrEqualTo(Money.Satoshis(4000)));
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void ChangeIsAboveDustOrZero()
     {
         var candidates = new[]
@@ -611,7 +612,7 @@ public class SingleRandomDrawStrategyTests
             $"Change {result.Change} must be zero or >= dust");
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void ReturnsNull_WhenInsufficientFunds()
     {
         var candidates = new[] { EarsTestHelpers.Candidate(1000, expiry: 100u) };
@@ -621,7 +622,7 @@ public class SingleRandomDrawStrategyTests
         Assert.That(result, Is.Null);
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void RespectsExpiry_ReturnsNull_WhenMixingDisabledAndNoGroupSufficient()
     {
         var candidates = new[]
@@ -635,7 +636,7 @@ public class SingleRandomDrawStrategyTests
         Assert.That(result, Is.Null);
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void CombinesGroups_WhenMixingEnabled()
     {
         var candidates = new[]
@@ -651,7 +652,7 @@ public class SingleRandomDrawStrategyTests
         Assert.That(result.ExpiryMixedFallback, Is.True);
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void ContinuesToNextBucket_WhenGreedyReturnsNull()
     {
         // First bucket has enough total but any random draw produces sub-dust change (5200-5000=200<546).
@@ -671,7 +672,7 @@ public class SingleRandomDrawStrategyTests
         Assert.That(result!.Change, Is.EqualTo(Money.Zero));
     }
 
-    [Test]
+    [Test, Retry(EarsTestHelpers.RandomizedTestRetries)]
     public void ExpiryMixedFallback_IsFalse_WhenSingleGroupSufficient()
     {
         var candidates = new[]
@@ -815,6 +816,12 @@ public class CoinSelectionEngineTests
 
 internal static class EarsTestHelpers
 {
+    /// <summary>
+    /// Retries for tests whose strategy shuffles coins with <see cref="Random.Shared"/>. A retry only
+    /// repeats a failed assertion, so a deterministic regression still fails every attempt.
+    /// </summary>
+    internal const int RandomizedTestRetries = 5;
+
     internal static IReadOnlyList<ExpiryBucket> Buckets(IEnumerable<CoinCandidate> candidates) =>
         candidates
             .GroupBy(c => c.ExpiryGroup)

@@ -1,4 +1,3 @@
-using BTCPayServer.Lightning;
 using NArk.Abstractions;
 using NArk.Abstractions.Assets;
 using NArk.Abstractions.Contracts;
@@ -12,9 +11,6 @@ using NArk.Core.Services;
 using NArk.Core.Transport;
 using NArk.Core.Wallet;
 using NArk.Hosting;
-using NArk.Swaps.Abstractions;
-using NArk.Swaps.Boltz;
-using NArk.Swaps.Services;
 using NBitcoin;
 
 namespace NArk.Wallet.Client.Services;
@@ -30,13 +26,10 @@ public class ArkWalletService(
     ISpendingService spendingService,
     IVtxoStorage vtxoStorage,
     IContractStorage contractStorage,
-    ISwapStorage swapStorage,
     IIntentStorage intentStorage,
     IAssetManager assetManager,
     IOnchainService onchainService,
     IContractService contractService,
-    SwapsManagementService swapsManagementService,
-    BoltzLimitsValidator boltzLimitsValidator,
     HdWalletRecoveryService recoveryService,
     PendingArkTransactionRecoveryService pendingTxRecoveryService,
     ArkNetworkConfig networkConfig)
@@ -97,9 +90,14 @@ public class ArkWalletService(
     /// <summary>
     /// Run an HD-wallet gap-limit recovery scan for a freshly imported wallet.
     /// Discovers contracts that were used by a previous instance of the same
-    /// mnemonic — VTXOs (arkd indexer), boarding UTXOs (on-chain), and Boltz
-    /// swaps — and persists them in local storage so balances and history
-    /// reflect the wallet's prior activity.
+    /// mnemonic — VTXOs (arkd indexer) and boarding UTXOs (on-chain) — and
+    /// persists them in local storage so balances and history reflect the
+    /// wallet's prior activity.
+    ///
+    /// Swaps are not among what comes back. The provider that held its own
+    /// record of them went with the swaps package; an intent swap is recorded
+    /// locally against a covenant this wallet derived, so recovering one means
+    /// rebuilding it from the chain rather than asking a counterparty.
     /// </summary>
     /// <remarks>
     /// Only meaningful for HD wallets; SingleKey wallets have no derivation index
@@ -179,45 +177,6 @@ public class ArkWalletService(
         return new ReceiveInfo(arkAddress, boardingAddress, arkScript, boardingScript);
     }
 
-    // ── Swaps ──
-
-    public async Task<IReadOnlyCollection<NArk.Swaps.Models.ArkSwap>> GetSwaps(string walletId)
-        => await swapStorage.GetSwaps(walletIds: [walletId]);
-
-    /// <summary>
-    /// Bulk audit: surfaces every swap whose contract script still has
-    /// unspent VTXOs (or has hit a terminal state with no funds).
-    /// Used by the Swaps page to show "X sats stranded — recovery
-    /// runs automatically" indicators after a wallet restore.
-    /// </summary>
-    public async Task<IReadOnlyList<NArk.Swaps.Models.SwapRecoveryInfo>> ScanRecoverableSwaps(string walletId)
-        => await swapsManagementService.ScanRecoverableSwapsAsync(walletId);
-
-    /// <summary>
-    /// Initiates a reverse submarine swap (Lightning → Ark). Returns the Lightning invoice to pay.
-    /// </summary>
-    public async Task<string> InitiateReverseSwap(string walletId, long amountSats)
-    {
-        var invoiceParams = new CreateInvoiceParams(
-            LightMoney.Satoshis(amountSats),
-            "Arkade Wallet Receive",
-            TimeSpan.FromHours(1));
-        return await swapsManagementService.InitiateReverseSwap(walletId, invoiceParams);
-    }
-
-    /// <summary>
-    /// Initiates a BTC→ARK chain swap. Returns the BTC address to send to.
-    /// </summary>
-    public async Task<(string BtcAddress, string SwapId, long ExpectedSats)> InitiateChainSwap(
-        string walletId, long amountSats)
-        => await swapsManagementService.InitiateBtcToArkChainSwap(walletId, amountSats);
-
-    /// <summary>
-    /// Gets Boltz swap limits for all swap types.
-    /// </summary>
-    public async Task<BoltzAllLimits?> GetBoltzLimits()
-        => await boltzLimitsValidator.GetAllLimitsAsync();
-
     // ── Wallet Info ──
 
     /// <summary>
@@ -269,24 +228,6 @@ public class ArkWalletService(
         var addr = BitcoinAddress.Create(btcAddress, serverInfo.Network);
         var output = new ArkTxOut(ArkTxOutType.Onchain, Money.Satoshis(amountSats), addr);
         return await onchainService.InitiateCollaborativeExit(walletId, output);
-    }
-
-    // ── Submarine Swap (Ark → Lightning) ──
-
-    public async Task<string> PayLightningInvoice(string walletId, string bolt11Invoice)
-    {
-        var serverInfo = await transport.GetServerInfoAsync();
-        var invoice = BOLT11PaymentRequest.Parse(bolt11Invoice, serverInfo.Network);
-        return await swapsManagementService.InitiateSubmarineSwap(walletId, invoice);
-    }
-
-    // ── Chain Swap (Ark → BTC on-chain via Boltz) ──
-
-    public async Task<string> SendArkToBtcChainSwap(string walletId, long amountSats, string btcAddress)
-    {
-        var serverInfo = await transport.GetServerInfoAsync();
-        var addr = BitcoinAddress.Create(btcAddress, serverInfo.Network);
-        return await swapsManagementService.InitiateArkToBtcChainSwap(walletId, amountSats, addr);
     }
 
     // ── Network Config ──
