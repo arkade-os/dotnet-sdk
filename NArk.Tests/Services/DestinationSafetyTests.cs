@@ -22,6 +22,18 @@ public class DestinationSafetyTests
     }
 
     [Test]
+    public void IsStale_true_when_deprecated_key_is_a_distinct_instance_of_the_same_key()
+    {
+        // The other cases hand the same ECXOnlyPubKey object to both sides, so they pass even under
+        // reference equality. On the wire the deprecated set and the destination's server key are
+        // parsed separately, so this is the shape that actually exercises value equality.
+        var deprecated = NewKey();
+        var info = MakeServerInfo(currentSigner: NewKey(), deprecated: [deprecated]);
+        var dest = MakeAddress(serverKey: ECXOnlyPubKey.Create(deprecated.ToBytes()));
+        Assert.That(DestinationSafety.IsStale(dest, info), Is.True);
+    }
+
+    [Test]
     public void IsStale_false_when_destination_server_key_is_current()
     {
         var current = NewKey();
