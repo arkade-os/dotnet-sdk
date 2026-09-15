@@ -1,0 +1,432 @@
+using NArk.Abstractions.VTXOs;
+using NArk.ArkadeIntents.Models;
+using NArk.ArkadeIntents.Services;
+
+namespace NArk.Tests.ArkadeIntents;
+
+/// <summary>
+/// Every transition an Arkade intent swap can make, in one place.
+/// </summary>
+/// <remarks>
+/// The machine reads the state a swap is IN as well as what the chain says, and that is the point.
+/// The same observation means opposite things depending on where we are and which corridor we are
+/// on: a spend is a fill, or our own cancel landing, or an ambiguous outcome, depending. A rule that
+/// looked only at the chain had to have those distinctions bolted on elsewhere, which is where they
+/// went missing.
+/// </remarks>
+[TestFixture]
+public class ArkadeSwapStateMachineTests
+{
+    private const long Locktime = 1_800_000_000;
+    private const long Before = Locktime - 3600;
+    private const long After = Locktime + 1;
+
+    // ─── Send: arkade → lightning ─────────────────────────────────────
+
+    [Test]
+    public void Send_SpentWithAProvenPreimage_IsTheFill()
+    {
+        // The only thing that proves a fill. A fill cannot happen without the preimage being
+        // revealed, and the preimage is checkable against the payment hash.
+        Assert.That(Next(Send, Pending, Filled(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+    }
+
+    [Test]
+    public void Send_SpentWithNoPreimage_IsNotReadAsAPayment()
+    {
+        // The counterparty can push the covenant's non-interactive refund at any moment — it carries
+        // no timelock — so a spend before the deadline is not proof of anything. Calling it a fill
+        // reports a refunded payment as a completed one, which downstream means an order settled
+        // against money that came back.
+        Assert.That(Next(Send, Pending, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void Send_SpentAtOrAfterTheLocktime_IsReportedRatherThanGuessed()
+    {
+        // Both the claim and the refund are live; telling them apart needs the spending witness.
+        Assert.That(Next(Send, Refundable, Spent(After)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void Send_UnspentPastTheLocktime_BecomesRefundable()
+    {
+        Assert.That(Next(Send, Pending, Open(After)), Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+    }
+
+    [Test]
+    public void Send_UnspentBeforeTheLocktime_WaitsOnTheSolver()
+    {
+        Assert.That(Next(Send, Pending, Open(Before)), Is.Null);
+    }
+
+    [Test]
+    public void Send_SeeingTheLockupAtAll_ConfirmsTheFundingLanded()
+    {
+        // A swap is recorded before its own spend, so this is the only confirmation it ever gets
+        // that the money actually moved.
+        Assert.That(
+            Next(Send, ArkadeSwapIntentStatus.Funding, Open(Before)),
+            Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+    }
+
+    [Test]
+    public void Send_FundingWithNoLockupYet_StaysPut()
+    {
+        // Nothing observed means nothing to conclude — the spend may be in flight, or may have
+        // failed. Reconciliation decides that with a clock, not the machine with a guess.
+        Assert.That(ArkadeSwapStateMachine.ActionFor(Send, ArkadeSwapIntentStatus.Funding),
+            Is.EqualTo(ArkadeIntentAction.None));
+    }
+
+    [Test]
+    public void Send_FundingStraightPastTheLocktime_GoesToRefundable()
+    {
+        // A swap that was recorded, funded, and then left alone long enough must not need a stop in
+        // Pending it never observed.
+        Assert.That(
+            Next(Send, ArkadeSwapIntentStatus.Funding, Open(After)),
+            Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+    }
+
+    // ─── Receive: lightning → arkade ──────────────────────────────────
+
+    [Test]
+    public void Receive_FundedAndUnspent_IsOursToClaim()
+    {
+        // The event the send leg has no equivalent of: the counterparty paid out first.
+        Assert.That(Next(Receive, Pending, Open(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
+    }
+
+    [Test]
+    public void Receive_UnspentPastTheDeadline_IsOverNotClaimable()
+    {
+        // The solver's own reclaim is open and the claim refuses to race it, so the swap is over:
+        // leaving it claimable would retry a spend that throws, on every pass, forever.
+        Assert.That(Next(Receive, Claimable, Open(After)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void Receive_SpentWithAProvenPreimage_IsOurClaimLanding()
+    {
+        // Our own claim is what publishes the preimage here, so the same proof applies from the
+        // other side of the corridor.
+        Assert.That(Next(Receive, Claimable, Filled(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+    }
+
+    [Test]
+    public void Receive_SpentWithNoPreimage_IsTheSolverReclaiming()
+    {
+        // The solver's own recourse leaves no preimage behind, and taking it for delivery would
+        // credit us with sats that went back to the counterparty.
+        Assert.That(Next(Receive, Claimable, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void TheTwoLightningCorridors_ReadAnUnspentLockupOppositely()
+    {
+        // The distinction the whole type exists for, asserted directly.
+        Assert.Multiple(() =>
+        {
+            Assert.That(Next(Send, Pending, Open(Before)), Is.Null, "send: waiting on the solver");
+            Assert.That(Next(Receive, Pending, Open(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Claimable),
+                "receive: ours to move, on a clock");
+        });
+    }
+
+    // ─── Asset corridors ──────────────────────────────────────────────
+
+    [Test]
+    public void Asset_Spent_IsTheFill()
+    {
+        // No refund leaf here, so a spend is unambiguous whatever the clock says.
+        Assert.That(Next(Asset, Pending, Spent(After)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+    }
+
+    [Test]
+    public void Asset_Open_StaysPending()
+    {
+        Assert.That(Next(Asset, Pending, Open(Before)), Is.Null);
+    }
+
+    // ─── Guards that need the current state ───────────────────────────
+
+    [Test]
+    public void ASpendWhileCancelling_IsOurOwnCancel()
+    {
+        // Reading this as a fill would credit the counterparty with something it never did.
+        Assert.That(Next(Asset, ArkadeSwapIntentStatus.Cancelling, Spent(Before)),
+            Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
+    }
+
+    [Test]
+    public void WhileCancelling_NothingElseMoves()
+    {
+        Assert.That(Next(Asset, ArkadeSwapIntentStatus.Cancelling, Open(Before)), Is.Null);
+    }
+
+    [TestCase(ArkadeSwapIntentStatus.Fulfilled)]
+    [TestCase(ArkadeSwapIntentStatus.Cancelled)]
+    [TestCase(ArkadeSwapIntentStatus.Resolved)]
+    [TestCase(ArkadeSwapIntentStatus.Recoverable)]
+    public void ATerminalSwap_NeverReopens(ArkadeSwapIntentStatus terminal)
+    {
+        // Without this a swept-then-spent output could walk a finished row backwards.
+        Assert.Multiple(() =>
+        {
+            Assert.That(Next(Send, terminal, Spent(After)), Is.Null);
+            Assert.That(Next(Receive, terminal, Open(Before)), Is.Null);
+            Assert.That(Next(Asset, terminal, Swept(Before)), Is.Null);
+        });
+    }
+
+    [Test]
+    public void AStatusIsNotRepeated()
+    {
+        // The monitor writes on change only; re-announcing the state we are in would be churn.
+        Assert.That(Next(Receive, Claimable, Open(Before)), Is.Null);
+        Assert.That(Next(Send, Refundable, Open(After)), Is.Null);
+    }
+
+    [Test]
+    public void ASweptLockup_IsRecoverable()
+    {
+        Assert.That(Next(Send, Pending, Swept(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Recoverable));
+    }
+
+    // ─── What a clock alone can settle ────────────────────────────────
+
+    [Test]
+    public void OnTheClock_ASendSwapBecomesRefundablePastTheDeadline()
+    {
+        // Nothing moves on-chain when a locktime matures, so without a clock pass the refund
+        // would never open for a wallet that saw no vtxo change after it.
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Send, Pending, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+    }
+
+    [Test]
+    public void OnTheClock_AReceiveSwapPastItsClaimWindow_IsOver()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, Claimable, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void OnTheClock_NothingMovesBeforeTheDeadline()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(ArkadeSwapStateMachine.NextOnClock(Send, Pending, Before, Locktime), Is.Null);
+            Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, Claimable, Before, Locktime), Is.Null);
+        });
+    }
+
+    [Test]
+    public void OnTheClock_NeverFabricatesAClaimableSwap()
+    {
+        // A receive swap the solver never funded has no lockup to claim: only a chain sighting may
+        // promote it, or the advance loop would claim-throw on a swap that never existed on-chain.
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, Pending, Before, Locktime), Is.Null);
+    }
+
+    [Test]
+    public void OnTheClock_TerminalSwapsStayPut()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, ArkadeSwapIntentStatus.Fulfilled, After, Locktime),
+            Is.Null);
+    }
+
+    // ─── What we do about a state ─────────────────────────────────────
+
+    [Test]
+    public void OnlyConsequencesAreAutomated()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(ArkadeSwapStateMachine.ActionFor(Receive, Claimable),
+                Is.EqualTo(ArkadeIntentAction.ClaimReceive));
+            Assert.That(ArkadeSwapStateMachine.ActionFor(Send, Refundable),
+                Is.EqualTo(ArkadeIntentAction.RefundSend));
+
+            // A pending asset swap is waiting to be filled, which is what was asked for.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(Asset, Pending), Is.EqualTo(ArkadeIntentAction.None));
+            // Claimable is only meaningful on the receive leg.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(Send, Claimable), Is.EqualTo(ArkadeIntentAction.None));
+        });
+    }
+
+    // ─── The documented steps ─────────────────────────────────────────
+
+    [TestCase(ArkadeSwapIntentType.BtcToLightning)]
+    [TestCase(ArkadeSwapIntentType.LightningToBtc)]
+    [TestCase(ArkadeSwapIntentType.BtcToAsset)]
+    [TestCase(ArkadeSwapIntentType.BtcToOnchain)]
+    [TestCase(ArkadeSwapIntentType.OnchainToBtc)]
+    public void TheStepsAreOrderedAndLandInReachableStates(ArkadeSwapIntentType type)
+    {
+        var steps = ArkadeSwapStateMachine.Steps(type);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(steps, Is.Not.Empty);
+            Assert.That(steps.Select(s => s.Ordinal), Is.EqualTo(Enumerable.Range(1, steps.Count)));
+            // A step claiming to leave the swap somewhere the machine never reaches would be
+            // documentation quietly drifting from behaviour.
+            foreach (var landing in steps.Where(s => s.Leaves is not null).Select(s => s.Leaves!.Value))
+            {
+                Assert.That(Reachable(type), Does.Contain(landing), $"{type} can reach {landing}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Every status a corridor can end up in: the ones the client writes directly, plus everything
+    /// the machine can transition to from them.
+    /// </summary>
+    /// <remarks>
+    /// The seed is not decoration. Some states are entered rather than transitioned into — a swap is
+    /// put into <see cref="ArkadeSwapIntentStatus.Funding"/> by the client before it spends, and into
+    /// <see cref="ArkadeSwapIntentStatus.Cancelling"/> before it cancels — and a walk that only
+    /// followed transitions would call those unreachable and fail a description that is correct.
+    /// </remarks>
+    private static IReadOnlyCollection<ArkadeSwapIntentStatus> Reachable(ArkadeSwapIntentType type)
+    {
+        var seen = new HashSet<ArkadeSwapIntentStatus>
+        {
+            ArkadeSwapIntentStatus.Funding,
+            Pending,
+            ArkadeSwapIntentStatus.Cancelling,
+        };
+        var observations = new[] { Open(Before), Open(After), Spent(Before), Spent(After), Filled(Before), Swept(Before) };
+
+        for (var settled = false; !settled;)
+        {
+            settled = true;
+            foreach (var from in seen.ToArray())
+            foreach (var o in observations)
+            {
+                if (ArkadeSwapStateMachine.Next(type, from, o) is { } to && seen.Add(to)) settled = false;
+            }
+        }
+
+        return seen;
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────
+
+    // ─── The onchain pair ─────────────────────────────────────────────
+
+    [Test]
+    public void OnBoard_ReadsItsArkadeSideExactlyAsTheLightningReceiveLegDoes()
+    {
+        // Same covenant, same roles, same clock — so the same readings. Anything else would mean two
+        // descriptions of one mechanism, which is how they drift.
+        Assert.Multiple(() =>
+        {
+            Assert.That(Next(OnBoard, Pending, Open(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
+            Assert.That(Next(OnBoard, Claimable, Open(After)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+            Assert.That(Next(OnBoard, Claimable, Filled(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(Next(OnBoard, Claimable, Spent(Before)), Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+        });
+    }
+
+    [Test]
+    public void OnTheClock_AnOffBoardBecomesRefundablePastItsDeadline()
+    {
+        // It used not to. The vtxo-driven path had this transition and the clock-driven one did not,
+        // so an off-board whose solver simply went quiet — no spend, no sweep, no chain event of any
+        // kind — never opened its refund at all.
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(OffBoard, Pending, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Refundable));
+    }
+
+    [Test]
+    public void OnTheClock_AnOnBoardPastItsClaimWindow_IsOverOnArkade()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(OnBoard, Claimable, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void TheOnchainLegsGetTheirOwnActions()
+    {
+        Assert.Multiple(() =>
+        {
+            // The off-board's L1 claim is proposed while it waits, because the funding it watches
+            // for raises no vtxo event.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OffBoard, Pending),
+                Is.EqualTo(ArkadeIntentAction.ClaimOnchain));
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OffBoard, Refundable),
+                Is.EqualTo(ArkadeIntentAction.RefundSend));
+
+            // The on-board claims the same way the Lightning receive leg does.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, Claimable),
+                Is.EqualTo(ArkadeIntentAction.ClaimReceive));
+        });
+    }
+
+    [Test]
+    public void AnOnBoardsL1RefundSurvivesATerminalArkadeStatus()
+    {
+        // Resolved means our claim window shut unused — which is exactly the case where the solver
+        // never learns the preimage, never claims on L1, and our funding is sitting there for us.
+        // Treating a status terminal for one rail as terminal for both would abandon those sats.
+        Assert.Multiple(() =>
+        {
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, ArkadeSwapIntentStatus.Resolved),
+                Is.EqualTo(ArkadeIntentAction.RefundOnchain));
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, Pending),
+                Is.EqualTo(ArkadeIntentAction.RefundOnchain));
+
+            // Once we have claimed, the preimage is public and the solver can take that same HTLC.
+            // Racing it is at best a wasted fee.
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, ArkadeSwapIntentStatus.Fulfilled),
+                Is.EqualTo(ArkadeIntentAction.None));
+            Assert.That(ArkadeSwapStateMachine.ActionFor(OnBoard, ArkadeSwapIntentStatus.Cancelled),
+                Is.EqualTo(ArkadeIntentAction.None));
+        });
+    }
+
+    private const ArkadeSwapIntentType Send = ArkadeSwapIntentType.BtcToLightning;
+    private const ArkadeSwapIntentType Receive = ArkadeSwapIntentType.LightningToBtc;
+    private const ArkadeSwapIntentType Asset = ArkadeSwapIntentType.BtcToAsset;
+    private const ArkadeSwapIntentType OffBoard = ArkadeSwapIntentType.BtcToOnchain;
+    private const ArkadeSwapIntentType OnBoard = ArkadeSwapIntentType.OnchainToBtc;
+
+    private const ArkadeSwapIntentStatus Pending = ArkadeSwapIntentStatus.Pending;
+    private const ArkadeSwapIntentStatus Claimable = ArkadeSwapIntentStatus.Claimable;
+    private const ArkadeSwapIntentStatus Refundable = ArkadeSwapIntentStatus.Refundable;
+
+    private static ArkadeSwapIntentStatus? Next(
+        ArkadeSwapIntentType type, ArkadeSwapIntentStatus current, SwapObservation o) =>
+        ArkadeSwapStateMachine.Next(type, current, o);
+
+    private static SwapObservation Open(long now) => new(Spent: false, Swept: false, now, Locktime);
+
+    /// <summary>Spent, with nothing proving who moved it.</summary>
+    private static SwapObservation Spent(long now) => new(Spent: true, Swept: false, now, Locktime);
+
+    /// <summary>Spent by a transaction that revealed this swap's preimage.</summary>
+    private static SwapObservation Filled(long now) =>
+        new(Spent: true, Swept: false, now, Locktime, PreimageRevealed: true);
+    private static SwapObservation Swept(long now) => new(Spent: false, Swept: true, now, Locktime);
+
+    [Test]
+    public void AnObservationReadsOffAVtxo()
+    {
+        var vtxo = new ArkVtxo(
+            Script: "5120aa", TransactionId: "tx", TransactionOutputIndex: 0, Amount: 50_000,
+            SpentByTransactionId: "spender", SettledByTransactionId: null, Swept: false,
+            CreatedAt: DateTimeOffset.UtcNow, ExpiresAt: null, ExpiresAtHeight: null, ArkTxid: null);
+
+        var observation = SwapObservation.From(vtxo, After, Locktime);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(observation.Spent, Is.True);
+            Assert.That(observation.Swept, Is.False);
+            Assert.That(observation.PastLocktime, Is.True);
+        });
+    }
+}

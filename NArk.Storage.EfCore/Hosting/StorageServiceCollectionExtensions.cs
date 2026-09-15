@@ -42,6 +42,7 @@ public static class StorageServiceCollectionExtensions
         services.AddSingleton<EfCoreIntentStorage>();
         services.AddSingleton<IIntentStorage>(sp => sp.GetRequiredService<EfCoreIntentStorage>());
 
+
         services.AddSingleton<EfCoreWalletStorage>();
         services.AddSingleton<IWalletStorage>(sp => sp.GetRequiredService<EfCoreWalletStorage>());
 

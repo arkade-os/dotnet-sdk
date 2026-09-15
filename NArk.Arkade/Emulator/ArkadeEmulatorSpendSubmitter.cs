@@ -15,7 +15,8 @@ namespace NArk.Arkade.Emulator;
 /// Engages only when at least one input is arkade-bound
 /// (<see cref="ArkadePsbtExtensions.RequiresEmulatorCoSigning"/>); every other spend
 /// falls through to the unchanged arkd cooperative flow. The Arkade transaction and checkpoints
-/// arrive already user-signed — this handler only adds the <c>prevarktx</c> annotation the
+/// carry participant signatures only when their leaves require them; signerless covenant paths
+/// carry their condition witnesses. This handler adds the <c>prevarktx</c> annotation the
 /// emulator requires on every input plus the emulator round-trip.
 /// </remarks>
 public sealed class ArkadeEmulatorSpendSubmitter(

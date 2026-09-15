@@ -7,26 +7,39 @@ jobs:
   test:
     name: Arkade E2E Tests
     runs-on: ubuntu-latest
+    env:
+      # solverd defaults to level 4 (info), which logs nothing once it is up — a swap the solver
+      # silently declines to fill is indistinguishable from one it never saw. Level 5 (debug) makes
+      # the fill decision visible in the solver logs collected below. A pre-set variable wins over
+      # regtest/.env.defaults (see lib/env.mjs), so this reaches the container.
+      SOLVER_LOG_LEVEL: '5'
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
-      # `emulator` pulls in `ark` (arkd) and starts the emulator co-signing overlay on :7073.
-      # That is the whole stack this suite needs: ArkadeFaucet tops wallets up from the ark CLI
-      # wallet inside the arkd container, so funding no longer costs a `boltz` profile.
-      # EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
+      # `solver` pulls in `ark` (arkd) + `emulator`, brings up the mock pricefeed + solver, and runs
+      # solver-init (fund + mint asset + register pairs) so the swap fulfill E2E has a live market.
+      # That is more than master's `emulator` because this suite negotiates against a real solver.
+      # `boltz` is gone with the fulmine funding it existed for: ArkadeFaucet tops wallets up from
+      # the ark CLI wallet inside the arkd container, so this suite no longer pays for a profile it
+      # used only as a faucet. EMULATOR_SECRET_KEY comes from regtest/.env.defaults (deterministic).
       - uses: ./.github/actions/e2e-setup
         with:
-          profile: emulator
+          profile: solver
       - name: Run Arkade E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=ArkadeScript"
-        timeout-minutes: 15
+        # Headroom for the solver-fill polls: a fill normally lands in ~1-3s, but each of the
+        # three swap tests can wait up to SolverFillTimeout when its offer queues behind a
+        # solver settlement round.
+        timeout-minutes: 25
       - name: Collect docker logs on failure
         if: failure()
         run: |
           docker logs arkd > /tmp/arkd-logs.txt 2>&1 || true
           docker logs emulator > /tmp/emulator-logs.txt 2>&1 || true
+          docker logs solver > /tmp/solver-logs.txt 2>&1 || true
+          docker logs solver-init > /tmp/solver-init-logs.txt 2>&1 || true
           docker logs bitcoin > /tmp/bitcoin-logs.txt 2>&1 || true
       - name: Upload logs
         if: failure()

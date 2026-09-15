@@ -17,11 +17,13 @@ jobs:
       - uses: ./.github/actions/e2e-setup
         with:
           profile: delegate
-      # Recovery tests run in a dedicated parallel workflow (e2e-recovery). Rotation tests run
-      # in e2e-rotation. Arkade covenant tests need the emulator profile, so they run in the
-      # arkade-e2e job. Run everything else here.
+      # Recovery tests run in a dedicated parallel workflow (e2e-recovery). Rotation tests run in
+      # e2e-rotation. Arkade covenant tests need the emulator profile, so they run in the arkade-e2e
+      # job, and ArkadeIntents needs a live solver, so it runs in e2e-arkade-intents. All of those
+      # are excluded from the filter below rather than left to be swept in by this catch-all.
+      # Run everything else here.
       - name: Run E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Swaps&TestCategory!=Recovery&TestCategory!=UnilateralExit&TestCategory!=ArkadeScript"
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory!=RealRotation&TestCategory!=Recovery&TestCategory!=UnilateralExit&TestCategory!=ArkadeScript&TestCategory!=ArkadeIntents"
         timeout-minutes: 20
       - name: Collect docker logs on failure
         if: failure()
