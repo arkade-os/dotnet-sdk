@@ -1,0 +1,16 @@
+{
+  "_comment": "GENERATED — do not hand-edit. Run generate-claim-packet-vector.mjs. If our output disagrees with this, ours is what is wrong.",
+  "inputs": {
+    "preimage": "1111111111111111111111111111111111111111111111111111111111111111",
+    "ephemeralPrivateKey": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+    "covclaimdPublicKey": "02474c9c627ad19d0ae5c70050703dc62ebbee99885d054623f59f8f79a277904e",
+    "nonce": "0102030405060708090a0b0c"
+  },
+  "intermediates": {
+    "ephemeralPublicKey": "02bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2",
+    "sharedSecretX": "57ef1cff56789278d991bb77139b8da899f413b9e11318c62c3a77ba74d21ade",
+    "derivedKey": "3b7c64384ed6ec00129b91c790727c8b3ed8029b42238b27b770f5a13a5b6eff"
+  },
+  "packet": "ArtYtf7KUFx07cAA2CgvxVblGhAk/I59flbG+IfFyNXyAQIDBAUGBwgJCgsMSfCsPB7IynYnqMZQvxBvTU/pFZedmx5jqwv9OaVrledciQ5qHvBKY5LSavBK0cOk",
+  "paymentHash": "02d449a31fbb267c8f352e9968a79e3e5fc95c1bbeaa502fd6454ebde5a4bedc"
+}

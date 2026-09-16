@@ -22,7 +22,8 @@ public record ArkServerInfo(
     Money VtxoMinAmount = default!,
     Money VtxoMaxAmount = default!,
     Money UtxoMinAmount = default!,
-    Money UtxoMaxAmount = default!
+    Money UtxoMaxAmount = default!,
+    string? NetworkName = null
 )
 {
     /// <summary>

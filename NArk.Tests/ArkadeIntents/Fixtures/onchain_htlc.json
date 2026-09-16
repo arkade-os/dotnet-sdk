@@ -1,0 +1,37 @@
+{
+  "_comment": "GENERATED — do not hand-edit. Produced by gen-onchain.mjs from @arkade-os/swap onchainHtlcScript.",
+  "_lockTimeThreshold": 500000000,
+  "inputs": {
+    "preimage": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+    "paymentHash": "4bf469546db4c45f0df5035610b66aa23b01cbfd53a2e7e32db3daa63d4d9c50",
+    "claimKey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+    "refundKey": "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394",
+    "refundLocktime": 1800000000
+  },
+  "networks": {
+    "bitcoin": {
+      "address": "bc1p26p3wqnnngyms2s3zk8dw5xmtf2l4gpu7jh6qdr2xj3uts6m9q8q6v9hud",
+      "pkScript": "512056831702739a09b82a11158ed750db5a55faa03cf4afa0346a34a3c5c35b280e",
+      "claimLeaf": "82012088a914638c08236d78edd6b2e7170048e8f9d350d9031788201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fac",
+      "refundLeaf": "0400d2496bb175207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ac",
+      "claimControlBlock": "c050929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac004a97b4b9500bbea3ebef837376efc74fb7b6009328eb8a9608831695c8cede0",
+      "refundControlBlock": "c050929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0f29af36205ed8ca22c6de81fa6de51575d26c272160bcfa376bae5437c956bd2"
+    },
+    "testnet": {
+      "address": "tb1p26p3wqnnngyms2s3zk8dw5xmtf2l4gpu7jh6qdr2xj3uts6m9q8qdyncxz",
+      "pkScript": "512056831702739a09b82a11158ed750db5a55faa03cf4afa0346a34a3c5c35b280e",
+      "claimLeaf": "82012088a914638c08236d78edd6b2e7170048e8f9d350d9031788201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fac",
+      "refundLeaf": "0400d2496bb175207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ac",
+      "claimControlBlock": "c050929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac004a97b4b9500bbea3ebef837376efc74fb7b6009328eb8a9608831695c8cede0",
+      "refundControlBlock": "c050929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0f29af36205ed8ca22c6de81fa6de51575d26c272160bcfa376bae5437c956bd2"
+    },
+    "regtest": {
+      "address": "bcrt1p26p3wqnnngyms2s3zk8dw5xmtf2l4gpu7jh6qdr2xj3uts6m9q8qqae7nc",
+      "pkScript": "512056831702739a09b82a11158ed750db5a55faa03cf4afa0346a34a3c5c35b280e",
+      "claimLeaf": "82012088a914638c08236d78edd6b2e7170048e8f9d350d9031788201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078fac",
+      "refundLeaf": "0400d2496bb175207c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394ac",
+      "claimControlBlock": "c050929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac004a97b4b9500bbea3ebef837376efc74fb7b6009328eb8a9608831695c8cede0",
+      "refundControlBlock": "c050929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0f29af36205ed8ca22c6de81fa6de51575d26c272160bcfa376bae5437c956bd2"
+    }
+  }
+}

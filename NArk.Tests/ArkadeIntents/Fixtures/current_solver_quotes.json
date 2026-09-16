@@ -1,0 +1,38 @@
+{
+  "solverCommit": "83fef5587562da7d7342a0e2387300654e46f14c",
+  "server": "e35799157be4b37565bb5afe4d04e6a0fa0a4b6a4f4e48b0d904685d253cdbdb",
+  "emulator": "999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9",
+  "operatorExitDelay": 512,
+  "vectors": [
+    {
+      "name": "send",
+      "paymentHash": "ea7ad684b1ae3975cbbdab9512cd042ccbb5218636d6998262c41ed31693ecd9",
+      "refundLocktime": 1786552072,
+      "sender": "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394",
+      "receiver": "df5e3a677c20ff3af3c1701e5ed75aa7cc1e3ff8069ea4a8df5012494d7af6eb",
+      "senderScript": "5120ec250c5be12707c56bee7a263fb1495e0fbdb733c9eb35a53b5e57e1e2ec2534",
+      "receiverScript": "5120ec250c5be12707c56bee7a263fb1495e0fbdb733c9eb35a53b5e57e1e2ec2534",
+      "address": "tark1qr340xg400jtxat9hdd0ungyu6s05zjtdf85uj9smyzxshf98ndahzcth2zgpku63s4mngdkumquq62x6meuhdznheyt09efrc3ndfw0lvercc"
+    },
+    {
+      "name": "send-distinct",
+      "paymentHash": "22fa82b7a24a4907c3955ca1044b4eef7a4e30aab0dfa96eae8e6435500fb5f4",
+      "refundLocktime": 1786771492,
+      "sender": "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394",
+      "receiver": "df5e3a677c20ff3af3c1701e5ed75aa7cc1e3ff8069ea4a8df5012494d7af6eb",
+      "senderScript": "5120535e2e7fb7a3fa9b3be74b13b813261497e3ad8a9d61cc45d233b4e0d21a7e73",
+      "receiverScript": "5120ec250c5be12707c56bee7a263fb1495e0fbdb733c9eb35a53b5e57e1e2ec2534",
+      "address": "tark1qr340xg400jtxat9hdd0ungyu6s05zjtdf85uj9smyzxshf98ndakaa6fm9e3yvw6435ks3mzdgqnk7jve4hdtmt98ddee0pq3np8uxkcsgl8x"
+    },
+    {
+      "name": "receive",
+      "paymentHash": "deb0e38ced1e41de6f92e70e80c418d2d356afaaa99e26f5939dbc7d3ef4772a",
+      "refundLocktime": 1786398939,
+      "sender": "df5e3a677c20ff3af3c1701e5ed75aa7cc1e3ff8069ea4a8df5012494d7af6eb",
+      "receiver": "7c2a5ee7f0d4f5f61b0b6b1d4c9a83a0e2f5c6d7889a0b1c2d3e4f5061728394",
+      "senderScript": "5120ec250c5be12707c56bee7a263fb1495e0fbdb733c9eb35a53b5e57e1e2ec2534",
+      "receiverScript": "5120535e2e7fb7a3fa9b3be74b13b813261497e3ad8a9d61cc45d233b4e0d21a7e73",
+      "address": "tark1qr340xg400jtxat9hdd0ungyu6s05zjtdf85uj9smyzxshf98ndakmfld7y2pyzakxsmxphrjqd3ardvfafw8pav2tj42x95tl9ts7y7r7cxf9"
+    }
+  ]
+}
