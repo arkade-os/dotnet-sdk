@@ -19,6 +19,8 @@ public interface IContractService
     /// Derives a new contract for the specified purpose, with optional input contracts for descriptor recycling.
     /// When inputContracts are provided and purpose is SendToSelf, HD wallets may reuse a descriptor
     /// from the inputs to avoid index bloat and reduce contract data accumulation.
+    /// Inputs the wallet is still advertising as an inbound destination are skipped, since recycling
+    /// deactivates the reused script — see <see cref="IArkadeAddressProvider.GetNextContract"/>.
     /// </summary>
     Task<ArkContract> DeriveContract(
         string walletId,
