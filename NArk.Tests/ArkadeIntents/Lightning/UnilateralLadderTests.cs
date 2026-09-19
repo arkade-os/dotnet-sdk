@@ -13,11 +13,17 @@ namespace NArk.Tests.ArkadeIntents.Lightning;
 /// </summary>
 /// <remarks>
 /// <para>
-/// These delays are <b>not carried on the wire</b>. Both sides derive them from the same operator
-/// <c>/v1/info</c>, deliberately — a delay the solver could send is a delay the solver could
-/// choose. The price is that the derivation itself is the wire format, so changing it on one side
-/// is a protocol break wearing the clothes of a one-file refactor, and the only symptom is an
-/// address that no longer matches the one being quoted.
+/// Two of the three are <b>not carried on the wire</b>. Both sides derive the claim and the
+/// two-party refund from the same operator <c>/v1/info</c>, deliberately — a delay the solver could
+/// send is a delay the solver could choose. The price is that the derivation itself is the wire
+/// format, so changing it on one side is a protocol break wearing the clothes of a one-file
+/// refactor, and the only symptom is an address that no longer matches the one being quoted.
+/// </para>
+/// <para>
+/// The solo refund is the exception, and what is pinned here is its <b>floor</b>: a send quote may
+/// publish a longer one to stay behind its own <c>refund_locktime</c>, which
+/// <see cref="NegotiatedSoloRefundTests"/> covers. Every property below still has to hold of the
+/// base ladder, because that is what a quote carrying no delay falls back to.
 /// </para>
 /// <para>
 /// Nothing asserted this before. The golden vectors took the three numbers as inputs and the
