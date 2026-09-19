@@ -10,6 +10,8 @@ using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Assets;
 using NArk.ArkadeIntents.Evm;
 using NArk.Abstractions.Blockchain;
+using NArk.ArkadeIntents.Covclaim;
+using Microsoft.Extensions.Options;
 namespace NArk.ArkadeIntents.Hosting;
 
 public static class ArkadeIntentsCollectionExtensions
@@ -79,6 +81,60 @@ public static class ArkadeIntentsCollectionExtensions
         // the payment silently does not arrive. Opt out through ArkadeIntentAdvanceOptions if the
         // host means to drive claims itself.
         services.AddHostedService<ArkadeIntentAdvanceService>();
+        return services;
+    }
+
+    /// <summary>
+    /// Points the receive corridors at a covclaimd instance, so every receive is revealed to it and
+    /// the daemon races this wallet for the claim.
+    /// </summary>
+    /// <param name="services">The container.</param>
+    /// <param name="configure">Where the daemon is, and how patient to be with it.</param>
+    /// <returns>The same container, for chaining.</returns>
+    /// <remarks>
+    /// <para>
+    /// Entirely optional, and additive: without this call a receive works exactly as before, claimed
+    /// by <see cref="ArkadeIntentAdvanceService"/> the moment the monitor sees the lockup funded.
+    /// What it buys is a second claimant for the window in which this wallet is not running — the
+    /// daemon spends the same covenant leaf, pinned to the same payout script, so the two racing
+    /// cannot disagree about where the money goes.
+    /// </para>
+    /// <para>
+    /// Call it <b>after</b> <see cref="AddArkadeIntentsServices"/>: the corridor clients resolve the
+    /// daemon as an optional dependency, and a container that registers it later still wires it,
+    /// but the renewal loop reads options that this call configures.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddCovclaimd(
+        this IServiceCollection services,
+        Action<CovclaimdOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        services.Configure(configure);
+
+        // A named client taken from the factory at resolve time, not a typed one: the client is a
+        // singleton because it caches the daemon's keys, and a typed client would pin one handler
+        // for the life of the process and never see a DNS change. Connection lifetime is managed on
+        // the handler instead.
+        services.AddHttpClient(CovclaimdOptions.HttpClientName)
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            });
+
+        services.TryAddSingleton<ICovclaimdClient>(sp => new CovclaimdClient(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(CovclaimdOptions.HttpClientName),
+            sp.GetRequiredService<IOptions<CovclaimdOptions>>(),
+            sp.GetService<IAesGcmCipher>(),
+            sp.GetService<ILogger<CovclaimdClient>>()));
+
+        // Registrations live in the daemon's memory, so one made at swap time is gone after a
+        // restart or a TTL. Registering the loop beside the client keeps "revealed once" from
+        // quietly meaning "revealed until covclaimd next restarts".
+        services.AddHostedService<CovclaimdRenewalService>();
         return services;
     }
 }
