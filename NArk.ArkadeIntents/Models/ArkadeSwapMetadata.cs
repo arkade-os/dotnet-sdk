@@ -51,6 +51,16 @@ public static class ArkadeSwapMetadataKeys
     /// </remarks>
     public const string SolverPubkey = "solverPubkey";
 
+    /// <summary>The RFQ negotiation this swap was quoted under, when it was quoted at all.</summary>
+    /// <remarks>
+    /// Absent on an unquoted offer, which is the whole difference between the two ways an Arkade
+    /// swap starts: one publishes a standing offer and waits for any taker, the other agrees terms
+    /// with a named solver first. Only the second has a negotiation to ask for a status on, and the
+    /// intent's own id cannot stand in for it — it is the funding txid, because that is what the
+    /// cancel path looks the deposit up by.
+    /// </remarks>
+    public const string RfqId = "rfqId";
+
     /// <summary>Exact ERC20 atomic output amount.</summary>
     public const string EvmAmount = "evmAmount";
     /// <summary>ERC20 token contract.</summary>
@@ -216,6 +226,25 @@ public static class ArkadeSwapIntentMetadataExtensions
         if (solverPubkey is { Length: > 0 })
         {
             intent.Metadata[ArkadeSwapMetadataKeys.SolverPubkey] = solverPubkey;
+        }
+        return intent;
+    }
+
+    /// <summary>The RFQ negotiation this swap was quoted under, or <c>null</c> if it was not quoted.</summary>
+    /// <param name="intent">The swap.</param>
+    /// <returns>The correlation id, or <c>null</c>.</returns>
+    public static string? RfqId(this ArkadeSwapIntent intent) =>
+        intent.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.RfqId) is { Length: > 0 } id ? id : null;
+
+    /// <summary>Record the RFQ negotiation this swap was quoted under.</summary>
+    /// <param name="intent">The swap.</param>
+    /// <param name="rfqId">The correlation id, or <c>null</c> to leave it unrecorded.</param>
+    /// <returns>The same swap, for chaining.</returns>
+    public static ArkadeSwapIntent WithRfqId(this ArkadeSwapIntent intent, string? rfqId)
+    {
+        if (rfqId is { Length: > 0 })
+        {
+            intent.Metadata[ArkadeSwapMetadataKeys.RfqId] = rfqId;
         }
         return intent;
     }

@@ -284,6 +284,15 @@ public sealed partial class OnchainIntentsClient(
         ArkServerInfo serverInfo)
     {
         var delays = LightningCorridor.UnilateralDelays(serverInfo);
+
+        // Adopted when published, derived when not — the Lightning leg's rule, applied to the same
+        // covenant. See LightningCorridor.ResolveSoloRefundDelay.
+        var soloRefundDelay = LightningCorridor.ResolveSoloRefundDelay(
+            quote.Profile?.RefundWithoutReceiverDelay,
+            delays,
+            quote.RefundLocktime,
+            _time.GetUtcNow().ToUnixTimeSeconds());
+
         var receiverPkScript = quote.Profile?.ReceiverPkScript
             ?? throw new OnchainSendNotFundableException(
                 OnchainSendRefusalReason.IncompleteQuote,
@@ -303,7 +312,7 @@ public sealed partial class OnchainIntentsClient(
             new LockTime(checked((uint)quote.RefundLocktime)),
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
-            new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
+            new Sequence(TimeSpan.FromSeconds(soloRefundDelay)),
             nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
                 Convert.FromHexString(receiverPkScript), emulatorPubKey),
             refundPkScript: refundPkScript,

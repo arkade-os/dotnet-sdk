@@ -1,3 +1,4 @@
+using System.Numerics;
 using NArk.ArkadeIntents.Rfq;
 
 namespace NArk.ArkadeIntents.SolverRegistry;
@@ -93,7 +94,24 @@ public static class SolverTerms
     /// <param name="pair">The RFQ pair.</param>
     /// <param name="amountSats">The size being traded.</param>
     /// <exception cref="SolverTermsException">The corridor is unserved, or the size is out of range.</exception>
-    public static void AssertWithinLimits(SolverCard card, string pair, long amountSats)
+    public static void AssertWithinLimits(SolverCard card, string pair, long amountSats) =>
+        AssertWithinLimits(card, pair, new BigInteger(amountSats));
+
+    /// <summary>
+    /// Refuse a size the solver's card says it will not pay out, in atomic units of the receiving
+    /// leg.
+    /// </summary>
+    /// <param name="card">The solver's card.</param>
+    /// <param name="pair">The corridor being asked for.</param>
+    /// <param name="amount">The payout size, in atomic units.</param>
+    /// <exception cref="SolverTermsException">The card does not serve that size, or that direction.</exception>
+    /// <remarks>
+    /// The width matters on an asset leg and nowhere else: one whole unit of an 18-decimal asset is
+    /// already 10^18, so a pair of them overflows the satoshi-shaped overload above — and an
+    /// overflow at a bounds check reads as a broken SDK rather than as a size the solver would have
+    /// been happy to quote.
+    /// </remarks>
+    public static void AssertWithinLimits(SolverCard card, string pair, BigInteger amount)
     {
         var (market, payout) = Resolve(card, pair)
             ?? throw new SolverTermsException(
@@ -116,15 +134,15 @@ public static class SolverTerms
                 $"this solver does not pay out the receiving side of {pair}");
         }
 
-        if (min > 0 && amountSats < min)
+        if (min > 0 && amount < min)
         {
             throw new SolverTermsException(
-                SolverTermsRefusal.BelowMinimum, $"{amountSats} sats is below this solver's {min} minimum");
+                SolverTermsRefusal.BelowMinimum, $"{amount} is below this solver's {min} minimum");
         }
-        if (amountSats > max)
+        if (amount > max)
         {
             throw new SolverTermsException(
-                SolverTermsRefusal.AboveMaximum, $"{amountSats} sats is above this solver's {max} maximum");
+                SolverTermsRefusal.AboveMaximum, $"{amount} is above this solver's {max} maximum");
         }
     }
 
@@ -133,7 +151,19 @@ public static class SolverTerms
     /// <param name="pair">Directional RFQ pair.</param>
     /// <param name="amount">Atomic units of the pair's from leg.</param>
     /// <exception cref="SolverTermsException">The corridor or input size is not advertised.</exception>
-    public static void AssertInputWithinLimits(SolverCard card, string pair, long amount)
+    public static void AssertInputWithinLimits(SolverCard card, string pair, long amount) =>
+        AssertInputWithinLimits(card, pair, new BigInteger(amount));
+
+    /// <summary>
+    /// Refuse a deposit the solver's card says it will not accept, in atomic units of the deposited
+    /// leg.
+    /// </summary>
+    /// <param name="card">The solver's card.</param>
+    /// <param name="pair">The corridor being asked for.</param>
+    /// <param name="amount">The deposit size, in atomic units.</param>
+    /// <exception cref="SolverTermsException">The card does not accept that size, or that direction.</exception>
+    /// <remarks>Widened for the reason <see cref="AssertWithinLimits(SolverCard, string, BigInteger)"/> gives.</remarks>
+    public static void AssertInputWithinLimits(SolverCard card, string pair, BigInteger amount)
     {
         var (market, payout) = Resolve(card, pair)
             ?? throw new SolverTermsException(
@@ -176,19 +206,25 @@ public static class SolverTerms
     /// </remarks>
     public static void AssertFeeWithinAdvertised<TProfile>(SolverCard card, RfqQuote<TProfile> quote)
     {
-        if (MarketFor(card, quote.Pair) is not { } market) return;
+        if (quote.Pair is not { Length: > 0 } pair || Resolve(card, pair) is not { } resolved) return;
 
+        var (market, payout) = resolved;
         if (!market.IsSameAsset) return;
         var charged = quote.FromAtomicAmount - quote.ToAtomicAmount;
         if (charged <= 0) return;
 
-        var advertised = market.TotalFeeOn(quote.FromAtomicAmount);
+        // Priced against the direction actually being swapped. A card may publish a different
+        // spread each way, and checking a deposit against the other direction's rate refuses honest
+        // quotes on one side while waving through overcharged ones on the other.
+        var deposited = payout == MarketSide.Quote ? MarketSide.Base : MarketSide.Quote;
+        var advertised = market.TotalFeeOn(quote.FromAtomicAmount, deposited);
         if (charged > advertised + 1)
         {
-            var flat = market.FeeFlatAtomicAmount > 0 ? $" + {market.FeeFlatAtomicAmount} flat" : "";
+            var flatAmount = market.FeeFlatOn(deposited);
+            var flat = flatAmount > 0 ? $" + {flatAmount} flat" : "";
             throw new SolverTermsException(
                 SolverTermsRefusal.FeeAboveAdvertised,
-                $"the quote charges {charged} atomic units, more than the {market.FeeBps} bps{flat} " +
+                $"the quote charges {charged} atomic units, more than the {market.FeeBpsOn(deposited)} bps{flat} " +
                 $"({advertised} atomic units) this solver advertises");
         }
     }

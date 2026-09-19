@@ -43,6 +43,20 @@ public class CurrentWireContractTests
         Assert.That(JsonSerializer.SerializeToNode(request, RfqProtocol.Json)!["amount"]!.GetValue<string>(), Is.EqualTo(Amount));
     }
 
+    [Test]
+    public void ReceiveRequest_WithoutACovclaimd_LeavesTheFieldOffTheWire()
+    {
+        // Omitted, not empty and not faked. The solver refuses `""`, so omission is the only way to
+        // say absent — and sealing to a throwaway key instead would advertise an offline claim path
+        // that no daemon can walk.
+        var request = NArk.ArkadeIntents.Rfq.Profiles.Lightning.LightningReceiveProfile.Request(
+            50_000, RfqAmountSide.To, "hash", "address", "key", claimPacket: null);
+
+        var json = JsonNode.Parse(JsonSerializer.Serialize(request, RfqProtocol.Json))!;
+
+        Assert.That(json["profile"]!.AsObject().ContainsKey("claim_packet"), Is.False);
+    }
+
     [TestCase("-1")]
     [TestCase("-9223372036854775808")]
     public void Quote_RejectsNegativeNumericAmounts(string amount)
