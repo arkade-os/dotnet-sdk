@@ -75,6 +75,16 @@ public static class ClaimPacket
             cipher ?? new AesGcmCipher(), cancellationToken);
     }
 
+    /// <summary>The payment hash a preimage settles against: <c>sha256(preimage)</c>, hex.</summary>
+    /// <param name="preimage">The 32-byte secret.</param>
+    /// <returns>64 lowercase hex characters.</returns>
+    /// <remarks>
+    /// Needed on its own because sealing is optional: a client with no covclaimd sends no packet,
+    /// and still has to name the hash its quote is requested against.
+    /// </remarks>
+    public static string PaymentHashOf(byte[] preimage) =>
+        Convert.ToHexString(NBitcoin.Crypto.Hashes.SHA256(preimage)).ToLowerInvariant();
+
     /// <summary>Generate a fresh 32-byte preimage and seal it — how a receive swap starts.</summary>
     /// <param name="covclaimdPubKeyHex">covclaimd's compressed secp256k1 key, hex.</param>
     /// <returns>The packet, the preimage and its payment hash.</returns>

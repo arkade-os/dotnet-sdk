@@ -40,7 +40,11 @@ public static class LightningReceiveProfile
     /// <param name="paymentHash">SHA-256 of the client's own preimage (hex).</param>
     /// <param name="payoutAddress">The client's Arkade address to be paid at.</param>
     /// <param name="payoutPubkey">The client's x-only key (hex) — the claiming key on this leg.</param>
-    /// <param name="claimPacket">The preimage sealed to covclaimd, base64.</param>
+    /// <param name="claimPacket">
+    /// The preimage sealed to covclaimd, base64, or <c>null</c> when there is no covclaimd to seal
+    /// to. Omitted rather than faked: a packet sealed to a key nobody holds is a claim path that
+    /// looks present and is not, and the client can always claim the lockup itself.
+    /// </param>
     /// <param name="rfqId">The correlation id; a fresh one is generated when omitted.</param>
     /// <returns>The request payload, ready for a transport.</returns>
     public static RfqRequest<LightningReceiveRequestProfile> Request(
@@ -49,7 +53,7 @@ public static class LightningReceiveProfile
         string paymentHash,
         string payoutAddress,
         string payoutPubkey,
-        string claimPacket,
+        string? claimPacket,
         string? rfqId = null) => new()
     {
         RfqId = rfqId ?? RfqProtocol.NewRfqId(),
