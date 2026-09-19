@@ -11,6 +11,7 @@ using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Lightning;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Onchain;
@@ -76,7 +77,8 @@ public sealed partial class OnchainIntentsClient(
     IAesGcmCipher? cipher = null,
     IOptions<ArkadeIntentsOptions>? options = null,
     TimeProvider? time = null,
-    ILogger<OnchainIntentsClient>? logger = null) : Composition.IOnchainIngressQuoteClient
+    ILogger<OnchainIntentsClient>? logger = null,
+    ICovclaimdClient? covclaimd = null) : Composition.IOnchainIngressQuoteClient
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ArkadeIntentsOptions _options = options?.Value ?? new ArkadeIntentsOptions();

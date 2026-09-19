@@ -8,6 +8,7 @@ using NArk.Abstractions.Wallets;
 using NArk.Abstractions;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NArk.ArkadeIntents.Rfq;
@@ -278,6 +279,11 @@ public sealed partial class LightningIntentsClient
             .WithSolver(quote.SolverPubkey);
         ComposedRouteExecutionGuard.Bind(receiveIntent, outgoingSwapId, payoutArkAddress.ScriptPubKey.ToHex());
         await _intentStorage.SaveArkadeSwapIntent(receiveIntent, cancellationToken);
+
+        // After the row, so a registration that half-happened still leaves a findable swap — and
+        // best-effort, because covclaimd is a second claimant racing ours rather than a dependency.
+        await CovclaimdRegistration.TryRegisterAsync(
+            _covclaimd, contract, lockupAddress, preimage, _logger, cancellationToken);
 
         _logger?.LogInformation(
             "Receive swap {RfqId} negotiated: {Amount} sats to {Payout}, lockup {Lockup}",

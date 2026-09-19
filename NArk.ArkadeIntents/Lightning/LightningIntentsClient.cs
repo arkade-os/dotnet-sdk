@@ -9,6 +9,7 @@ using NArk.Abstractions.Wallets;
 using NArk.Abstractions;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NArk.ArkadeIntents.Rfq;
@@ -68,6 +69,9 @@ public sealed partial class LightningIntentsClient : Composition.ILightningIngre
     private readonly TimeProvider _time;
     private readonly ILogger<LightningIntentsClient>? _logger;
 
+    /// <summary>The claim daemon to reveal receives to, or <c>null</c> when none is configured.</summary>
+    private readonly ICovclaimdClient? _covclaimd;
+
     /// <summary>Creates the client.</summary>
     /// <param name="transport">The Arkade server connection.</param>
     /// <param name="contractService">Derives and imports contracts.</param>
@@ -90,6 +94,10 @@ public sealed partial class LightningIntentsClient : Composition.ILightningIngre
     /// </param>
     /// <param name="time">Clock for the deadline comparisons; defaults to the system clock.</param>
     /// <param name="logger">Optional logger.</param>
+    /// <param name="covclaimd">
+    /// Optional. Supplied, every receive is also revealed to this daemon, which then races this
+    /// wallet's own claimer for the lockup; absent, the wallet is the only claimant.
+    /// </param>
     public LightningIntentsClient(
         IClientTransport transport,
         IContractService contractService,
@@ -102,7 +110,8 @@ public sealed partial class LightningIntentsClient : Composition.ILightningIngre
         IBitcoinBlockchain? blockchain = null,
         IOptions<ArkadeIntentsOptions>? options = null,
         TimeProvider? time = null,
-        ILogger<LightningIntentsClient>? logger = null)
+        ILogger<LightningIntentsClient>? logger = null,
+        ICovclaimdClient? covclaimd = null)
     {
         _transport = transport;
         _contractService = contractService;
@@ -117,6 +126,7 @@ public sealed partial class LightningIntentsClient : Composition.ILightningIngre
         _emulatorPubkeyOverride = resolved.EmulatorPubkeyOverride;
         _maxPayAmountSats = resolved.MaxPayAmountSats;
         _time = time ?? TimeProvider.System;
+        _covclaimd = covclaimd;
         _logger = logger;
     }
 
