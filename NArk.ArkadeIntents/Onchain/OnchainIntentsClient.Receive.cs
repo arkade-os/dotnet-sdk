@@ -8,6 +8,7 @@ using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Composition;
 using NArk.ArkadeIntents.Lightning;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Onchain;
@@ -86,7 +87,7 @@ public sealed partial class OnchainIntentsClient
     /// <param name="walletId">Wallet owning M's receiver key and recovery state.</param>
     /// <param name="amountSats">Exact Arkade amount required by L.</param>
     /// <param name="rfqTransport">Ingress solver transport.</param>
-    /// <param name="covclaimdPubKey">Emulator encryption key for the claim packet.</param>
+    /// <param name="covclaimdPubKey">covclaimd's key for the claim packet, or <c>null</c> to send none.</param>
     /// <param name="l1RefundAddress">Merchant's destination if the source HTLC must be refunded.</param>
     /// <param name="secret">Client-owned outgoing route secret, reused for this ingress.</param>
     /// <param name="payoutAddress">Already-verified outgoing Arkade lock L.</param>
@@ -98,7 +99,7 @@ public sealed partial class OnchainIntentsClient
     /// <returns>The source HTLC and verified M covenant, imported with P saved in SDK intent storage.</returns>
     /// <remarks>Claiming M reveals P while creating L, before downstream settlement; ingress is not merchant settlement.</remarks>
     public async Task<PendingOnchainReceive> ReceiveFromOnchainIntoAsync(
-        string walletId, long amountSats, IRfqTransport rfqTransport, string covclaimdPubKey,
+        string walletId, long amountSats, IRfqTransport rfqTransport, string? covclaimdPubKey,
         BitcoinAddress l1RefundAddress, SwapLinkSecret secret, ArkAddress payoutAddress, ArkContract receiverContract,
         string outgoingSwapId,
         SolverCard? solverCard = null, string? rfqId = null, CancellationToken cancellationToken = default)
@@ -121,8 +122,9 @@ public sealed partial class OnchainIntentsClient
     /// <param name="amountSats">The size to ask for, on the leg <paramref name="amountSide"/> names.</param>
     /// <param name="rfqTransport">How to reach the solver.</param>
     /// <param name="covclaimdPubKey">
-    /// covclaimd's compressed key, read live from its own endpoint. The preimage is sealed to this so
-    /// the Arkade claim can be pushed without us online.
+    /// covclaimd's compressed key, read live from its own endpoint, so the preimage is sealed to it
+    /// and the Arkade claim can be pushed without us online — or <c>null</c> when there is no
+    /// covclaimd, in which case no packet is sent at all and the claim is ours alone to make.
     /// </param>
     /// <param name="l1RefundAddress">
     /// Where the L1 HTLC pays if we have to take it back. Neither contract commits to it, so it is
@@ -194,7 +196,7 @@ public sealed partial class OnchainIntentsClient
         string walletId,
         long amountSats,
         IRfqTransport rfqTransport,
-        string covclaimdPubKey,
+        string? covclaimdPubKey,
         BitcoinAddress l1RefundAddress,
         RfqAmountSide amountSide = RfqAmountSide.From,
         SolverCard? solverCard = null,
@@ -204,7 +206,7 @@ public sealed partial class OnchainIntentsClient
             linkedSecret: null, linkedPayout: null, linkedRfqId: null, outgoingSwapId: null, cancellationToken);
 
     private async Task<PendingOnchainReceive> ReceiveFromOnchainCoreAsync(
-        string walletId, long amountSats, IRfqTransport rfqTransport, string covclaimdPubKey,
+        string walletId, long amountSats, IRfqTransport rfqTransport, string? covclaimdPubKey,
         BitcoinAddress l1RefundAddress, RfqAmountSide amountSide, SolverCard? solverCard, ArkContract? payoutContract,
         SwapLinkSecret? linkedSecret, ArkAddress? linkedPayout, string? linkedRfqId, string? outgoingSwapId, CancellationToken cancellationToken)
     {
@@ -232,7 +234,14 @@ public sealed partial class OnchainIntentsClient
         var rfqId = linkedRfqId ?? RfqProtocol.NewRfqId();
         var preimage = linkedSecret?.ExportPreimage()
             ?? await ProvisionPreimageAsync(walletId, payoutDescriptor, rfqId, cancellationToken);
-        var sealed_ = await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken);
+        // Sealed only when there is somebody to seal to. Without a covclaimd the field is left off
+        // entirely rather than sealed to a key nobody holds: the solver treats the packet as opaque
+        // either way, so a fake one buys nothing and advertises an offline claim path that does not
+        // exist. The client's own claim still works — it holds the preimage.
+        var sealed_ = covclaimdPubKey is { Length: > 0 }
+            ? await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken)
+            : null;
+        var paymentHash = sealed_?.PaymentHash ?? ClaimPacket.PaymentHashOf(preimage);
 
         if (solverCard is not null)
         {
@@ -240,7 +249,7 @@ public sealed partial class OnchainIntentsClient
         }
 
         var request = OnchainReceiveProfile.Request(
-            amountSats, amountSide, sealed_.PaymentHash, sealed_.Packet,
+            amountSats, amountSide, paymentHash, sealed_?.Packet,
             refundPubkey: clientXOnly, payoutAddress, payoutPubkey: clientXOnly, rfqId);
 
         var quote = await rfqTransport
@@ -259,7 +268,7 @@ public sealed partial class OnchainIntentsClient
         // Both deadlines, both rails, checked together — the ordering neither contract enforces.
         OnchainReceiveGates.AssertFundable(quote, _time.GetUtcNow().ToUnixTimeSeconds());
 
-        var htlc = DeriveReceiveHtlc(quote, sealed_.PaymentHash, payoutDescriptor, serverInfo.Network);
+        var htlc = DeriveReceiveHtlc(quote, paymentHash, payoutDescriptor, serverInfo.Network);
         if (!string.Equals(htlc.Address.ToString(), quote.Profile?.HtlcAddress, StringComparison.Ordinal))
         {
             throw new OnchainReceiveNotFundableException(
@@ -270,7 +279,7 @@ public sealed partial class OnchainIntentsClient
         }
 
         var (eightLeaf, nineLeaf) = DeriveReceiveLockup(
-            quote, sealed_.PaymentHash, payoutDescriptor, payoutPkScript, serverInfo);
+            quote, paymentHash, payoutDescriptor, payoutPkScript, serverInfo);
 
         var (matched, eightAddress, nineAddress) =
             LightningCorridor.MatchQuotedLockup(eightLeaf, nineLeaf, quote.Profile?.LockupAddress, isMainnet);
@@ -304,7 +313,7 @@ public sealed partial class OnchainIntentsClient
             SwapAddress = lockupAddress,
             FromAssetId = "onchain:btc",
             ToAssetId = "btc",
-            PaymentHash = sealed_.PaymentHash,
+            PaymentHash = paymentHash,
             // The SOLVER's Arkade reclaim, which on this leg is OUR claim deadline. Our own deadline
             // is the L1 one, and it lives in the metadata beside the key it belongs to.
             RefundLocktime = quote.RefundLocktime,
@@ -317,6 +326,11 @@ public sealed partial class OnchainIntentsClient
         ComposedRouteExecutionGuard.Bind(intent, outgoingSwapId, payoutArkAddress.ScriptPubKey.ToHex());
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
+        // The Lightning receive leg's rule, on the leg that funds the same covenant: register after
+        // the row exists, and never let the daemon's absence fail the swap.
+        await CovclaimdRegistration.TryRegisterAsync(
+            covclaimd, contract, lockupAddress, preimage, logger, cancellationToken);
+
         logger?.LogInformation(
             "On-board {RfqId} negotiated: fund {Sats} sats to {Htlc}, lockup {Lockup} pays {Payout}",
             rfqId, quote.FromAmount, htlc.Address, lockupAddress, payoutAddress);
@@ -324,7 +338,7 @@ public sealed partial class OnchainIntentsClient
         return new PendingOnchainReceive(
             rfqId, quote, htlc.Address.ToString(), quote.FromAmount,
             quote.Profile.HtlcLocktime!.Value, quote.Profile.MinConfirmations!.Value,
-            lockupAddress, sealed_.PaymentHash, preimage, contract, payoutAddress);
+            lockupAddress, paymentHash, preimage, contract, payoutAddress);
     }
 
     /// <summary>

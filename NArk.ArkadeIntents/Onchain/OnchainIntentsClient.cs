@@ -11,6 +11,7 @@ using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Lightning;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Onchain;
@@ -76,7 +77,8 @@ public sealed partial class OnchainIntentsClient(
     IAesGcmCipher? cipher = null,
     IOptions<ArkadeIntentsOptions>? options = null,
     TimeProvider? time = null,
-    ILogger<OnchainIntentsClient>? logger = null) : Composition.IOnchainIngressQuoteClient
+    ILogger<OnchainIntentsClient>? logger = null,
+    ICovclaimdClient? covclaimd = null) : Composition.IOnchainIngressQuoteClient
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ArkadeIntentsOptions _options = options?.Value ?? new ArkadeIntentsOptions();
@@ -284,6 +286,15 @@ public sealed partial class OnchainIntentsClient(
         ArkServerInfo serverInfo)
     {
         var delays = LightningCorridor.UnilateralDelays(serverInfo);
+
+        // Adopted when published, derived when not — the Lightning leg's rule, applied to the same
+        // covenant. See LightningCorridor.ResolveSoloRefundDelay.
+        var soloRefundDelay = LightningCorridor.ResolveSoloRefundDelay(
+            quote.Profile?.RefundWithoutReceiverDelay,
+            delays,
+            quote.RefundLocktime,
+            _time.GetUtcNow().ToUnixTimeSeconds());
+
         var receiverPkScript = quote.Profile?.ReceiverPkScript
             ?? throw new OnchainSendNotFundableException(
                 OnchainSendRefusalReason.IncompleteQuote,
@@ -303,7 +314,7 @@ public sealed partial class OnchainIntentsClient(
             new LockTime(checked((uint)quote.RefundLocktime)),
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
-            new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
+            new Sequence(TimeSpan.FromSeconds(soloRefundDelay)),
             nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
                 Convert.FromHexString(receiverPkScript), emulatorPubKey),
             refundPkScript: refundPkScript,

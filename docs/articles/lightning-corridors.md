@@ -116,7 +116,36 @@ is load-bearing: the solver funds the Arkade side before the payment it is owed 
 solver able to open the packet could settle the invoice without ever delivering.
 
 We never talk to covclaimd ourselves — we read its public key once and seal to it, and the packet
-travels to the solver as opaque bytes it forwards. What the daemon buys is the receive corridor's
+travels to the solver as opaque bytes it forwards.
+
+The packet is **optional**. Pass no covclaimd key and no packet is sent at all, which is the honest
+encoding of "nobody else can claim this": you keep the preimage and claim the lockup yourself.
+Sealing to a key generated and dropped on the spot would instead advertise an offline claim path
+that no daemon can walk.
+
+## Revealing a claim to covclaimd
+
+There are two ways a daemon can come to hold your packet, and this SDK takes the direct one. With
+`AddCovclaimd` registered, every receive is **revealed**: the sealed preimage goes straight to one
+named daemon over its own endpoint, together with the covenant's claim script and the lockup's
+taptree. The daemon validates that the tree hashes to the address and carries the closure for that
+script — so a registration it cannot bind to the address is refused there and then, rather than
+discovered at claim time — and from then on it watches arkd's stream for the lockup being funded.
+
+The arkade script travels with the registration rather than being rebuilt by either side, and that
+is deliberate: the covenant commits to a hash of it, so the party that built the contract holds the
+only copy guaranteed to match. This SDK takes it from
+[`VHTLCv2Contract.NonInteractiveClaimArkadeScript`](xref:NArk.Arkade.Contracts.VHTLCv2Contract.NonInteractiveClaimArkadeScript)
+for exactly that reason.
+
+What the daemon can do with it is bounded by the leaf it spends: `nonInteractiveClaim` pays the
+receiver script the covenant already pins, which is yours. So the daemon is a second claimant racing
+your own — never a party that can redirect anything. Registration failures are logged and swallowed
+for the same reason: what a failed registration costs is redundancy, not the swap.
+
+Registrations live in the daemon's memory, so they lapse on a TTL and vanish on a restart.
+`CovclaimdRenewalService` re-reveals every live receive every half TTL; repeat reveals for one
+address are safe by design, which is why it re-asserts rather than tracking expiry. What the daemon buys is the receive corridor's
 answer to the problem the send corridor solves with a locktime: if you go offline between minting
 the invoice and the solver funding, covclaimd holds the only other copy of your preimage and can
 push the covenant's `nonInteractiveClaim` leaf on your behalf. That leaf is pinned to *your*
@@ -257,12 +286,28 @@ not a gap in this SDK: the contract is priced so that waiting for `refund_lockti
 `refundWithoutReceiver` is the sane move, and the Arkade server declining to co-sign is the only
 scenario the arithmetic assumes away.
 
-The three CSV delays are **not carried on the wire**. Both sides derive them from the Arkade
+Two of the three CSV delays are **not carried on the wire**. Both sides derive them from the Arkade
 operator's own `unilateralExitDelay`, rounded up to a whole BIP68 unit: the claim and the two-party
-refund sit level at that base (neither of those leaves is spendable alone, so separating them buys
-nothing), and only the solo refund gets real headroom on top — 8 BIP68 units (4096 seconds), sized
-for what reaching the claim costs with the server gone. A delay the solver could dictate is a delay
-it could stretch.
+refund sit level at that base, since neither of those leaves is spendable alone and separating them
+buys nothing. A delay the solver could dictate is a delay it could stretch.
+
+The solo refund is the exception, because it cannot be derived. It must open **after** the absolute
+`refund_locktime` the quote names — otherwise the funder could take the deposit back while a
+claimant holding the preimage still had a live claim — and on any realistic Lightning horizon the
+base ladder's fixed headroom (8 BIP68 units, 4096 seconds) does not reach that far. So a send quote
+publishes the rung it built as `profile.refund_without_receiver_delay`, and the client's job is to
+check it rather than to guess the same number:
+
+- a whole BIP68 unit, or the leaf would encode a delay neither side agreed to;
+- at or after the claim rung, or the funder's solo path opens before the claimant's;
+- at least as long as `refund_locktime - now`, which is the theft window itself.
+
+[`LightningCorridor.ResolveSoloRefundDelay`](xref:NArk.ArkadeIntents.Lightning.LightningCorridor.ResolveSoloRefundDelay*)
+applies all three and throws
+[`QuotedDelayRejectedException`](xref:NArk.ArkadeIntents.Lightning.QuotedDelayRejectedException)
+otherwise. A quote carrying no such field — a solver older than 0.3.0 — falls back to the locally
+derived ladder, which is what that solver derives too; the address comparison decides either way, so
+nothing is trusted that was not checked.
 
 The key behind leaves 1–4 is the one that owns your refund address, so it is on your wallet's own
 derivation chain and survives a restart with no extra storage.

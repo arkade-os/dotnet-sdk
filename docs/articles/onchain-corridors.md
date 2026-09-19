@@ -175,7 +175,8 @@ You still choose the preimage here — the solver funds Arkade before it has bee
 able to release the secret could collect without delivering. A copy sealed to covclaimd travels with
 the request so the claim can be pushed while you are offline; the solver carries it as bytes it
 cannot open. `payout_pubkey` is sent as well, so you can claim yourself: a covenant only covclaimd
-can spend would make it a hard dependency of the corridor.
+can spend would make it a hard dependency of the corridor. Pass no covclaimd key and the packet is
+left off the wire entirely, which is exactly what it means.
 
 After `min_confirmations` the solver funds the lockup, the monitor moves the intent to `Claimable`,
 and the advance pass claims it:

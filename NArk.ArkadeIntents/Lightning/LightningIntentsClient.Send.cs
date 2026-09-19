@@ -599,6 +599,14 @@ public sealed partial class LightningIntentsClient
     {
         var delays = LightningCorridor.UnilateralDelays(serverInfo);
 
+        // The one rung the solver sets. Checked, never believed — and checked here rather than in a
+        // gate, because the value's only use is the derivation two statements below.
+        var soloRefundDelay = LightningCorridor.ResolveSoloRefundDelay(
+            quote.Profile?.RefundWithoutReceiverDelay,
+            delays,
+            quote.RefundLocktime,
+            _time.GetUtcNow().ToUnixTimeSeconds());
+
         var receiverPkScript = quote.Profile?.ReceiverPkScript
             ?? throw new InvalidOperationException(
                 "the quote carries no receiver_pk_script, so the covenant's nonInteractiveClaim leaf " +
@@ -618,7 +626,7 @@ public sealed partial class LightningIntentsClient
             new LockTime(checked((uint)quote.RefundLocktime)),
             new Sequence(TimeSpan.FromSeconds(delays.Claim)),
             new Sequence(TimeSpan.FromSeconds(delays.Refund)),
-            new Sequence(TimeSpan.FromSeconds(delays.RefundWithoutReceiver)),
+            new Sequence(TimeSpan.FromSeconds(soloRefundDelay)),
             nonInteractiveClaim: new VHTLCv2NonInteractiveClaim(
                 Convert.FromHexString(receiverPkScript), emulatorPubKey),
             refundPkScript: refundPkScript,

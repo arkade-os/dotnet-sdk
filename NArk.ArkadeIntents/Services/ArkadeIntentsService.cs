@@ -148,7 +148,7 @@ public sealed class ArkadeIntentsService
     /// <param name="walletId">The wallet taking delivery.</param>
     /// <param name="amountSats">The size to ask for, in sats — of the leg <paramref name="amountSide"/> names.</param>
     /// <param name="rfqTransport">How to reach a solver.</param>
-    /// <param name="covclaimdPubKey">covclaimd's key, read live.</param>
+    /// <param name="covclaimdPubKey">covclaimd's key, read live, or <c>null</c> to send no claim packet.</param>
     /// <param name="solverCard">The solver's published card, when there is one.</param>
     /// <param name="amountSide">
     /// Which leg <paramref name="amountSats"/> pins, and so who absorbs the solver's spread — what
@@ -162,7 +162,7 @@ public sealed class ArkadeIntentsService
         string walletId,
         long amountSats,
         IRfqTransport rfqTransport,
-        string covclaimdPubKey,
+        string? covclaimdPubKey,
         SolverCard? solverCard = null,
         RfqAmountSide amountSide = RfqAmountSide.To,
         CancellationToken cancellationToken = default) =>
@@ -373,7 +373,7 @@ public sealed class ArkadeIntentsService
     /// <param name="walletId">The wallet taking delivery.</param>
     /// <param name="amountSats">The size to ask for, on the leg <paramref name="amountSide"/> names.</param>
     /// <param name="rfqTransport">How to reach a solver.</param>
-    /// <param name="covclaimdPubKey">covclaimd's key, read live.</param>
+    /// <param name="covclaimdPubKey">covclaimd's key, read live, or <c>null</c> to send no claim packet.</param>
     /// <param name="l1RefundAddress">Where the L1 HTLC pays if it has to be taken back.</param>
     /// <param name="amountSide">
     /// Which leg <paramref name="amountSats"/> pins, and so who absorbs the solver's spread — what we
@@ -395,7 +395,7 @@ public sealed class ArkadeIntentsService
         string walletId,
         long amountSats,
         IRfqTransport rfqTransport,
-        string covclaimdPubKey,
+        string? covclaimdPubKey,
         BitcoinAddress l1RefundAddress,
         RfqAmountSide amountSide = RfqAmountSide.From,
         SolverCard? solverCard = null,

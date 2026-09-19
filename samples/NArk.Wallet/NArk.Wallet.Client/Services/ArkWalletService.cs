@@ -275,6 +275,61 @@ public class ArkWalletService(
             walletId, NArk.ArkadeIntents.Models.ArkadeSwapIntentType.BtcToAsset,
             depositSats, wantAssetAmount, AssetId.FromString(market.QuoteAsset.LegacyId)), ct);
 
+    /// <summary>
+    /// Ask the market's solver for a binding quote, then fund the offer it prices.
+    /// </summary>
+    /// <param name="walletId">The wallet that deposits, and that the fill pays.</param>
+    /// <param name="market">The market to trade on, as the registry published it.</param>
+    /// <param name="amount">Atomic units of whichever leg <paramref name="amountSide"/> names.</param>
+    /// <param name="amountSide">
+    /// <c>From</c> to ask "what will you pay for this deposit"; <c>To</c> to ask "what deposit
+    /// reaches this payout". This corridor serves both.
+    /// </param>
+    /// <param name="ct">Cancels before funding.</param>
+    /// <returns>The funded swap and the quote it was funded under.</returns>
+    /// <remarks>
+    /// The difference from <see cref="CreateBtcToAssetSwap"/> is who sets the price. That one
+    /// publishes a standing offer at a number this UI estimated from a price feed and waits for any
+    /// taker; this one asks a named solver what it will actually pay and funds only its own
+    /// derivation of the offer the solver quoted. Same covenant, same cancel path — so an unfilled
+    /// deposit is reclaimed the same way either way.
+    /// </remarks>
+    public async Task<NArk.ArkadeIntents.Assets.QuotedArkadeSwap> CreateQuotedBtcToAssetSwap(
+        string walletId, NArk.ArkadeIntents.SolverRegistry.IndexedMarket market,
+        System.Numerics.BigInteger amount,
+        NArk.ArkadeIntents.Rfq.RfqAmountSide amountSide = NArk.ArkadeIntents.Rfq.RfqAmountSide.From,
+        CancellationToken ct = default)
+    {
+        // Both halves come off the card: who to address, and where. A market carrying neither is
+        // one the registry listed but nothing can dial, which is worth saying plainly rather than
+        // failing inside a socket.
+        if (market.DiscoveryPubkey is not { Length: > 0 } solverPubkey)
+        {
+            throw new InvalidOperationException(
+                $"the {market.Pair} market names no discovery pubkey, so there is nobody to quote against");
+        }
+        var relays = (market.Transports?.Nostr?.Relays ?? [])
+            .Select(r => new Uri(r)).ToList();
+        if (relays.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"the {market.Pair} market names no relay, so its solver cannot be reached");
+        }
+
+        // Built per negotiation and disposed with it: the RFQ kinds are ephemeral, so a relay stores
+        // nothing a longer-lived connection could catch up from.
+        using var transport = new NArk.ArkadeIntents.Rfq.NostrRfqTransport(relays, solverPubkey);
+        return await arkadeSwaps.CreateQuotedSwap(
+            new NArk.ArkadeIntents.Assets.QuotedSwapRequest(
+                walletId,
+                OfferAsset: null,
+                WantAsset: AssetId.FromString(market.QuoteAsset.LegacyId),
+                amount,
+                amountSide),
+            transport,
+            cancellationToken: ct);
+    }
+
     /// <summary>Cancel a pending swap and reclaim the deposit via the covenant's cancel path.</summary>
     public Task<NArk.ArkadeIntents.Models.ArkadeSwapIntent> CancelAssetSwap(
         string swapId, CancellationToken ct = default)
