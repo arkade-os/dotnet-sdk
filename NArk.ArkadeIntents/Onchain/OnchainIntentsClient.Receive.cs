@@ -8,6 +8,7 @@ using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents.Composition;
 using NArk.ArkadeIntents.Lightning;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Rfq.Profiles.Onchain;
@@ -324,6 +325,11 @@ public sealed partial class OnchainIntentsClient
             quote.Profile.MinConfirmations)).WithSolver(quote.SolverPubkey);
         ComposedRouteExecutionGuard.Bind(intent, outgoingSwapId, payoutArkAddress.ScriptPubKey.ToHex());
         await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+        // The Lightning receive leg's rule, on the leg that funds the same covenant: register after
+        // the row exists, and never let the daemon's absence fail the swap.
+        await CovclaimdRegistration.TryRegisterAsync(
+            covclaimd, contract, lockupAddress, preimage, logger, cancellationToken);
 
         logger?.LogInformation(
             "On-board {RfqId} negotiated: fund {Sats} sats to {Htlc}, lockup {Lockup} pays {Payout}",
