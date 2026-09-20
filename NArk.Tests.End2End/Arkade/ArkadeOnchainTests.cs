@@ -269,18 +269,34 @@ public class ArkadeOnchainTests
     }
 
     /// <summary>
-    /// Run a negotiation, turning a solver that does not serve the pair into a skip.
+    /// Run a negotiation, skipping a pair the solver does not serve and backing off once from a
+    /// capacity refusal.
     /// </summary>
     /// <remarks>
-    /// The onchain corridors are separately switchable in a deployment, so `unsupported_pair` means
-    /// "not turned on here", not "broken". Every other refusal reason is a real answer and is left
-    /// to fail the test.
+    /// <para>
+    /// The onchain corridors are separately switchable in a deployment, so <c>unsupported_pair</c>
+    /// means "not turned on here", not "broken".
+    /// </para>
+    /// <para>
+    /// <c>exposure_cap</c> gets one retry, because on a freshly started solver the first quote on
+    /// this corridor is refused for a reason that has nothing to do with capacity. The reference
+    /// solver's float gate reads its payout wallet through a LAZY sampler: the read that finds no
+    /// reading kicks off the fetch and answers <c>null</c> in the meantime, and admission treats a
+    /// missing reading as a refusal. So the first read always refuses, the fetch lands a moment
+    /// later, and the next one is answered against a real balance.
+    /// </para>
+    /// <para>
+    /// Retrying is what the protocol asks of a client here — § 10 defines <c>exposure_cap</c> as
+    /// "solver at aggregate capacity right now", a back-off-and-retry reason rather than a verdict
+    /// on the request. Once, though, and once only: a solver that is genuinely out of float refuses
+    /// the second one too, and that still fails the test.
+    /// </para>
     /// </remarks>
     private static async Task<T> Quoted<T>(Func<Task<T>> negotiate)
     {
         try
         {
-            return await negotiate();
+            return await Retried(negotiate);
         }
         catch (RfqRefusedException e) when (e.Reason == RfqRefusalReason.UnsupportedPair)
         {
@@ -288,6 +304,22 @@ public class ArkadeOnchainTests
                 "the solver does not serve this onchain pair — the corridor is switchable per " +
                 "deployment, so this is a configuration these tests have nothing to say about.");
             throw;
+        }
+    }
+
+    /// <summary>One negotiation, retried once if the solver answered that it was at capacity.</summary>
+    private static async Task<T> Retried<T>(Func<Task<T>> negotiate)
+    {
+        try
+        {
+            return await negotiate();
+        }
+        catch (RfqRefusedException e) when (e.Reason == RfqRefusalReason.ExposureCap)
+        {
+            // Long enough for a wallet RPC on a loaded regtest, short enough that a solver which
+            // really is capped still fails this test in seconds rather than minutes.
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            return await negotiate();
         }
     }
 
