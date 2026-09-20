@@ -7,6 +7,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.Abstractions.Wallets;
 using NArk.Arkade.Contracts;
 using NArk.ArkadeIntents;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Onchain;
 using NArk.ArkadeIntents.Rfq;
@@ -455,7 +456,8 @@ public class OnchainReceiveOrchestrationTests
         IContractService Contracts,
         IArkadeIntentStorage Intents,
         IBitcoinBlockchain Blockchain,
-        IWalletProvider Wallets);
+        IWalletProvider Wallets,
+        ICovclaimdClient Covclaimd);
 
     private static Harness Ctx(ArkadeSwapIntent? intent = null, long now = Now)
     {
@@ -482,13 +484,15 @@ public class OnchainReceiveOrchestrationTests
 
         var blockchain = Substitute.For<IBitcoinBlockchain>();
 
+        var covclaimd = Substitute.For<ICovclaimdClient>();
         var client = new OnchainIntentsClient(
             transport, contracts, spending, intents, contractStorage,
             Substitute.For<IVtxoStorage>(), wallets, blockchain,
             options: Options.Create(new ArkadeIntentsOptions()),
-            time: new FixedClock(now));
+            time: new FixedClock(now),
+            covclaimd: covclaimd);
 
-        return new Harness(client, spending, contracts, intents, blockchain, wallets);
+        return new Harness(client, spending, contracts, intents, blockchain, wallets, covclaimd);
     }
 
     /// <summary>The lockup the refund path reads back to recover our key.</summary>

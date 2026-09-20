@@ -21,6 +21,8 @@ using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
+using NArk.ArkadeIntents.Covclaim;
 
 namespace NArk.Tests.ArkadeIntents.Onchain;
 
@@ -145,7 +147,42 @@ public class OnchainLinkedReceiveTests
         ctx.Client.ReceiveFromOnchainIntoAsync("wallet-1", amount, ctx.Rfq, KeyFor(11).PubKey.Compress().ToHex(),
             RefundAddress, ctx.Secret, ctx.Outgoing, ctx.Receiver, OutgoingRfqId, rfqId: rfqId);
 
-    private static Harness Context(long quoteDelta = 0)
+    [Test]
+    public async Task ASuccessfulReceive_RevealsTheLockupToCovclaimd()
+    {
+        // The wiring itself, which the component tests either side of it cannot see: a receive that
+        // completed must have handed the daemon the address it just derived, with the covenant's own
+        // claim script and the tree that hashes to it.
+        var ctx = Context();
+
+        var pending = await Receive(ctx);
+
+        var imported = ctx.Imported.Single();
+        await ctx.Covclaimd.Received(1).RevealAsync(
+            pending.LockupAddress,
+            Arg.Is<byte[]>(p => p.SequenceEqual(pending.Preimage)),
+            Arg.Is<byte[]>(a => a.SequenceEqual(imported.NonInteractiveClaimArkadeScript)),
+            Arg.Is<TapScript[]>(t => t.Length == imported.GetTapScriptList().Length),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ADaemonThatRefuses_DoesNotFailTheReceive()
+    {
+        // The property that makes a second claimant safe to add at all. A receive that threw here
+        // would have traded a redundant claimant for no swap — and the invoice is already out.
+        var ctx = Context(covclaimdFails: true);
+
+        var pending = await Receive(ctx);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(pending.LockupAddress, Is.Not.Empty);
+            Assert.That(ctx.Saved, Is.Not.Empty, "the swap was still recorded");
+        });
+    }
+
+    private static Harness Context(long quoteDelta = 0, bool covclaimdFails = false)
     {
         var server = TestServerInfo.WithSeconds(4096);
         var receiver = new ArkPaymentContract(server.SignerKey, new Sequence(TimeSpan.FromSeconds(4096)), Descriptor(4));
@@ -228,11 +265,18 @@ public class OnchainLinkedReceiveTests
                 };
             });
         var wallets = Substitute.For<IWalletProvider>();
+        var covclaimd = Substitute.For<ICovclaimdClient>();
+        if (covclaimdFails)
+        {
+            covclaimd.RevealAsync(default!, default!, default!, default!, default)
+                .ThrowsAsyncForAnyArgs(new CovclaimdException("unreachable"));
+        }
         var client = new OnchainIntentsClient(transport, contracts, Substitute.For<ISpendingService>(), intents,
             Substitute.For<IContractStorage>(), Substitute.For<IVtxoStorage>(), wallets, Substitute.For<IBitcoinBlockchain>(),
             options: Options.Create(new ArkadeIntentsOptions { EmulatorPubkeyOverride = KeyFor(11).PubKey.Compress().ToHex() }),
-            time: new TestClock());
-        return new Harness(client, rfq, contracts, wallets, receiver, outgoing,
+            time: new TestClock(),
+            covclaimd: covclaimd);
+        return new Harness(client, rfq, contracts, wallets, receiver, outgoing, covclaimd,
             SwapLinkSecret.FromPreimage(Enumerable.Repeat((byte)0x42, 32).ToArray()), events, requests, imported, saved);
     }
 
@@ -241,7 +285,8 @@ public class OnchainLinkedReceiveTests
     private static OutputDescriptor Descriptor(byte seed) => KeyExtensions.ParseOutputDescriptor(KeyFor(seed).PubKey.ToHex(), Network.RegTest);
     private static string KeyHex(byte seed) => Convert.ToHexString(KeyFor(seed).PubKey.TaprootInternalKey.ToBytes()).ToLowerInvariant();
     private sealed record Harness(OnchainIntentsClient Client, IRfqTransport Rfq, IContractService Contracts,
-        IWalletProvider Wallets, ArkContract Receiver, ArkAddress Outgoing, SwapLinkSecret Secret, List<string> Events,
+        IWalletProvider Wallets, ArkContract Receiver, ArkAddress Outgoing, ICovclaimdClient Covclaimd,
+        SwapLinkSecret Secret, List<string> Events,
         List<RfqRequest<OnchainReceiveRequestProfile>> Requests, List<VHTLCv2Contract> Imported, List<ArkadeSwapIntent> Saved);
     private sealed class TestClock : TimeProvider
     {
