@@ -153,6 +153,15 @@ public static class LightningCorridor
     /// itself.
     /// </para>
     /// <para>
+    /// <b>Precondition:</b> <paramref name="now"/> is before <paramref name="refundLocktime"/>. The
+    /// horizon check compares against their difference, so on a quote that has already lapsed the
+    /// difference is negative and every positive delay clears it. That is not a hole in practice —
+    /// the corridor's own expiry gate refuses a lapsed quote before anything is derived, and the
+    /// address comparison catches a wrong derivation either way — but this function is public, so
+    /// the assumption is stated rather than implied. A caller reaching it directly must check
+    /// expiry itself.
+    /// </para>
+    /// <para>
     /// A missing value is <b>not</b> refused. A solver predating the field derives the same base
     /// ladder this falls back to, and the client's real protection is the address comparison that
     /// follows either way: a solver whose number we did not reproduce quotes an address we do not
