@@ -108,13 +108,6 @@ jobs:
       contents: read
     env:
       SOLVER_LOG_LEVEL: '5'
-      # The off-board's float gate reads the payout rail's CONFIRMED balance on a schedule, and a
-      # reading that predates a deposit errs toward refusing (`ops/floatSampler.ts`). lnd starts
-      # with its whole balance committed to the channel, so the solver's first reading is zero and
-      # the faucet below lands after it — at the 60s default the first quote races the refresh and
-      # is refused `insufficient_float`, which reaches the client as `exposure_cap`. Five seconds
-      # costs nothing on regtest and removes the race.
-      ONCHAIN_FEE_RATE_REFRESH_MS: '5000'
       # INTENT_SOLVER_IMAGE is deliberately NOT set here. regtest reads ../.env.regtest as its
       # override, so that file names the image for CI and for a local run from one place; setting it
       # again here would be a second tag to keep in step with the first.
@@ -165,6 +158,35 @@ jobs:
           done
           echo "::error::lnd never credited the faucet output"
           exit 1
+      # The off-board's float gate reads the payout rail's CONFIRMED balance, and lnd starts with
+      # its whole balance committed to the channel — so the solver's FIRST reading, taken at boot,
+      # is zero, and the faucet above lands after it. A stale reading misses a deposit and errs
+      # toward refusing (`ops/floatSampler.ts`), which is why the first off-board quote comes back
+      # `insufficient_float` — reaching the client as `exposure_cap`.
+      #
+      # The refresh cadence (`ONCHAIN_FEE_RATE_REFRESH_MS`, 60s) cannot be lowered from here:
+      # compose declares the solver's environment explicitly, so a variable set on the runner never
+      # reaches the container. Booting it again with the money already there is the cheapest thing
+      # that is also true, and it costs a few seconds against the 60 the alternative would wait.
+      #
+      # Only the onchain leg needs it: the float gate guards the off-board's L1 payout, and the
+      # Lightning suite is already green without a restart it has no reason to pay for.
+      - name: Restart the solver so its float reading sees the funded wallet
+        if: matrix.corridor.slug == 'onchain'
+        timeout-minutes: 3
+        run: |
+          set -eu
+          docker restart intent-solver
+          for _ in $(seq 1 45); do
+            if curl -fsS http://localhost:8787/healthz >/dev/null 2>&1; then
+              echo "intent-solver is serving again"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::intent-solver did not come back after the restart"
+          exit 1
+
       - name: Run ${{ matrix.corridor.name }} E2E tests
         run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "${{ matrix.corridor.filter }}"
         timeout-minutes: 25
