@@ -142,8 +142,17 @@ public static class PsbtHelpers
     /// <param name="leaves">The tapscript leaves, in the order that fixes the merkle root.</param>
     /// <returns>The encoded taproot tree.</returns>
     /// <remarks>
+    /// <para>
     /// Public because the PSBT field is not the only consumer: covclaimd takes this same encoding in
     /// a reveal, where it is what binds a registered claim to the address it claims to describe.
+    /// </para>
+    /// <para>
+    /// <b>Every leaf is encoded at depth 1, so this is only correct for a flat taptree.</b> Every
+    /// Arkade covenant is flat, which is why the constant is safe here and why the counterpart in
+    /// <c>@arkade-os/ts-sdk</c> hardcodes the same 1. A caller passing a nested tree would get an
+    /// encoding that does not hash to its address, and the first sign of it would be a counterparty
+    /// refusing something this side considers well-formed.
+    /// </para>
     /// </remarks>
     public static byte[] EncodeTaprootTree(TapScript[] leaves)
     {
