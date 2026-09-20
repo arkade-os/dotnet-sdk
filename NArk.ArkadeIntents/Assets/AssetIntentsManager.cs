@@ -289,15 +289,21 @@ public sealed class AssetIntentsManager
         var swapAddress = created.Contract.GetArkAddress();
         var isBtcDeposit = request.OfferAsset is null;
         var carrierSats = quote.CarrierSats is { } carrier && carrier > BigInteger.Zero
-            ? Money.Satoshis((long)carrier)
+            ? Money.Satoshis(SatsOf(carrier, "carrier_sats"))
             : serverInfo.Dust;
-        var depositSats = isBtcDeposit ? Money.Satoshis((long)quote.FromAtomicAmount) : carrierSats;
+        var depositSats = isBtcDeposit
+            ? Money.Satoshis(SatsOf(quote.FromAtomicAmount, "from_amount"))
+            : carrierSats;
 
         var deposit = isBtcDeposit
             ? new ArkTxOut(ArkTxOutType.Vtxo, depositSats, swapAddress)
             : new ArkTxOut(ArkTxOutType.Vtxo, depositSats, swapAddress)
             {
-                Assets = [new ArkTxOutAsset(request.OfferAsset!.ToString(), (ulong)quote.FromAtomicAmount)],
+                Assets =
+                [
+                    new ArkTxOutAsset(
+                        request.OfferAsset!.ToString(), AssetUnitsOf(quote.FromAtomicAmount)),
+                ],
             };
 
         var txid = await _spendingService.Spend(request.WalletId, [deposit], cancellationToken,
@@ -334,23 +340,59 @@ public sealed class AssetIntentsManager
             isBtcDeposit ? null : quote.FromAtomicAmount);
     }
 
-    /// <summary>
-    /// The quote's payout, narrowed to what the offer TLV can carry.
-    /// </summary>
+    /// <summary>The quote's payout, narrowed to what the offer TLV can carry.</summary>
+    private static long WantAmountOf(RfqQuote<ArkadeSwapQuoteProfile> quote) =>
+        SatsOf(quote.ToAtomicAmount, "to_amount");
+
+    /// <summary>A quoted amount as satoshis, or a refusal naming the field that did not fit.</summary>
+    /// <param name="value">The amount, in atomic units.</param>
+    /// <param name="field">The quote field it came from, for the message.</param>
+    /// <returns>The same amount as <see cref="long"/>.</returns>
     /// <remarks>
-    /// The wire is 256-bit and the offer's <c>wantAmount</c> record is 64. Nothing a solver quotes
-    /// today comes close, but the narrowing is explicit so an amount that did would fail here —
-    /// before a deposit — rather than wrapping into a covenant obliging a payment of something else.
+    /// <para>
+    /// The wire carries 256-bit amounts and every sats-shaped thing downstream — the offer's
+    /// <c>wantAmount</c> record, <see cref="Money"/>, the spend — is 64. Narrowing without asking
+    /// first throws <see cref="OverflowException"/>, which is true but useless: it names no field,
+    /// reads as a bug in this SDK rather than as terms we declined, and a caller cannot branch on it
+    /// the way it branches on every other reason a quote is not fundable.
+    /// </para>
+    /// <para>
+    /// Only two of the three narrowings this guards are reachable from a well-behaved solver, and
+    /// the third is the reason to guard all of them: with <see cref="RfqAmountSide.To"/> the solver
+    /// picks <c>from_amount</c> itself, bounded only by a <see cref="QuotedSwapRequest.MaxFromAmount"/>
+    /// the caller may not have set.
+    /// </para>
     /// </remarks>
-    private static long WantAmountOf(RfqQuote<ArkadeSwapQuoteProfile> quote)
+    /// <exception cref="ArkadeSwapNotFundableException">The amount does not fit.</exception>
+    internal static long SatsOf(BigInteger value, string field)
     {
-        if (quote.ToAtomicAmount > long.MaxValue)
+        if (value > long.MaxValue)
         {
             throw new ArkadeSwapNotFundableException(
                 ArkadeSwapRefusal.AmountRejected,
-                $"the quote pays {quote.ToAtomicAmount}, more than the offer's want-amount record holds");
+                $"the quote's {field} of {value} is more than a satoshi amount can hold");
         }
-        return (long)quote.ToAtomicAmount;
+        return (long)value;
+    }
+
+    /// <summary>A quoted amount as asset units, or a refusal naming the field that did not fit.</summary>
+    /// <param name="value">The amount, in the asset's own atomic units.</param>
+    /// <returns>The same amount as <see cref="ulong"/>.</returns>
+    /// <remarks>
+    /// Wider than <see cref="SatsOf"/> because an asset's unit is, and still short of the wire's
+    /// 256 bits. This is the one narrowing an ordinary market could reach: a whole unit of an
+    /// 18-decimal asset is already 10^18, so eighteen of them do not fit.
+    /// </remarks>
+    /// <exception cref="ArkadeSwapNotFundableException">The amount does not fit.</exception>
+    internal static ulong AssetUnitsOf(BigInteger value)
+    {
+        if (value > ulong.MaxValue)
+        {
+            throw new ArkadeSwapNotFundableException(
+                ArkadeSwapRefusal.AmountRejected,
+                $"the quote's from_amount of {value} is more than an asset amount can hold");
+        }
+        return (ulong)value;
     }
 
     /// <summary>

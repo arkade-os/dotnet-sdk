@@ -204,6 +204,46 @@ public class ArkadeSwapRfqTests
             maxFromAmount: 50_000, minToAmount: 1_000));
     }
 
+    [Test]
+    public void AnAmountTooWideForSatoshis_IsRefused_NotOverflowed()
+    {
+        // The wire is 256-bit and everything downstream is 64. Narrowing without asking throws
+        // OverflowException, which names no field and reads as a bug here rather than as terms we
+        // declined — so a caller cannot branch on it the way it branches on every other refusal.
+        var tooWide = new BigInteger(long.MaxValue) + 1;
+
+        var refusal = Assert.Throws<ArkadeSwapNotFundableException>(
+            () => AssetIntentsManager.SatsOf(tooWide, "from_amount"));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(refusal!.Reason, Is.EqualTo(ArkadeSwapRefusal.AmountRejected));
+            // The field, because three different quote fields reach this guard.
+            Assert.That(refusal.Message, Does.Contain("from_amount"));
+        });
+    }
+
+    [Test]
+    public void AnAssetAmountTooWideForItsUnit_IsRefused()
+    {
+        // The one narrowing an ordinary market could reach: a whole unit of an 18-decimal asset is
+        // already 10^18, so eighteen of them do not fit.
+        var tooWide = new BigInteger(ulong.MaxValue) + 1;
+
+        Assert.That(() => AssetIntentsManager.AssetUnitsOf(tooWide),
+            Throws.TypeOf<ArkadeSwapNotFundableException>());
+    }
+
+    [Test]
+    public void AnAmountThatFits_PassesThroughUnchanged()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(AssetIntentsManager.SatsOf(new BigInteger(50_000), "from_amount"), Is.EqualTo(50_000));
+            Assert.That(AssetIntentsManager.AssetUnitsOf(new BigInteger(50_000)), Is.EqualTo(50_000UL));
+        });
+    }
+
     private const string Pair = "arkade:BTC->arkade:aa";
 
     private static RfqQuote<ArkadeSwapQuoteProfile> Quote(
