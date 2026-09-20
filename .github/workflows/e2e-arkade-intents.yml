@@ -1,7 +1,8 @@
-# The ArkadeIntents corridors against live solvers, in TWO jobs on TWO stacks.
+# The ArkadeIntents corridors against live solvers, on SEPARATE stacks.
 #
-# The split is not parallelism, it is a constraint: arkd's timelocks are typed, and the corridors
-# need opposite types from one server.
+# The first split is not parallelism, it is a constraint: arkd's timelocks are typed, and the
+# corridors need opposite types from one server. The second — Lightning and onchain on their own
+# runners — is the solver's per-IP quote budget, and the `rfq-corridors` job explains it there.
 #
 #  * The RFQ corridors (Lightning, onchain) build swap scripts with seconds-typed unilateral tiers.
 #    `LightningCorridor.MatchQuotedLockup` refuses a server whose unilateral exit delay is
@@ -78,12 +79,42 @@ jobs:
         run: node regtest/regtest.mjs clean || true
 
   rfq-corridors:
-    name: Lightning + Onchain Corridors E2E
+    # ONE RUNNER PER CORRIDOR, and the reason is the solver's rate limiter rather than speed.
+    # intent-solver builds a single RateLimiter for all five corridors (QUOTE_RATE_LIMIT = 5 per
+    # QUOTE_RATE_WINDOW_SECONDS = 15 minutes, `ops/services.ts`), keyed over HTTP by the client's IP
+    # address (`cli.ts`'s `clientKey`). Both suites together ask for more than five quotes, so run
+    # from one runner the last of them is refused `rate_limited` — and a refused quote spends a
+    # token too, so a corridor having a bad day eats the next one's budget. Neither constant is
+    # configurable: they are compiled into solver-core, not read from the environment.
+    #
+    # Two runners means two source addresses and therefore two budgets, each comfortably above what
+    # its own suite spends. Splitting on TestCategory rather than on file keeps a new test in the
+    # right budget automatically.
+    name: ${{ matrix.corridor.name }} E2E
     runs-on: ubuntu-latest
+    strategy:
+      # Independent stacks: one failing tells you nothing about the other, and stopping the second
+      # would hide which corridors still work.
+      fail-fast: false
+      matrix:
+        corridor:
+          - name: Lightning Corridors
+            filter: TestCategory=LightningCorridors
+            slug: lightning
+          - name: Onchain Corridors
+            filter: TestCategory=OnchainCorridors
+            slug: onchain
     permissions:
       contents: read
     env:
       SOLVER_LOG_LEVEL: '5'
+      # The off-board's float gate reads the payout rail's CONFIRMED balance on a schedule, and a
+      # reading that predates a deposit errs toward refusing (`ops/floatSampler.ts`). lnd starts
+      # with its whole balance committed to the channel, so the solver's first reading is zero and
+      # the faucet below lands after it — at the 60s default the first quote races the refresh and
+      # is refused `insufficient_float`, which reaches the client as `exposure_cap`. Five seconds
+      # costs nothing on regtest and removes the race.
+      ONCHAIN_FEE_RATE_REFRESH_MS: '5000'
       # INTENT_SOLVER_IMAGE is deliberately NOT set here. regtest reads ../.env.regtest as its
       # override, so that file names the image for CI and for a local run from one place; setting it
       # again here would be a second tag to keep in step with the first.
@@ -134,8 +165,8 @@ jobs:
           done
           echo "::error::lnd never credited the faucet output"
           exit 1
-      - name: Run Lightning and onchain corridor E2E tests
-        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "TestCategory=LightningCorridors|TestCategory=OnchainCorridors"
+      - name: Run ${{ matrix.corridor.name }} E2E tests
+        run: dotnet test NArk.Tests.End2End --no-build --verbosity normal --filter "${{ matrix.corridor.filter }}"
         timeout-minutes: 25
       - name: Collect docker logs on failure
         if: failure()
@@ -151,7 +182,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: rfq-corridors-docker-logs
+          name: ${{ matrix.corridor.slug }}-corridor-docker-logs
           path: /tmp/*-logs.txt
       - name: Stop infrastructure
         if: always()
