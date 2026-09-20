@@ -55,6 +55,32 @@ public sealed class CovclaimdClient : ICovclaimdClient
         _httpClient.BaseAddress ??= _options.BaseAddress
             ?? throw new InvalidOperationException(
                 $"{nameof(CovclaimdOptions)}.{nameof(CovclaimdOptions.BaseAddress)} must be set.");
+
+        AssertTransportSecure(_httpClient.BaseAddress, _options.AllowInsecureHttp);
+    }
+
+    /// <summary>
+    /// Refuse a daemon reachable only over plain HTTP, unless it is on this machine or the caller
+    /// has said otherwise.
+    /// </summary>
+    /// <remarks>
+    /// This is not transport hygiene, it is the trust anchor. The key served by whatever answers
+    /// this address is the key every preimage gets sealed to, so anyone able to answer in its place
+    /// substitutes their own and reads the secrets — and on a receive leg a leaked preimage settles
+    /// the payer's invoice without this wallet ever claiming. Loopback is exempt because that is
+    /// where covclaimd runs by default and nothing crosses a wire to intercept.
+    /// </remarks>
+    private static void AssertTransportSecure(Uri baseAddress, bool allowInsecureHttp)
+    {
+        if (baseAddress.Scheme == Uri.UriSchemeHttps || allowInsecureHttp || baseAddress.IsLoopback)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"covclaimd must be reached over https (got {baseAddress.Scheme}://{baseAddress.Host}): " +
+            "the key it serves is the one every preimage gets sealed to. Set " +
+            $"{nameof(CovclaimdOptions)}.{nameof(CovclaimdOptions.AllowInsecureHttp)} to override.");
     }
 
     /// <inheritdoc />

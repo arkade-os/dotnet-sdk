@@ -121,10 +121,25 @@ public class CovclaimdClientTests
     }
 
     [Test]
-    public async Task TheDaemonsKeys_AreReadOnceWhenCachingIsOn()
+    public async Task TheDaemonsKeys_AreReReadEveryTime_ByDefault()
     {
+        // covclaimd generates its key at startup, so a copy held across a restart is stale — and
+        // sealing to a stale key fails silently, at the daemon's AEAD check, which is why the round
+        // trip is the default and the reference client does not cache at all.
         var handler = new RecordingHandler();
         var client = Client(handler);
+
+        await client.GetKeysAsync();
+        await client.GetKeysAsync();
+
+        Assert.That(handler.Requests, Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task TheDaemonsKeys_AreReadOnce_WhenCachingIsAskedFor()
+    {
+        var handler = new RecordingHandler();
+        var client = Client(handler, cacheKeys: true);
 
         await client.GetKeysAsync();
         await client.GetKeysAsync();
@@ -133,21 +148,39 @@ public class CovclaimdClientTests
     }
 
     [Test]
-    public async Task TheDaemonsKeys_AreReReadEveryTimeWhenCachingIsOff()
+    public void ARemoteDaemonOverPlainHttp_IsRefused()
     {
-        // covclaimd generates its key at startup, so a deployment that restarts it often wants the
-        // live value: sealing to a stale key fails silently, at the daemon's AEAD check.
-        var handler = new RecordingHandler();
-        var client = Client(handler, cacheKeys: false);
-
-        await client.GetKeysAsync();
-        await client.GetKeysAsync();
-
-        Assert.That(handler.Requests, Is.EqualTo(2));
+        // The key served at this address is the key every preimage gets sealed to, so whoever can
+        // answer in its place reads the secrets — and on a receive leg that is a funds loss, not a
+        // privacy one.
+        Assert.That(() => new CovclaimdClient(
+                new HttpClient { BaseAddress = new Uri("http://covclaimd.example") },
+                Options.Create(new CovclaimdOptions())),
+            Throws.TypeOf<InvalidOperationException>().With.Message.Contains("https"));
     }
 
-    private static CovclaimdClient Client(RecordingHandler handler, bool cacheKeys = true) =>
-        new(new HttpClient(handler) { BaseAddress = new Uri("http://covclaimd.test") },
+    [Test]
+    public void ARemoteDaemonOverHttps_IsAccepted()
+    {
+        Assert.That(() => new CovclaimdClient(
+                new HttpClient { BaseAddress = new Uri("https://covclaimd.example") },
+                Options.Create(new CovclaimdOptions())),
+            Throws.Nothing);
+    }
+
+    [Test]
+    public void ARemoteDaemonOverPlainHttp_IsAcceptedOnAnExplicitOptOut()
+    {
+        // A private network the operator vouches for. Explicit, because the default must not be
+        // the one that quietly hands a preimage to whoever answers.
+        Assert.That(() => new CovclaimdClient(
+                new HttpClient { BaseAddress = new Uri("http://covclaimd.example") },
+                Options.Create(new CovclaimdOptions { AllowInsecureHttp = true })),
+            Throws.Nothing);
+    }
+
+    private static CovclaimdClient Client(RecordingHandler handler, bool cacheKeys = false) =>
+        new(new HttpClient(handler) { BaseAddress = new Uri("http://localhost:7271") },
             Options.Create(new CovclaimdOptions { CacheKeys = cacheKeys }));
 
     private static TapScript Leaf(byte op) => new Script(new[] { op }).ToTapScript(TapLeafVersion.C0);

@@ -123,6 +123,9 @@ public static class ArkadeIntentsCollectionExtensions
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                // A redirect would move the key fetch off the address the caller vetted, which is
+                // the one thing this transport cannot afford to let a remote decide.
+                AllowAutoRedirect = false,
             });
 
         services.TryAddSingleton<ICovclaimdClient>(sp => new CovclaimdClient(

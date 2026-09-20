@@ -33,10 +33,31 @@ public sealed class CovclaimdOptions
 
     /// <summary>Whether to remember the daemon's keys for the process's lifetime.</summary>
     /// <remarks>
-    /// covclaimd generates its encryption key at startup, so a cached copy goes stale when the
-    /// daemon restarts — and sealing to a stale key fails silently, since only the daemon can tell
-    /// that the AEAD tag does not check out. Caching is still the default because the alternative
-    /// is a round trip per swap; turn it off where the daemon restarts often enough to matter.
+    /// <para>
+    /// <b>Off by default</b>, and the reason is worth the round trip. covclaimd generates its
+    /// encryption key at startup, so a cached copy goes stale the moment the daemon restarts — and
+    /// sealing to a stale key fails <em>silently</em>, because only the daemon can tell that the
+    /// AEAD tag does not check out. What an operator then sees is a renewal loop reporting success
+    /// while the second claimant is gone.
+    /// </para>
+    /// <para>
+    /// The reference client does not cache at all. Turn this on only where the daemon's lifetime is
+    /// known to outlive this process's, and read <see cref="RegistrationTtl"/> as the window in
+    /// which a stale key stays undetected.
+    /// </para>
     /// </remarks>
-    public bool CacheKeys { get; set; } = true;
+    public bool CacheKeys { get; set; }
+
+    /// <summary>
+    /// Allow plain HTTP to a non-loopback daemon. Off by default, and rarely the right answer.
+    /// </summary>
+    /// <remarks>
+    /// The key this daemon serves is the key a preimage gets sealed to, so whoever can answer for it
+    /// can substitute their own and read every secret this wallet reveals. On a receive leg that is
+    /// not a privacy loss but a funds one: a preimage in someone else's hands settles the payer's
+    /// invoice without this wallet ever claiming, and the lockup is then reclaimed at
+    /// <c>refund_locktime</c>. Loopback is exempt because that is where covclaimd runs by default
+    /// and nothing crosses a wire.
+    /// </remarks>
+    public bool AllowInsecureHttp { get; set; }
 }
