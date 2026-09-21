@@ -9,6 +9,7 @@ using NArk.ArkadeIntents;
 
 using NArk.ArkadeIntents.Assets;
 using NArk.ArkadeIntents.Evm;
+using NArk.Abstractions.Blockchain;
 namespace NArk.ArkadeIntents.Hosting;
 
 public static class ArkadeIntentsCollectionExtensions
@@ -22,6 +23,13 @@ public static class ArkadeIntentsCollectionExtensions
     /// <see cref="NArk.Abstractions.Scripts.IActiveScriptsProvider"/> so its pending-swap scripts are
     /// watched by the shared VtxoSynchronizationService.
     /// </summary>
+    /// <remarks>
+    /// The on-chain and EVM corridors are wired only when the seam each is built on — an
+    /// <see cref="IBitcoinBlockchain"/> and an <see cref="IEvmSwapRpc"/> respectively — is already
+    /// in the container. Neither has a default worth inventing, so a host that registered neither
+    /// gets those corridors absent rather than a container that fails to validate, and a caller
+    /// that reaches for one anyway gets an error naming what is missing.
+    /// </remarks>
     /// <param name="services">The container.</param>
     /// <param name="options">
     /// All supplied corridor settings are copied, including payer limits and L1 confirmation policy.
@@ -48,10 +56,22 @@ public static class ArkadeIntentsCollectionExtensions
             sp.GetService<ILogger<SolverDiscoveryService>>()));
         services.AddSingleton<AssetIntentsManager>();
         services.AddSingleton<LightningIntentsClient>();
-        services.TryAddSingleton<EvmIntentsClient>();
-        // TryAdd, not Add: the off-board corridor needs IBitcoinBlockchain, and a deployment with no
-        // L1 access should get an ArkadeIntentsService without it rather than a resolution failure.
-        services.TryAddSingleton<OnchainIntentsClient>();
+        // Each of these is registered only when the seam it is built on is already in the
+        // container. Neither seam has a default worth inventing — IEvmSwapRpc needs the address of
+        // an EVM node, IBitcoinBlockchain an L1 source — so a host that configured neither means it
+        // wants neither corridor.
+        //
+        // TryAdd alone does not express that: it only declines to overwrite an existing
+        // registration, and still leaves a descriptor whose dependency nothing satisfies. A
+        // container that validates its descriptors — BTCPayServer builds with ValidateOnBuild —
+        // then fails at startup over a corridor the host never asked for, naming a type it has
+        // never heard of. Absent the seam the corridor should simply be missing, which is what
+        // ArkadeIntentsService already reads OnchainIntentsClient as (optional, then RequireOnchain
+        // at the point of use).
+        if (services.Any(descriptor => descriptor.ServiceType == typeof(IEvmSwapRpc)))
+            services.TryAddSingleton<EvmIntentsClient>();
+        if (services.Any(descriptor => descriptor.ServiceType == typeof(IBitcoinBlockchain)))
+            services.TryAddSingleton<OnchainIntentsClient>();
         services.AddSingleton<ArkadeIntentsService>();
         services.AddHostedService<ArkadeSwapIntentMonitoringService>();
         // Registered beside the monitor on purpose. The monitor only observes; without something

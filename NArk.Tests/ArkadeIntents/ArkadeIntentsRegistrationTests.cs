@@ -1,7 +1,16 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using NArk.Abstractions.Blockchain;
+using NArk.Abstractions.Contracts;
+using NArk.Abstractions.VTXOs;
+using NArk.Abstractions.Wallets;
+using NArk.Core.Services;
+using NArk.Core.Transport;
 using NArk.ArkadeIntents;
+using NArk.ArkadeIntents.Evm;
 using NArk.ArkadeIntents.Hosting;
+using NArk.ArkadeIntents.Onchain;
+using NSubstitute;
 
 namespace NArk.Tests.ArkadeIntents;
 
@@ -71,6 +80,70 @@ public class ArkadeIntentsRegistrationTests
             Assert.That(actual.OnchainClaimConfirmations, Is.EqualTo(2));
         });
     }
+
+    /// <summary>
+    /// A host that configured neither corridor seam still gets a container that validates.
+    /// </summary>
+    /// <remarks>
+    /// Both clients used to be named unconditionally, so a container built with
+    /// <c>ValidateOnBuild</c> — BTCPayServer's is — threw at startup over a corridor the host never
+    /// asked for, naming an <c>IEvmSwapRpc</c> it has no way to supply.
+    /// </remarks>
+    [Test]
+    public void NoCorridorSeams_LeaveAValidatableContainer()
+    {
+        var services = CoreSeams();
+        services.AddArkadeIntentsServices();
+
+        Assert.DoesNotThrow(() => services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true }).Dispose());
+    }
+
+    [Test]
+    public void NoCorridorSeams_LeaveTheirClientsUnregistered()
+    {
+        var services = CoreSeams();
+        services.AddArkadeIntentsServices();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(services.Any(d => d.ServiceType == typeof(EvmIntentsClient)), Is.False);
+            Assert.That(services.Any(d => d.ServiceType == typeof(OnchainIntentsClient)), Is.False);
+        });
+    }
+
+    /// <summary>A seam the host did supply still brings its corridor client, resolvable.</summary>
+    [Test]
+    public void SuppliedSeams_BringTheirCorridorClients()
+    {
+        var services = CoreSeams();
+        services.AddSingleton(Substitute.For<IEvmSwapRpc>());
+        services.AddSingleton(Substitute.For<IBitcoinBlockchain>());
+        services.AddArkadeIntentsServices();
+
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateOnBuild = true });
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(provider.GetService<EvmIntentsClient>(), Is.Not.Null);
+            Assert.That(provider.GetService<OnchainIntentsClient>(), Is.Not.Null);
+        });
+    }
+
+    /// <summary>
+    /// What any host of the intents package supplies regardless of corridor: the transport it
+    /// speaks to the operator over, the wallet and spending seams, and the stores the swap state
+    /// lives in. A corridor seam is deliberately not among them — that is what these tests vary.
+    /// </summary>
+    private static IServiceCollection CoreSeams() => new ServiceCollection()
+        .AddSingleton(Substitute.For<IClientTransport>())
+        .AddSingleton(Substitute.For<IContractService>())
+        .AddSingleton(Substitute.For<ISpendingService>())
+        .AddSingleton(Substitute.For<IWalletProvider>())
+        .AddSingleton(Substitute.For<IContractStorage>())
+        .AddSingleton(Substitute.For<IVtxoStorage>())
+        .AddSingleton(Substitute.For<IArkadeIntentStorage>());
 
     private static IServiceCollection ConfiguredLimits() => new ServiceCollection().Configure<ArkadeIntentsOptions>(options =>
     {

@@ -97,3 +97,8 @@ The gateway sample's `ComposedEvmSettlementExample` registers the composer and d
 to `EvmServerChainExample`. It requires the normal Arkade intent clients, intent/contract storage,
 network transport, synchronized `IVtxoStorage`, `IBitcoinBlockchain`, `EvmJsonRpcClient`, and
 `EvmLocalTransactionSender` registrations.
+
+The `IEvmSwapRpc` registration is what turns the corridor on: `AddArkadeIntentsServices()` wires the
+EVM client only when one is present, the same way it treats `IBitcoinBlockchain` for the on-chain
+corridors. A deployment with no EVM access gets the corridor absent rather than a container that
+fails to validate over a node address it was never going to supply.
