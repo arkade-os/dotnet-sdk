@@ -12,6 +12,8 @@
   href: assets.md
 - name: ArkadeCash
   href: arkade-cash.md
+- name: Arkade Asset Swaps
+  href: asset-swaps.md
 - name: Lightning Corridors
   href: lightning-corridors.md
 - name: Onchain Corridors

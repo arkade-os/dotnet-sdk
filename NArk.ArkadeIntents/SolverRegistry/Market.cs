@@ -59,6 +59,39 @@ public sealed class PriceFeedSchema
 /// appears inside a source <see cref="SolverCard"/> and, tagged with its solver, inside the
 /// per-network index (<see cref="IndexedMarket"/>).
 /// </summary>
+/// <summary>One direction's fee on a market that prices its two directions differently.</summary>
+/// <remarks>
+/// Keyed by the side <b>deposited</b>, not the side paid out. An absent <see cref="Bps"/> means the
+/// market's own <c>fee_bps</c> stands for this direction; an absent <see cref="Flat"/> means this
+/// direction charges no flat component at all, which is not the same as inheriting the market's
+/// legacy <c>fee_flat</c> — that field states the quote-deposited direction alone, and reading it
+/// as both would overstate one of them.
+/// </remarks>
+public sealed class SolverFeeSide
+{
+    /// <summary>This direction's spread in basis points, when it differs from the other's.</summary>
+    public int? Bps { get; init; }
+
+    /// <summary>This direction's flat charge, in atomic units of the deposited leg.</summary>
+    public string? Flat { get; init; }
+}
+
+/// <summary>A market's per-direction fees, when it publishes them.</summary>
+/// <remarks>
+/// Only cross-asset Arkade markets carry this today. A same-asset corridor publishes one
+/// <c>fee_bps</c> standing for both directions, and a card that advertises one market for both
+/// states the wider of the two — overstating a fee is the safe direction, understating one is a card
+/// that lies.
+/// </remarks>
+public sealed class SolverFeeSides
+{
+    /// <summary>The fee when the base leg is deposited.</summary>
+    public SolverFeeSide? Base { get; init; }
+
+    /// <summary>The fee when the quote leg is deposited.</summary>
+    public SolverFeeSide? Quote { get; init; }
+}
+
 public class SolverMarket
 {
     /// <summary>Optional display label; empty when omitted. Never used as market identity.</summary>
@@ -96,6 +129,14 @@ public class SolverMarket
 
     /// <summary>Solver spread, in basis points.</summary>
     public int FeeBps { get; init; }
+
+    /// <summary>Per-direction fees, when this market prices its two directions differently.</summary>
+    /// <remarks>
+    /// Supersedes <see cref="FeeBps"/> and <see cref="FeeFlat"/> for a market that publishes it;
+    /// both are still emitted, at the widest direction, so a reader predating this field prices
+    /// conservatively rather than wrongly.
+    /// </remarks>
+    public SolverFeeSides? SolverFee { get; init; }
 
     /// <summary>
     /// A flat component of the solver's fee, in <em>quote</em>-asset atomic units, charged on top
@@ -222,6 +263,38 @@ public class SolverMarket
     /// with a lower spread and a flat fee is dearer at small sizes and cheaper at large ones.
     /// </remarks>
     public long TotalFeeOn(long amount) => checked((long)TotalFeeOn(new BigInteger(amount)));
+
+    /// <summary>This market's spread for a swap depositing <paramref name="deposited"/>, in basis points.</summary>
+    /// <param name="deposited">Which leg the client pays in.</param>
+    /// <returns>The direction's own rate, or the market's single rate when it publishes one.</returns>
+    public int FeeBpsOn(MarketSide deposited) => SideFee(deposited)?.Bps ?? FeeBps;
+
+    /// <summary>
+    /// This market's flat charge for a swap depositing <paramref name="deposited"/>, in atomic units
+    /// of that leg.
+    /// </summary>
+    /// <param name="deposited">Which leg the client pays in.</param>
+    /// <returns>The direction's own flat charge, or the market's single one.</returns>
+    /// <remarks>
+    /// A market publishing per-direction fees states every flat charge it makes, so a direction with
+    /// no entry charges nothing — falling back to <see cref="FeeFlat"/> there would bill one
+    /// direction for the other's flat component.
+    /// </remarks>
+    public BigInteger FeeFlatOn(MarketSide deposited) => SolverFee is null
+        ? FeeFlatAtomicAmount
+        : SideFee(deposited)?.Flat is { Length: > 0 } flat
+            ? JsonSerializer.Deserialize<BigInteger>(JsonSerializer.Serialize(flat), AtomicJson)
+            : BigInteger.Zero;
+
+    /// <summary>What this market charges to swap <paramref name="amount"/> of the deposited leg.</summary>
+    /// <param name="amount">The deposit, in atomic units.</param>
+    /// <param name="deposited">Which leg it is denominated in.</param>
+    /// <returns>The advertised fee, in the same units.</returns>
+    public BigInteger TotalFeeOn(BigInteger amount, MarketSide deposited) =>
+        amount * FeeBpsOn(deposited) / 10_000 + FeeFlatOn(deposited);
+
+    private SolverFeeSide? SideFee(MarketSide deposited) =>
+        deposited == MarketSide.Base ? SolverFee?.Base : SolverFee?.Quote;
 
     /// <summary>The fee in full-width atomic units, without intermediate Int64 overflow.</summary>
     public BigInteger TotalFeeOn(BigInteger amount) => amount * FeeBps / 10_000 + FeeFlatAtomicAmount;

@@ -10,6 +10,19 @@ namespace NArk.ArkadeIntents.Rfq.Profiles.Onchain;
 public sealed class OnchainSendQuoteProfile
 {
     /// <summary>
+    /// The exact BIP68 delay, in seconds, the client must put in its Arkade lockup's
+    /// <c>unilateralRefundWithoutReceiver</c> leaf, when the solver publishes one.
+    /// </summary>
+    /// <remarks>
+    /// The same binding field the Lightning send quote carries, and read here for the same reason:
+    /// this leg funds the same covenant. The reference solver sizes this rung against the quoted
+    /// horizon on the Lightning leg only, so on this one the field is usually absent and the base
+    /// ladder stands — but a quote that does publish it derived its address from it, so it is
+    /// adopted rather than ignored.
+    /// </remarks>
+    public long? RefundWithoutReceiverDelay { get; init; }
+
+    /// <summary>
     /// The solver's derivation of the Arkade covenant's address. Compare-only — check it against
     /// your own and refuse to fund on any mismatch.
     /// </summary>

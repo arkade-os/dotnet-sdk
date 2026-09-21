@@ -11,6 +11,23 @@ using NBitcoin.Secp256k1;
 
 namespace NArk.ArkadeIntents.Lightning;
 
+/// <summary>Thrown when a quote publishes a timelock the client will not build into a script.</summary>
+/// <remarks>
+/// Raised before anything is funded, and deliberately distinct from a mismatched address: this says
+/// the solver's own published number is unusable on its face, which a client should read as a broken
+/// or hostile counterparty rather than as a derivation it failed to reproduce.
+/// </remarks>
+public sealed class QuotedDelayRejectedException : Exception
+{
+    /// <summary>Creates the exception.</summary>
+    /// <param name="quoted">The delay the quote published, in seconds.</param>
+    /// <param name="message">Which bound it broke.</param>
+    public QuotedDelayRejectedException(long? quoted, string message) : base(message) => Quoted = quoted;
+
+    /// <summary>The delay the quote published, in seconds.</summary>
+    public long? Quoted { get; }
+}
+
 /// <summary>
 /// What both Lightning corridors need identically: the CSV ladder, the key conversions, and
 /// rebuilding a funded lockup.
@@ -29,9 +46,17 @@ public static class LightningCorridor
     /// <exception cref="InvalidOperationException">The server denominates its exit delay in blocks.</exception>
     /// <remarks>
     /// <para>
-    /// Deliberately absent from the RFQ wire. Both sides read the same public <c>/v1/info</c> and
-    /// apply the same rule, so they reach identical numbers without the solver being able to
-    /// influence them — a delay it could dictate would be a delay it could stretch.
+    /// The <b>base</b> ladder, from the same public <c>/v1/info</c> both sides read, so neither
+    /// needs the other to reach it. Two of the three rungs end here: the claim and the two-party
+    /// refund are never negotiated, because a delay a solver could dictate would be a delay it
+    /// could stretch.
+    /// </para>
+    /// <para>
+    /// The solo rung is the exception, and only on a <b>send</b> quote: it may have to reach past
+    /// this base to stay behind the quoted <c>refund_locktime</c>, so the solver publishes the
+    /// value it built and the client adopts it after checking it —
+    /// <see cref="ResolveSoloRefundDelay"/>. What comes back from here is that negotiation's floor,
+    /// not its answer.
     /// </para>
     /// <para>
     /// The claim and the two-party refund sit level, and only the solo refund gets headroom on top:
@@ -97,6 +122,97 @@ public static class LightningCorridor
         // neither party can spend that leaf alone, while spending headroom that does matter.
         var claim = SwapScriptValues.CeilToGranularity(seconds);
         return (claim, claim, claim + SwapScriptValues.SoloRefundHeadroomSeconds);
+    }
+
+    /// <summary>
+    /// Settle the solo-refund rung for one send quote: adopt the solver's published delay once it
+    /// has been checked, or fall back to the base ladder when the quote carries none.
+    /// </summary>
+    /// <param name="quotedDelaySeconds">
+    /// The quote's <c>profile.refund_without_receiver_delay</c>, or <c>null</c> when it carries none.
+    /// </param>
+    /// <param name="delays">The base ladder from <see cref="UnilateralDelays"/>.</param>
+    /// <param name="refundLocktime">The quote's absolute refund deadline, unix seconds.</param>
+    /// <param name="now">The current time, unix seconds.</param>
+    /// <returns>The delay to build the <c>unilateralRefundWithoutReceiver</c> leaf with, in seconds.</returns>
+    /// <exception cref="QuotedDelayRejectedException">The published delay is one we will not build.</exception>
+    /// <remarks>
+    /// <para>
+    /// This one rung is negotiated because it cannot always be derived. The solo refund must open
+    /// <b>after</b> the absolute <c>refund_locktime</c> the solver quotes — otherwise the funder
+    /// could take back a deposit while the claimant, holding the preimage, still had a live claim —
+    /// and on a long horizon the base ladder's fixed headroom is not enough to guarantee that. The
+    /// solver sizes the rung against the horizon it just quoted and publishes the result; the
+    /// client's job is to check it rather than to guess the same number.
+    /// </para>
+    /// <para>
+    /// Every bound below is checked because this value goes straight into a script. A delay that is
+    /// not a whole BIP68 unit would be silently rounded when encoded, so the leaf would time
+    /// something other than what was agreed; one below the claim rung would let the funder's solo
+    /// path open before the claimant's; one that does not cover the horizon is the theft window
+    /// itself.
+    /// </para>
+    /// <para>
+    /// <b>Precondition:</b> <paramref name="now"/> is before <paramref name="refundLocktime"/>. The
+    /// horizon check compares against their difference, so on a quote that has already lapsed the
+    /// difference is negative and every positive delay clears it. That is not a hole in practice —
+    /// the corridor's own expiry gate refuses a lapsed quote before anything is derived, and the
+    /// address comparison catches a wrong derivation either way — but this function is public, so
+    /// the assumption is stated rather than implied. A caller reaching it directly must check
+    /// expiry itself.
+    /// </para>
+    /// <para>
+    /// A missing value is <b>not</b> refused. A solver predating the field derives the same base
+    /// ladder this falls back to, and the client's real protection is the address comparison that
+    /// follows either way: a solver whose number we did not reproduce quotes an address we do not
+    /// derive, and nothing gets funded. Refusing outright would drop those deployments for a
+    /// guarantee the comparison already gives.
+    /// </para>
+    /// </remarks>
+    public static uint ResolveSoloRefundDelay(
+        long? quotedDelaySeconds,
+        (uint Claim, uint Refund, uint RefundWithoutReceiver) delays,
+        long refundLocktime,
+        long now)
+    {
+        if (quotedDelaySeconds is not { } quoted)
+        {
+            return delays.RefundWithoutReceiver;
+        }
+
+        var ceiling = (long)0xffff * SwapScriptValues.SequenceGranularitySeconds;
+        if (quoted <= 0 || quoted > ceiling)
+        {
+            throw new QuotedDelayRejectedException(
+                quoted,
+                $"the quote's refund_without_receiver_delay of {quoted}s is outside what BIP68 encodes " +
+                $"(1..{ceiling}s)");
+        }
+        if (quoted % SwapScriptValues.SequenceGranularitySeconds != 0)
+        {
+            throw new QuotedDelayRejectedException(
+                quoted,
+                $"the quote's refund_without_receiver_delay of {quoted}s is not a whole " +
+                $"{SwapScriptValues.SequenceGranularitySeconds}s BIP68 unit, so the leaf would encode a " +
+                "different delay than the one quoted");
+        }
+        if (quoted < delays.Claim)
+        {
+            throw new QuotedDelayRejectedException(
+                quoted,
+                $"the quote's refund_without_receiver_delay of {quoted}s opens before the claim leaf's " +
+                $"{delays.Claim}s, which would let the funder refund out from under a claimant holding " +
+                "the preimage");
+        }
+        if (quoted < refundLocktime - now)
+        {
+            throw new QuotedDelayRejectedException(
+                quoted,
+                $"the quote's refund_without_receiver_delay of {quoted}s does not cover the " +
+                $"{refundLocktime - now}s remaining until its own refund_locktime");
+        }
+
+        return checked((uint)quoted);
     }
 
     /// <summary>Accept an emulator key in either encoding and return its x-only form.</summary>

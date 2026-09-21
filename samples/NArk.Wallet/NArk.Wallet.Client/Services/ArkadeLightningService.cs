@@ -250,18 +250,17 @@ public sealed class ArkadeLightningService(
     /// swap works, and only its offline claim path quietly does not exist.
     /// </para>
     /// <para>
-    /// Without a daemon the packet still has to be there: the field is required on the wire, though
-    /// the solver treats it as opaque and never opens it. So it is sealed to a key generated here
-    /// and immediately dropped, which is the honest encoding of "nobody else is claiming this" —
-    /// the sats are reachable by our preimage alone, and that is stored before the invoice is handed
-    /// out. Sending a decryptable packet nobody was meant to read would be the stranger choice.
+    /// Without a daemon there is no packet at all. The field is optional on the wire, so omitting it
+    /// says exactly what is true — nobody else can claim this — where sealing to a key generated
+    /// here and dropped would advertise an offline claim path that no daemon can walk. The sats stay
+    /// reachable by our own preimage, which is stored before the invoice is handed out.
     /// </para>
     /// </remarks>
-    private async Task<string> ResolveClaimRecipientAsync(CancellationToken cancellationToken)
+    private async Task<string?> ResolveClaimRecipientAsync(CancellationToken cancellationToken)
     {
         if (options.CovclaimdUrl is not { } covclaimd)
         {
-            return new Key().PubKey.Compress().ToHex();
+            return null;
         }
 
         using var http = new HttpClient { BaseAddress = covclaimd };

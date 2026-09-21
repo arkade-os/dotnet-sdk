@@ -93,8 +93,9 @@ public sealed partial class LightningIntentsClient
     /// deployment naming a solver outright has no published terms to hold it to.
     /// </param>
     /// <param name="covclaimdPubKey">
-    /// covclaimd's compressed key, read live from its own endpoint. The preimage is sealed to this,
-    /// so the claim can be pushed without the client online.
+    /// covclaimd's compressed key, read live from its own endpoint, so the preimage can be sealed to
+    /// it and the claim pushed while this client is offline — or <c>null</c> when there is no
+    /// covclaimd, in which case no packet is sent at all and the claim is this client's own to make.
     /// </param>
     /// <param name="cancellationToken">Cancels the negotiation.</param>
     /// <returns>The invoice to be paid, and everything needed to claim once it is.</returns>
@@ -105,7 +106,7 @@ public sealed partial class LightningIntentsClient
         string walletId,
         long amountSats,
         IRfqTransport rfqTransport,
-        string covclaimdPubKey,
+        string? covclaimdPubKey,
         SolverCard? solverCard = null,
         RfqAmountSide amountSide = RfqAmountSide.To,
         CancellationToken cancellationToken = default) => await ReceiveFromLightningCoreAsync(
@@ -117,7 +118,7 @@ public sealed partial class LightningIntentsClient
     /// <param name="walletId">Wallet owning the receiver key and recovery state.</param>
     /// <param name="amountSats">Exact Arkade amount required by the outgoing lock.</param>
     /// <param name="rfqTransport">How to reach the ingress solver.</param>
-    /// <param name="covclaimdPubKey">Emulator encryption key for the claim packet.</param>
+    /// <param name="covclaimdPubKey">covclaimd's key for the claim packet, or <c>null</c> to send none.</param>
     /// <param name="secret">The outgoing route's client-owned secret.</param>
     /// <param name="payoutAddress">The already-verified outgoing Arkade lock L.</param>
     /// <param name="receiverContract">A wallet-owned contract supplying M's receiver key.</param>
@@ -135,7 +136,7 @@ public sealed partial class LightningIntentsClient
         string walletId,
         long amountSats,
         IRfqTransport rfqTransport,
-        string covclaimdPubKey,
+        string? covclaimdPubKey,
         SwapLinkSecret secret,
         ArkAddress payoutAddress,
         ArkContract receiverContract,
@@ -150,7 +151,7 @@ public sealed partial class LightningIntentsClient
         string walletId,
         long amountSats,
         IRfqTransport rfqTransport,
-        string covclaimdPubKey,
+        string? covclaimdPubKey,
         SolverCard? solverCard,
         RfqAmountSide amountSide,
         SwapLinkSecret? linkedSecret,
@@ -185,15 +186,22 @@ public sealed partial class LightningIntentsClient
         var rfqId = linkedRfqId ?? RfqProtocol.NewRfqId();
         var preimage = linkedSecret?.ExportPreimage()
             ?? await ProvisionClaimPreimageAsync(walletId, payoutDescriptor, rfqId, cancellationToken);
-        var sealed_ = await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken);
+        // Sealed only when there is somebody to seal to. Without a covclaimd the field is left off
+        // entirely rather than sealed to a key nobody holds: the solver treats the packet as opaque
+        // either way, so a fake one buys nothing and advertises an offline claim path that does not
+        // exist. The client's own claim still works — it holds the preimage.
+        var sealed_ = covclaimdPubKey is { Length: > 0 }
+            ? await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken)
+            : null;
+        var paymentHash = sealed_?.PaymentHash ?? ClaimPacket.PaymentHashOf(preimage);
 
         var request = LightningReceiveProfile.Request(
             amountSats,
             amountSide,
-            sealed_.PaymentHash,
+            paymentHash,
             payoutAddress,
             Convert.ToHexString(payoutDescriptor.ToXOnlyPubKey().ToBytes()).ToLowerInvariant(),
-            sealed_.Packet,
+            sealed_?.Packet,
             rfqId);
 
         // Asked before the request: a size outside the advertised range is one the solver refuses
@@ -220,7 +228,7 @@ public sealed partial class LightningIntentsClient
         }
 
         var invoice = LightningReceiveGates.VerifyInvoice(
-            quote, sealed_.PaymentHash, amountSats, amountSide, serverInfo.Network);
+            quote, paymentHash, amountSats, amountSide, serverInfo.Network);
 
         // The last check before the invoice can reach a payer: paying into a window too short to
         // claim in parks the payer's money in a held HTLC until it lapses, and a quote billing more
@@ -229,7 +237,7 @@ public sealed partial class LightningIntentsClient
             quote, invoice, _time.GetUtcNow().ToUnixTimeSeconds(), _maxPayAmountSats);
 
         var (eightLeaf, nineLeaf) = await DeriveLockupAsync(
-            quote, sealed_.PaymentHash, payoutDescriptor, payoutPkScript, serverInfo, cancellationToken);
+            quote, paymentHash, payoutDescriptor, payoutPkScript, serverInfo, cancellationToken);
         var isMainnet = serverInfo.Network == Network.Main;
 
         // Accepts whichever of the two shapes the solver quoted, and refuses when it quoted neither
@@ -261,12 +269,12 @@ public sealed partial class LightningIntentsClient
             SwapAddress = lockupAddress,
             FromAssetId = "lightning:btc",
             ToAssetId = "btc",
-            PaymentHash = sealed_.PaymentHash,
+            PaymentHash = paymentHash,
             RefundLocktime = quote.RefundLocktime,
             // No offer TLV on this corridor: it is negotiated by RFQ, and the covenant is rebuilt
             // from the imported contract rather than from a wire offer.
         }.WithLightningMetadata(new LightningSwapMetadata(
-                invoice.ToString(), Convert.ToHexString(sealed_.Preimage).ToLowerInvariant()))
+                invoice.ToString(), Convert.ToHexString(preimage).ToLowerInvariant()))
             .WithSolver(quote.SolverPubkey);
         ComposedRouteExecutionGuard.Bind(receiveIntent, outgoingSwapId, payoutArkAddress.ScriptPubKey.ToHex());
         await _intentStorage.SaveArkadeSwapIntent(receiveIntent, cancellationToken);
@@ -276,7 +284,7 @@ public sealed partial class LightningIntentsClient
             request.RfqId, amountSats, payoutAddress, lockupAddress);
 
         return new PendingLightningReceive(
-            request.RfqId, quote, invoice.ToString(), sealed_.Preimage, sealed_.PaymentHash,
+            request.RfqId, quote, invoice.ToString(), preimage, paymentHash,
             contract, lockupAddress, payoutAddress);
     }
 

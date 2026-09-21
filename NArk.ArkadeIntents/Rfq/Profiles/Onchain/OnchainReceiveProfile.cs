@@ -38,7 +38,10 @@ public static class OnchainReceiveProfile
     /// client sends on L1, <see cref="RfqAmountSide.To"/> for what lands on Arkade.
     /// </param>
     /// <param name="paymentHash">SHA-256 of the client's own preimage (hex).</param>
-    /// <param name="claimPacket">That preimage sealed to covclaimd, base64.</param>
+    /// <param name="claimPacket">
+    /// That preimage sealed to covclaimd, base64, or <c>null</c> when there is no covclaimd to seal
+    /// to — omitted rather than faked, for the reason the Lightning receive profile gives.
+    /// </param>
     /// <param name="refundPubkey">The client's x-only key (hex) on the L1 HTLC's refund leaf.</param>
     /// <param name="payoutAddress">The client's Arkade address the lockup must pay.</param>
     /// <param name="payoutPubkey">The client's x-only Arkade key (hex) — the covenant's claiming role.</param>
@@ -48,7 +51,7 @@ public static class OnchainReceiveProfile
         long amountSats,
         RfqAmountSide amountSide,
         string paymentHash,
-        string claimPacket,
+        string? claimPacket,
         string refundPubkey,
         string payoutAddress,
         string payoutPubkey,

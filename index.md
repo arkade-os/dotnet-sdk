@@ -26,7 +26,7 @@ NArk gives .NET applications everything they need to build on Arkade: wallet man
 | **[Wallets](docs/articles/wallets.md)** | HD and SingleKey wallet management |
 | **[Spending](docs/articles/spending.md)** | Automatic and manual coin selection, sub-dust outputs |
 | **[Assets](docs/articles/assets.md)** | Issuance, transfer, burn, and querying Arkade assets |
-| **[Swaps](docs/articles/swaps.md)** | Lightning integration via Boltz |
+| **[Arkade Asset Swaps](docs/articles/asset-swaps.md)** | Offers and RFQ-quoted swaps between sats and issued assets |
 | **[Storage](docs/articles/storage.md)** | EF Core setup, entity reference |
 | **[API Reference](api/index.md)** | Auto-generated API documentation |
 

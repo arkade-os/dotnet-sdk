@@ -224,6 +224,97 @@ public class SolverTermsTests
             Card(), Quote(from: 50_000, to: 1, pair: "arkade:BTC->onchain:BTC")));
     }
 
+    [Test]
+    public void AnAmountWiderThanSatoshis_IsCheckedRatherThanOverflowing()
+    {
+        // One whole unit of an 18-decimal asset is already 10^18, so a pair of them is past what a
+        // satoshi-shaped bound could hold. Overflowing here would read as a broken SDK rather than
+        // as a size this solver would happily have quoted.
+        var card = Card(CardJson
+            .Replace("\"max_quote_amount\": \"1000000\"", "\"max_quote_amount\": \"20000000000000000000\""));
+        var amount = System.Numerics.BigInteger.Parse("10000000000000000000");
+
+        Assert.Multiple(() =>
+        {
+            Assert.DoesNotThrow(() => SolverTerms.AssertWithinLimits(card, SendPair, amount));
+            Assert.That(() => SolverTerms.AssertWithinLimits(card, SendPair, amount * 3),
+                Throws.TypeOf<SolverTermsException>());
+        });
+    }
+
+    [Test]
+    public void ADirectionalCard_PricesTheDirectionBeingSwapped()
+    {
+        // `solver_fee` is keyed by the side DEPOSITED. A send deposits the base leg, so it is held
+        // to the base entry's 30 bps — the quote entry's 10 would refuse an honest quote here.
+        var card = DirectionalCard();
+
+        Assert.Multiple(() =>
+        {
+            // 50_000 * 30bps = 150, plus the 20 flat this direction states.
+            Assert.DoesNotThrow(() => SolverTerms.AssertFeeWithinAdvertised(card, Quote(50_170, 50_000)));
+            Assert.That(() => SolverTerms.AssertFeeWithinAdvertised(card, Quote(50_400, 50_000)),
+                Throws.TypeOf<SolverTermsException>());
+        });
+    }
+
+    [Test]
+    public void ADirectionalCard_HoldsTheOtherDirectionToItsOwnRate()
+    {
+        // The receive leg deposits the QUOTE side: 10 bps and no flat, so the send leg's allowance
+        // is well over what this direction may charge.
+        var card = DirectionalCard();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(() => SolverTerms.AssertFeeWithinAdvertised(card, Quote(50_170, 50_000, ReceivePair)),
+                Throws.TypeOf<SolverTermsException>());
+            // 50_000 * 10bps = 50, and nothing flat.
+            Assert.DoesNotThrow(
+                () => SolverTerms.AssertFeeWithinAdvertised(card, Quote(50_050, 50_000, ReceivePair)));
+        });
+    }
+
+    [Test]
+    public void ADirectionWithNoEntry_TakesTheMarketRateAndNoFlat()
+    {
+        // A market publishing per-direction fees states every flat charge it makes, so a direction
+        // it leaves out charges none — inheriting the legacy `fee_flat` would bill this direction
+        // for the other one's.
+        var market = SolverTerms.MarketFor(DirectionalCard("""
+            "solver_fee": { "base": { "flat": "20" } },
+            """), SendPair)!;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(market.FeeBpsOn(MarketSide.Quote), Is.EqualTo(30));
+            Assert.That(market.FeeFlatOn(MarketSide.Quote), Is.EqualTo(System.Numerics.BigInteger.Zero));
+        });
+    }
+
+    [Test]
+    public void ACardWithoutDirectionalFees_KeepsTheSingleAdvertisedRate()
+    {
+        // The overwhelming majority of cards, and the same-asset corridors always: one rate stated
+        // for both directions, and the legacy flat applying to whichever one is asked about.
+        var market = SolverTerms.MarketFor(CardWithFlatFee(), SendPair)!;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(market.FeeBpsOn(MarketSide.Base), Is.EqualTo(30));
+            Assert.That(market.FeeFlatOn(MarketSide.Base), Is.EqualTo(new System.Numerics.BigInteger(100)));
+            Assert.That(market.FeeFlatOn(MarketSide.Quote), Is.EqualTo(new System.Numerics.BigInteger(100)));
+        });
+    }
+
+    /// <summary>The card with per-direction fees: 30 bps plus 20 flat one way, 10 bps the other.</summary>
+    private static SolverCard DirectionalCard(string solverFee = """
+        "solver_fee": { "base": { "bps": 30, "flat": "20" }, "quote": { "bps": 10 } },
+        """) =>
+        // `fee_bps` stays the WIDEST of the two, which is what the registry requires and what a
+        // reader predating `solver_fee` prices with.
+        Card(CardJson.Replace("\"fee_bps\": 30", solverFee.Trim() + "\n      \"fee_bps\": 30"));
+
     private static SolverCard Card(string json = CardJson) =>
         JsonSerializer.Deserialize<SolverCard>(
             json, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower })!;

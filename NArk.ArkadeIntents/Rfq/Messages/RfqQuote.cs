@@ -7,8 +7,10 @@ namespace NArk.ArkadeIntents.Rfq;
 /// <summary>
 /// The solver's quote. Its <b>binding fields</b> — <see cref="SolverPubkey"/>,
 /// <see cref="RefundLocktime"/>, <see cref="ValidUntil"/>, <see cref="FromAmount"/> and
-/// <see cref="ToAmount"/> — are the only values a client may trust; everything in
-/// <see cref="Profile"/> is compare-only or informational.
+/// <see cref="ToAmount"/> — are the values a client may trust; everything in
+/// <see cref="Profile"/> is compare-only or informational, with one exception named there
+/// (an HTLC send quote's <c>refund_without_receiver_delay</c>, which the client builds into its
+/// script because it is the one number the client cannot derive).
 /// </summary>
 /// <typeparam name="TProfile">The corridor's quote-profile shape.</typeparam>
 /// <remarks>
@@ -53,6 +55,25 @@ public sealed class RfqQuote<TProfile>
     /// <summary>Optional upper bound on the onchain receive deposit, in atomic units.</summary>
     [JsonConverter(typeof(AtomicAmountConverter))]
     public BigInteger? MaxFromAmount { get; init; }
+
+    /// <summary>
+    /// The dust sats an Arkade asset deposit rides on, when the quote publishes them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Not a fee</b>, and already netted into the two amounts above: returned inside
+    /// <see cref="ToAtomicAmount"/> when the payout leg is sats (the client fronted the carrier on
+    /// its own deposit) and charged out of <see cref="FromAtomicAmount"/> when the payout leg is an
+    /// asset (the solver fronts it at output 0).
+    /// </para>
+    /// <para>
+    /// What it changes is what a client actually sends: an asset deposit carries
+    /// <see cref="FromAtomicAmount"/> of the asset <em>plus</em> this many sats. Absent means zero,
+    /// and only the Arkade-to-Arkade class publishes it at all.
+    /// </para>
+    /// </remarks>
+    [JsonConverter(typeof(AtomicAmountConverter))]
+    public BigInteger? CarrierSats { get; init; }
 
     /// <summary>The solver's x-only settlement key (hex).</summary>
     public required string SolverPubkey { get; init; }

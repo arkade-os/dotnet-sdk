@@ -82,10 +82,23 @@
                         }
                     </p>
 
-                    <button class="btn btn-primary" style="width:100%;" @onclick="CreateSwap"
-                            disabled="@(_busy || _depositSats <= 0 || _wantAmount <= 0)">
-                        @(_busy ? "Creating…" : "Create swap")
+                    <button class="btn btn-primary" style="width:100%;" @onclick="QuotedSwap"
+                            disabled="@(_busy || _depositSats <= 0)">
+                        @(_busy ? "Quoting…" : "Quote & swap")
                     </button>
+                    <p class="text-secondary" style="font-size:11px;margin:6px 0 12px;">
+                        Asks this market's solver what it will pay for @_depositSats sats and funds the
+                        offer it prices. The estimate above is only an estimate; the quote binds.
+                    </p>
+
+                    <button class="btn btn-secondary" style="width:100%;" @onclick="CreateSwap"
+                            disabled="@(_busy || _depositSats <= 0 || _wantAmount <= 0)">
+                        @(_busy ? "Creating…" : "Publish an offer at my price")
+                    </button>
+                    <p class="text-secondary" style="font-size:11px;margin:6px 0 0;">
+                        No negotiation: publishes a standing offer at the want amount above and waits
+                        for any solver to take it.
+                    </p>
                 }
             }
 
@@ -219,6 +232,30 @@
         }
         catch { /* non-fatal */ }
         StateHasChanged();
+    }
+
+    /// <summary>
+    /// Quote first, then fund — the negotiated path.
+    /// </summary>
+    /// <remarks>
+    /// Only the deposit is named here, so the solver answers with the payout it will pay for it.
+    /// The client derives the offer covenant from that answer, compares it against the one the
+    /// solver published, and funds only its own derivation.
+    /// </remarks>
+    private async Task QuotedSwap()
+    {
+        if (State.ActiveWalletId is null || _selected is null) return;
+        _busy = true; _error = null;
+        try
+        {
+            var swap = await Ark.CreateQuotedBtcToAssetSwap(
+                State.ActiveWalletId, _selected, _depositSats);
+            // What the solver actually committed to, which is the point of asking.
+            _wantAmount = (long)swap.Quote.ToAtomicAmount;
+            await LoadSwaps();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
     }
 
     private async Task Claim(string swapId)
