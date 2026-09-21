@@ -1,3 +1,4 @@
+using NArk.Abstractions.Contracts;
 using NArk.Abstractions;
 using NArk.Abstractions.Helpers;
 using NSubstitute;
@@ -6,6 +7,7 @@ using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Services;
+using NArk.Tests.ArkadeIntents.Lightning;
 using NBitcoin;
 
 namespace NArk.Tests.ArkadeIntents;
@@ -241,6 +243,57 @@ public class ArkadeIntentsReconciliationTests
     }
 
     [Test]
+    public async Task AnUnfundedReceivePastItsDeadline_IsClosedAndUnwatched()
+    {
+        var contracts = Substitute.For<IContractStorage>();
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Pending),
+            vtxo: null, clock: new FakeClock(Locktime + 3600), contracts: contracts);
+
+        await service.AdvanceAllAsync();
+
+        var saved = storage.Saved.Single();
+        Assert.Multiple(() =>
+        {
+            Assert.That(saved.Status, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+            Assert.That(saved.Metadata, Does.ContainKey(ArkadeSwapMetadataKeys.ClosedByClockAt));
+        });
+        await contracts.Received().UpdateContractActivityState(
+            "wallet-1", saved.SwapPkScript, ContractActivityState.Inactive, Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ASwapClosedOnTheClock_ReopensAsPendingAndWatched()
+    {
+        var contracts = Substitute.For<IContractStorage>();
+        var intent = Intent(ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Resolved);
+        intent.Metadata[ArkadeSwapMetadataKeys.ClosedByClockAt] = "1";
+        var (service, storage) = Build(intent, vtxo: null, contracts: contracts);
+
+        Assert.That(await service.ReopenAsync("swap-1"), Is.True);
+
+        var saved = storage.Saved.Single();
+        Assert.Multiple(() =>
+        {
+            Assert.That(saved.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(saved.Metadata, Does.Not.ContainKey(ArkadeSwapMetadataKeys.ClosedByClockAt));
+        });
+        await contracts.Received().UpdateContractActivityState(
+            "wallet-1", saved.SwapPkScript, ContractActivityState.AwaitingFundsBeforeDeactivate,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ASwapClosedByTheChain_IsNeverReopened()
+    {
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Resolved), vtxo: null);
+
+        Assert.That(await service.ReopenAsync("swap-1"), Is.False);
+        Assert.That(storage.Saved, Is.Empty);
+    }
+
+    [Test]
     public async Task ASwapAlreadyInTheRightState_IsNotRewritten()
     {
         // Reconciliation is meant to be run on every startup, so a no-op pass must actually be one.
@@ -281,6 +334,7 @@ public class ArkadeIntentsReconciliationTests
     private static IClientTransport TransportReturning(params string[] psbts)
     {
         var transport = Substitute.For<IClientTransport>();
+        transport.GetServerInfoAsync(Arg.Any<CancellationToken>()).Returns(TestServerInfo.WithSeconds(4096));
         transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<string>>(psbts));
         return transport;
@@ -296,7 +350,8 @@ public class ArkadeIntentsReconciliationTests
     private static IClientTransport SilentTransport() => TransportReturning();
 
     private static (ArkadeIntentsService, FakeIntents) Build(
-        ArkadeSwapIntent intent, ArkVtxo? vtxo, IClientTransport? transport = null, FakeClock? clock = null)
+        ArkadeSwapIntent intent, ArkVtxo? vtxo, IClientTransport? transport = null, FakeClock? clock = null,
+        IContractStorage? contracts = null)
     {
         var intents = new FakeIntents(intent);
         var vtxos = _lastVtxos = new FakeVtxos(vtxo);
@@ -311,7 +366,8 @@ public class ArkadeIntentsReconciliationTests
             intentStorage: intents,
             vtxoStorage: vtxos,
             transport: transport ?? SilentTransport(),
-            time: clock ?? new FakeClock(Locktime - 3600)), intents);
+            time: clock ?? new FakeClock(Locktime - 3600),
+            contractStorage: contracts), intents);
     }
 
     private static ArkadeSwapIntent Intent(

@@ -92,6 +92,9 @@ public static class OnchainReceiveGates
     /// </remarks>
     public const long OrderMarginSeconds = 15 * 60;
 
+    /// <summary>How long past the L1 refund locktime an HTLC that never saw a payment stays watched.</summary>
+    public const long AbandonedGraceSeconds = 24 * 60 * 60;
+
     /// <summary>
     /// Whether there is still time to claim the Arkade lockup before the solver's reclaim opens.
     /// </summary>

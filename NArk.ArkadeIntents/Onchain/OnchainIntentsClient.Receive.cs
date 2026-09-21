@@ -17,6 +17,7 @@ using NArk.Core.Contracts;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
+using NArk.ArkadeIntents.Services;
 
 namespace NArk.ArkadeIntents.Onchain;
 
@@ -580,6 +581,19 @@ public sealed partial class OnchainIntentsClient
         var live = utxos.Where(u => u.Confirmed).ToList();
         if (live.Count == 0)
         {
+            // Nothing even in the mempool, a day past the only deadline that could still move it: stop
+            // asking the chain about this address on every pass. ReopenAsync restores it.
+            if (utxos.Count == 0
+                && (await blockchain.GetChainTime(cancellationToken)).Timestamp.ToUnixTimeSeconds()
+                    >= htlcLocktime + OnchainReceiveGates.AbandonedGraceSeconds)
+            {
+                await SwapWatch.CloseAsync(contractStorage, intent, ArkadeSwapIntentStatus.Cancelled,
+                    _time.GetUtcNow().ToUnixTimeSeconds(), network, cancellationToken);
+                await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+                return new OnchainRefundOutcome(
+                    false, "the L1 HTLC was never funded and its deadline has long passed; the swap is closed");
+            }
+
             return new OnchainRefundOutcome(
                 false, "the L1 HTLC holds nothing confirmed — either it was never funded, or it is gone");
         }

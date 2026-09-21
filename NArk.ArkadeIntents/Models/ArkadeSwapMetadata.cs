@@ -51,6 +51,10 @@ public static class ArkadeSwapMetadataKeys
     /// </remarks>
     public const string SolverPubkey = "solverPubkey";
 
+    /// <summary>When the advance pass closed this swap on its deadline, unix seconds.</summary>
+    /// <remarks>Marks the only kind of closed row <c>ReopenAsync</c> will reopen.</remarks>
+    public const string ClosedByClockAt = "closedByClockAt";
+
     /// <summary>The RFQ negotiation this swap was quoted under, when it was quoted at all.</summary>
     /// <remarks>
     /// Absent on an unquoted offer, which is the whole difference between the two ways an Arkade

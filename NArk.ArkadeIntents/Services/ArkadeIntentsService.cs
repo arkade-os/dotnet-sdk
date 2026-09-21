@@ -81,6 +81,7 @@ public sealed class ArkadeIntentsService
     private readonly IClientTransport _transport;
     private readonly TimeProvider _time;
     private readonly ILogger<ArkadeIntentsService>? _logger;
+    private readonly IContractStorage? _contractStorage;
 
     /// <summary>Creates the service.</summary>
     /// <param name="assets">The asset-swap corridors.</param>
@@ -101,7 +102,8 @@ public sealed class ArkadeIntentsService
         IClientTransport transport,
         OnchainIntentsClient? onchain = null,
         TimeProvider? time = null,
-        ILogger<ArkadeIntentsService>? logger = null)
+        ILogger<ArkadeIntentsService>? logger = null,
+        IContractStorage? contractStorage = null)
     {
         _assets = assets;
         _lightning = lightning;
@@ -111,6 +113,7 @@ public sealed class ArkadeIntentsService
         _onchain = onchain;
         _time = time ?? TimeProvider.System;
         _logger = logger;
+        _contractStorage = contractStorage;
     }
 
     // ─── Creating ─────────────────────────────────────────────────────
@@ -627,6 +630,30 @@ public sealed class ArkadeIntentsService
             await _transport.GetServerInfoAsync(cancellationToken), _logger, cancellationToken);
 
     /// <summary>
+    /// Put a receive swap the advance pass closed on its deadline back under watch, as Pending.
+    /// </summary>
+    /// <param name="swapId">The swap to reopen.</param>
+    /// <param name="cancellationToken">Cancels the lookups.</param>
+    /// <returns>Whether the swap was reopened; false for any row not closed by the clock.</returns>
+    /// <remarks>
+    /// The manual escape from a deadline that closed too early, e.g. a lockup funded while this process
+    /// was down. The next advance pass closes it again if the chain still shows nothing.
+    /// </remarks>
+    public async Task<bool> ReopenAsync(string swapId, CancellationToken cancellationToken = default)
+    {
+        var intent = await GetAsync(swapId, cancellationToken)
+            ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
+        if (!SwapWatch.IsClosedByClock(intent) || !ArkadeSwapStateMachine.Terminal.Contains(intent.Status))
+            return false;
+
+        var network = (await _transport.GetServerInfoAsync(cancellationToken)).Network;
+        await SwapWatch.ReopenAsync(_contractStorage, intent, network, cancellationToken);
+        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+        _logger?.LogInformation("Swap {SwapId}: reopened after its deadline closed it", swapId);
+        return true;
+    }
+
+    /// <summary>
     /// Re-derive every open swap's status from the chain, and report what was behind.
     /// </summary>
     /// <param name="walletId">Narrow to one wallet.</param>
@@ -726,7 +753,16 @@ public sealed class ArkadeIntentsService
             {
                 _logger?.LogInformation("Swap {SwapId}: {From} → {To} on the clock",
                     intent.Id, intent.Status, timed);
-                intent.Status = timed;
+                if (intent.Type is ArkadeSwapIntentType.LightningToBtc or ArkadeSwapIntentType.OnchainToBtc)
+                {
+                    // A receive closed on the clock stops being watched; ReopenAsync undoes both.
+                    var network = (await _transport.GetServerInfoAsync(cancellationToken)).Network;
+                    await SwapWatch.CloseAsync(_contractStorage, intent, timed, now, network, cancellationToken);
+                }
+                else
+                {
+                    intent.Status = timed;
+                }
                 await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
             }
 
