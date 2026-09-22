@@ -198,6 +198,21 @@ public class OnchainReceiveGatesTests
     }
 
     [Test]
+    public void APayoutBelowDust_IsRefused()
+    {
+        var ex = Assert.Throws<OnchainReceiveNotFundableException>(() =>
+            OnchainReceiveGates.AssertPayoutAboveDust(Quote(), dustSats: 49_851));
+
+        Assert.That(ex!.Reason, Is.EqualTo(OnchainReceiveRefusalReason.PayoutBelowDust));
+    }
+
+    [Test]
+    public void APayoutAtDust_IsAccepted()
+    {
+        Assert.DoesNotThrow(() => OnchainReceiveGates.AssertPayoutAboveDust(Quote(), dustSats: 49_850));
+    }
+
+    [Test]
     public void AQuotePricingTheRequestedTrade_IsAccepted()
     {
         Assert.Multiple(() =>

@@ -160,6 +160,10 @@ A quote is also held to the amount that was asked for: exact-in (`RfqAmountSide.
 payer that amount to the satoshi, and exact-out (`RfqAmountSide.To`) must deliver at least it. Neither
 was checked before, which left the payout a solver could name freely.
 
+A quote is refused outright when its payout is below the Arkade server's dust limit
+(`PayoutBelowDust`), which exact-in makes possible on a small order: the claim could not spend such a
+lockup into an output, and the L1 funding would wait out its locktime.
+
 One output, holding exactly `FundAmountSats`. The solver looks at the address for a single output
 whose value equals the quote — not a sum, and not "at least" — so the usual near misses have no
 recovery:

@@ -29,6 +29,9 @@ public enum OnchainReceiveRefusalReason
 
     /// <summary>The quote delivers less to us than we asked to receive (exact-out only).</summary>
     ShortPayout,
+
+    /// <summary>The payout, once the solver's fee is out of it, is below the Arkade server's dust limit.</summary>
+    PayoutBelowDust,
 }
 
 /// <summary>Thrown when an onchain receive quote is refused before anything is funded.</summary>
@@ -165,6 +168,27 @@ public static class OnchainReceiveGates
             throw new OnchainReceiveNotFundableException(
                 OnchainReceiveRefusalReason.ShortPayout,
                 $"the quote delivers {quote.ToAmount} sats, less than the {requestedSats} asked for");
+        }
+    }
+
+
+    /// <summary>
+    /// Refuse a quote whose payout could not become a VTXO.
+    /// </summary>
+    /// <param name="quote">The solver's quote.</param>
+    /// <param name="dustSats">The Arkade server's dust limit, in sats.</param>
+    /// <exception cref="OnchainReceiveNotFundableException">The payout is below <paramref name="dustSats"/>.</exception>
+    /// <remarks>
+    /// Matters on exact-in, where the fee comes out of the payout: a small order can leave a lockup the
+    /// claim cannot spend into an output, and the payer's L1 funding then waits out the HTLC locktime.
+    /// </remarks>
+    public static void AssertPayoutAboveDust(RfqQuote<OnchainReceiveQuoteProfile> quote, long dustSats)
+    {
+        if (quote.ToAmount < dustSats)
+        {
+            throw new OnchainReceiveNotFundableException(
+                OnchainReceiveRefusalReason.PayoutBelowDust,
+                $"the quote pays out {quote.ToAmount} sats, below the {dustSats}-sat dust limit");
         }
     }
 

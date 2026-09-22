@@ -266,6 +266,7 @@ public sealed partial class OnchainIntentsClient
         }
 
         OnchainReceiveGates.AssertAmounts(quote, amountSats, amountSide);
+        OnchainReceiveGates.AssertPayoutAboveDust(quote, serverInfo.Dust.Satoshi);
 
         // Both deadlines, both rails, checked together — the ordering neither contract enforces.
         OnchainReceiveGates.AssertFundable(quote, _time.GetUtcNow().ToUnixTimeSeconds());
