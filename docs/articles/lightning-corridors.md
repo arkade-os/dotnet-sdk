@@ -374,11 +374,12 @@ cannot link a wallet's swaps to each other.
 invalidates any copy — and a preimage sealed to a key nobody holds fails silently: the swap works,
 and only its offline claim path quietly does not exist.
 
-The status labels are worth a look too. On these corridors `Resolved` means the swap ended without
-a proven preimage — a spend that revealed none (a refund, not a payment), or a claim window that
-lapsed — so the sample says "Refunded — the payment did not happen" rather than anything that reads
-like success. `Fulfilled` is reserved for a spend whose witness carries a preimage hashing to the
-swap's payment hash, which is provable rather than inferred; the monitor checks it on every spend,
-and reconciliation re-checks it, so a `Resolved` recorded on a transient indexer miss is upgraded
-once the proof is readable. A wallet that collapses those two into "done" reports a failed payment
-as a completed one.
+The status labels are worth a look too. A spent lockup moves only on a verdict read from the chain
+(`LockupFateReader`). `Fulfilled` is reserved for a spend whose witness carries a preimage hashing to
+the swap's payment hash, which is provable rather than inferred. A spend the indexer can produce
+that carries no such preimage returned the money to whoever funded the lockup: on a send that is
+you, so the swap becomes `Cancelled`; on a receive the solver took its lockup back and the swap is
+`Resolved`, as it is when a claim window lapses. A spend that cannot be read yet proves neither and
+changes nothing — the advance pass re-reads it, and re-reads an older `Resolved` send the same way.
+The sample says "Refunded — the payment did not happen" for these rather than anything that reads
+like success; a wallet that collapses them into "done" reports a failed payment as a completed one.

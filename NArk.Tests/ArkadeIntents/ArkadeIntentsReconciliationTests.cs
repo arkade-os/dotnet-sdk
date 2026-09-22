@@ -93,20 +93,36 @@ public class ArkadeIntentsReconciliationTests
     }
 
     [Test]
-    public async Task ASpentLightningLockup_IsNotAssumedFilled()
+    public async Task ASpentLightningLockup_WhoseSpendCannotBeRead_IsLeftAlone()
     {
-        // The spend is recorded, but nothing here proves who moved it: the counterparty can push the
-        // covenant's untimelocked refund at any time. Reading this as a fill would report a refunded
-        // payment as a completed one — an order settled against money that came back.
+        // Nothing proves who moved it, so neither a fill nor a refund may be written.
         var (service, storage) = Build(
-            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending),
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending, withPaymentHash: true),
             Vtxo(spentBy: "spendtx", arkTxid: "arktx"));
 
         var result = await service.ReconcileAsync();
 
         Assert.Multiple(() =>
         {
-            Assert.That(result.Updated.Single().To, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+            Assert.That(result.Updated, Is.Empty);
+            Assert.That(storage.Saved, Is.Empty);
+        });
+    }
+
+    [TestCase(ArkadeSwapIntentStatus.Pending)]
+    [TestCase(ArkadeSwapIntentStatus.Resolved)]
+    public async Task ASendLockupSpentWithoutAPreimage_IsCancelledNotResolved(ArkadeSwapIntentStatus from)
+    {
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, from, withPaymentHash: true),
+            Vtxo(spentBy: "spendtx", arkTxid: "arktx"),
+            TransportReturning(SpendOf(LockupOutpoint)));
+
+        await service.ReconcileAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(storage.Saved.Single().Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
             Assert.That(storage.Saved.Single().SpentTxid, Is.EqualTo("arktx"));
         });
     }

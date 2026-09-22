@@ -581,38 +581,15 @@ public sealed class ArkadeIntentsService
     /// check against: there is nothing to prove in those cases, and asking the indexer for a
     /// transaction that cannot help is a round trip spent on a foregone answer.
     /// </remarks>
-    // A send whose funding spend failed ambiguously: the monitor ignores Funding, so the lockup, if it
-    // landed, is found here. Absent it, the invoice's expiry is the proof: once the payee can no longer
-    // be paid, cancelling cannot lead anyone to pay twice.
-    private async Task SettleFundingAsync(ArkadeSwapIntent intent, long now, CancellationToken cancellationToken)
+    // A send whose funding outcome is unknown and whose lockup never appeared: once the invoice has
+    // expired the payee can no longer be paid, so cancelling cannot lead anyone to pay twice.
+    private async Task CancelUnfundedSendAsync(ArkadeSwapIntent intent, long now, CancellationToken cancellationToken)
     {
-        var vtxos = await _vtxoStorage.GetVtxos(
-            scripts: [intent.SwapPkScript], includeSpent: true, cancellationToken: cancellationToken);
-        var lockup = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept) ?? vtxos.FirstOrDefault();
-
-        if (lockup is not null)
-        {
-            var preimage = await RevealedPreimageAsync(intent, lockup, cancellationToken);
-            if (ArkadeSwapStateMachine.Next(intent.Type, ArkadeSwapIntentStatus.Funding,
-                    SwapObservation.From(lockup, now, intent.RefundLocktime, preimage is not null)) is not { } next)
-                return;
-
-            intent.Status = next;
-            intent.Metadata.Remove(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt);
-            if (lockup.IsSpent()) intent.SpentTxid ??= lockup.ArkTxid ?? lockup.SpentByTransactionId;
-            await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
-            _logger?.LogInformation("Swap {SwapId}: lockup found for an unconfirmed funding → {Status}", intent.Id, next);
-            return;
-        }
-
-        if (intent.Status != ArkadeSwapIntentStatus.Funding
-            || intent.LightningMetadata().Invoice is not { Length: > 0 } invoice)
-            return;
+        if (intent.LightningMetadata().Invoice is not { Length: > 0 } invoice) return;
 
         var network = (await _transport.GetServerInfoAsync(cancellationToken)).Network;
         var expiry = BTCPayServer.Lightning.BOLT11PaymentRequest.Parse(invoice, network).ExpiryDate.ToUnixTimeSeconds();
-        if (now < expiry + LightningSendGates.UnfundedAfterExpirySeconds)
-            return;
+        if (now < expiry + LightningSendGates.UnfundedAfterExpirySeconds) return;
 
         intent.Status = ArkadeSwapIntentStatus.Cancelled;
         intent.Metadata[ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt] = now.ToString();
@@ -717,52 +694,65 @@ public sealed class ArkadeIntentsService
         foreach (var intent in await ListAsync(walletId: walletId, cancellationToken: cancellationToken))
         {
             if (ComposedRouteExecutionGuard.IsCompositionOwned(intent)) continue;
-
-            // Resolved is the one terminal status worth re-examining: it may have been recorded on
-            // a transient read failure, before the spending transaction was fetchable, and a
-            // preimage found now upgrades it to the fill it always was.
-            if (ArkadeSwapStateMachine.Terminal.Contains(intent.Status)
-                && intent.Status != ArkadeSwapIntentStatus.Resolved) continue;
             cancellationToken.ThrowIfCancellationRequested();
 
-            // includeSpent matters: a lockup the counterparty already took is exactly the outcome
-            // this pass exists to notice, and the default view hides it.
-            var vtxos = await _vtxoStorage.GetVtxos(
-                scripts: [intent.SwapPkScript], includeSpent: true, cancellationToken: cancellationToken);
-
-            // Prefer the live output; fall back to a spent one, which still carries the outcome.
-            var lockup = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept) ?? vtxos.FirstOrDefault();
-            if (lockup is null)
-            {
-                if (intent.Status == ArkadeSwapIntentStatus.Funding) unconfirmed.Add(intent.Id);
-                continue;
-            }
-
-            var preimage = await RevealedPreimageAsync(intent, lockup, cancellationToken);
-
-            ArkadeSwapIntentStatus? next = intent.Status == ArkadeSwapIntentStatus.Resolved
-                // Terminal to the machine, so the upgrade is decided here: a proven preimage on a
-                // swap written off as resolved means the earlier read was wrong, not that the
-                // swap reopened.
-                ? preimage is not null ? ArkadeSwapIntentStatus.Fulfilled : null
-                : ArkadeSwapStateMachine.Next(
-                    intent.Type, intent.Status,
-                    SwapObservation.From(lockup, now, intent.RefundLocktime, preimage is not null));
-            if (next is null) continue;
-
-            var from = intent.Status;
-            intent.Status = next.Value;
-            if (lockup.IsSpent())
-            {
-                intent.SpentTxid ??= lockup.ArkTxid ?? lockup.SpentByTransactionId;
-            }
-            await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
-
-            _logger?.LogInformation("Swap {SwapId} reconciled: {From} → {To}", intent.Id, from, next.Value);
-            updated.Add(new ArkadeIntentReconciled(intent.Id, from, next.Value));
+            var (reconciled, lockupSeen) = await ReconcileOneAsync(intent, now, cancellationToken);
+            if (reconciled is not null) updated.Add(reconciled);
+            else if (!lockupSeen && intent.Status == ArkadeSwapIntentStatus.Funding) unconfirmed.Add(intent.Id);
         }
 
         return new ArkadeReconciliation(updated, unconfirmed);
+    }
+
+    // One swap's status re-derived from the chain. A spent HTLC lockup moves only on a verdict: a
+    // claim proven by its preimage, or a spend readable enough to prove there was none. Unknown
+    // leaves the row as it is, for a later pass, rather than guessing Resolved.
+    private async Task<(ArkadeIntentReconciled? Reconciled, bool LockupSeen)> ReconcileOneAsync(
+        ArkadeSwapIntent intent, long now, CancellationToken cancellationToken)
+    {
+        var reopening = intent.Status == ArkadeSwapIntentStatus.Cancelled
+                        && SwapWatch.IsClosedWithoutChainEvent(intent) && SwapSpendVerdict.IsSend(intent.Type);
+        if (ArkadeSwapStateMachine.Terminal.Contains(intent.Status)
+            && intent.Status != ArkadeSwapIntentStatus.Resolved && !reopening)
+            return (null, false);
+
+        // includeSpent matters: a lockup the counterparty already took is exactly the outcome to notice.
+        var vtxos = await _vtxoStorage.GetVtxos(
+            scripts: [intent.SwapPkScript], includeSpent: true, cancellationToken: cancellationToken);
+        var lockup = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept) ?? vtxos.FirstOrDefault();
+        if (lockup is null) return (null, false);
+
+        var htlcSpend = lockup.IsSpent() && SwapSpendVerdict.IsHtlcCorridor(intent.Type);
+        var claimed = false;
+        if (htlcSpend)
+        {
+            if (await SwapSpendVerdict.ClaimedAsync(_transport, _vtxoStorage, intent, cancellationToken) is not { } verdict)
+                return (null, true);
+            claimed = verdict;
+        }
+        else if (lockup.IsSpent())
+        {
+            claimed = await RevealedPreimageAsync(intent, lockup, cancellationToken) is not null;
+        }
+
+        var from = intent.Status;
+        ArkadeSwapIntentStatus? next = from == ArkadeSwapIntentStatus.Resolved
+            // Terminal to the machine, so decided here: the earlier read was wrong, not the swap reopened.
+            ? claimed ? ArkadeSwapIntentStatus.Fulfilled
+              : htlcSpend ? SwapSpendVerdict.AfterNoClaim(intent.Type, from) : null
+            : ArkadeSwapStateMachine.Next(
+                intent.Type, reopening ? ArkadeSwapIntentStatus.Funding : from,
+                SwapObservation.From(lockup, now, intent.RefundLocktime, claimed));
+        if (next is { } n && htlcSpend && !claimed) next = SwapSpendVerdict.AfterNoClaim(intent.Type, n);
+        if (next is null || next == from) return (null, true);
+
+        intent.Status = next.Value;
+        intent.Metadata.Remove(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt);
+        if (lockup.IsSpent()) intent.SpentTxid ??= lockup.ArkTxid ?? lockup.SpentByTransactionId;
+        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+        _logger?.LogInformation("Swap {SwapId} reconciled: {From} → {To}", intent.Id, from, next.Value);
+        return (new ArkadeIntentReconciled(intent.Id, from, next.Value), true);
     }
 
     /// <summary>
@@ -786,11 +776,16 @@ public sealed class ArkadeIntentsService
             cancellationToken.ThrowIfCancellationRequested();
             if (ComposedRouteExecutionGuard.IsCompositionOwned(intent)) continue;
 
-            if (intent.Type == ArkadeSwapIntentType.BtcToLightning
-                && (intent.Status == ArkadeSwapIntentStatus.Funding
+            // The monitor leaves a spend it cannot yet prove either way untouched, so this pass re-reads
+            // it. Resolved sends are re-read too, until proven one way; a Resolved receive is final.
+            if (SwapSpendVerdict.IsHtlcCorridor(intent.Type)
+                && (!ArkadeSwapStateMachine.Terminal.Contains(intent.Status)
+                    || (SwapSpendVerdict.IsSend(intent.Type) && intent.Status == ArkadeSwapIntentStatus.Resolved)
                     || (intent.Status == ArkadeSwapIntentStatus.Cancelled && SwapWatch.IsClosedWithoutChainEvent(intent))))
             {
-                await SettleFundingAsync(intent, now, cancellationToken);
+                var (_, lockupSeen) = await ReconcileOneAsync(intent, now, cancellationToken);
+                if (!lockupSeen && intent is { Type: ArkadeSwapIntentType.BtcToLightning, Status: ArkadeSwapIntentStatus.Funding })
+                    await CancelUnfundedSendAsync(intent, now, cancellationToken);
             }
 
             // Deadlines raise no chain event, so the monitor never sees them: a lockup sitting

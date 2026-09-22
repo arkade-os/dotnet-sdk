@@ -299,6 +299,9 @@
             ? "Paid — preimage published"
             : "Received",
         ArkadeSwapIntentStatus.Resolved => "Refunded — the payment did not happen",
+        ArkadeSwapIntentStatus.Cancelled => s.Type == ArkadeSwapIntentType.BtcToLightning
+            ? "Refunded — the payment did not happen"
+            : "Cancelled",
         ArkadeSwapIntentStatus.Recoverable => "Stuck — funds recoverable",
         _ => s.Status.ToString(),
     };
