@@ -288,6 +288,42 @@ nothing is trusted that was not checked.
 The key behind leaves 1–4 is the one that owns your refund address, so it is on your wallet's own
 derivation chain and survives a restart with no extra storage.
 
+## When a swap goes quiet
+
+Two outcomes produce no chain event, so the advance pass settles them on the clock instead.
+
+**A receive nobody paid.** A `LightningToBtc` swap still `Pending` at its `RefundLocktime` becomes
+`Resolved`: that deadline is the solver's reclaim, so there is nothing left to claim. Its lockup and
+payout contracts stop being watched, so abandoned invoices do not grow the synced script set.
+
+**A send whose funding failed ambiguously.** A spend can throw after the Arkade server accepted it,
+so once the funding spend has been attempted `SendToLightningAsync` returns rather than throws:
+
+- a coin-selection failure (`NotEnoughFundsException`, `TooManyInputsException`) means nothing was
+  sent; the swap is `Cancelled` and the exception is rethrown;
+- any other failure returns with `FundingConfirmed = false` and no `FundingTxid`, leaving the swap
+  `Funding`. Treat the payment as in flight, never as failed — retrying may pay the invoice twice. The
+  advance pass promotes the swap as soon as its lockup appears, and cancels it once the invoice has
+  been expired for `LightningSendGates.UnfundedAfterExpirySeconds` with no lockup, when paying it is
+  no longer possible.
+
+```csharp
+var funded = await intents.SendToLightningAsync(walletId, invoice, rfqTransport);
+if (!funded.FundingConfirmed)
+{
+    // Report the payment as pending and follow swap funded.RfqId; do not retry.
+}
+```
+
+A swap closed either way carries `closedWithoutChainEventAt`, and `ReopenAsync` puts it back under
+watch (`Pending` for a receive, `Funding` for a send) for the next pass to re-read. Rows closed by a
+chain event are refused.
+
+```csharp
+if (await intents.ReopenAsync(swapId))
+    await intents.AdvanceAsync(swapId);
+```
+
 ## Keeping up with the solver
 
 The contract is an agreement about bytes, and it is not versioned on the wire: if your derivation

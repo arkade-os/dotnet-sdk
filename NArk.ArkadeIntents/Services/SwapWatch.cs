@@ -5,26 +5,29 @@ using NBitcoin;
 
 namespace NArk.ArkadeIntents.Services;
 
-/// <summary>Starts or stops watching the scripts a receive swap left behind: its lockup and its payout.</summary>
+/// <summary>Closes or reopens a swap that ended with no chain event, and (un)watches its lockup and payout.</summary>
 internal static class SwapWatch
 {
-    public static bool IsClosedByClock(ArkadeSwapIntent intent) =>
-        intent.Metadata.ContainsKey(ArkadeSwapMetadataKeys.ClosedByClockAt);
+    public static bool IsClosedWithoutChainEvent(ArkadeSwapIntent intent) =>
+        intent.Metadata.ContainsKey(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt);
 
     public static async Task CloseAsync(
         IContractStorage? contracts, ArkadeSwapIntent intent, ArkadeSwapIntentStatus status, long now,
         Network network, CancellationToken cancellationToken)
     {
         intent.Status = status;
-        intent.Metadata[ArkadeSwapMetadataKeys.ClosedByClockAt] = now.ToString();
+        intent.Metadata[ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt] = now.ToString();
         await SetAsync(contracts, intent, ContractActivityState.Inactive, network, cancellationToken);
     }
 
     public static async Task ReopenAsync(
         IContractStorage? contracts, ArkadeSwapIntent intent, Network network, CancellationToken cancellationToken)
     {
-        intent.Status = ArkadeSwapIntentStatus.Pending;
-        intent.Metadata.Remove(ArkadeSwapMetadataKeys.ClosedByClockAt);
+        // A send goes back to Funding, so the advance pass re-reads whether its lockup landed.
+        intent.Status = intent.Type == ArkadeSwapIntentType.BtcToLightning
+            ? ArkadeSwapIntentStatus.Funding
+            : ArkadeSwapIntentStatus.Pending;
+        intent.Metadata.Remove(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt);
         await SetAsync(contracts, intent, ContractActivityState.AwaitingFundsBeforeDeactivate, network, cancellationToken);
     }
 

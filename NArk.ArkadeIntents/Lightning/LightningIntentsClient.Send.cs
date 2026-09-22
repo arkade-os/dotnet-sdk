@@ -13,6 +13,7 @@ using NArk.ArkadeIntents.Recovery;
 using NArk.ArkadeIntents.Rfq.Profiles.Lightning;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.SolverRegistry;
+using NArk.Core.CoinSelector;
 using NArk.Core.Contracts;
 using NArk.Core.Services;
 using NArk.Core.Transport;
@@ -31,7 +32,15 @@ namespace NArk.ArkadeIntents.Lightning;
 /// <param name="RefundAddress">Where the covenant refund pays if the swap fails.</param>
 /// <param name="PaymentHash">The invoice's payment hash (hex).</param>
 /// <param name="FundedSats">What was locked up.</param>
-/// <param name="FundingTxid">The Arkade transaction that funded the lockup.</param>
+/// <param name="FundingTxid">
+/// The Arkade transaction that funded the lockup, or <c>null</c> when <paramref name="FundingConfirmed"/>
+/// is false.
+/// </param>
+/// <param name="FundingConfirmed">
+/// False when the funding spend failed in a way that does not say whether it reached the Arkade
+/// server. Treat the payment as in flight, never as failed: retrying may pay the invoice twice. The
+/// swap stays <see cref="Models.ArkadeSwapIntentStatus.Funding"/> until the advance pass settles it.
+/// </param>
 public sealed record FundedLightningSend(
     string RfqId,
     RfqQuote<LightningSendQuoteProfile> Quote,
@@ -40,7 +49,8 @@ public sealed record FundedLightningSend(
     string RefundAddress,
     string PaymentHash,
     long FundedSats,
-    string FundingTxid);
+    string? FundingTxid,
+    bool FundingConfirmed = true);
 
 /// <summary>
 /// The maker side of an <c>arkade:BTC-&gt;lightning:BTC</c> swap: pay a BOLT11 out of an Arkade
@@ -72,7 +82,11 @@ public sealed partial class LightningIntentsClient
     /// <param name="invoice">The BOLT11 to pay.</param>
     /// <param name="rfqTransport">How to reach the solver.</param>
     /// <param name="cancellationToken">Cancels before funding; after funding the swap is live regardless.</param>
-    /// <returns>The funded swap.</returns>
+    /// <returns>
+    /// The funded swap. Once the funding spend has been attempted this returns rather than throws:
+    /// check <see cref="FundedLightningSend.FundingConfirmed"/>, which is false when the outcome is unknown.
+    /// </returns>
+    /// <exception cref="NBitcoin.NotEnoughFundsException">The wallet cannot cover the lockup — nothing was funded.</exception>
     /// <exception cref="RfqRefusedException">The solver declined to quote.</exception>
     /// <exception cref="LockupAddressMismatchException">The solver's address is not ours — nothing was funded.</exception>
     /// <exception cref="LightningSendNotFundableException">A safety gate refused — nothing was funded.</exception>
@@ -188,13 +202,46 @@ public sealed partial class LightningIntentsClient
         }.WithLightningMetadata(new LightningSwapMetadata(invoice, null)).WithSolver(quote.SolverPubkey);
         await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
 
-        var txid = await _spendingService.Spend(
-            walletId,
-            [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(quote.FromAmount), lockupArkAddress)],
-            cancellationToken);
+        uint256? txid;
+        try
+        {
+            txid = await _spendingService.Spend(
+                walletId,
+                [new ArkTxOut(ArkTxOutType.Vtxo, Money.Satoshis(quote.FromAmount), lockupArkAddress)],
+                cancellationToken);
+        }
+        catch (Exception e) when (e is NotEnoughFundsException or TooManyInputsException)
+        {
+            // Coin selection fails before anything reaches the Arkade server, so nothing was funded.
+            intent.Status = ArkadeSwapIntentStatus.Cancelled;
+            await _intentStorage.SaveArkadeSwapIntent(intent, CancellationToken.None);
+            await _contractStorage.UpdateContractActivityState(
+                walletId, intent.SwapPkScript, ContractActivityState.Inactive, CancellationToken.None);
+            throw;
+        }
+        catch (Exception e)
+        {
+            // Any later failure may follow a submit the server accepted, so it is returned, not thrown:
+            // a caller treating an exception as "not paid" would retry. The row stays Funding, and the
+            // advance pass settles it from the chain or, failing that, from the invoice's expiry.
+            _logger?.LogWarning(e, "Funding send swap {RfqId} failed with an unknown outcome", request.RfqId);
+            txid = null;
+        }
 
-        intent.Status = ArkadeSwapIntentStatus.Pending;
-        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+        if (txid is not null)
+        {
+            intent.Status = ArkadeSwapIntentStatus.Pending;
+            try
+            {
+                await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+            }
+            catch (Exception e)
+            {
+                // Funded regardless; the advance pass promotes the Funding row once it sees the lockup.
+                _logger?.LogWarning(e, "Send swap {RfqId} funded in {Txid} but could not be marked Pending",
+                    request.RfqId, txid);
+            }
+        }
 
         return new FundedLightningSend(
             RfqId: request.RfqId,
@@ -204,7 +251,8 @@ public sealed partial class LightningIntentsClient
             RefundAddress: refundAddress,
             PaymentHash: decoded.PaymentHash.ToString(),
             FundedSats: quote.FromAmount,
-            FundingTxid: txid.ToString());
+            FundingTxid: txid?.ToString(),
+            FundingConfirmed: txid is not null);
     }
 
     /// <summary>

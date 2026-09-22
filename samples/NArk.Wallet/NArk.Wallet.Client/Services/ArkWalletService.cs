@@ -399,7 +399,8 @@ public class ArkWalletService(
     /// that, and it appears when the solver claims — until then the swap is still in flight and,
     /// past its refund locktime, still refundable.
     /// </remarks>
-    public async Task<string> PayLightningInvoice(string walletId, string bolt11Invoice)
+    /// <returns>The funding txid, or null when the funding outcome is unknown: still in flight, do not retry.</returns>
+    public async Task<string?> PayLightningInvoice(string walletId, string bolt11Invoice)
     {
         var funded = await arkadeLightning.PayInvoiceAsync(walletId, bolt11Invoice);
         return funded.FundingTxid;

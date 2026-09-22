@@ -208,6 +208,11 @@ Two things about it are worth knowing:
 It is refused once the swap is `Fulfilled`: past that the preimage is public and the solver can take
 that same HTLC, so a refund racing it is at best a wasted fee.
 
+An on-board whose HTLC never saw a payment is closed (`Cancelled`) by this path once the chain's
+median time past is `OnchainReceiveGates.AbandonedGraceSeconds` beyond the HTLC locktime and the
+address shows no output at all, not even unconfirmed. It stops being polled; `ReopenAsync` restores
+it, as described under [Lightning Corridors](lightning-corridors.md#when-a-swap-goes-quiet).
+
 ## Recovery
 
 Everything above drives forward from a row the client wrote itself. When that row is gone or stale —

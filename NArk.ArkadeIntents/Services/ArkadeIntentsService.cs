@@ -138,7 +138,10 @@ public sealed class ArkadeIntentsService
     /// not apply — a deployment naming one solver outright has no published terms to hold it to.
     /// </param>
     /// <param name="cancellationToken">Cancels before funding.</param>
-    /// <returns>The funded swap.</returns>
+    /// <returns>
+    /// The funded swap; <see cref="FundedLightningSend.FundingConfirmed"/> is false when the funding
+    /// outcome is unknown, and the payment must then be treated as in flight.
+    /// </returns>
     public Task<FundedLightningSend> SendToLightningAsync(
         string walletId,
         string invoice,
@@ -578,6 +581,45 @@ public sealed class ArkadeIntentsService
     /// check against: there is nothing to prove in those cases, and asking the indexer for a
     /// transaction that cannot help is a round trip spent on a foregone answer.
     /// </remarks>
+    // A send whose funding spend failed ambiguously: the monitor ignores Funding, so the lockup, if it
+    // landed, is found here. Absent it, the invoice's expiry is the proof: once the payee can no longer
+    // be paid, cancelling cannot lead anyone to pay twice.
+    private async Task SettleFundingAsync(ArkadeSwapIntent intent, long now, CancellationToken cancellationToken)
+    {
+        var vtxos = await _vtxoStorage.GetVtxos(
+            scripts: [intent.SwapPkScript], includeSpent: true, cancellationToken: cancellationToken);
+        var lockup = vtxos.FirstOrDefault(v => !v.IsSpent() && !v.Swept) ?? vtxos.FirstOrDefault();
+
+        if (lockup is not null)
+        {
+            var preimage = await RevealedPreimageAsync(intent, lockup, cancellationToken);
+            if (ArkadeSwapStateMachine.Next(intent.Type, ArkadeSwapIntentStatus.Funding,
+                    SwapObservation.From(lockup, now, intent.RefundLocktime, preimage is not null)) is not { } next)
+                return;
+
+            intent.Status = next;
+            intent.Metadata.Remove(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt);
+            if (lockup.IsSpent()) intent.SpentTxid ??= lockup.ArkTxid ?? lockup.SpentByTransactionId;
+            await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+            _logger?.LogInformation("Swap {SwapId}: lockup found for an unconfirmed funding → {Status}", intent.Id, next);
+            return;
+        }
+
+        if (intent.Status != ArkadeSwapIntentStatus.Funding
+            || intent.LightningMetadata().Invoice is not { Length: > 0 } invoice)
+            return;
+
+        var network = (await _transport.GetServerInfoAsync(cancellationToken)).Network;
+        var expiry = BTCPayServer.Lightning.BOLT11PaymentRequest.Parse(invoice, network).ExpiryDate.ToUnixTimeSeconds();
+        if (now < expiry + LightningSendGates.UnfundedAfterExpirySeconds)
+            return;
+
+        intent.Status = ArkadeSwapIntentStatus.Cancelled;
+        intent.Metadata[ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt] = now.ToString();
+        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+        _logger?.LogInformation("Swap {SwapId}: funding never landed and the invoice has expired → Cancelled", intent.Id);
+    }
+
     private async Task<byte[]?> RevealedPreimageAsync(
         ArkadeSwapIntent intent, ArkVtxo lockup, CancellationToken cancellationToken)
     {
@@ -643,7 +685,7 @@ public sealed class ArkadeIntentsService
     {
         var intent = await GetAsync(swapId, cancellationToken)
             ?? throw new InvalidOperationException($"Swap '{swapId}' not found.");
-        if (!SwapWatch.IsClosedByClock(intent) || !ArkadeSwapStateMachine.Terminal.Contains(intent.Status))
+        if (!SwapWatch.IsClosedWithoutChainEvent(intent) || !ArkadeSwapStateMachine.Terminal.Contains(intent.Status))
             return false;
 
         var network = (await _transport.GetServerInfoAsync(cancellationToken)).Network;
@@ -743,6 +785,13 @@ public sealed class ArkadeIntentsService
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (ComposedRouteExecutionGuard.IsCompositionOwned(intent)) continue;
+
+            if (intent.Type == ArkadeSwapIntentType.BtcToLightning
+                && (intent.Status == ArkadeSwapIntentStatus.Funding
+                    || (intent.Status == ArkadeSwapIntentStatus.Cancelled && SwapWatch.IsClosedWithoutChainEvent(intent))))
+            {
+                await SettleFundingAsync(intent, now, cancellationToken);
+            }
 
             // Deadlines raise no chain event, so the monitor never sees them: a lockup sitting
             // unspent past its locktime is only ever noticed by a pass that checks the clock.

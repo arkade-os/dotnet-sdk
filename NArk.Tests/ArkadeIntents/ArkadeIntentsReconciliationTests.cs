@@ -5,6 +5,7 @@ using NSubstitute;
 using NArk.Core.Transport;
 using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents;
+using NArk.ArkadeIntents.Lightning;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Services;
 using NArk.Tests.ArkadeIntents.Lightning;
@@ -256,7 +257,7 @@ public class ArkadeIntentsReconciliationTests
         Assert.Multiple(() =>
         {
             Assert.That(saved.Status, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
-            Assert.That(saved.Metadata, Does.ContainKey(ArkadeSwapMetadataKeys.ClosedByClockAt));
+            Assert.That(saved.Metadata, Does.ContainKey(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt));
         });
         await contracts.Received().UpdateContractActivityState(
             "wallet-1", saved.SwapPkScript, ContractActivityState.Inactive, Arg.Any<CancellationToken>());
@@ -267,7 +268,7 @@ public class ArkadeIntentsReconciliationTests
     {
         var contracts = Substitute.For<IContractStorage>();
         var intent = Intent(ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Resolved);
-        intent.Metadata[ArkadeSwapMetadataKeys.ClosedByClockAt] = "1";
+        intent.Metadata[ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt] = "1";
         var (service, storage) = Build(intent, vtxo: null, contracts: contracts);
 
         Assert.That(await service.ReopenAsync("swap-1"), Is.True);
@@ -276,11 +277,91 @@ public class ArkadeIntentsReconciliationTests
         Assert.Multiple(() =>
         {
             Assert.That(saved.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
-            Assert.That(saved.Metadata, Does.Not.ContainKey(ArkadeSwapMetadataKeys.ClosedByClockAt));
+            Assert.That(saved.Metadata, Does.Not.ContainKey(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt));
         });
         await contracts.Received().UpdateContractActivityState(
             "wallet-1", saved.SwapPkScript, ContractActivityState.AwaitingFundsBeforeDeactivate,
             Arg.Any<CancellationToken>());
+    }
+
+    // A signed regtest invoice; its expiry anchors the clocks below.
+    private const string SendInvoice =
+        "lnbcrt21u1p5tqtaypp56yzglgfgwsm5pd49996jqvtmpf8fqdk7cq2znnjw5c2j5t8ua38qdql2djkuepqw3hjqs2jfvsxzerywfjhxuccqz95xqztfsp586s5vpsdxt05rm7hr6ycwq5ffmnx2gngv820seugky6j6z2wxqwq9qxpqysgqepuxr82pvlp8lgj7nqu8yp2f5q32323jxddx9qgtjhfhsyzvftgkwx8qv4772fzz46pwyw5ex3u7lf7na8a8403ur3gyeu22gv29rpspefzz2y";
+
+    private static readonly long SendInvoiceExpiry =
+        BTCPayServer.Lightning.BOLT11PaymentRequest.Parse(SendInvoice, Network.RegTest).ExpiryDate.ToUnixTimeSeconds();
+
+    private static ArkadeSwapIntent FundingSend(ArkadeSwapIntentStatus status = ArkadeSwapIntentStatus.Funding)
+    {
+        var intent = Intent(ArkadeSwapIntentType.BtcToLightning, status)
+            .WithLightningMetadata(new LightningSwapMetadata(SendInvoice, null));
+        intent.RefundLocktime = SendInvoiceExpiry + 7200;
+        return intent;
+    }
+
+    [Test]
+    public async Task AFundingSendWhoseLockupLanded_IsPromotedByTheAdvancePass()
+    {
+        var (service, storage) = Build(FundingSend(), Vtxo(), clock: new FakeClock(SendInvoiceExpiry - 60));
+
+        await service.AdvanceAllAsync();
+
+        Assert.That(storage.Saved.First().Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+    }
+
+    [Test]
+    public async Task AFundingSendWithNoLockup_WaitsWhileItsInvoiceCanStillBePaid()
+    {
+        var (service, storage) = Build(FundingSend(), vtxo: null,
+            clock: new FakeClock(SendInvoiceExpiry + LightningSendGates.UnfundedAfterExpirySeconds - 1));
+
+        await service.AdvanceAllAsync();
+
+        Assert.That(storage.Saved, Is.Empty);
+    }
+
+    [Test]
+    public async Task AFundingSendWithNoLockup_IsCancelledOnceItsInvoiceExpired()
+    {
+        var (service, storage) = Build(FundingSend(), vtxo: null,
+            clock: new FakeClock(SendInvoiceExpiry + LightningSendGates.UnfundedAfterExpirySeconds));
+
+        await service.AdvanceAllAsync();
+
+        var saved = storage.Saved.Single();
+        Assert.Multiple(() =>
+        {
+            Assert.That(saved.Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
+            Assert.That(saved.Metadata, Does.ContainKey(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt));
+        });
+    }
+
+    [Test]
+    public async Task ACancelledSendWhoseLockupLandedLate_IsReopened()
+    {
+        var intent = FundingSend(ArkadeSwapIntentStatus.Cancelled);
+        intent.Metadata[ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt] = "1";
+        var (service, storage) = Build(intent, Vtxo(), clock: new FakeClock(SendInvoiceExpiry + 3600));
+
+        await service.AdvanceAllAsync();
+
+        var saved = storage.Saved.First();
+        Assert.Multiple(() =>
+        {
+            Assert.That(saved.Status, Is.EqualTo(ArkadeSwapIntentStatus.Pending));
+            Assert.That(saved.Metadata, Does.Not.ContainKey(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt));
+        });
+    }
+
+    [Test]
+    public async Task AReopenedSend_GoesBackToFunding()
+    {
+        var intent = FundingSend(ArkadeSwapIntentStatus.Cancelled);
+        intent.Metadata[ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt] = "1";
+        var (service, storage) = Build(intent, vtxo: null, contracts: Substitute.For<IContractStorage>());
+
+        Assert.That(await service.ReopenAsync("swap-1"), Is.True);
+        Assert.That(storage.Saved.Single().Status, Is.EqualTo(ArkadeSwapIntentStatus.Funding));
     }
 
     [Test]

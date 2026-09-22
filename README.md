@@ -1218,6 +1218,13 @@ var funded = await intents.SendToLightningAsync(
 await intents.RefundLightningSendAsync(funded.RfqId);
 ```
 
+A funding spend that fails after it may have reached the Arkade server does not throw: it returns
+with `funded.FundingConfirmed == false` and no txid. Report the payment as in flight and do not
+retry, since the lockup may be funded. The advance pass settles the swap from the
+chain, or cancels it once the invoice has expired unfunded. A swap closed without a chain event —
+that one, or a receive nobody paid past its deadline — can be put back under watch with
+`await intents.ReopenAsync(swapId)`. See [Lightning Corridors](docs/articles/lightning-corridors.md#when-a-swap-goes-quiet).
+
 ### Receiving — be paid over Lightning, take delivery on Arkade
 
 ```csharp

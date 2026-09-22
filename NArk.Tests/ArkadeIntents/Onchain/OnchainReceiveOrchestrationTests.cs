@@ -310,7 +310,7 @@ public class OnchainReceiveOrchestrationTests
         {
             Assert.That(outcome.Refunded, Is.False);
             Assert.That(saved!.Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
-            Assert.That(saved.Metadata, Does.ContainKey(ArkadeSwapMetadataKeys.ClosedByClockAt));
+            Assert.That(saved.Metadata, Does.ContainKey(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt));
         });
     }
 
