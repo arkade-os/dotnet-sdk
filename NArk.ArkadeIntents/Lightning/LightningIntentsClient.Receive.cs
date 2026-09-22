@@ -97,6 +97,12 @@ public sealed partial class LightningIntentsClient
     /// it and the claim pushed while this client is offline — or <c>null</c> when there is no
     /// covclaimd, in which case no packet is sent at all and the claim is this client's own to make.
     /// </param>
+    /// <param name="payoutContract">
+    /// A contract to take the payout key from instead of deriving a fresh one. Supply the one this
+    /// payment already has — an invoice's own payment contract, say — and the swap costs no HD index
+    /// of its own. An HD wallet is recovered by scanning until <c>GapLimit</c> consecutive indices come
+    /// back unused, so every index spent on a swap nobody pays shortens the run a restore can cross.
+    /// </param>
     /// <param name="cancellationToken">Cancels the negotiation.</param>
     /// <returns>The invoice to be paid, and everything needed to claim once it is.</returns>
     /// <exception cref="RfqRefusedException">The solver declined to quote.</exception>
@@ -109,8 +115,9 @@ public sealed partial class LightningIntentsClient
         string? covclaimdPubKey,
         SolverCard? solverCard = null,
         RfqAmountSide amountSide = RfqAmountSide.To,
+        ArkContract? payoutContract = null,
         CancellationToken cancellationToken = default) => await ReceiveFromLightningCoreAsync(
-            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, amountSide,
+            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, amountSide, payoutContract,
             linkedSecret: null, linkedPayout: null, linkedReceiver: null, linkedRfqId: null, outgoingSwapId: null,
             cancellationToken);
 
@@ -145,7 +152,7 @@ public sealed partial class LightningIntentsClient
         string? rfqId = null,
         CancellationToken cancellationToken = default) => await ReceiveFromLightningCoreAsync(
             walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, RfqAmountSide.To,
-            secret, payoutAddress, receiverContract, rfqId, outgoingSwapId, cancellationToken);
+            payoutContract: null, secret, payoutAddress, receiverContract, rfqId, outgoingSwapId, cancellationToken);
 
     private async Task<PendingLightningReceive> ReceiveFromLightningCoreAsync(
         string walletId,
@@ -154,6 +161,7 @@ public sealed partial class LightningIntentsClient
         string? covclaimdPubKey,
         SolverCard? solverCard,
         RfqAmountSide amountSide,
+        ArkContract? payoutContract,
         SwapLinkSecret? linkedSecret,
         ArkAddress? linkedPayout,
         ArkContract? linkedReceiver,
@@ -167,7 +175,7 @@ public sealed partial class LightningIntentsClient
         // the swap — on this corridor the client is the covenant's `receiver`.
         if ((linkedSecret is null) != (linkedPayout is null) || (linkedSecret is null) != (linkedReceiver is null))
             throw new ArgumentException("a linked receive requires its secret, payout, and receiver together");
-        var payout = linkedReceiver ?? await _contractService.DeriveContract(
+        var payout = linkedReceiver ?? payoutContract ?? await _contractService.DeriveContract(
             walletId, NextContractPurpose.Receive, cancellationToken: cancellationToken);
         var payoutArkAddress = linkedPayout ?? payout.GetArkAddress();
         var payoutPkScript = payoutArkAddress.ScriptPubKey.ToBytes();

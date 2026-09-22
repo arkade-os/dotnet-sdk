@@ -150,6 +150,12 @@ The preimage is persisted on the intent before the invoice is handed out, becaus
 recovering it afterwards: you chose it, and the only other copy is sealed to a key you do not hold.
 The covclaimd packet is a fallback claimer, not a backup you can read.
 
+Both receives take an optional `payoutContract`: pass a contract the caller already derived for this
+payment and the swap spends no HD index of its own. Left out, a fresh receive contract is derived, as
+before. It matters for a flow that mints an address per attempt — an invoice, an order — because an HD
+wallet is restored by scanning until `GapLimit` consecutive indices come back unused, and every index
+spent on a swap nobody pays shortens the run a restore can cross.
+
 ## Reaching a solver
 
 Two transports, same payloads.

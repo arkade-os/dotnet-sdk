@@ -1240,6 +1240,9 @@ var pending = await intents.ReceiveFromLightningAsync(
 
 Console.WriteLine($"have the payer settle: {pending.Invoice}");
 
+// `payoutContract:` takes the payout key from a contract the caller already has — an invoice's own
+// payment contract, say — so a swap nobody pays costs no HD index. The on-board takes the same.
+
 // Once the solver funds the lockup — the monitor moves the intent to Claimable:
 await intents.ClaimLightningReceiveAsync(pending.RfqId);
 ```

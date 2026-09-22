@@ -162,6 +162,10 @@ public sealed class ArkadeIntentsService
     /// (<see cref="RfqAmountSide.From"/>). A merchant minting an invoice for an order total wants
     /// the latter.
     /// </param>
+    /// <param name="payoutContract">
+    /// A contract to take the payout key from instead of deriving a fresh one — the one this payment
+    /// already has, where the caller has one, so the swap costs no HD index of its own.
+    /// </param>
     /// <param name="cancellationToken">Cancels the negotiation.</param>
     /// <returns>The invoice to hand to a payer, and what is needed to claim.</returns>
     public Task<PendingLightningReceive> ReceiveFromLightningAsync(
@@ -171,9 +175,11 @@ public sealed class ArkadeIntentsService
         string? covclaimdPubKey,
         SolverCard? solverCard = null,
         RfqAmountSide amountSide = RfqAmountSide.To,
+        ArkContract? payoutContract = null,
         CancellationToken cancellationToken = default) =>
         _lightning.ReceiveFromLightningAsync(
-            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, amountSide, cancellationToken);
+            walletId, amountSats, rfqTransport, covclaimdPubKey, solverCard, amountSide, payoutContract,
+            cancellationToken);
 
     // ─── Reading ──────────────────────────────────────────────────────
 
