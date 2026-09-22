@@ -87,6 +87,14 @@ await intents.ClaimLightningReceiveAsync(pending.RfqId);
 
 ### Watch-only execution
 
+
+A wallet that cannot sign still claims and refunds, because the covenant's signerless leaves pin their
+outputs — the claim to our payout, the ninth leaf to our refund address — and the emulator co-signs
+them. The SDK never switches to those paths on its own: set `ArkadeIntentsOptions.SignerlessFallback`
+and a wallet with no signer takes that route automatically, including from the advance pass. Without it
+a receive a watch-only wallet negotiated can never be claimed, and the payer's money waits out the
+solver's reclaim. The preimage still has to be on the row: a wallet with no signer cannot re-derive it.
+
 With `AddArkadeEmulator(...)` registered, explicitly call
 `intents.ClaimLightningReceiveNonInteractiveAsync(swapId)` to spend the covenant claim without a
 wallet signature. A watch-only receive must retain its preimage; without it, losing the signer also

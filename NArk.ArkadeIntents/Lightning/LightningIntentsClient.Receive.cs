@@ -345,6 +345,12 @@ public sealed partial class LightningIntentsClient
                 $"Swap '{swapId}' passed its claim window {now - locktime}s ago; the solver's reclaim path is open.");
         }
 
+        // A wallet that cannot sign can still claim where the deployment asked for it: the claim leaf is
+        // pinned to our payout and co-signed by the emulator, so the preimage is all it needs.
+        nonInteractive = nonInteractive
+            || (_signerlessFallback
+                && await _walletProvider.GetSignerAsync(intent.WalletId, cancellationToken) is null);
+
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
         var contract = await LightningCorridor.LoadLockupAsync(
             _contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);

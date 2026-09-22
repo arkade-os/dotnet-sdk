@@ -560,6 +560,11 @@ public sealed partial class LightningIntentsClient
 
         await AssertLocktimeReachedAsync(swapId, locktime, cancellationToken);
 
+        // Same as the claim, and on the same switch: the ninth leaf pays our own refund address.
+        nonInteractive = nonInteractive
+            || (_signerlessFallback
+                && await _walletProvider.GetSignerAsync(intent.WalletId, cancellationToken) is null);
+
         var previousStatus = intent.Status;
         intent.Status = ArkadeSwapIntentStatus.Cancelling;
         await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);

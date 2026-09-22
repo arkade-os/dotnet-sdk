@@ -1511,6 +1511,10 @@ services.AddArkadeIntentsServices(new ArkadeIntentsOptions
 {
     // Refuse a receive quote billing the payer more than this. Unset means no ceiling.
     MaxPayAmountSats = 250_000,
+
+    // Claim and refund through the covenant's signerless leaves when the wallet cannot sign.
+    // Off by default; turn it on for wallets that are watch-only by design.
+    SignerlessFallback = true,
 });
 ```
 

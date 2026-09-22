@@ -461,6 +461,12 @@ public sealed partial class OnchainIntentsClient
                 + "the L1 refund is the way out from here.");
         }
 
+        // As on the Lightning leg, and on the same switch: the claim leaf is pinned to our payout and
+        // co-signed by the emulator, so a wallet that cannot sign still takes delivery.
+        nonInteractive = nonInteractive
+            || (_options.SignerlessFallback
+                && await walletProvider.GetSignerAsync(intent.WalletId, cancellationToken) is null);
+
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
         var contract = await LightningCorridor.LoadLockupAsync(
             contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
