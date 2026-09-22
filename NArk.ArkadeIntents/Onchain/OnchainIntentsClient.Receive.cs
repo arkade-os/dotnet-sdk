@@ -265,6 +265,8 @@ public sealed partial class OnchainIntentsClient
             SolverTerms.AssertFeeWithinAdvertised(solverCard, quote);
         }
 
+        OnchainReceiveGates.AssertAmounts(quote, amountSats, amountSide);
+
         // Both deadlines, both rails, checked together — the ordering neither contract enforces.
         OnchainReceiveGates.AssertFundable(quote, _time.GetUtcNow().ToUnixTimeSeconds());
 

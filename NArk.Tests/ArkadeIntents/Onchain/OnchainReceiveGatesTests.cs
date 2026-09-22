@@ -177,6 +177,36 @@ public class OnchainReceiveGatesTests
         Assert.Throws<OnchainReceiveNotFundableException>(
             () => OnchainReceiveGates.AssertFundable(quote, now))!.Reason;
 
+    // The quote prices 50_000 in, 49_850 out.
+
+    [Test]
+    public void AnExactInQuoteBillingSomethingElse_IsRefused()
+    {
+        var ex = Assert.Throws<OnchainReceiveNotFundableException>(() =>
+            OnchainReceiveGates.AssertAmounts(Quote(), 49_000, RfqAmountSide.From));
+
+        Assert.That(ex!.Reason, Is.EqualTo(OnchainReceiveRefusalReason.PayerChargeMismatch));
+    }
+
+    [Test]
+    public void AnExactOutQuoteDeliveringLessThanAsked_IsRefused()
+    {
+        var ex = Assert.Throws<OnchainReceiveNotFundableException>(() =>
+            OnchainReceiveGates.AssertAmounts(Quote(), 50_000, RfqAmountSide.To));
+
+        Assert.That(ex!.Reason, Is.EqualTo(OnchainReceiveRefusalReason.ShortPayout));
+    }
+
+    [Test]
+    public void AQuotePricingTheRequestedTrade_IsAccepted()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.DoesNotThrow(() => OnchainReceiveGates.AssertAmounts(Quote(), 50_000, RfqAmountSide.From));
+            Assert.DoesNotThrow(() => OnchainReceiveGates.AssertAmounts(Quote(), 49_850, RfqAmountSide.To));
+        });
+    }
+
     private static RfqQuote<OnchainReceiveQuoteProfile> Quote(
         long validUntil = Now + 600,
         long arkadeRefund = Now + 6 * 60 * 60,

@@ -23,6 +23,12 @@ public enum OnchainReceiveRefusalReason
 
     /// <summary>The two refunds open in the wrong order, or too close together.</summary>
     TimelocksOutOfOrder,
+
+    /// <summary>The quote asks the payer for something other than the amount requested (exact-in only).</summary>
+    PayerChargeMismatch,
+
+    /// <summary>The quote delivers less to us than we asked to receive (exact-out only).</summary>
+    ShortPayout,
 }
 
 /// <summary>Thrown when an onchain receive quote is refused before anything is funded.</summary>
@@ -131,6 +137,37 @@ public static class OnchainReceiveGates
     /// </summary>
     /// <param name="quote">The solver's quote.</param>
     /// <param name="now">The current time, unix seconds.</param>
+
+    /// <summary>
+    /// Hold a quote to the amount that was asked for, on the leg the request pinned.
+    /// </summary>
+    /// <param name="quote">The solver's quote.</param>
+    /// <param name="requestedSats">The amount the request named.</param>
+    /// <param name="amountSide">Which leg that amount pinned.</param>
+    /// <exception cref="OnchainReceiveNotFundableException">The quote prices a different trade.</exception>
+    /// <remarks>
+    /// Exact-in is checked both ways: the payer's figure is one a third party has been quoted, so a
+    /// charge under it under-credits the swap as surely as one over it overcharges. Exact-out only
+    /// bounds the payout from below, since a fee correction may deliver a satoshi more.
+    /// </remarks>
+    public static void AssertAmounts(
+        RfqQuote<OnchainReceiveQuoteProfile> quote, long requestedSats, RfqAmountSide amountSide)
+    {
+        if (amountSide == RfqAmountSide.From && quote.FromAmount != requestedSats)
+        {
+            throw new OnchainReceiveNotFundableException(
+                OnchainReceiveRefusalReason.PayerChargeMismatch,
+                $"the quote asks the payer for {quote.FromAmount} sats, not the {requestedSats} requested");
+        }
+
+        if (amountSide == RfqAmountSide.To && quote.ToAmount < requestedSats)
+        {
+            throw new OnchainReceiveNotFundableException(
+                OnchainReceiveRefusalReason.ShortPayout,
+                $"the quote delivers {quote.ToAmount} sats, less than the {requestedSats} asked for");
+        }
+    }
+
     /// <exception cref="OnchainReceiveNotFundableException">Any check refused.</exception>
     public static void AssertFundable(RfqQuote<OnchainReceiveQuoteProfile> quote, long now)
     {
