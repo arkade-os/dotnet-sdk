@@ -1512,6 +1512,11 @@ reaches anyone. Nothing is at risk without it — the amount that lands on Arkad
 separately — but a customer handed an invoice for more than the order they approved is a payment
 their wallet may refuse outright.
 
+Pinning the bill (`RfqAmountSide.From`) moves the solver's fee into the payout instead, so a small
+invoice can leave a payout below the Arkade server's dust limit — one the claim could not spend into
+an output. Such a quote is refused with `LightningReceiveRefusalReason.PayoutBelowDust`, again before
+its invoice is handed out.
+
 Registration copies every supplied `ArkadeIntentsOptions` value, including
 `OnchainClaimConfirmations` for automatic off-board claims (default: six). An explicit options
 object replaces earlier configured values, including null/default values. With no object, previously

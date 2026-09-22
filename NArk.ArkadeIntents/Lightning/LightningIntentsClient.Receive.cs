@@ -229,6 +229,7 @@ public sealed partial class LightningIntentsClient
 
         var invoice = LightningReceiveGates.VerifyInvoice(
             quote, paymentHash, amountSats, amountSide, serverInfo.Network);
+        LightningReceiveGates.AssertPayoutAboveDust(quote, serverInfo.Dust.Satoshi);
 
         // The last check before the invoice can reach a payer: paying into a window too short to
         // claim in parks the payer's money in a held HTLC until it lapses, and a quote billing more
