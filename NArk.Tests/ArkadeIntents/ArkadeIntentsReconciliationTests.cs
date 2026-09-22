@@ -381,6 +381,20 @@ public class ArkadeIntentsReconciliationTests
     }
 
     [Test]
+    public async Task ASwapMovedWhileTheAdvancePassWasReading_IsNotRewound()
+    {
+        // The monitor's view is the newer one, so a pass that started before it must not write over it.
+        var (service, storage) = Build(
+            Intent(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Pending),
+            Vtxo(), clock: new FakeClock(Locktime + 3600));
+        storage.MovedUnderneath = ArkadeSwapIntentStatus.Fulfilled;
+
+        await service.AdvanceAllAsync();
+
+        Assert.That(storage.Saved, Is.Empty);
+    }
+
+    [Test]
     public async Task ASwapClosedByTheChain_IsNeverReopened()
     {
         var (service, storage) = Build(
@@ -518,11 +532,21 @@ public class ArkadeIntentsReconciliationTests
             return Task.FromResult<IReadOnlyCollection<ArkadeSwapIntent>>(q.ToList());
         }
 
+        /// <summary>Set to have the next conditional save find the swap already moved.</summary>
+        public ArkadeSwapIntentStatus? MovedUnderneath;
+
         public Task SaveArkadeSwapIntent(ArkadeSwapIntent i, CancellationToken cancellationToken = default)
         {
             Saved.Add(i);
             SwapsChanged?.Invoke(this, i);
             return Task.CompletedTask;
+        }
+
+        public Task<bool> TrySaveArkadeSwapIntent(
+            ArkadeSwapIntent i, ArkadeSwapIntentStatus expectedStatus, CancellationToken cancellationToken = default)
+        {
+            if (MovedUnderneath is { } moved && moved != expectedStatus) return Task.FromResult(false);
+            return SaveArkadeSwapIntent(i, cancellationToken).ContinueWith(_ => true, cancellationToken);
         }
 
         public Task<bool> UpdateStatus(

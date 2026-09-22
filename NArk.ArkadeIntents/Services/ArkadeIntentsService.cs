@@ -591,10 +591,11 @@ public sealed class ArkadeIntentsService
         var expiry = BTCPayServer.Lightning.BOLT11PaymentRequest.Parse(invoice, network).ExpiryDate.ToUnixTimeSeconds();
         if (now < expiry + LightningSendGates.UnfundedAfterExpirySeconds) return;
 
+        var from = intent.Status;
         intent.Status = ArkadeSwapIntentStatus.Cancelled;
         intent.Metadata[ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt] = now.ToString();
-        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
-        _logger?.LogInformation("Swap {SwapId}: funding never landed and the invoice has expired → Cancelled", intent.Id);
+        if (await _intentStorage.TrySaveArkadeSwapIntent(intent, from, cancellationToken))
+            _logger?.LogInformation("Swap {SwapId}: funding never landed and the invoice has expired → Cancelled", intent.Id);
     }
 
     private async Task<byte[]?> RevealedPreimageAsync(
@@ -666,8 +667,10 @@ public sealed class ArkadeIntentsService
             return false;
 
         var network = (await _transport.GetServerInfoAsync(cancellationToken)).Network;
+        var from = intent.Status;
         await SwapWatch.ReopenAsync(_contractStorage, intent, network, cancellationToken);
-        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+        if (!await _intentStorage.TrySaveArkadeSwapIntent(intent, from, cancellationToken)) return false;
+
         _logger?.LogInformation("Swap {SwapId}: reopened after its deadline closed it", swapId);
         return true;
     }
@@ -749,7 +752,13 @@ public sealed class ArkadeIntentsService
         intent.Status = next.Value;
         intent.Metadata.Remove(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt);
         if (lockup.IsSpent()) intent.SpentTxid ??= lockup.ArkTxid ?? lockup.SpentByTransactionId;
-        await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+        // Conditional: the monitor may have moved this swap since it was read, and its view is the newer one.
+        if (!await _intentStorage.TrySaveArkadeSwapIntent(intent, from, cancellationToken))
+        {
+            intent.Status = from;
+            return (null, true);
+        }
 
         _logger?.LogInformation("Swap {SwapId} reconciled: {From} → {To}", intent.Id, from, next.Value);
         return (new ArkadeIntentReconciled(intent.Id, from, next.Value), true);
@@ -797,6 +806,7 @@ public sealed class ArkadeIntentsService
             {
                 _logger?.LogInformation("Swap {SwapId}: {From} → {To} on the clock",
                     intent.Id, intent.Status, timed);
+                var before = intent.Status;
                 if (intent.Type is ArkadeSwapIntentType.LightningToBtc or ArkadeSwapIntentType.OnchainToBtc)
                 {
                     // A receive closed on the clock stops being watched; ReopenAsync undoes both.
@@ -807,7 +817,9 @@ public sealed class ArkadeIntentsService
                 {
                     intent.Status = timed;
                 }
-                await _intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+
+                if (!await _intentStorage.TrySaveArkadeSwapIntent(intent, before, cancellationToken))
+                    intent.Status = before;
             }
 
             if (ArkadeIntentPolicy.NextAction(intent) == ArkadeIntentAction.None) continue;

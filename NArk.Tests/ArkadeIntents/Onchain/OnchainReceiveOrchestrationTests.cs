@@ -462,9 +462,11 @@ public class OnchainReceiveOrchestrationTests
         return (Transaction)calls[0].GetArguments()[0]!;
     }
 
+    // Either write: a status decided from a snapshot is saved conditionally, one just spent for is not.
     private static ArkadeSwapIntent? LastSavedIntent(Harness ctx) =>
         ctx.Intents.ReceivedCalls()
-            .Where(c => c.GetMethodInfo().Name == nameof(IArkadeIntentStorage.SaveArkadeSwapIntent))
+            .Where(c => c.GetMethodInfo().Name is nameof(IArkadeIntentStorage.SaveArkadeSwapIntent)
+                or nameof(IArkadeIntentStorage.TrySaveArkadeSwapIntent))
             .Select(c => (ArkadeSwapIntent)c.GetArguments()[0]!)
             .LastOrDefault();
 

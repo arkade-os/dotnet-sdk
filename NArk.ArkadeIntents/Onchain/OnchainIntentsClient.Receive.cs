@@ -589,9 +589,10 @@ public sealed partial class OnchainIntentsClient
                 && (await blockchain.GetChainTime(cancellationToken)).Timestamp.ToUnixTimeSeconds()
                     >= htlcLocktime + OnchainReceiveGates.AbandonedGraceSeconds)
             {
+                var from = intent.Status;
                 await SwapWatch.CloseAsync(contractStorage, intent, ArkadeSwapIntentStatus.Cancelled,
                     _time.GetUtcNow().ToUnixTimeSeconds(), network, cancellationToken);
-                await intentStorage.SaveArkadeSwapIntent(intent, cancellationToken);
+                await intentStorage.TrySaveArkadeSwapIntent(intent, from, cancellationToken);
                 return new OnchainRefundOutcome(
                     false, "the L1 HTLC was never funded and its deadline has long passed; the swap is closed");
             }

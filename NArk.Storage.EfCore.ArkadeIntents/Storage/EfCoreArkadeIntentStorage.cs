@@ -68,6 +68,33 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         Notify(intent);
     }
 
+    /// <inheritdoc />
+    public async Task<bool> TrySaveArkadeSwapIntent(
+        ArkadeSwapIntent intent, ArkadeSwapIntentStatus expectedStatus,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var set = db.Set<ArkadeSwapIntentEntity>();
+
+        var existing = await set.FirstOrDefaultAsync(x => x.Id == intent.Id, cancellationToken);
+        if (existing is null)
+        {
+            set.Add(ToEntity(intent));
+        }
+        else
+        {
+            // The guard is the read itself: the row is only written while it still holds the status the
+            // caller decided from, so a slower pass cannot undo a faster one.
+            if (existing.Status != expectedStatus) return false;
+            Apply(intent, existing);
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        Notify(intent);
+        return true;
+    }
+
+
     public async Task<bool> UpdateStatus(
         string swapPkScript,
         ArkadeSwapIntentStatus status,

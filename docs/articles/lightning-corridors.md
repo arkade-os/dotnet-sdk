@@ -315,6 +315,11 @@ if (!funded.FundingConfirmed)
 }
 ```
 
+Every status decided from a snapshot is written conditionally: `IArkadeIntentStorage.TrySaveArkadeSwapIntent`
+saves only while the row still holds the status it was read in, so a pass that started earlier cannot
+undo what the monitor has since recorded. A status the client itself produced — a claim, a refund, a
+funding just spent for — is written outright, since nothing newer can exist.
+
 A swap closed either way carries `closedWithoutChainEventAt`, and `ReopenAsync` puts it back under
 watch (`Pending` for a receive, `Funding` for a send) for the next pass to re-read. Rows closed by a
 chain event are refused.

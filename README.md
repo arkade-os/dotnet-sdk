@@ -1218,6 +1218,10 @@ var funded = await intents.SendToLightningAsync(
 await intents.RefundLightningSendAsync(funded.RfqId);
 ```
 
+`IArkadeIntentStorage.TrySaveArkadeSwapIntent` saves a swap only while its stored status is still the
+one the caller read, which is how the monitor and the advance pass avoid overwriting each other. A
+custom storage backend inherits a non-atomic default and should override it.
+
 A funding spend that fails after it may have reached the Arkade server does not throw: it returns
 with `funded.FundingConfirmed == false` and no txid. Report the payment as in flight and do not
 retry, since the lockup may be funded. The advance pass settles the swap from the
