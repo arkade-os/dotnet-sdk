@@ -27,6 +27,7 @@ public class ArkadeOpcodeTests
         (0xd4, "OP_INSPECTNUMINPUTS"), (0xd5, "OP_INSPECTNUMOUTPUTS"), (0xd6, "OP_TXWEIGHT"),
         // 0xd7–0xe2 — emulator-authoritative (byte-string + EC ops), NOT 64-bit arithmetic.
         (0xd7, "OP_NUM2BIN"), (0xd8, "OP_BIN2NUM"), (0xd9, "OP_REVERSEBYTES"), (0xda, "OP_MODEXP"),
+        (0xdb, "OP_PUSHEXPIRY"), (0xdc, "OP_CHECKTIME"),
         (0xe0, "OP_ECADD"), (0xe1, "OP_ECMUL"), (0xe2, "OP_ECPAIRING"),
         (0xe3, "OP_ECMULSCALARVERIFY"), (0xe4, "OP_TWEAKVERIFY"),
         // Asset groups 0xe5–0xf2.
@@ -39,7 +40,7 @@ public class ArkadeOpcodeTests
         (0xf1, "OP_INSPECTINASSETAT"), (0xf2, "OP_INSPECTINASSETLOOKUP"),
         // Tx id + packet introspection + sighash.
         (0xf3, "OP_TXID"), (0xf4, "OP_INSPECTPACKET"), (0xf5, "OP_INSPECTINPUTPACKET"),
-        (0xf6, "OP_SIGHASH"),
+        (0xf6, "OP_SIGHASH"), (0xf7, "OP_TUNNEL"), (0xf8, "OP_INSPECTINTENTMESSAGE"),
     };
 
     [Test]
