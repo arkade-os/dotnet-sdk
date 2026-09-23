@@ -28,7 +28,11 @@ public interface IArkadeAddressProvider
     /// <param name="purpose">Purpose of the contract</param>
     /// <param name="activityState">Activity state for the contract</param>
     /// <param name="inputContracts">Optional input contracts for descriptor recycling (SendToSelf only).
-    /// When provided, HD wallets may reuse a descriptor from the inputs to avoid index bloat.</param>
+    /// When provided, HD wallets may reuse a descriptor from the inputs to avoid index bloat.
+    /// Inputs the wallet is still advertising as an inbound destination are never recycled, because
+    /// recycling deactivates the reused script: that covers contracts still in
+    /// <see cref="ContractActivityState.Active"/> and those whose <c>Source</c> metadata starts with
+    /// <c>invoice:</c>.</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>
     /// A tuple of (contract, entity).
