@@ -127,6 +127,61 @@ public class IntentGenerationServiceTests
             Arg.Any<CancellationToken>());
     }
 
+    // Cancelling a registered intent locally is not enough: arkd keeps the registration, and because
+    // every later cleanup filters on the active states, nothing will ever delete it. The wallet then
+    // re-registers the same VTXO under a fresh intent, and arkd fails each round it collects both
+    // forfeits for — for every participant, not just this wallet.
+    [Test]
+    public async Task DeletesStaleBatchInProgressIntentFromTheServer_BeforeCancellingItLocally()
+    {
+        SetUpVtxoAndContract();
+
+        var stale = CreateIntent(
+            ArkIntentState.BatchInProgress,
+            updatedAt: DateTimeOffset.UtcNow.AddMinutes(-6),
+            intentId: "server-intent-1");
+        SetUpGetIntents(stateFilter: [ArkIntentState.BatchInProgress], result: [stale]);
+        SetUpGetIntents(
+            stateFilter: [ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch],
+            result: []);
+
+        await using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+        await Task.Delay(200);
+
+        await _clientTransport.Received(1).DeleteIntent(
+            Arg.Is<ArkIntent>(i => i.IntentTxId == stale.IntentTxId),
+            Arg.Any<CancellationToken>());
+
+        await _intentStorage.Received().SaveIntent(
+            WalletId,
+            Arg.Is<ArkIntent>(i => i.IntentTxId == stale.IntentTxId && i.State == ArkIntentState.Cancelled),
+            Arg.Any<CancellationToken>());
+    }
+
+    // A batch that succeeded owns its registration; deleting it would drop a settlement already made.
+    [Test]
+    public async Task LeavesAStaleIntentAlone_WhenItsBatchAlreadyCommitted()
+    {
+        SetUpVtxoAndContract();
+
+        var committed = CreateIntent(
+            ArkIntentState.BatchInProgress,
+            updatedAt: DateTimeOffset.UtcNow.AddMinutes(-6),
+            intentId: "server-intent-2") with { CommitmentTransactionId = uint256.One.ToString() };
+        SetUpGetIntents(stateFilter: [ArkIntentState.BatchInProgress], result: [committed]);
+        SetUpGetIntents(
+            stateFilter: [ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch],
+            result: []);
+
+        await using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+        await Task.Delay(200);
+
+        await _clientTransport.DidNotReceive().DeleteIntent(
+            Arg.Any<ArkIntent>(), Arg.Any<CancellationToken>());
+    }
+
     [Test]
     public async Task ProcessesWallet_WhenNoActivePendingIntents()
     {
@@ -363,11 +418,12 @@ public class IntentGenerationServiceTests
 
     private static ArkIntent CreateIntent(
         ArkIntentState state,
-        DateTimeOffset? updatedAt = null)
+        DateTimeOffset? updatedAt = null,
+        string? intentId = null)
     {
         return new ArkIntent(
             IntentTxId: $"intent-{state}-{Guid.NewGuid():N}",
-            IntentId: null,
+            IntentId: intentId,
             WalletId: WalletId,
             State: state,
             ValidFrom: DateTimeOffset.UtcNow.AddHours(-1),
