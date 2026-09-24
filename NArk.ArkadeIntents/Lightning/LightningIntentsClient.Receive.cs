@@ -498,11 +498,12 @@ public sealed partial class LightningIntentsClient
         return preimage;
     }
 
-    // Height-based expiry needs the chain tip; without a blockchain only the clock half is known, and
-    // an unknown height must not be read as "past it", so it stays at zero.
-    private async Task<TimeHeight> ChainTimeAsync(CancellationToken cancellationToken)
+    // Null means the chain's clock is unavailable, not that it is now. Consensus matures expiry against
+    // median time past, which trails wall clock, so standing in a local clock would refuse claims the
+    // chain would still accept — and on a receive that is the delivery, not a retry.
+    private async Task<TimeHeight?> ChainTimeAsync(CancellationToken cancellationToken)
     {
-        if (_blockchain is null) return new TimeHeight(_time.GetUtcNow(), 0);
+        if (_blockchain is null) return null;
 
         try
         {
@@ -510,23 +511,29 @@ public sealed partial class LightningIntentsClient
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            return new TimeHeight(_time.GetUtcNow(), 0);
+            return null;
         }
     }
 
     internal static IReadOnlyList<ArkVtxo> SelectClaimable(
-        IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId, TimeHeight now,
+        IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId, TimeHeight? now,
         bool requireExact = false)
     {
         // The wallet's own rule, not a weaker copy of it: a VTXO past its batch's expiry is recoverable
         // even before the server sweeps it, and arkd refuses to spend one offchain. Claiming it cannot
         // work, so the attempt is worth refusing here with a reason instead of there without one.
-        var live = vtxos.Where(v => v.CanSpendOffchain(now)).ToList();
+        // Without the chain's clock the expiry half cannot be judged, so it is left unjudged rather
+        // than guessed: attempting a claim costs a refusal, refusing one wrongly costs the delivery.
+        var live = now is { } chain
+            ? vtxos.Where(v => v.CanSpendOffchain(chain)).ToList()
+            : vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
         if (live.Count == 0)
         {
             // A lockup that arrived and then lapsed is a different problem from one that never arrived,
             // and reporting it as "not funded yet" sends the reader looking in the wrong place.
-            var lapsed = vtxos.Where(v => !v.IsSpent() && v.IsRecoverable(now)).ToList();
+            var lapsed = now is { } t
+                ? vtxos.Where(v => !v.IsSpent() && v.IsRecoverable(t)).ToList()
+                : [];
             throw new InvalidOperationException(lapsed.Count > 0
                 ? $"Swap '{swapId}' was funded, but its lockup is past the batch it was minted in "
                   + $"({lapsed.Count} output(s) expired or swept), so it can no longer be claimed offchain."

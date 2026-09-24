@@ -92,6 +92,18 @@ public class ClaimSelectionTests
             () => LightningIntentsClient.SelectClaimable([lapsed], Quoted, "swap-1", Now));
     }
 
+    // A local clock runs ahead of median time past, so standing in for the chain's would refuse claims
+    // the chain still accepts. On a receive that is the delivery, so an unknown clock judges nothing.
+    [Test]
+    public void WithNoChainClock_ExpiryIsNotJudgedAtAll()
+    {
+        var lapsed = Vtxo(amount: Quoted, expiresAt: Now.Timestamp.AddMinutes(-1));
+
+        Assert.That(
+            LightningIntentsClient.SelectClaimable([lapsed], Quoted, "swap-1", null),
+            Is.EqualTo(new[] { lapsed }));
+    }
+
     [Test]
     public void ALockupStillInsideItsBatch_IsClaimed()
     {
