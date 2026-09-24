@@ -476,7 +476,8 @@ public sealed partial class OnchainIntentsClient
         var vtxos = await vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
         var claimable = LightningIntentsClient.SelectClaimable(
-            vtxos, (ulong)intent.WantAmount.Satoshi, swapId, linked);
+            vtxos, (ulong)intent.WantAmount.Satoshi, swapId,
+            await blockchain.GetChainTime(cancellationToken), linked);
         var pinnedOutputs = nonInteractive ? NonInteractiveVhtlcSpend.Outputs(contract, claimable, serverInfo) : null;
         var preimage = await ResolvePreimageAsync(intent, contract, cancellationToken);
         var coins = claimable.Select(v => nonInteractive

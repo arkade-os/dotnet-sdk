@@ -359,7 +359,8 @@ public sealed partial class LightningIntentsClient
             _intentStorage, _contractStorage, intent, contract, serverInfo.Network, now, cancellationToken);
         var vtxos = await _vtxoStorage.GetVtxos(
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
-        var claimable = SelectClaimable(vtxos, (ulong)intent.WantAmount.Satoshi, swapId, linked);
+        var claimable = SelectClaimable(
+            vtxos, (ulong)intent.WantAmount.Satoshi, swapId, await ChainTimeAsync(cancellationToken), linked);
         var pinnedOutputs = nonInteractive ? NonInteractiveVhtlcSpend.Outputs(contract, claimable, serverInfo) : null;
         var preimage = intent.LightningMetadata().Preimage is { Length: > 0 } preimageHex
             ? Convert.FromHexString(preimageHex)
@@ -497,14 +498,39 @@ public sealed partial class LightningIntentsClient
         return preimage;
     }
 
-    internal static IReadOnlyList<ArkVtxo> SelectClaimable(
-        IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId, bool requireExact = false)
+    // Height-based expiry needs the chain tip; without a blockchain only the clock half is known, and
+    // an unknown height must not be read as "past it", so it stays at zero.
+    private async Task<TimeHeight> ChainTimeAsync(CancellationToken cancellationToken)
     {
-        var live = vtxos.Where(v => !v.IsSpent() && !v.Swept).ToList();
+        if (_blockchain is null) return new TimeHeight(_time.GetUtcNow(), 0);
+
+        try
+        {
+            return await _blockchain.GetChainTime(cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return new TimeHeight(_time.GetUtcNow(), 0);
+        }
+    }
+
+    internal static IReadOnlyList<ArkVtxo> SelectClaimable(
+        IReadOnlyCollection<ArkVtxo> vtxos, ulong expectedSats, string swapId, TimeHeight now,
+        bool requireExact = false)
+    {
+        // The wallet's own rule, not a weaker copy of it: a VTXO past its batch's expiry is recoverable
+        // even before the server sweeps it, and arkd refuses to spend one offchain. Claiming it cannot
+        // work, so the attempt is worth refusing here with a reason instead of there without one.
+        var live = vtxos.Where(v => v.CanSpendOffchain(now)).ToList();
         if (live.Count == 0)
         {
-            throw new InvalidOperationException(
-                $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet.");
+            // A lockup that arrived and then lapsed is a different problem from one that never arrived,
+            // and reporting it as "not funded yet" sends the reader looking in the wrong place.
+            var lapsed = vtxos.Where(v => !v.IsSpent() && v.IsRecoverable(now)).ToList();
+            throw new InvalidOperationException(lapsed.Count > 0
+                ? $"Swap '{swapId}' was funded, but its lockup is past the batch it was minted in "
+                  + $"({lapsed.Count} output(s) expired or swept), so it can no longer be claimed offchain."
+                : $"Swap '{swapId}' has no unspent lockup — the solver has not funded it yet.");
         }
 
         var total = live.Aggregate(0UL, (sum, v) => checked(sum + v.Amount));
