@@ -477,7 +477,7 @@ public sealed partial class OnchainIntentsClient
             scripts: [intent.SwapPkScript], cancellationToken: cancellationToken);
         var claimable = LightningIntentsClient.SelectClaimable(
             vtxos, (ulong)intent.WantAmount.Satoshi, swapId,
-            await blockchain.GetChainTime(cancellationToken), linked);
+            await ArkadeChainTimeAsync(cancellationToken), linked);
         var pinnedOutputs = nonInteractive ? NonInteractiveVhtlcSpend.Outputs(contract, claimable, serverInfo) : null;
         var preimage = await ResolvePreimageAsync(intent, contract, cancellationToken);
         var coins = claimable.Select(v => nonInteractive
@@ -643,6 +643,23 @@ public sealed partial class OnchainIntentsClient
             "Swap {SwapId}: refunded {Sats} sats on L1 in {Txid}", swapId, total, signed.GetHash());
 
         return new OnchainRefundOutcome(true, Txid: signed.GetHash().ToString());
+    }
+
+    // Only the expiry judgement reads this, and the Arkade claim is drivable with no L1 seam at all —
+    // a watch-only claim never touches one — so an absent or unreachable chain clock leaves expiry
+    // unjudged rather than taking the claim down. The L1 paths below still require the blockchain.
+    private async Task<TimeHeight?> ArkadeChainTimeAsync(CancellationToken cancellationToken)
+    {
+        if (blockchain is null) return null;
+
+        try
+        {
+            return await blockchain.GetChainTime(cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
