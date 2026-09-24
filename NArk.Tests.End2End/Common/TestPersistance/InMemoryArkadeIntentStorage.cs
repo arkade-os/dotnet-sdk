@@ -21,6 +21,7 @@ namespace NArk.Tests.End2End.TestPersistance;
 internal sealed class InMemoryArkadeIntentStorage : IArkadeIntentStorage
 {
     private readonly Dictionary<string, ArkadeSwapIntent> _byId = new();
+    private readonly Dictionary<string, ArkadeSwapIntentStatus> _committed = new();
 
     /// <inheritdoc />
     public event EventHandler<ArkadeSwapIntent>? SwapsChanged;
@@ -54,9 +55,27 @@ internal sealed class InMemoryArkadeIntentStorage : IArkadeIntentStorage
     public Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default)
     {
         _byId[intent.Id] = intent;
+        _committed[intent.Id] = intent.Status;
         SwapsChanged?.Invoke(this, intent);
         ActiveScriptsChanged?.Invoke(this, EventArgs.Empty);
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Overridden rather than inherited: rows here are the caller's own objects, so the default
+    /// implementation's read finds the status the caller has already written to the field — the very
+    /// change it is asking permission to store — and refuses every save. The guard compares against
+    /// what was last committed instead, which is what a real backend's row holds.
+    /// </remarks>
+    public Task<bool> TrySaveArkadeSwapIntent(
+        ArkadeSwapIntent intent, ArkadeSwapIntentStatus expectedStatus,
+        CancellationToken cancellationToken = default)
+    {
+        if (_committed.TryGetValue(intent.Id, out var committed) && committed != expectedStatus)
+            return Task.FromResult(false);
+
+        return SaveArkadeSwapIntent(intent, cancellationToken).ContinueWith(_ => true, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -70,6 +89,7 @@ internal sealed class InMemoryArkadeIntentStorage : IArkadeIntentStorage
         if (intent is null) return Task.FromResult(false);
 
         intent.Status = status;
+        _committed[intent.Id] = status;
         if (spentTxid is { Length: > 0 }) intent.SpentTxid = spentTxid;
         SwapsChanged?.Invoke(this, intent);
         return Task.FromResult(true);
