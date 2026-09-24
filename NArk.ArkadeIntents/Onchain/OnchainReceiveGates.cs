@@ -136,12 +136,6 @@ public static class OnchainReceiveGates
         medianTimePast >= htlcLocktime;
 
     /// <summary>
-    /// Refuse a quote this corridor cannot safely fund.
-    /// </summary>
-    /// <param name="quote">The solver's quote.</param>
-    /// <param name="now">The current time, unix seconds.</param>
-
-    /// <summary>
     /// Hold a quote to the amount that was asked for, on the leg the request pinned.
     /// </summary>
     /// <param name="quote">The solver's quote.</param>
@@ -192,6 +186,11 @@ public static class OnchainReceiveGates
         }
     }
 
+    /// <summary>
+    /// Refuse a quote this corridor cannot safely fund.
+    /// </summary>
+    /// <param name="quote">The solver's quote.</param>
+    /// <param name="now">The current time, unix seconds.</param>
     /// <exception cref="OnchainReceiveNotFundableException">Any check refused.</exception>
     public static void AssertFundable(RfqQuote<OnchainReceiveQuoteProfile> quote, long now)
     {

@@ -76,18 +76,26 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var set = db.Set<ArkadeSwapIntentEntity>();
 
-        var existing = await set.FirstOrDefaultAsync(x => x.Id == intent.Id, cancellationToken);
-        if (existing is null)
+        // The guard has to be the write, not a read before it: a tracked update carries only the key in
+        // its WHERE clause, so a status checked in memory can change before SaveChanges lands. Claiming
+        // the status in one statement is what makes a slower pass unable to undo a faster one.
+        var claimed = await set
+            .Where(x => x.Id == intent.Id && x.Status == expectedStatus)
+            .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, intent.Status), cancellationToken);
+
+        if (claimed == 0)
         {
+            if (await set.AnyAsync(x => x.Id == intent.Id, cancellationToken)) return false;
+
             set.Add(ToEntity(intent));
+            await db.SaveChangesAsync(cancellationToken);
+            Notify(intent);
+            return true;
         }
-        else
-        {
-            // The guard is the read itself: the row is only written while it still holds the status the
-            // caller decided from, so a slower pass cannot undo a faster one.
-            if (existing.Status != expectedStatus) return false;
-            Apply(intent, existing);
-        }
+
+        // The row is ours now — no other conditional writer can still be holding the old status.
+        var existing = await set.FirstAsync(x => x.Id == intent.Id, cancellationToken);
+        Apply(intent, existing);
 
         await db.SaveChangesAsync(cancellationToken);
         Notify(intent);
