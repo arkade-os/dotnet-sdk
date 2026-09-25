@@ -121,6 +121,7 @@ public class IntentGenerationService(
 
                         logger?.LogWarning("Cancelling stuck BatchInProgress intent {IntentTxId} for wallet {WalletId} (stuck for {Duration})",
                             stale.IntentTxId, walletId, DateTimeOffset.UtcNow - stale.UpdatedAt);
+                        await TryDeleteFromServerAsync(stale, token);
                         await intentStorage.SaveIntent(walletId, stale with
                         {
                             State = ArkIntentState.Cancelled,
@@ -208,6 +209,25 @@ public class IntentGenerationService(
                     break;
                 }
             }
+        }
+    }
+
+    /// <summary>Unregisters an intent from the Arkade server before it is cancelled locally. Best
+    /// effort; see <see cref="BatchManagementService"/> for why a stranded registration matters.</summary>
+    private async Task TryDeleteFromServerAsync(ArkIntent intent, CancellationToken token)
+    {
+        if (intent.IntentId is null)
+            return;
+
+        try
+        {
+            await clientTransport.DeleteIntent(intent, token);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(0, ex,
+                "Failed to delete intent {IntentId} from the Arkade server; it may still hold the VTXO",
+                intent.IntentId);
         }
     }
 

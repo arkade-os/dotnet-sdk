@@ -289,6 +289,26 @@ public class BatchManagementService(
 
     #region Private Methods
 
+    /// <summary>Unregisters an intent from the Arkade server before it is cancelled locally: a
+    /// cancelled intent falls outside every state filter here, so one left registered keeps its claim
+    /// on the VTXO and fails each batch that collects two forfeits for it. Best effort.</summary>
+    private async Task TryDeleteFromServerAsync(ArkIntent intent, CancellationToken cancellationToken)
+    {
+        if (intent.IntentId is null)
+            return;
+
+        try
+        {
+            await clientTransport.DeleteIntent(intent, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(0, ex,
+                "Failed to delete intent {IntentId} from the Arkade server; it may still hold the VTXO",
+                intent.IntentId);
+        }
+    }
+
     private async Task LoadActiveIntentsAsync(CancellationToken cancellationToken, bool firstRun = true)
     {
         var activeStates = new[] { ArkIntentState.WaitingToSubmit, ArkIntentState.WaitingForBatch, ArkIntentState.BatchInProgress };
@@ -332,6 +352,8 @@ public class BatchManagementService(
                     "Cancelling duplicate intent {IntentTxId} (IntentId: {IntentId}) - VTXO already claimed by another intent",
                     intent.IntentTxId, intent.IntentId);
 
+                await TryDeleteFromServerAsync(intent, cancellationToken);
+
                 var cancelledIntent = intent with
                 {
                     State = ArkIntentState.Cancelled,
@@ -373,6 +395,8 @@ public class BatchManagementService(
                 logger?.LogWarning(
                     "Cancelling orphaned BatchInProgress intent {IntentId} on startup (no active batch session)",
                     intent.IntentId);
+
+                await TryDeleteFromServerAsync(intent, cancellationToken);
 
                 var cancelledIntent = intent with
                 {
