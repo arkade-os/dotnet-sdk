@@ -76,6 +76,11 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var set = db.Set<ArkadeSwapIntentEntity>();
 
+        // One transaction around both writes. The status lands in its own statement and the rest of the
+        // row in another, so without this a reader between them sees the new status over the old
+        // metadata — a Claimable swap with no preimage — which is a state no pass ever decided.
+        await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
+
         // The guard has to be the write, not a read before it: a tracked update carries only the key in
         // its WHERE clause, so a status checked in memory can change before SaveChanges lands. Claiming
         // the status in one statement is what makes a slower pass unable to undo a faster one.
@@ -89,6 +94,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
 
             set.Add(ToEntity(intent));
             await db.SaveChangesAsync(cancellationToken);
+            await tx.CommitAsync(cancellationToken);
             Notify(intent);
             return true;
         }
@@ -98,6 +104,7 @@ public class EfCoreArkadeIntentStorage : IArkadeIntentStorage
         Apply(intent, existing);
 
         await db.SaveChangesAsync(cancellationToken);
+        await tx.CommitAsync(cancellationToken);
         Notify(intent);
         return true;
     }

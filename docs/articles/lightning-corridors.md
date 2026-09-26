@@ -321,6 +321,9 @@ so once the funding spend has been attempted `SendToLightningAsync` returns rath
   been expired for `LightningSendGates.UnfundedAfterExpirySeconds` with no lockup, when paying it is
   no longer possible.
 
+`FundedLightningSend.FundingTxid` is `string?` for that reason — a surface change for callers compiled
+against the previous non-nullable property, which now has to handle the ambiguous outcome.
+
 ```csharp
 var funded = await intents.SendToLightningAsync(walletId, invoice, rfqTransport);
 if (!funded.FundingConfirmed)

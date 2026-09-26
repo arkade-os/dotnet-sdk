@@ -68,14 +68,15 @@ internal sealed class InMemoryArkadeIntentStorage : IArkadeIntentStorage
     /// change it is asking permission to store — and refuses every save. The guard compares against
     /// what was last committed instead, which is what a real backend's row holds.
     /// </remarks>
-    public Task<bool> TrySaveArkadeSwapIntent(
+    public async Task<bool> TrySaveArkadeSwapIntent(
         ArkadeSwapIntent intent, ArkadeSwapIntentStatus expectedStatus,
         CancellationToken cancellationToken = default)
     {
         if (_committed.TryGetValue(intent.Id, out var committed) && committed != expectedStatus)
-            return Task.FromResult(false);
+            return false;
 
-        return SaveArkadeSwapIntent(intent, cancellationToken).ContinueWith(_ => true, cancellationToken);
+        await SaveArkadeSwapIntent(intent, cancellationToken);
+        return true;
     }
 
     /// <inheritdoc />
