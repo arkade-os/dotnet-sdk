@@ -17,6 +17,7 @@ using NArk.Core.Contracts;
 using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
+using NArk.ArkadeIntents.Services;
 
 namespace NArk.ArkadeIntents.Onchain;
 
@@ -264,6 +265,9 @@ public sealed partial class OnchainIntentsClient
             SolverTerms.AssertFeeWithinAdvertised(solverCard, quote);
         }
 
+        OnchainReceiveGates.AssertAmounts(quote, amountSats, amountSide);
+        OnchainReceiveGates.AssertPayoutAboveDust(quote, serverInfo.Dust.Satoshi);
+
         // Both deadlines, both rails, checked together — the ordering neither contract enforces.
         OnchainReceiveGates.AssertFundable(quote, _time.GetUtcNow().ToUnixTimeSeconds());
 
@@ -457,6 +461,12 @@ public sealed partial class OnchainIntentsClient
                 + "the L1 refund is the way out from here.");
         }
 
+        // As on the Lightning leg, and on the same switch: the claim leaf is pinned to our payout and
+        // co-signed by the emulator, so a wallet that cannot sign still takes delivery.
+        nonInteractive = nonInteractive
+            || (_options.SignerlessFallback
+                && await walletProvider.GetSignerAsync(intent.WalletId, cancellationToken) is null);
+
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
         var contract = await LightningCorridor.LoadLockupAsync(
             contractStorage, intent.SwapPkScript, intent.Id, serverInfo.Network, cancellationToken);
@@ -580,6 +590,20 @@ public sealed partial class OnchainIntentsClient
         var live = utxos.Where(u => u.Confirmed).ToList();
         if (live.Count == 0)
         {
+            // Nothing even in the mempool, a day past the only deadline that could still move it: stop
+            // asking the chain about this address on every pass. ReopenAsync restores it.
+            if (utxos.Count == 0
+                && (await blockchain.GetChainTime(cancellationToken)).Timestamp.ToUnixTimeSeconds()
+                    >= htlcLocktime + OnchainReceiveGates.AbandonedGraceSeconds)
+            {
+                var from = intent.Status;
+                await SwapWatch.CloseAsync(contractStorage, intent, ArkadeSwapIntentStatus.Cancelled,
+                    _time.GetUtcNow().ToUnixTimeSeconds(), network, cancellationToken);
+                await intentStorage.TrySaveArkadeSwapIntent(intent, from, cancellationToken);
+                return new OnchainRefundOutcome(
+                    false, "the L1 HTLC was never funded and its deadline has long passed; the swap is closed");
+            }
+
             return new OnchainRefundOutcome(
                 false, "the L1 HTLC holds nothing confirmed — either it was never funded, or it is gone");
         }

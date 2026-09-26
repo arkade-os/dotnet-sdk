@@ -87,6 +87,14 @@ await intents.ClaimLightningReceiveAsync(pending.RfqId);
 
 ### Watch-only execution
 
+
+A wallet that cannot sign still claims and refunds, because the covenant's signerless leaves pin their
+outputs — the claim to our payout, the ninth leaf to our refund address — and the emulator co-signs
+them. The SDK never switches to those paths on its own: set `ArkadeIntentsOptions.SignerlessFallback`
+and a wallet with no signer takes that route automatically, including from the advance pass. Without it
+a receive a watch-only wallet negotiated can never be claimed, and the payer's money waits out the
+solver's reclaim. The preimage still has to be on the row: a wallet with no signer cannot re-derive it.
+
 With `AddArkadeEmulator(...)` registered, explicitly call
 `intents.ClaimLightningReceiveNonInteractiveAsync(swapId)` to spend the covenant claim without a
 wallet signature. A watch-only receive must retain its preimage; without it, losing the signer also
@@ -149,6 +157,12 @@ with every live output claimed together.
 The preimage is persisted on the intent before the invoice is handed out, because there is no
 recovering it afterwards: you chose it, and the only other copy is sealed to a key you do not hold.
 The covclaimd packet is a fallback claimer, not a backup you can read.
+
+Both receives take an optional `payoutContract`: pass a contract the caller already derived for this
+payment and the swap spends no HD index of its own. Left out, a fresh receive contract is derived, as
+before. It matters for a flow that mints an address per attempt — an invoice, an order — because an HD
+wallet is restored by scanning until `GapLimit` consecutive indices come back unused, and every index
+spent on a swap nobody pays shortens the run a restore can cross.
 
 ## Reaching a solver
 
@@ -288,6 +302,50 @@ nothing is trusted that was not checked.
 The key behind leaves 1–4 is the one that owns your refund address, so it is on your wallet's own
 derivation chain and survives a restart with no extra storage.
 
+## When a swap goes quiet
+
+Two outcomes produce no chain event, so the advance pass settles them on the clock instead.
+
+**A receive nobody paid.** A `LightningToBtc` swap still `Pending` at its `RefundLocktime` becomes
+`Resolved`: that deadline is the solver's reclaim, so there is nothing left to claim. Its lockup and
+payout contracts stop being watched, so abandoned invoices do not grow the synced script set.
+
+**A send whose funding failed ambiguously.** A spend can throw after the Arkade server accepted it,
+so once the funding spend has been attempted `SendToLightningAsync` returns rather than throws:
+
+- a coin-selection failure (`NotEnoughFundsException`, `TooManyInputsException`) means nothing was
+  sent; the swap is `Cancelled` and the exception is rethrown;
+- any other failure returns with `FundingConfirmed = false` and no `FundingTxid`, leaving the swap
+  `Funding`. Treat the payment as in flight, never as failed — retrying may pay the invoice twice. The
+  advance pass promotes the swap as soon as its lockup appears, and cancels it once the invoice has
+  been expired for `LightningSendGates.UnfundedAfterExpirySeconds` with no lockup, when paying it is
+  no longer possible.
+
+`FundedLightningSend.FundingTxid` is `string?` for that reason — a surface change for callers compiled
+against the previous non-nullable property, which now has to handle the ambiguous outcome.
+
+```csharp
+var funded = await intents.SendToLightningAsync(walletId, invoice, rfqTransport);
+if (!funded.FundingConfirmed)
+{
+    // Report the payment as pending and follow swap funded.RfqId; do not retry.
+}
+```
+
+Every status decided from a snapshot is written conditionally: `IArkadeIntentStorage.TrySaveArkadeSwapIntent`
+saves only while the row still holds the status it was read in, so a pass that started earlier cannot
+undo what the monitor has since recorded. A status the client itself produced — a claim, a refund, a
+funding just spent for — is written outright, since nothing newer can exist.
+
+A swap closed either way carries `closedWithoutChainEventAt`, and `ReopenAsync` puts it back under
+watch (`Pending` for a receive, `Funding` for a send) for the next pass to re-read. Rows closed by a
+chain event are refused.
+
+```csharp
+if (await intents.ReopenAsync(swapId))
+    await intents.AdvanceAsync(swapId);
+```
+
 ## Keeping up with the solver
 
 The contract is an agreement about bytes, and it is not versioned on the wire: if your derivation
@@ -338,11 +396,12 @@ cannot link a wallet's swaps to each other.
 invalidates any copy — and a preimage sealed to a key nobody holds fails silently: the swap works,
 and only its offline claim path quietly does not exist.
 
-The status labels are worth a look too. On these corridors `Resolved` means the swap ended without
-a proven preimage — a spend that revealed none (a refund, not a payment), or a claim window that
-lapsed — so the sample says "Refunded — the payment did not happen" rather than anything that reads
-like success. `Fulfilled` is reserved for a spend whose witness carries a preimage hashing to the
-swap's payment hash, which is provable rather than inferred; the monitor checks it on every spend,
-and reconciliation re-checks it, so a `Resolved` recorded on a transient indexer miss is upgraded
-once the proof is readable. A wallet that collapses those two into "done" reports a failed payment
-as a completed one.
+The status labels are worth a look too. A spent lockup moves only on a verdict read from the chain
+(`LockupFateReader`). `Fulfilled` is reserved for a spend whose witness carries a preimage hashing to
+the swap's payment hash, which is provable rather than inferred. A spend the indexer can produce
+that carries no such preimage returned the money to whoever funded the lockup: on a send that is
+you, so the swap becomes `Cancelled`; on a receive the solver took its lockup back and the swap is
+`Resolved`, as it is when a claim window lapses. A spend that cannot be read yet proves neither and
+changes nothing — the advance pass re-reads it, and re-reads an older `Resolved` send the same way.
+The sample says "Refunded — the payment did not happen" for these rather than anything that reads
+like success; a wallet that collapses them into "done" reports a failed payment as a completed one.

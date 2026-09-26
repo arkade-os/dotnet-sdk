@@ -51,6 +51,13 @@ public static class ArkadeSwapMetadataKeys
     /// </remarks>
     public const string SolverPubkey = "solverPubkey";
 
+    /// <summary>When this swap was closed with no chain event to show for it, unix seconds.</summary>
+    /// <remarks>
+    /// Set on a deadline passing unfunded, or on a funding spend that failed without reaching arkd.
+    /// Marks the only kind of closed row <c>ReopenAsync</c> will reopen.
+    /// </remarks>
+    public const string ClosedWithoutChainEventAt = "closedWithoutChainEventAt";
+
     /// <summary>The RFQ negotiation this swap was quoted under, when it was quoted at all.</summary>
     /// <remarks>
     /// Absent on an unquoted offer, which is the whole difference between the two ways an Arkade

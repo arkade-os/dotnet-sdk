@@ -155,6 +155,15 @@ which is only sound because all three are yours on this leg.
 
 ### The funding has to be exact
 
+
+A quote is also held to the amount that was asked for: exact-in (`RfqAmountSide.From`) must bill the
+payer that amount to the satoshi, and exact-out (`RfqAmountSide.To`) must deliver at least it. Neither
+was checked before, which left the payout a solver could name freely.
+
+A quote is refused outright when its payout is below the Arkade server's dust limit
+(`PayoutBelowDust`), which exact-in makes possible on a small order: the claim could not spend such a
+lockup into an output, and the L1 funding would wait out its locktime.
+
 One output, holding exactly `FundAmountSats`. The solver looks at the address for a single output
 whose value equals the quote — not a sum, and not "at least" — so the usual near misses have no
 recovery:
@@ -207,6 +216,11 @@ Two things about it are worth knowing:
 
 It is refused once the swap is `Fulfilled`: past that the preimage is public and the solver can take
 that same HTLC, so a refund racing it is at best a wasted fee.
+
+An on-board whose HTLC never saw a payment is closed (`Cancelled`) by this path once the chain's
+median time past is `OnchainReceiveGates.AbandonedGraceSeconds` beyond the HTLC locktime and the
+address shows no output at all, not even unconfirmed. It stops being polled; `ReopenAsync` restores
+it, as described under [Lightning Corridors](lightning-corridors.md#when-a-swap-goes-quiet).
 
 ## Recovery
 

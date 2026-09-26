@@ -127,7 +127,10 @@ public sealed class ArkadeLightningService(
     /// <param name="walletId">The wallet paying.</param>
     /// <param name="bolt11">The invoice to pay.</param>
     /// <param name="cancellationToken">Cancels before funding.</param>
-    /// <returns>The funded swap, including the address the sats went to and the refund address.</returns>
+    /// <returns>
+    /// The funded swap, including the address the sats went to and the refund address. Its
+    /// <c>FundingConfirmed</c> is false when the funding outcome is unknown.
+    /// </returns>
     /// <remarks>
     /// Returns once the covenant is funded, which is not the same as the invoice being paid. The
     /// solver still has to route the payment, and only the preimage it must publish to take the sats

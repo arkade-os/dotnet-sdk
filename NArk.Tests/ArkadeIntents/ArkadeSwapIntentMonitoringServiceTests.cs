@@ -115,11 +115,12 @@ public class ArkadeSwapIntentMonitoringServiceTests
         Assert.That(intents.Updates[0], Is.EqualTo(("script1", ArkadeSwapIntentStatus.Fulfilled, "arktx")));
     }
 
-    [TestCase(ArkadeSwapIntentType.BtcToLightning)]
-    [TestCase(ArkadeSwapIntentType.BtcToOnchain)]
-    [TestCase(ArkadeSwapIntentType.OnchainToBtc)]
-    public async Task SpentPreimageCorridorLockup_WithoutAPreimage_IsResolvedNotFulfilled(
-        ArkadeSwapIntentType type)
+    // A readable spend with no preimage returned the money to whoever funded the lockup: us, on a send.
+    [TestCase(ArkadeSwapIntentType.BtcToLightning, ArkadeSwapIntentStatus.Cancelled)]
+    [TestCase(ArkadeSwapIntentType.BtcToOnchain, ArkadeSwapIntentStatus.Cancelled)]
+    [TestCase(ArkadeSwapIntentType.OnchainToBtc, ArkadeSwapIntentStatus.Resolved)]
+    public async Task SpentPreimageCorridorLockup_WithoutAPreimage_IsNotFulfilled(
+        ArkadeSwapIntentType type, ArkadeSwapIntentStatus expected)
     {
         // The covenant's non-interactive refund carries no timelock and no preimage, so a bare
         // spend says the script moved, not that the invoice was paid.
@@ -131,14 +132,13 @@ public class ArkadeSwapIntentMonitoringServiceTests
         vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx"));
 
         Assert.That(intents.Updates, Has.Count.EqualTo(1));
-        Assert.That(intents.Updates[0], Is.EqualTo(("script1", ArkadeSwapIntentStatus.Resolved, "spendtx")));
+        Assert.That(intents.Updates[0], Is.EqualTo(("script1", expected, "spendtx")));
     }
 
     [Test]
-    public async Task SpentLightningLockup_WhenTheIndexerIsDown_IsResolvedButRecorded()
+    public async Task SpentLightningLockup_WhenTheIndexerIsDown_IsLeftForTheAdvancePass()
     {
-        // A read failure is "no proof", not a crash: the transition still lands, and a later
-        // reconcile upgrades it once the spending transaction is fetchable.
+        // No verdict either way: writing Resolved here is what reported paid invoices as failed.
         var transport = Substitute.For<IClientTransport>();
         transport.GetVirtualTxsAsync(Arg.Any<IReadOnlyList<string>>(), Arg.Any<CancellationToken>())
             .Returns<Task<IReadOnlyList<string>>>(_ => throw new HttpRequestException("indexer down"));
@@ -147,8 +147,7 @@ public class ArkadeSwapIntentMonitoringServiceTests
 
         vtxos.RaiseVtxo(Vtxo("script1", spentBy: "spendtx"));
 
-        Assert.That(intents.Updates, Has.Count.EqualTo(1));
-        Assert.That(intents.Updates[0].Status, Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+        Assert.That(intents.Updates, Is.Empty);
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────
@@ -221,7 +220,14 @@ public class ArkadeSwapIntentMonitoringServiceTests
         public event EventHandler<ArkVtxo>? VtxosChanged;
         public event EventHandler? ActiveScriptsChanged;
 
-        public void RaiseVtxo(ArkVtxo vtxo) => VtxosChanged?.Invoke(this, vtxo);
+        private readonly List<ArkVtxo> _stored = [];
+
+        // Stored before it is raised, as the real storage does, so a reader of the lockup sees it.
+        public void RaiseVtxo(ArkVtxo vtxo)
+        {
+            _stored.Add(vtxo);
+            VtxosChanged?.Invoke(this, vtxo);
+        }
 
         public Task<bool> UpsertVtxo(ArkVtxo vtxo, CancellationToken cancellationToken = default)
             => Task.FromResult(true);
@@ -235,7 +241,8 @@ public class ArkadeSwapIntentMonitoringServiceTests
             int? skip = null,
             int? take = null,
             CancellationToken cancellationToken = default)
-            => Task.FromResult<IReadOnlyCollection<ArkVtxo>>(Array.Empty<ArkVtxo>());
+            => Task.FromResult<IReadOnlyCollection<ArkVtxo>>(
+                _stored.Where(v => scripts is null || scripts.Contains(v.Script)).ToList());
     }
 
     private sealed class FakeIntentStorage : IArkadeIntentStorage

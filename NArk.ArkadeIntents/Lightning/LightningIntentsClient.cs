@@ -64,6 +64,7 @@ public sealed partial class LightningIntentsClient : Composition.ILightningIngre
 
     /// <summary>The ceiling on what a receive quote may bill the payer, or <c>null</c> for none.</summary>
     private readonly long? _maxPayAmountSats;
+    private readonly bool _signerlessFallback;
 
     private readonly TimeProvider _time;
     private readonly ILogger<LightningIntentsClient>? _logger;
@@ -116,6 +117,7 @@ public sealed partial class LightningIntentsClient : Composition.ILightningIngre
         var resolved = options?.Value ?? new ArkadeIntentsOptions();
         _emulatorPubkeyOverride = resolved.EmulatorPubkeyOverride;
         _maxPayAmountSats = resolved.MaxPayAmountSats;
+        _signerlessFallback = resolved.SignerlessFallback;
         _time = time ?? TimeProvider.System;
         _logger = logger;
     }

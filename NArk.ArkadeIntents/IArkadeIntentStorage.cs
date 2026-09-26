@@ -55,6 +55,32 @@ public interface IArkadeIntentStorage : IActiveScriptsProvider
     Task SaveArkadeSwapIntent(ArkadeSwapIntent intent, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Save a swap, but only while its stored status is still the one it was read in.
+    /// </summary>
+    /// <param name="intent">The swap, already carrying the changes to save.</param>
+    /// <param name="expectedStatus">The status this change was decided from.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>False when something else moved the swap first, leaving it untouched.</returns>
+    /// <remarks>
+    /// Every status here is decided from a snapshot — a chain event, a deadline, a spend just made — and
+    /// two of those can be in flight at once. An unconditional write lets the slower one undo the faster,
+    /// which is how a swap the counterparty had already filled went back to awaiting its refund. The
+    /// default implementation reads and writes without a transaction, so a storage backend that can do
+    /// this atomically should override it.
+    /// </remarks>
+    async Task<bool> TrySaveArkadeSwapIntent(
+        ArkadeSwapIntent intent, ArkadeSwapIntentStatus expectedStatus,
+        CancellationToken cancellationToken = default)
+    {
+        var stored = (await GetArkadeSwapIntents(id: intent.Id, cancellationToken: cancellationToken))
+            .FirstOrDefault();
+        if (stored is not null && stored.Status != expectedStatus) return false;
+
+        await SaveArkadeSwapIntent(intent, cancellationToken);
+        return true;
+    }
+
+    /// <summary>
     /// Transition the <b>in-flight</b> swap on the given covenant script to <paramref name="status"/>
     /// (recording <paramref name="spentTxid"/> when spent). Only swaps that are still
     /// <see cref="ArkadeSwapIntentStatus.Pending"/>, <see cref="ArkadeSwapIntentStatus.Refundable"/>

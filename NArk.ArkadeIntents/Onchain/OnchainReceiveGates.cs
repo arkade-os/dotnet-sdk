@@ -23,6 +23,15 @@ public enum OnchainReceiveRefusalReason
 
     /// <summary>The two refunds open in the wrong order, or too close together.</summary>
     TimelocksOutOfOrder,
+
+    /// <summary>The quote asks the payer for something other than the amount requested (exact-in only).</summary>
+    PayerChargeMismatch,
+
+    /// <summary>The quote delivers less to us than we asked to receive (exact-out only).</summary>
+    ShortPayout,
+
+    /// <summary>The payout, once the solver's fee is out of it, is below the Arkade server's dust limit.</summary>
+    PayoutBelowDust,
 }
 
 /// <summary>Thrown when an onchain receive quote is refused before anything is funded.</summary>
@@ -92,6 +101,9 @@ public static class OnchainReceiveGates
     /// </remarks>
     public const long OrderMarginSeconds = 15 * 60;
 
+    /// <summary>How long past the L1 refund locktime an HTLC that never saw a payment stays watched.</summary>
+    public const long AbandonedGraceSeconds = 24 * 60 * 60;
+
     /// <summary>
     /// Whether there is still time to claim the Arkade lockup before the solver's reclaim opens.
     /// </summary>
@@ -122,6 +134,57 @@ public static class OnchainReceiveGates
     /// </remarks>
     public static bool RefundIsDue(long htlcLocktime, long medianTimePast) =>
         medianTimePast >= htlcLocktime;
+
+    /// <summary>
+    /// Hold a quote to the amount that was asked for, on the leg the request pinned.
+    /// </summary>
+    /// <param name="quote">The solver's quote.</param>
+    /// <param name="requestedSats">The amount the request named.</param>
+    /// <param name="amountSide">Which leg that amount pinned.</param>
+    /// <exception cref="OnchainReceiveNotFundableException">The quote prices a different trade.</exception>
+    /// <remarks>
+    /// Exact-in is checked both ways: the payer's figure is one a third party has been quoted, so a
+    /// charge under it under-credits the swap as surely as one over it overcharges. Exact-out only
+    /// bounds the payout from below, since a fee correction may deliver a satoshi more.
+    /// </remarks>
+    public static void AssertAmounts(
+        RfqQuote<OnchainReceiveQuoteProfile> quote, long requestedSats, RfqAmountSide amountSide)
+    {
+        if (amountSide == RfqAmountSide.From && quote.FromAmount != requestedSats)
+        {
+            throw new OnchainReceiveNotFundableException(
+                OnchainReceiveRefusalReason.PayerChargeMismatch,
+                $"the quote asks the payer for {quote.FromAmount} sats, not the {requestedSats} requested");
+        }
+
+        if (amountSide == RfqAmountSide.To && quote.ToAmount < requestedSats)
+        {
+            throw new OnchainReceiveNotFundableException(
+                OnchainReceiveRefusalReason.ShortPayout,
+                $"the quote delivers {quote.ToAmount} sats, less than the {requestedSats} asked for");
+        }
+    }
+
+
+    /// <summary>
+    /// Refuse a quote whose payout could not become a VTXO.
+    /// </summary>
+    /// <param name="quote">The solver's quote.</param>
+    /// <param name="dustSats">The Arkade server's dust limit, in sats.</param>
+    /// <exception cref="OnchainReceiveNotFundableException">The payout is below <paramref name="dustSats"/>.</exception>
+    /// <remarks>
+    /// Matters on exact-in, where the fee comes out of the payout: a small order can leave a lockup the
+    /// claim cannot spend into an output, and the payer's L1 funding then waits out the HTLC locktime.
+    /// </remarks>
+    public static void AssertPayoutAboveDust(RfqQuote<OnchainReceiveQuoteProfile> quote, long dustSats)
+    {
+        if (quote.ToAmount < dustSats)
+        {
+            throw new OnchainReceiveNotFundableException(
+                OnchainReceiveRefusalReason.PayoutBelowDust,
+                $"the quote pays out {quote.ToAmount} sats, below the {dustSats}-sat dust limit");
+        }
+    }
 
     /// <summary>
     /// Refuse a quote this corridor cannot safely fund.
