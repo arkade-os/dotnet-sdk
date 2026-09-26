@@ -92,18 +92,10 @@ public static class ArkadeIntentsCollectionExtensions
     /// <param name="configure">Where the daemon is, and how patient to be with it.</param>
     /// <returns>The same container, for chaining.</returns>
     /// <remarks>
-    /// <para>
-    /// Entirely optional, and additive: without this call a receive works exactly as before, claimed
-    /// by <see cref="ArkadeIntentAdvanceService"/> the moment the monitor sees the lockup funded.
-    /// What it buys is a second claimant for the window in which this wallet is not running — the
-    /// daemon spends the same covenant leaf, pinned to the same payout script, so the two racing
-    /// cannot disagree about where the money goes.
-    /// </para>
-    /// <para>
-    /// Call it <b>after</b> <see cref="AddArkadeIntentsServices"/>: the corridor clients resolve the
-    /// daemon as an optional dependency, and a container that registers it later still wires it,
-    /// but the renewal loop reads options that this call configures.
-    /// </para>
+    /// Optional and additive: without it a receive is still claimed by
+    /// <see cref="ArkadeIntentAdvanceService"/> once the monitor sees the lockup funded. What it buys
+    /// is a second claimant for the window this wallet is not running, spending the same leaf pinned
+    /// to the same payout script. Call it after <see cref="AddArkadeIntentsServices"/>.
     /// </remarks>
     public static IServiceCollection AddCovclaimd(
         this IServiceCollection services,
@@ -114,17 +106,14 @@ public static class ArkadeIntentsCollectionExtensions
 
         services.Configure(configure);
 
-        // A named client taken from the factory at resolve time, not a typed one: the client is a
-        // singleton because it caches the daemon's keys, and a typed client would pin one handler
-        // for the life of the process and never see a DNS change. Connection lifetime is managed on
-        // the handler instead.
+        // Named, not typed: the client is a singleton, and a typed one would pin a single handler for
+        // the life of the process and never see a DNS change.
         services.AddHttpClient(CovclaimdOptions.HttpClientName)
             .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-                // A redirect would move the key fetch off the address the caller vetted, which is
-                // the one thing this transport cannot afford to let a remote decide.
+                // A redirect would move the key fetch off the address the caller vetted.
                 AllowAutoRedirect = false,
             });
 
@@ -134,9 +123,8 @@ public static class ArkadeIntentsCollectionExtensions
             sp.GetService<IAesGcmCipher>(),
             sp.GetService<ILogger<CovclaimdClient>>()));
 
-        // Registrations live in the daemon's memory, so one made at swap time is gone after a
-        // restart or a TTL. Registering the loop beside the client keeps "revealed once" from
-        // quietly meaning "revealed until covclaimd next restarts".
+        // Registrations live in the daemon's memory, so "revealed once" would otherwise mean
+        // "revealed until covclaimd next restarts".
         services.AddHostedService<CovclaimdRenewalService>();
         return services;
     }

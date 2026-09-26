@@ -210,21 +210,11 @@ public class ArkadeLightningTests
 
     // ─── the second claimant ──────────────────────────────────────────
 
-    /// <summary>
-    /// covclaimd collects a receive this wallet never claims.
-    /// </summary>
+    /// <summary>covclaimd collects a receive this wallet never claims.</summary>
     /// <remarks>
-    /// <para>
-    /// The property under test is an absence: nothing here calls <c>ClaimLightningReceiveAsync</c>,
-    /// and no advance loop is running, so the only party that can spend the lockup is the daemon the
-    /// receive was revealed to. A spent lockup and a settled invoice therefore prove the whole
-    /// registration path — the sealed preimage decrypted, the arkade script matched the covenant's
-    /// own commitment, and the taptree bound to the funded address.
-    /// </para>
-    /// <para>
-    /// This is the one place that can prove it. One wire format has three implementations — this
-    /// SDK, the daemon and the emulator — and the unit tests reach only the first.
-    /// </para>
+    /// The property is an absence: nothing here claims and no advance loop runs, so only the daemon
+    /// can spend the lockup. A spent lockup and a settled invoice prove the whole registration path,
+    /// across three implementations of one wire format that the unit tests reach only the first of.
     /// </remarks>
     [Test]
     [Category("Covclaim")]
@@ -248,8 +238,8 @@ public class ArkadeLightningTests
             }
         }
 
-        // Fired, not awaited: the hold only settles once somebody publishes the preimage, and the
-        // whole point is that the somebody is not us.
+        // Fired, not awaited: the hold settles once somebody publishes the preimage, and the whole
+        // point is that the somebody is not us.
         var payment = Task.Run(() => ctx.Lnd.Pay(pending.Invoice));
 
         var lockupScript = pending.Contract.GetScriptPubKey().ToHex();
@@ -257,8 +247,7 @@ public class ArkadeLightningTests
         Assert.That(lockup.Amount, Is.GreaterThanOrEqualTo((ulong)pending.Quote.ToAmount),
             "the solver funded at least what it quoted");
 
-        // No VtxoSynchronizationService and no advance loop: this wallet is deliberately blind from
-        // here on, which is the state the daemon exists to cover.
+        // No sync service and no advance loop: this wallet is blind from here on.
         var spent = await Poll(async () => (await GetVtxo(ctx, lockupScript))?.SpentByTransactionId is
             { Length: > 0 }, SolverTimeout);
         Assert.That(spent, Is.True, "covclaimd claimed the lockup without this wallet doing anything");
@@ -307,9 +296,7 @@ public class ArkadeLightningTests
         IVtxoStorage VtxoStorage,
         IArkadeIntentStorage IntentStorage)
     {
-        /// <summary>
-        /// Reads covclaimd's key from the solver's own endpoint rather than hardcoding it.
-        /// </summary>
+        /// <summary>Reads covclaimd's key from the solver's own endpoint rather than hardcoding it.</summary>
         /// <remarks>
         /// covclaimd generates its key at startup, so a rebuilt stack invalidates any copy. A stale
         /// one seals the preimage to a daemon that cannot open it, which nothing on the wire
@@ -325,9 +312,8 @@ public class ArkadeLightningTests
 
     /// <summary>Builds the corridor under test.</summary>
     /// <param name="withCovclaimd">
-    /// Attach the stack's covclaimd, so every receive is also revealed to it. Off by default: the
-    /// other tests here are about the corridor claiming for itself, and a second claimant racing
-    /// them would make a passing run say less than it looks like it does.
+    /// Attach the stack's covclaimd, so every receive is also revealed to it. Off by default: a
+    /// second claimant racing the other tests would make a passing run say less than it looks like.
     /// </param>
     private static async Task<Ctx> SetUpAsync(bool withCovclaimd = false)
     {

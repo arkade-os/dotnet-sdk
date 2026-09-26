@@ -9,21 +9,11 @@ using NArk.Core.Transport;
 
 namespace NArk.ArkadeIntents.Covclaim;
 
-/// <summary>
-/// Re-reveals every live receive to covclaimd before the daemon forgets it.
-/// </summary>
+/// <summary>Re-reveals every live receive to covclaimd before the daemon forgets it.</summary>
 /// <remarks>
-/// <para>
-/// covclaimd holds reveals in memory, so a registration has two ways of disappearing: its TTL
-/// lapses, or the daemon restarts and loses everything at once. Either leaves a lockup with one
-/// claimant where the operator believed there were two — and nothing announces it, because the
-/// wallet's own claimer carries on exactly as before.
-/// </para>
-/// <para>
-/// So this re-registers rather than tracking expiry: repeat reveals for the same address are safe
-/// by design, and a pass that re-asserts everything is correct after a restart the client never saw.
-/// The cadence is half the TTL, which covers one missed pass without a gap.
-/// </para>
+/// A registration disappears when its TTL lapses or the daemon restarts, and nothing announces
+/// either — the wallet's own claimer carries on as before. So this re-asserts every live receive
+/// rather than tracking expiry, at half the TTL, which covers one missed pass without a gap.
 /// </remarks>
 public sealed class CovclaimdRenewalService : BackgroundService
 {
@@ -89,10 +79,7 @@ public sealed class CovclaimdRenewalService : BackgroundService
     /// <summary>Re-reveal every receive that can still be claimed.</summary>
     /// <param name="cancellationToken">Cancels the pass.</param>
     /// <returns>How many registrations the daemon accepted.</returns>
-    /// <remarks>
-    /// Exposed so a host without a background loop — a browser, a one-shot job — can drive the same
-    /// pass on its own schedule.
-    /// </remarks>
+    /// <remarks>Public so a host without a background loop can drive the pass on its own schedule.</remarks>
     public async Task<int> RenewAsync(CancellationToken cancellationToken = default)
     {
         var live = await _intentStorage.GetArkadeSwapIntents(
@@ -114,8 +101,6 @@ public sealed class CovclaimdRenewalService : BackgroundService
         {
             if (intent.Metadata.GetValueOrDefault(ArkadeSwapMetadataKeys.Preimage) is not { Length: > 0 } hex)
             {
-                // A receive whose preimage this wallet no longer holds is one it cannot claim
-                // either, so there is nothing to hand the daemon.
                 continue;
             }
 

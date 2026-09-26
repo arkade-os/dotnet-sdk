@@ -2,9 +2,8 @@ namespace NArk.ArkadeIntents.Covclaim;
 
 /// <summary>How to reach the covclaimd instance this wallet reveals its claims to.</summary>
 /// <remarks>
-/// Reaching covclaimd is optional on every corridor. Without it a receive still works — the wallet
-/// claims its own lockup the moment the monitor sees it funded — so everything here configures a
-/// second claimant racing ours, not a dependency of the swap.
+/// Optional on every corridor: without it a receive still works, because the wallet claims its own
+/// lockup once the monitor sees it funded. This configures a second claimant, not a dependency.
 /// </remarks>
 public sealed class CovclaimdOptions
 {
@@ -15,36 +14,23 @@ public sealed class CovclaimdOptions
     public Uri? BaseAddress { get; set; }
 
     /// <summary>
-    /// How long a reveal stays registered before the daemon drops it.
+    /// How long a reveal stays registered before the daemon drops it. An upper bound only — the
+    /// daemon holds reveals in memory, so a restart loses them. Renewal paces itself off this value.
     /// </summary>
-    /// <remarks>
-    /// The daemon holds reveals in memory, so this is an upper bound and not a promise: a restart
-    /// loses every registration it was holding. Renewal paces itself off this value.
-    /// </remarks>
     public TimeSpan RegistrationTtl { get; set; } = TimeSpan.FromMinutes(15);
 
-    /// <summary>How long any one request may take before it is abandoned.</summary>
-    /// <remarks>
-    /// Short on purpose. Every call here sits on a path that has something better to do — a receive
-    /// that is about to hand out an invoice, or a renewal pass with other swaps behind it — and a
-    /// daemon that is merely a second claimant must never be the reason one of those stalls.
-    /// </remarks>
+    /// <summary>
+    /// How long any one request may take. Short on purpose: a second claimant must never be the
+    /// reason a receive about to hand out an invoice stalls.
+    /// </summary>
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>Whether to remember the daemon's keys for the process's lifetime.</summary>
     /// <remarks>
-    /// <para>
-    /// <b>Off by default</b>, and the reason is worth the round trip. covclaimd generates its
-    /// encryption key at startup, so a cached copy goes stale the moment the daemon restarts — and
-    /// sealing to a stale key fails <em>silently</em>, because only the daemon can tell that the
-    /// AEAD tag does not check out. What an operator then sees is a renewal loop reporting success
-    /// while the second claimant is gone.
-    /// </para>
-    /// <para>
-    /// The reference client does not cache at all. Turn this on only where the daemon's lifetime is
-    /// known to outlive this process's, and read <see cref="RegistrationTtl"/> as the window in
-    /// which a stale key stays undetected.
-    /// </para>
+    /// Off by default: covclaimd generates its encryption key at startup, and sealing to a stale one
+    /// fails silently — only the daemon can tell the AEAD tag does not check out, so the renewal loop
+    /// keeps reporting success with the second claimant gone. Turn it on only where the daemon's
+    /// lifetime is known to outlive this process's.
     /// </remarks>
     public bool CacheKeys { get; set; }
 
@@ -52,12 +38,9 @@ public sealed class CovclaimdOptions
     /// Allow plain HTTP to a non-loopback daemon. Off by default, and rarely the right answer.
     /// </summary>
     /// <remarks>
-    /// The key this daemon serves is the key a preimage gets sealed to, so whoever can answer for it
-    /// can substitute their own and read every secret this wallet reveals. On a receive leg that is
-    /// not a privacy loss but a funds one: a preimage in someone else's hands settles the payer's
-    /// invoice without this wallet ever claiming, and the lockup is then reclaimed at
-    /// <c>refund_locktime</c>. Loopback is exempt because that is where covclaimd runs by default
-    /// and nothing crosses a wire.
+    /// Whoever can answer for this endpoint substitutes their own key and reads every secret revealed
+    /// to it — and a preimage in someone else's hands settles the payer's invoice while the lockup is
+    /// reclaimed at <c>refund_locktime</c>. Loopback is exempt: nothing crosses a wire.
     /// </remarks>
     public bool AllowInsecureHttp { get; set; }
 }

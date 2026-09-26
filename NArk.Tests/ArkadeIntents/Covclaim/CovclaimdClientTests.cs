@@ -10,21 +10,9 @@ namespace NArk.Tests.ArkadeIntents.Covclaim;
 
 /// <summary>
 /// What this wallet puts on the wire when it reveals a claim, and how it fails when the daemon
-/// cannot be reached.
+/// cannot be reached. Field by field, because covclaimd refuses a body whose three parts do not
+/// agree — at the one moment the wallet has stopped watching.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The request shape is checked field by field because covclaimd validates the three parts against
-/// each other — the taptree must hash to the swap address and must carry the closure for this
-/// arkade script — and a body that is individually well-formed but internally inconsistent is
-/// refused on arrival, at the one moment the wallet has stopped watching.
-/// </para>
-/// <para>
-/// The failure shape matters as much. Every call here sits on a path that proceeds without the
-/// daemon, so failures have to arrive as one catchable type rather than as whatever the transport
-/// happened to raise.
-/// </para>
-/// </remarks>
 [TestFixture]
 public class CovclaimdClientTests
 {
@@ -45,14 +33,11 @@ public class CovclaimdClientTests
         {
             Assert.That(handler.LastPath, Is.EqualTo("/v1/reveal"));
             Assert.That((string)body["swap_address"]!, Is.EqualTo("tark1qexample"));
-            // The arkade script travels in the clear — it says where the claim must pay, which is
-            // not a secret — while the preimage is sealed and is 93 bytes once decoded.
+            // Sealed preimage: 93 bytes once decoded.
             Assert.That(Convert.FromBase64String((string)body["packet"]!["arkade_script"]!),
                 Is.EqualTo(new byte[] { 0x6a, 0x51 }));
             Assert.That(Convert.FromBase64String((string)body["packet"]!["ciphertext"]!).Length,
                 Is.EqualTo(93));
-            // Lowercase hex of the PSBT taptree encoding, which is what binds the registration to
-            // the address it claims to describe.
             Assert.That((string)body["taptree"]!, Does.Match("^[0-9a-f]+$"));
         });
     }
@@ -60,9 +45,6 @@ public class CovclaimdClientTests
     [Test]
     public async Task Reveal_SendsNoThirdPacketField()
     {
-        // The extension path's packet also names which covclaimd may open it, because there the
-        // daemon finds it on a public stream. Here we are talking to one daemon over its own
-        // endpoint, and its schema refuses what it does not declare.
         var handler = new RecordingHandler();
 
         await Client(handler).RevealAsync("tark1qexample", new byte[32], [0x51], [Leaf(0x51)]);
@@ -87,9 +69,7 @@ public class CovclaimdClientTests
     [Test]
     public void Reveal_WithAnEmptyTaptree_IsRefusedBeforeAnyRequest()
     {
-        // A tree with no leaves cannot hash to the address it claims to describe, so the daemon
-        // would refuse it — better to say so here, where the caller can still read which argument
-        // was empty.
+        // Refused here, where the caller can still read which argument was empty.
         Assert.That(() => Client(new RecordingHandler()).RevealAsync("tark1q", new byte[32], [0x51], []),
             Throws.TypeOf<ArgumentException>());
     }
@@ -114,7 +94,6 @@ public class CovclaimdClientTests
     [Test]
     public void AnUnreachableDaemon_IsACovclaimdException_NotATransportOne()
     {
-        // The whole point of the wrapper: callers on this path catch one type and carry on.
         var handler = new RecordingHandler { Throw = new HttpRequestException("connection refused") };
 
         Assert.That(() => Client(handler).GetKeysAsync(), Throws.TypeOf<CovclaimdException>());
@@ -123,9 +102,6 @@ public class CovclaimdClientTests
     [Test]
     public async Task TheDaemonsKeys_AreReReadEveryTime_ByDefault()
     {
-        // covclaimd generates its key at startup, so a copy held across a restart is stale — and
-        // sealing to a stale key fails silently, at the daemon's AEAD check, which is why the round
-        // trip is the default and the reference client does not cache at all.
         var handler = new RecordingHandler();
         var client = Client(handler);
 
@@ -150,9 +126,6 @@ public class CovclaimdClientTests
     [Test]
     public void ARemoteDaemonOverPlainHttp_IsRefused()
     {
-        // The key served at this address is the key every preimage gets sealed to, so whoever can
-        // answer in its place reads the secrets — and on a receive leg that is a funds loss, not a
-        // privacy one.
         Assert.That(() => new CovclaimdClient(
                 new HttpClient { BaseAddress = new Uri("http://covclaimd.example") },
                 Options.Create(new CovclaimdOptions())),
@@ -171,8 +144,7 @@ public class CovclaimdClientTests
     [Test]
     public void ARemoteDaemonOverPlainHttp_IsAcceptedOnAnExplicitOptOut()
     {
-        // A private network the operator vouches for. Explicit, because the default must not be
-        // the one that quietly hands a preimage to whoever answers.
+        // A private network the operator vouches for.
         Assert.That(() => new CovclaimdClient(
                 new HttpClient { BaseAddress = new Uri("http://covclaimd.example") },
                 Options.Create(new CovclaimdOptions { AllowInsecureHttp = true })),

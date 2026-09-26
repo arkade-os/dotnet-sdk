@@ -8,14 +8,10 @@ using NBitcoin.Secp256k1;
 
 namespace NArk.ArkadeIntents.Covclaim;
 
-/// <summary>
-/// <see cref="ICovclaimdClient"/> over covclaimd's REST gateway.
-/// </summary>
+/// <summary><see cref="ICovclaimdClient"/> over covclaimd's REST gateway.</summary>
 /// <remarks>
-/// Every request is bounded by <see cref="CovclaimdOptions.RequestTimeout"/> and every failure
-/// surfaces as <see cref="CovclaimdException"/>, including the ones a bare
-/// <see cref="HttpClient"/> would raise as transport noise — callers on this path are meant to
-/// catch and carry on, and that is only reasonable if the failures have one shape.
+/// Every failure surfaces as <see cref="CovclaimdException"/>, including transport noise: callers on
+/// this path catch and carry on, which is only reasonable if the failures have one shape.
 /// </remarks>
 public sealed class CovclaimdClient : ICovclaimdClient
 {
@@ -64,11 +60,9 @@ public sealed class CovclaimdClient : ICovclaimdClient
     /// has said otherwise.
     /// </summary>
     /// <remarks>
-    /// This is not transport hygiene, it is the trust anchor. The key served by whatever answers
-    /// this address is the key every preimage gets sealed to, so anyone able to answer in its place
-    /// substitutes their own and reads the secrets — and on a receive leg a leaked preimage settles
-    /// the payer's invoice without this wallet ever claiming. Loopback is exempt because that is
-    /// where covclaimd runs by default and nothing crosses a wire to intercept.
+    /// The trust anchor, not transport hygiene: whatever answers this address serves the key every
+    /// preimage is sealed to, and a leaked preimage settles the payer's invoice without this wallet
+    /// ever claiming. Loopback is exempt — nothing crosses a wire to intercept.
     /// </remarks>
     private static void AssertTransportSecure(Uri baseAddress, bool allowInsecureHttp)
     {
@@ -154,8 +148,8 @@ public sealed class CovclaimdClient : ICovclaimdClient
 
         var keys = await GetKeysAsync(cancellationToken);
 
-        // Only the preimage is sealed. The arkade script travels in the clear because it carries no
-        // secret — it says where the claim must pay, which the solver already knows.
+        // Only the preimage is sealed: the arkade script says where the claim must pay, which the
+        // solver already knows.
         var sealed_ = await ClaimPacket.SealAsync(
             preimage,
             Convert.ToHexString(keys.CovclaimdPubKey.ToBytes(true)).ToLowerInvariant(),
@@ -194,8 +188,7 @@ public sealed class CovclaimdClient : ICovclaimdClient
         {
             return await send(timeoutCts.Token);
         }
-        // The caller's own cancellation is theirs to see; only our timeout becomes an exception
-        // about covclaimd.
+        // The caller's own cancellation is theirs to see; only our timeout speaks for covclaimd.
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -229,8 +222,8 @@ public sealed class CovclaimdClient : ICovclaimdClient
         }
         catch
         {
-            // A gateway that fails without a JSON body still has a status worth reporting, and the
-            // status is the half that says whether to retry.
+            // A gateway that fails without a JSON body still has a status, which is the half that
+            // says whether to retry.
         }
 
         throw new CovclaimdException(

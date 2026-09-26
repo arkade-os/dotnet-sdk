@@ -9,10 +9,9 @@ namespace NArk.ArkadeIntents.Covclaim;
 /// What a preimage is sealed to. Read live: the daemon generates it at startup.
 /// </param>
 /// <param name="EmulatorPubKey">
-/// The covenant co-signer the daemon will claim through. Worth reading even though this SDK pins
-/// its own per network — a daemon pointed at a different emulator cannot claim anything we build,
-/// and comparing the two is how that becomes an error at registration rather than a lockup nobody
-/// touches.
+/// The covenant co-signer the daemon will claim through. Read even though this SDK pins its own per
+/// network: a daemon on a different emulator cannot claim anything we build, and comparing the two
+/// turns that into an error at registration rather than a lockup nobody touches.
 /// </param>
 public sealed record CovclaimdKeys(ECPubKey CovclaimdPubKey, ECPubKey EmulatorPubKey)
 {
@@ -30,13 +29,7 @@ internal sealed class CovclaimdKeysResponse
     public string? EmulatorPubKey { get; set; }
 }
 
-/// <summary>Wire shape of <c>POST /v1/reveal</c>.</summary>
-/// <remarks>
-/// Mirrors <c>covclaimd.v1.RevealRequest</c>. The daemon validates the packet against the taptree —
-/// the tree must hash to <see cref="SwapAddress"/> and must carry the claim closure for this arkade
-/// script — and refuses anything it cannot bind to the address, so a malformed registration fails
-/// here rather than at claim time.
-/// </remarks>
+/// <summary>Wire shape of <c>POST /v1/reveal</c>, mirroring <c>covclaimd.v1.RevealRequest</c>.</summary>
 internal sealed class RevealRequestBody
 {
     [JsonPropertyName("swap_address")]
@@ -51,9 +44,8 @@ internal sealed class RevealRequestBody
 
 /// <summary>The claim packet a reveal carries; both fields are standard base64.</summary>
 /// <remarks>
-/// Deliberately two fields and no third: the extension path's packet also names which covclaimd may
-/// open it, because there the daemon finds the packet on a public stream. Here the client is talking
-/// to one daemon over its own endpoint, so the question does not arise.
+/// Two fields and no third: the extension path's packet also names which covclaimd may open it,
+/// because there the packet is found on a public stream. Here there is one named daemon.
 /// </remarks>
 internal sealed class RevealPacketBody
 {
