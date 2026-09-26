@@ -10,6 +10,8 @@ using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Assets;
 using NArk.ArkadeIntents.Evm;
 using NArk.Abstractions.Blockchain;
+using NArk.ArkadeIntents.Covclaim;
+using Microsoft.Extensions.Options;
 namespace NArk.ArkadeIntents.Hosting;
 
 public static class ArkadeIntentsCollectionExtensions
@@ -79,6 +81,51 @@ public static class ArkadeIntentsCollectionExtensions
         // the payment silently does not arrive. Opt out through ArkadeIntentAdvanceOptions if the
         // host means to drive claims itself.
         services.AddHostedService<ArkadeIntentAdvanceService>();
+        return services;
+    }
+
+    /// <summary>
+    /// Points the receive corridors at a covclaimd instance, so every receive is revealed to it and
+    /// the daemon races this wallet for the claim.
+    /// </summary>
+    /// <param name="services">The container.</param>
+    /// <param name="configure">Where the daemon is, and how patient to be with it.</param>
+    /// <returns>The same container, for chaining.</returns>
+    /// <remarks>
+    /// Optional and additive: without it a receive is still claimed by
+    /// <see cref="ArkadeIntentAdvanceService"/> once the monitor sees the lockup funded. What it buys
+    /// is a second claimant for the window this wallet is not running, spending the same leaf pinned
+    /// to the same payout script. Call it after <see cref="AddArkadeIntentsServices"/>.
+    /// </remarks>
+    public static IServiceCollection AddCovclaimd(
+        this IServiceCollection services,
+        Action<CovclaimdOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        services.Configure(configure);
+
+        // Named, not typed: the client is a singleton, and a typed one would pin a single handler for
+        // the life of the process and never see a DNS change.
+        services.AddHttpClient(CovclaimdOptions.HttpClientName)
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                // A redirect would move the key fetch off the address the caller vetted.
+                AllowAutoRedirect = false,
+            });
+
+        services.TryAddSingleton<ICovclaimdClient>(sp => new CovclaimdClient(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(CovclaimdOptions.HttpClientName),
+            sp.GetRequiredService<IOptions<CovclaimdOptions>>(),
+            sp.GetService<IAesGcmCipher>(),
+            sp.GetService<ILogger<CovclaimdClient>>()));
+
+        // Registrations live in the daemon's memory, so "revealed once" would otherwise mean
+        // "revealed until covclaimd next restarts".
+        services.AddHostedService<CovclaimdRenewalService>();
         return services;
     }
 }

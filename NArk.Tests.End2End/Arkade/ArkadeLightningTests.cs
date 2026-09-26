@@ -7,6 +7,7 @@ using NArk.Arkade.Contracts;
 using NArk.Arkade.Emulator;
 using NArk.ArkadeIntents;
 using NArk.ArkadeIntents.Lightning;
+using NArk.ArkadeIntents.Covclaim;
 using NArk.ArkadeIntents.Models;
 using NArk.ArkadeIntents.Rfq;
 using NArk.ArkadeIntents.Services;
@@ -207,6 +208,55 @@ public class ArkadeLightningTests
         await payment;
     }
 
+    // ─── the second claimant ──────────────────────────────────────────
+
+    /// <summary>covclaimd collects a receive this wallet never claims.</summary>
+    /// <remarks>
+    /// The property is an absence: nothing here claims and no advance loop runs, so only the daemon
+    /// can spend the lockup. A spent lockup and a settled invoice prove the whole registration path,
+    /// across three implementations of one wire format that the unit tests reach only the first of.
+    /// </remarks>
+    [Test]
+    [Category("Covclaim")]
+    public async Task Receive_IsClaimedByCovclaimd_WhileThisWalletNeverDoes()
+    {
+        var ctx = await SetUpAsync(withCovclaimd: true);
+        var covclaimdKey = await ctx.ReadCovclaimdPubKeyAsync();
+
+        var pending = await ctx.Intents.ReceiveFromLightningAsync(
+            ctx.WalletId, SwapSats, ctx.Rfq, covclaimdKey);
+
+        if (pending.Quote.Profile?.SolverRefundPkScript is { Length: > 0 } solverScript)
+        {
+            var serverInfo = await ctx.Transport.GetServerInfoAsync();
+            if (!await SolverLiquidityHelper.EnsureBtcFloat(
+                    serverInfo.SignerKey.ToXOnlyPubKey(), solverScript, (ulong)SwapSats * 2))
+            {
+                Assert.Ignore(
+                    "the solver has no unencumbered float to fund the lockup with, and topping it " +
+                    "up did not land — its balance frees on the operator's settlement schedule.");
+            }
+        }
+
+        // Fired, not awaited: the hold settles once somebody publishes the preimage, and the whole
+        // point is that the somebody is not us.
+        var payment = Task.Run(() => ctx.Lnd.Pay(pending.Invoice));
+
+        var lockupScript = pending.Contract.GetScriptPubKey().ToHex();
+        var lockup = await WaitForVtxo(ctx, lockupScript);
+        Assert.That(lockup.Amount, Is.GreaterThanOrEqualTo((ulong)pending.Quote.ToAmount),
+            "the solver funded at least what it quoted");
+
+        // No sync service and no advance loop: this wallet is blind from here on.
+        var spent = await Poll(async () => (await GetVtxo(ctx, lockupScript))?.SpentByTransactionId is
+            { Length: > 0 }, SolverTimeout);
+        Assert.That(spent, Is.True, "covclaimd claimed the lockup without this wallet doing anything");
+
+        Assert.That(await Task.WhenAny(payment, Task.Delay(SolverTimeout)), Is.SameAs(payment),
+            "the payer's invoice settled on the preimage covclaimd published");
+        await payment;
+    }
+
     /// <summary>
     /// A swap nobody funds stays unclaimable, and claiming it fails rather than half-completing.
     /// </summary>
@@ -246,9 +296,7 @@ public class ArkadeLightningTests
         IVtxoStorage VtxoStorage,
         IArkadeIntentStorage IntentStorage)
     {
-        /// <summary>
-        /// Reads covclaimd's key from the solver's own endpoint rather than hardcoding it.
-        /// </summary>
+        /// <summary>Reads covclaimd's key from the solver's own endpoint rather than hardcoding it.</summary>
         /// <remarks>
         /// covclaimd generates its key at startup, so a rebuilt stack invalidates any copy. A stale
         /// one seals the preimage to a daemon that cannot open it, which nothing on the wire
@@ -262,7 +310,12 @@ public class ArkadeLightningTests
         }
     }
 
-    private static async Task<Ctx> SetUpAsync()
+    /// <summary>Builds the corridor under test.</summary>
+    /// <param name="withCovclaimd">
+    /// Attach the stack's covclaimd, so every receive is also revealed to it. Off by default: a
+    /// second claimant racing the other tests would make a passing run say less than it looks like.
+    /// </param>
+    private static async Task<Ctx> SetUpAsync(bool withCovclaimd = false)
     {
         var solverUrl = Env("ARKADE_LN_SOLVER_URL");
         if (solverUrl is null)
@@ -301,9 +354,17 @@ public class ArkadeLightningTests
 
         // One client for both directions now, so the two constructions that used to differ by a
         // parameter cannot differ at all.
+        var covclaimdUrl = new Uri(Env("ARKADE_COVCLAIMD_URL") ?? "http://localhost:7271");
+        var covclaimdClient = withCovclaimd
+            ? new CovclaimdClient(
+                new HttpClient { BaseAddress = covclaimdUrl },
+                Microsoft.Extensions.Options.Options.Create(new CovclaimdOptions()))
+            : null;
+
         var lightning = new LightningIntentsClient(
             w.clientTransport, w.contractService, spendingService,
-            intentStorage, w.contracts, w.vtxoStorage, w.walletProvider);
+            intentStorage, w.contracts, w.vtxoStorage, w.walletProvider,
+            covclaimd: covclaimdClient);
 
         // The asset corridor is not exercised here, so its client is left out rather than
         // constructed to satisfy a signature.
@@ -317,9 +378,8 @@ public class ArkadeLightningTests
 
         var solver = new Uri(solverUrl!.EndsWith('/') ? solverUrl : solverUrl + "/");
         var rfq = new HttpRfqTransport(new HttpClient(), solver);
-        var covclaimd = new Uri(Env("ARKADE_COVCLAIMD_URL") ?? "http://localhost:7271");
 
-        return new Ctx(w.walletIdentifier, w.clientTransport, intents, rfq, lnd, covclaimd,
+        return new Ctx(w.walletIdentifier, w.clientTransport, intents, rfq, lnd, covclaimdUrl,
             w.vtxoStorage, intentStorage);
     }
 

@@ -1610,6 +1610,29 @@ covclaimd is optional. Both corridors work without it; what it adds is a daemon 
 wallet's own claim, so a funded receive is still collected while the browser tab is closed — worth
 having, because the claim window is a couple of hours.
 
+Point the corridors at one with `AddCovclaimd`, after the intents registration:
+
+```csharp
+services.AddArkadeIntentsServices();
+services.AddCovclaimd(o => o.BaseAddress = new Uri("http://localhost:7271"));
+```
+
+From then on every receive is **revealed** to that daemon: the preimage is sealed to its key, and
+the registration carries the covenant's own claim script and the lockup's taptree, which is what
+binds it to the funded address. The daemon watches arkd's stream and claims the moment the lockup
+appears. It spends the same non-interactive claim leaf the wallet would, pinned to the same payout
+script, so the two racing cannot disagree about where the money goes — and whichever loses simply
+finds the output already spent.
+
+Registration is **best-effort by construction**: a daemon that is down or refuses leaves a warning
+in the log and the swap proceeds, because trading a redundant claimant for no swap at all would be
+the worse outcome. `CovclaimdRenewalService` re-reveals every live receive every half TTL, since the
+daemon holds registrations in memory and loses them on restart.
+
+Nothing here is required for a server-side wallet that stays up: `ArkadeIntentAdvanceService`
+already claims a funded receive the moment the monitor marks it Claimable. The daemon covers the
+window where the wallet is not running.
+
 > **Both corridors settle end to end against a live solver.** `ArkadeLightningTests` in
 > `NArk.Tests.End2End` drives each one through funding, fill and claim: on send the solver pays the
 > invoice and takes the lockup with the preimage; on receive the payer settles a hold invoice, the

@@ -121,7 +121,31 @@ travels to the solver as opaque bytes it forwards.
 The packet is **optional**. Pass no covclaimd key and no packet is sent at all, which is the honest
 encoding of "nobody else can claim this": you keep the preimage and claim the lockup yourself.
 Sealing to a key generated and dropped on the spot would instead advertise an offline claim path
-that no daemon can walk. What the daemon buys is the receive corridor's
+that no daemon can walk.
+
+## Revealing a claim to covclaimd
+
+There are two ways a daemon can come to hold your packet, and this SDK takes the direct one. With
+`AddCovclaimd` registered, every receive is **revealed**: the sealed preimage goes straight to one
+named daemon over its own endpoint, together with the covenant's claim script and the lockup's
+taptree. The daemon validates that the tree hashes to the address and carries the closure for that
+script — so a registration it cannot bind to the address is refused there and then, rather than
+discovered at claim time — and from then on it watches arkd's stream for the lockup being funded.
+
+The arkade script travels with the registration rather than being rebuilt by either side, and that
+is deliberate: the covenant commits to a hash of it, so the party that built the contract holds the
+only copy guaranteed to match. This SDK takes it from
+[`VHTLCv2Contract.NonInteractiveClaimArkadeScript`](xref:NArk.Arkade.Contracts.VHTLCv2Contract.NonInteractiveClaimArkadeScript)
+for exactly that reason.
+
+What the daemon can do with it is bounded by the leaf it spends: `nonInteractiveClaim` pays the
+receiver script the covenant already pins, which is yours. So the daemon is a second claimant racing
+your own — never a party that can redirect anything. Registration failures are logged and swallowed
+for the same reason: what a failed registration costs is redundancy, not the swap.
+
+Registrations live in the daemon's memory, so they lapse on a TTL and vanish on a restart.
+`CovclaimdRenewalService` re-reveals every live receive every half TTL; repeat reveals for one
+address are safe by design, which is why it re-asserts rather than tracking expiry. What the daemon buys is the receive corridor's
 answer to the problem the send corridor solves with a locktime: if you go offline between minting
 the invoice and the solver funding, covclaimd holds the only other copy of your preimage and can
 push the covenant's `nonInteractiveClaim` leaf on your behalf. That leaf is pinned to *your*

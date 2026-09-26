@@ -135,10 +135,19 @@ public static class PsbtHelpers
     }
 
 
-    // Encodes taproot script leaves per PSBT spec: {depth version script_length script}* (no leaf count prefix).
-    // Param: leaves — array of tapscript byte arrays.
-    /// <returns>Encoded taproot tree as byte array</returns>
-    private static byte[] EncodeTaprootTree(TapScript[] leaves)
+    /// <summary>
+    /// Encodes taproot script leaves per the PSBT spec: <c>{depth version script_length script}*</c>,
+    /// with no leaf-count prefix.
+    /// </summary>
+    /// <param name="leaves">The tapscript leaves, in the order that fixes the merkle root.</param>
+    /// <returns>The encoded taproot tree.</returns>
+    /// <remarks>
+    /// Public because covclaimd takes this same encoding in a reveal, where it binds a registered
+    /// claim to its address. <b>Every leaf is encoded at depth 1, so this is only correct for a flat
+    /// taptree</b> — which every Arkade covenant is; a nested one would encode to something that does
+    /// not hash to its address, first visible as a counterparty refusing a well-formed-looking reveal.
+    /// </remarks>
+    public static byte[] EncodeTaprootTree(TapScript[] leaves)
     {
         return leaves.SelectMany(EncodeLeaf).ToArray();
 
