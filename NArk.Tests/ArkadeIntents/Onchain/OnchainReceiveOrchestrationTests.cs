@@ -20,6 +20,7 @@ using NBitcoin;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 
 namespace NArk.Tests.ArkadeIntents.Onchain;
 
@@ -229,6 +230,33 @@ public class OnchainReceiveOrchestrationTests
         });
         Assert.DoesNotThrowAsync(async () =>
             await ctx.Spending.DidNotReceiveWithAnyArgs().Spend(default!, default(ArkTxOut[])!, default));
+    }
+
+    [Test]
+    public void AClaimWithNoL1Seam_ReachesTheLockupSelection()
+    {
+        // The Arkade half of this corridor is drivable without a blockchain at all — a watch-only
+        // claim is built that way — and the clock is read only to judge expiry. Getting as far as
+        // "not funded yet" is what proves the read no longer takes the claim down with it.
+        var ctx = Ctx(intent: Intent(), withBlockchain: false);
+
+        var ex = Assert.ThrowsAsync<InvalidOperationException>(
+            () => ctx.Client.ClaimOnchainReceiveAsync("swap-1"));
+
+        Assert.That(ex!.Message, Does.Contain("has not funded it yet"));
+    }
+
+    [Test]
+    public void AClaimWhoseChainClockIsDown_ReachesTheLockupSelectionToo()
+    {
+        var down = Substitute.For<IBitcoinBlockchain>();
+        down.GetChainTime(default).ThrowsAsyncForAnyArgs(new HttpRequestException("esplora down"));
+        var ctx = Ctx(intent: Intent(), blockchain: down);
+
+        var ex = Assert.ThrowsAsync<InvalidOperationException>(
+            () => ctx.Client.ClaimOnchainReceiveAsync("swap-1"));
+
+        Assert.That(ex!.Message, Does.Contain("has not funded it yet"));
     }
 
     // ─── The L1 refund ────────────────────────────────────────────────
@@ -492,7 +520,9 @@ public class OnchainReceiveOrchestrationTests
         IBitcoinBlockchain Blockchain,
         IWalletProvider Wallets);
 
-    private static Harness Ctx(ArkadeSwapIntent? intent = null, long now = Now)
+    private static Harness Ctx(
+        ArkadeSwapIntent? intent = null, long now = Now, IBitcoinBlockchain? blockchain = null,
+        bool withBlockchain = true)
     {
         var transport = Substitute.For<IClientTransport>();
         transport.GetServerInfoAsync(default).ReturnsForAnyArgs(ServerInfo);
@@ -515,15 +545,15 @@ public class OnchainReceiveOrchestrationTests
         var wallets = Substitute.For<IWalletProvider>();
         wallets.GetSignerAsync(default!, default).ReturnsForAnyArgs((IArkadeWalletSigner?)null);
 
-        var blockchain = Substitute.For<IBitcoinBlockchain>();
+        blockchain ??= withBlockchain ? Substitute.For<IBitcoinBlockchain>() : null;
 
         var client = new OnchainIntentsClient(
             transport, contracts, spending, intents, contractStorage,
-            Substitute.For<IVtxoStorage>(), wallets, blockchain,
+            Substitute.For<IVtxoStorage>(), wallets, blockchain!,
             options: Options.Create(new ArkadeIntentsOptions()),
             time: new FixedClock(now));
 
-        return new Harness(client, spending, contracts, intents, blockchain, wallets);
+        return new Harness(client, spending, contracts, intents, blockchain!, wallets);
     }
 
     /// <summary>The lockup the refund path reads back to recover our key.</summary>

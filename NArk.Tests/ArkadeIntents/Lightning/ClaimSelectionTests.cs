@@ -88,8 +88,10 @@ public class ClaimSelectionTests
     {
         var lapsed = Vtxo(amount: Quoted, expiresAtHeight: Now.Height);
 
-        Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<InvalidOperationException>(
             () => LightningIntentsClient.SelectClaimable([lapsed], Quoted, "swap-1", Now));
+
+        Assert.That(ex!.Message, Does.Contain("past the batch"));
     }
 
     // A local clock runs ahead of median time past, so standing in for the chain's would refuse claims

@@ -611,7 +611,8 @@ public sealed partial class OnchainIntentsClient
 
         // Median time past, never the local clock: consensus matures CLTV against it, and it trails
         // wall clock by about an hour. A refund built against the wrong clock is well formed and
-        // rejected as non-final, with nothing in the rejection saying why.
+        // rejected as non-final, with nothing in the rejection saying why. Read straight, unlike the
+        // Arkade claim's: this path exists only for a swap whose L1 leg we funded, so the seam is there.
         var chain = await blockchain.GetChainTime(cancellationToken);
         var mtp = chain.Timestamp.ToUnixTimeSeconds();
         if (!OnchainReceiveGates.RefundIsDue(htlcLocktime, mtp))
