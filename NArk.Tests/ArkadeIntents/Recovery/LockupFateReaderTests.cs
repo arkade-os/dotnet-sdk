@@ -1,3 +1,4 @@
+using NBitcoin;
 using NArk.Abstractions.VTXOs;
 using NArk.ArkadeIntents.Recovery;
 using NArk.Core.Transport;
@@ -74,9 +75,9 @@ public class LockupFateReaderTests
     {
         // Every leaf that is not a claim hands the money back: the covenant's non-interactive refund
         // is pinned to our own address, and the rest need our own signature. So this is decidable
-        // without asking the counterparty anything.
+        // without asking the counterparty anything — once the witness is there to read.
         var fate = await Read(
-            [Vtxo() with { SpentByTransactionId = new string('c', 64) }], spendIsVisible: true);
+            [Vtxo() with { SpentByTransactionId = new string('c', 64) }], spendPsbt: ReadableSpendOf());
 
         Assert.Multiple(() =>
         {
@@ -116,7 +117,35 @@ public class LockupFateReaderTests
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
-    private static Task<LockupFateResult> Read(ArkVtxo[] vtxos, bool spendIsVisible = false)
+    /// <summary>A PSBT spending the fixture's lockup, carrying a witness that proves nothing.</summary>
+    // The bug this guards: a claim whose witness had not been published yet read exactly like a
+    // refund, and the verdict is terminal, so the payout was reported failed after the payee was paid.
+    [Test]
+    public async Task ASpendWhoseWitnessCannotBeReadYet_IsUnknownRatherThanReturned()
+    {
+        var fate = await Read(
+            [Vtxo() with { SpentByTransactionId = new string('c', 64) }], spendIsVisible: true);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(fate.Fate, Is.EqualTo(LockupFate.Unknown));
+            Assert.That(fate.IsResolved, Is.False);
+        });
+    }
+
+    private static string ReadableSpendOf(uint vout = 0)
+    {
+        var tx = Network.Main.CreateTransaction();
+        tx.Inputs.Add(new TxIn(new OutPoint(uint256.Parse(new string('b', 64)), vout)));
+        tx.Outputs.Add(new TxOut(Money.Satoshis(1000), new Key().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86)));
+
+        var psbt = PSBT.FromTransaction(tx, Network.Main);
+        psbt.Inputs[0].FinalScriptWitness = new WitScript(Op.GetPushOp(new byte[32]).ToBytes());
+        return psbt.ToBase64();
+    }
+
+    private static Task<LockupFateResult> Read(
+        ArkVtxo[] vtxos, bool spendIsVisible = false, string? spendPsbt = null)
     {
         // ReturnsForAnyArgs, not a named-argument arrangement: GetVtxos carries more parameters than
         // the reader passes, so matching on a subset silently arranges nothing and every case comes
@@ -126,11 +155,8 @@ public class LockupFateReaderTests
         storage.GetVtxos().ReturnsForAnyArgs(vtxos);
 
         var transport = Substitute.For<IClientTransport>();
-        // An unparseable blob still counts as "the indexer produced something": the preimage search
-        // then finds nothing in it, which is the refund reading. Absence of any transaction is the
-        // separate case, and the one that must not be read as a verdict.
         transport.GetVirtualTxsAsync(default!, default)
-            .ReturnsForAnyArgs(spendIsVisible ? ["not-a-psbt"] : []);
+            .ReturnsForAnyArgs(spendPsbt is not null ? [spendPsbt] : spendIsVisible ? ["not-a-psbt"] : []);
 
         return LockupFateReader.ReadAsync(transport, storage, Script, PaymentHash);
     }
