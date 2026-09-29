@@ -44,7 +44,7 @@ public class HierarchicalDeterministicAddressProviderRecycleTests
     private static readonly ArkServerInfo TestServerInfo = new(
         Dust: Money.Satoshis(330),
         SignerKey: TestServerKey,
-        DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(ECXOnlyPubKeyComparer.Instance),
+        DeprecatedSigners: new Dictionary<ECXOnlyPubKey, long>(),
         Network: Network.RegTest,
         UnilateralExit: new Sequence(144),
         BoardingExit: new Sequence(144),
@@ -106,8 +106,7 @@ public class HierarchicalDeterministicAddressProviderRecycleTests
             _walletStorage,
             _contractStorage,
             _wallet,
-            Network.RegTest,
-            sweepDestination: null);
+            Network.RegTest);
 
         var walletProvider = Substitute.For<IWalletProvider>();
         walletProvider.GetAddressProviderAsync(WalletId, Arg.Any<CancellationToken>())
