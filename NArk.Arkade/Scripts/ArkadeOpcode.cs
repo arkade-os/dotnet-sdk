@@ -12,8 +12,8 @@ namespace NArk.Arkade.Scripts;
 /// the ts-sdk <c>ARKADE_OP</c> table (emulator v0.0.4).
 /// </para>
 /// <para>
-/// The values fall in <c>0xb3</c> (repurposed NOP4 slot) and <c>0xc3</c>–<c>0xf6</c>,
-/// with <c>0xd0</c> and <c>0xdb</c>–<c>0xdf</c> unassigned; standard Bitcoin
+/// The values fall in <c>0xb3</c> (repurposed NOP4 slot) and <c>0xc3</c>–<c>0xf8</c>,
+/// with <c>0xd0</c> and <c>0xdd</c>–<c>0xdf</c> unassigned; standard Bitcoin
 /// opcodes are emitted via NBitcoin's <see cref="NBitcoin.Op"/> type and are NOT
 /// re-declared here.
 /// </para>
@@ -84,7 +84,7 @@ public enum ArkadeOpcode : byte
 
     // ─── Byte-string / big-number ops (0xd7–0xda) ──────────────────
     // The emulator places byte-string and modular-arithmetic ops here.
-    // 0xdb–0xdf are unassigned.
+    // 0xdd–0xdf are unassigned.
 
     /// <summary>0xd7 — Pad a BigNum to exactly <c>size</c> bytes; fails if it doesn't fit or <c>size</c> is out of range.</summary>
     OP_NUM2BIN = 0xd7,
@@ -94,6 +94,13 @@ public enum ArkadeOpcode : byte
     OP_REVERSEBYTES = 0xd9,
     /// <summary>0xda — Modular exponentiation: push <c>base^exp mod modulus</c> in <c>[0, modulus)</c> (operands ≤ 64 bytes).</summary>
     OP_MODEXP = 0xda,
+
+    // ─── VTXO expiry + emulator clock (0xdb–0xdc) ──────────────────
+
+    /// <summary>0xdb — Push the spent VTXO's Unix expiry timestamp; fails if the emulator has no expiry bound.</summary>
+    OP_PUSHEXPIRY = 0xdb,
+    /// <summary>0xdc — Pop a Unix timestamp and push whether it is not later than the emulator's current time.</summary>
+    OP_CHECKTIME = 0xdc,
 
     // ─── Elliptic-curve operations (0xe0–0xe4) ─────────────────────
 
@@ -152,4 +159,18 @@ public enum ArkadeOpcode : byte
     OP_INSPECTINPUTPACKET = 0xf5,
     /// <summary>0xf6 — Push the Arkade tapscript sighash (non-BIP342) of the current input under a sighash flag.</summary>
     OP_SIGHASH = 0xf6,
+
+    // ─── Continuation + intent introspection (0xf7–0xf8) ───────────
+
+    /// <summary>
+    /// 0xf7 — Require output <c>output_index</c> to preserve the current input's fields selected by
+    /// <c>flags</c> (<c>1</c> scriptPubKey, <c>2</c> value, <c>4</c> assets; nonzero, combinable).
+    /// Asset IDs listed before <c>exception_count</c> are excluded from the asset check.
+    /// </summary>
+    OP_TUNNEL = 0xf7,
+    /// <summary>
+    /// 0xf8 — Read a field of the Arkade intent message bound to the current execution by a dot-separated
+    /// <c>path</c> (e.g. <c>outpoints.0</c>); push <c>(value, 1)</c>, or <c>(empty, 0)</c> when missing or outside intent validation.
+    /// </summary>
+    OP_INSPECTINTENTMESSAGE = 0xf8,
 }
