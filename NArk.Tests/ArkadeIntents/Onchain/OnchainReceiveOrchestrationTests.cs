@@ -283,6 +283,7 @@ public class OnchainReceiveOrchestrationTests
     {
         var ctx = Ctx(intent: Intent());
         ctx.Blockchain.GetUtxosAsync(default!, default).ReturnsForAnyArgs([]);
+        ctx.Blockchain.GetChainTime(default).ReturnsForAnyArgs(new TimeHeight(Stamp(HtlcLocktime + 3600), 200));
 
         var outcome = await ctx.Client.RefundOnchainReceiveAsync("swap-1");
 
@@ -292,6 +293,38 @@ public class OnchainReceiveOrchestrationTests
             Assert.That(outcome.Detail, Does.Contain("nothing confirmed"));
         });
         await ctx.Blockchain.DidNotReceiveWithAnyArgs().BroadcastAsync(default!, default);
+    }
+
+    [Test]
+    public async Task AnHtlcNeverFunded_IsClosedADayPastItsLocktime()
+    {
+        var ctx = Ctx(intent: Intent());
+        ctx.Blockchain.GetUtxosAsync(default!, default).ReturnsForAnyArgs([]);
+        ctx.Blockchain.GetChainTime(default).ReturnsForAnyArgs(
+            new TimeHeight(Stamp(HtlcLocktime + OnchainReceiveGates.AbandonedGraceSeconds), 200));
+
+        var outcome = await ctx.Client.RefundOnchainReceiveAsync("swap-1");
+
+        var saved = LastSavedIntent(ctx);
+        Assert.Multiple(() =>
+        {
+            Assert.That(outcome.Refunded, Is.False);
+            Assert.That(saved!.Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
+            Assert.That(saved.Metadata, Does.ContainKey(ArkadeSwapMetadataKeys.ClosedWithoutChainEventAt));
+        });
+    }
+
+    [Test]
+    public async Task AnHtlcWithAnUnconfirmedPayment_IsNeverClosed()
+    {
+        var ctx = Ctx(intent: Intent());
+        ctx.Blockchain.GetUtxosAsync(default!, default).ReturnsForAnyArgs([Utxo(100_000) with { Confirmed = false }]);
+        ctx.Blockchain.GetChainTime(default).ReturnsForAnyArgs(
+            new TimeHeight(Stamp(HtlcLocktime + OnchainReceiveGates.AbandonedGraceSeconds * 2), 200));
+
+        await ctx.Client.RefundOnchainReceiveAsync("swap-1");
+
+        Assert.That(LastSavedIntent(ctx), Is.Null);
     }
 
     [Test]
@@ -429,9 +462,11 @@ public class OnchainReceiveOrchestrationTests
         return (Transaction)calls[0].GetArguments()[0]!;
     }
 
+    // Either write: a status decided from a snapshot is saved conditionally, one just spent for is not.
     private static ArkadeSwapIntent? LastSavedIntent(Harness ctx) =>
         ctx.Intents.ReceivedCalls()
-            .Where(c => c.GetMethodInfo().Name == nameof(IArkadeIntentStorage.SaveArkadeSwapIntent))
+            .Where(c => c.GetMethodInfo().Name is nameof(IArkadeIntentStorage.SaveArkadeSwapIntent)
+                or nameof(IArkadeIntentStorage.TrySaveArkadeSwapIntent))
             .Select(c => (ArkadeSwapIntent)c.GetArguments()[0]!)
             .LastOrDefault();
 

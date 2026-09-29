@@ -239,6 +239,49 @@ public class EfCoreArkadeIntentStorageTests
         Assert.That(events, Is.EqualTo(2));
     }
 
+    [Test]
+    public async Task AConditionalSave_WritesStatusAndTheRestOfTheRowTogether()
+    {
+        var intent = Intent("swap-1", "5120" + new string('d', 64));
+        await _storage.SaveArkadeSwapIntent(intent);
+
+        intent.Status = ArkadeSwapIntentStatus.Fulfilled;
+        intent.SpentTxid = "spender";
+
+        Assert.That(
+            await _storage.TrySaveArkadeSwapIntent(intent, ArkadeSwapIntentStatus.Pending), Is.True);
+
+        var stored = await _storage.GetArkadeSwapIntent("swap-1");
+        Assert.That(stored!.Status, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+        Assert.That(stored.SpentTxid, Is.EqualTo("spender"));
+    }
+
+    [Test]
+    public async Task AConditionalSave_RefusesASwapSomethingElseAlreadyMoved()
+    {
+        var intent = Intent("swap-1", "5120" + new string('e', 64));
+        await _storage.SaveArkadeSwapIntent(intent);
+        await _storage.UpdateStatus(intent.SwapPkScript, ArkadeSwapIntentStatus.Claimable);
+
+        intent.Status = ArkadeSwapIntentStatus.Refundable;
+
+        Assert.That(
+            await _storage.TrySaveArkadeSwapIntent(intent, ArkadeSwapIntentStatus.Pending), Is.False);
+        Assert.That(
+            (await _storage.GetArkadeSwapIntent("swap-1"))!.Status,
+            Is.EqualTo(ArkadeSwapIntentStatus.Claimable));
+    }
+
+    [Test]
+    public async Task AConditionalSave_InsertsASwapThatWasNeverStored()
+    {
+        var intent = Intent("swap-1", "5120" + new string('f', 64));
+
+        Assert.That(
+            await _storage.TrySaveArkadeSwapIntent(intent, ArkadeSwapIntentStatus.Pending), Is.True);
+        Assert.That(await _storage.GetArkadeSwapIntent("swap-1"), Is.Not.Null);
+    }
+
     private static ArkadeSwapIntent Intent(string id, string pkScript, ArkadeSwapIntentStatus status = ArkadeSwapIntentStatus.Pending) => new ArkadeSwapIntent
     {
         Id = id,

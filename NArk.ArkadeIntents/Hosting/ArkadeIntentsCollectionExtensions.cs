@@ -45,6 +45,7 @@ public static class ArkadeIntentsCollectionExtensions
             {
                 configured.MaxPayAmountSats = options.MaxPayAmountSats;
                 configured.OnchainClaimConfirmations = options.OnchainClaimConfirmations;
+                configured.SignerlessFallback = options.SignerlessFallback;
             }
         });
         // Singleton, not AddHttpClient<T>: that registers the client TRANSIENT, and the service

@@ -295,6 +295,11 @@ public static class ArkadeSwapStateMachine
                 ArkadeSwapIntentStatus.Claimable) =>
                 ArkadeSwapIntentStatus.Resolved,
 
+            // Never funded and now past the solver's reclaim: there is nothing left for us to claim.
+            // The on-board is left out: its L1 refund comes later, at the HTLC's own locktime.
+            (ArkadeSwapIntentType.LightningToBtc, ArkadeSwapIntentStatus.Pending) =>
+                ArkadeSwapIntentStatus.Resolved,
+
             _ => null,
         };
     }

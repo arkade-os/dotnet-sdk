@@ -40,6 +40,17 @@ public sealed class ArkadeIntentsOptions
     public long? MaxPayAmountSats { get; set; }
 
     /// <summary>
+    /// Claim and refund through the covenant's signerless leaves when the wallet cannot sign.
+    /// </summary>
+    /// <remarks>
+    /// Off by default, because a signerless spend is submitted through the emulator and pins its outputs,
+    /// and switching to it unasked hides a wallet that was meant to be able to sign. Turn it on for a
+    /// deployment whose wallets are watch-only by design: without it, a receive such a wallet negotiated
+    /// can never be claimed, and the payer's money sits until the swap's deadline returns it.
+    /// </remarks>
+    public bool SignerlessFallback { get; set; }
+
+    /// <summary>
     /// Confirmations to require on an off-board's L1 funding before claiming it. Defaults to the
     /// most any solver may ask for.
     /// </summary>

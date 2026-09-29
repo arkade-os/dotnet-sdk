@@ -231,6 +231,19 @@ public class ArkadeSwapStateMachineTests
     }
 
     [Test]
+    public void OnTheClock_AReceiveSwapNeverFundedPastItsDeadline_IsOver()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, Pending, After, Locktime),
+            Is.EqualTo(ArkadeSwapIntentStatus.Resolved));
+    }
+
+    [Test]
+    public void OnTheClock_AnOnBoardAwaitingFunding_WaitsForItsL1Refund()
+    {
+        Assert.That(ArkadeSwapStateMachine.NextOnClock(OnBoard, Pending, After, Locktime), Is.Null);
+    }
+
+    [Test]
     public void OnTheClock_TerminalSwapsStayPut()
     {
         Assert.That(ArkadeSwapStateMachine.NextOnClock(Receive, ArkadeSwapIntentStatus.Fulfilled, After, Locktime),

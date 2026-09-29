@@ -74,17 +74,24 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
             // things either side of its deadline; the asset directions have no such leaf.
             if (swap is null || ComposedRouteExecutionGuard.IsCompositionOwned(swap)) return;
 
-            // A spent Lightning lockup is a fill only when the spend revealed the preimage —
-            // otherwise it is the counterparty's refund, and the two must never read alike.
-            var preimageRevealed = await ProvesFill(swap, vtxo);
+            // A spent HTLC lockup moves only on a verdict; one not yet provable either way is left
+            // for the advance pass to re-read, rather than written off as Resolved.
+            var htlcSpend = vtxo.IsSpent() && SwapSpendVerdict.IsHtlcCorridor(swap.Type);
+            var preimageRevealed = false;
+            if (htlcSpend)
+            {
+                if (await SwapSpendVerdict.ClaimedAsync(_transport, _vtxoStorage, swap, CancellationToken.None)
+                    is not { } claimed) return;
+                preimageRevealed = claimed;
+            }
 
-            // One machine decides every transition, guarded by the state the swap is already in —
-            // which is what tells our own cancel-spend apart from a counterparty's fill.
             var status = ArkadeSwapStateMachine.Next(
                 swap.Type,
                 swap.Status,
                 SwapObservation.From(
                     vtxo, _time.GetUtcNow().ToUnixTimeSeconds(), swap.RefundLocktime, preimageRevealed));
+            if (status is { } next && htlcSpend && !preimageRevealed)
+                status = SwapSpendVerdict.AfterNoClaim(swap.Type, next);
 
             if (status is null || status == swap.Status) return;
 
@@ -111,18 +118,4 @@ public sealed class ArkadeSwapIntentMonitoringService : IHostedService
     /// indexer must not stop the transition, and a swap misread this way is corrected by the next
     /// <see cref="ArkadeIntentsService.ReconcileAsync"/>.
     /// </remarks>
-    private async Task<bool> ProvesFill(ArkadeSwapIntent swap, ArkVtxo vtxo)
-    {
-        if (!vtxo.IsSpent()
-            || swap.PaymentHash is not { Length: > 0 } hash
-            || swap.Type is not (ArkadeSwapIntentType.BtcToLightning or ArkadeSwapIntentType.LightningToBtc
-                or ArkadeSwapIntentType.BtcToOnchain or ArkadeSwapIntentType.OnchainToBtc))
-        {
-            return false;
-        }
-
-        var spender = vtxo.SpentByTransactionId ?? vtxo.SettledByTransactionId;
-        return spender is { Length: > 0 }
-               && await SwapPreimageReader.FindAsync(_transport, vtxo.OutPoint, spender, hash) is not null;
-    }
 }

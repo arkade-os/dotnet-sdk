@@ -32,6 +32,9 @@ public enum LightningReceiveRefusalReason
 
     /// <summary>The quote bills the payer more than the caller's ceiling allows.</summary>
     PriceTooHigh,
+
+    /// <summary>The payout, once the solver's fee is out of it, is below the Arkade server's dust limit.</summary>
+    PayoutBelowDust,
 }
 
 /// <summary>Thrown when a client's own checks refuse a receive quote.</summary>
@@ -158,6 +161,26 @@ public static class LightningReceiveGates
         }
 
         return decoded;
+    }
+
+    /// <summary>
+    /// Refuse a quote whose payout could not become a VTXO.
+    /// </summary>
+    /// <param name="quote">The solver's quote.</param>
+    /// <param name="dustSats">The Arkade server's dust limit, in sats.</param>
+    /// <exception cref="LightningReceiveNotUsableException">The payout is below <paramref name="dustSats"/>.</exception>
+    /// <remarks>
+    /// Matters on exact-in, where the fee comes out of the payout: a small invoice can leave a lockup the
+    /// claim cannot spend into an output, and the payer's money would sit in a held HTLC until it lapses.
+    /// </remarks>
+    public static void AssertPayoutAboveDust(RfqQuote<LightningReceiveQuoteProfile> quote, long dustSats)
+    {
+        if (quote.ToAmount < dustSats)
+        {
+            throw new LightningReceiveNotUsableException(
+                LightningReceiveRefusalReason.PayoutBelowDust,
+                $"the quote pays out {quote.ToAmount} sats, below the {dustSats}-sat dust limit");
+        }
     }
 
     /// <summary>

@@ -1218,6 +1218,17 @@ var funded = await intents.SendToLightningAsync(
 await intents.RefundLightningSendAsync(funded.RfqId);
 ```
 
+`IArkadeIntentStorage.TrySaveArkadeSwapIntent` saves a swap only while its stored status is still the
+one the caller read, which is how the monitor and the advance pass avoid overwriting each other. A
+custom storage backend inherits a non-atomic default and should override it.
+
+A funding spend that fails after it may have reached the Arkade server does not throw: it returns
+with `funded.FundingConfirmed == false` and no txid. Report the payment as in flight and do not
+retry, since the lockup may be funded. The advance pass settles the swap from the
+chain, or cancels it once the invoice has expired unfunded. A swap closed without a chain event —
+that one, or a receive nobody paid past its deadline — can be put back under watch with
+`await intents.ReopenAsync(swapId)`. See [Lightning Corridors](docs/articles/lightning-corridors.md#when-a-swap-goes-quiet).
+
 ### Receiving — be paid over Lightning, take delivery on Arkade
 
 ```csharp
@@ -1228,6 +1239,9 @@ var pending = await intents.ReceiveFromLightningAsync(
     covclaimdPubKey: covclaimdPubKey);   // read live from covclaimd, never hardcoded
 
 Console.WriteLine($"have the payer settle: {pending.Invoice}");
+
+// `payoutContract:` takes the payout key from a contract the caller already has — an invoice's own
+// payment contract, say — so a swap nobody pays costs no HD index. The on-board takes the same.
 
 // Once the solver funds the lockup — the monitor moves the intent to Claimable:
 await intents.ClaimLightningReceiveAsync(pending.RfqId);
@@ -1497,6 +1511,10 @@ services.AddArkadeIntentsServices(new ArkadeIntentsOptions
 {
     // Refuse a receive quote billing the payer more than this. Unset means no ceiling.
     MaxPayAmountSats = 250_000,
+
+    // Claim and refund through the covenant's signerless leaves when the wallet cannot sign.
+    // Off by default; turn it on for wallets that are watch-only by design.
+    SignerlessFallback = true,
 });
 ```
 
@@ -1504,6 +1522,11 @@ A quote above it is refused with `LightningReceiveRefusalReason.PriceTooHigh`, b
 reaches anyone. Nothing is at risk without it — the amount that lands on Arkade is checked
 separately — but a customer handed an invoice for more than the order they approved is a payment
 their wallet may refuse outright.
+
+Pinning the bill (`RfqAmountSide.From`) moves the solver's fee into the payout instead, so a small
+invoice can leave a payout below the Arkade server's dust limit — one the claim could not spend into
+an output. Such a quote is refused with `LightningReceiveRefusalReason.PayoutBelowDust`, again before
+its invoice is handed out.
 
 Registration copies every supplied `ArkadeIntentsOptions` value, including
 `OnchainClaimConfirmations` for automatic off-board claims (default: six). An explicit options

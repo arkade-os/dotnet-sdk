@@ -311,6 +311,22 @@ public class LightningReceiveGatesTests
             LightningReceiveGates.ResolveLockupContract(quote, eightLeaf, nineLeaf, isMainnet: false));
     }
 
+    [Test]
+    public void APayoutBelowDust_IsRefused()
+    {
+        var ex = Assert.Throws<LightningReceiveNotUsableException>(() =>
+            LightningReceiveGates.AssertPayoutAboveDust(Quote(Invoice, toAmount: 329, fromAmount: 1_000), dustSats: 330));
+
+        Assert.That(ex!.Reason, Is.EqualTo(LightningReceiveRefusalReason.PayoutBelowDust));
+    }
+
+    [Test]
+    public void APayoutAtDust_IsAccepted()
+    {
+        Assert.DoesNotThrow(() =>
+            LightningReceiveGates.AssertPayoutAboveDust(Quote(Invoice, toAmount: 330, fromAmount: 1_000), dustSats: 330));
+    }
+
     private static RfqQuote<LightningReceiveQuoteProfile> Quote(
         string? invoice, long toAmount, long? fromAmount = null,
         long validUntil = 1_800_000_900, long refundLocktime = 1_800_605_184,

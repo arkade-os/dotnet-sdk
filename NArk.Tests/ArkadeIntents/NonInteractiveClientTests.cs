@@ -31,6 +31,38 @@ public class NonInteractiveClientTests
 
     [TestCase(false)]
     [TestCase(true)]
+    public async Task WithTheFallbackOn_AWatchOnlyWalletStillTakesDelivery(bool onchain)
+    {
+        // Without it a receive such a wallet negotiated can never be claimed, and the payer waits out
+        // the solver's reclaim for money nobody could take.
+        using var ctx = new Harness(onchain, signerlessFallback: true);
+        ctx.Intent.Status = ArkadeSwapIntentStatus.Claimable;
+
+        var result = await ctx.Service.AdvanceAsync(ctx.Intent.Id);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Acted, Is.True);
+            Assert.That(ctx.Intent.Status, Is.EqualTo(ArkadeSwapIntentStatus.Fulfilled));
+            Assert.That(ctx.Emulator.ArkTx!.Outputs.Take(2).All(o => o.ScriptPubKey.ToBytes()
+                .SequenceEqual(ctx.Contract.NonInteractiveClaim!.ReceiverPkScript)), Is.True);
+        });
+    }
+
+    [Test]
+    public async Task WithTheFallbackOn_AWatchOnlyWalletStillRefundsItsSend()
+    {
+        using var ctx = new Harness(false, outgoing: true, signerlessFallback: true);
+
+        var refunded = await ctx.Service.RefundLightningSendAsync(ctx.Intent.Id);
+
+        Assert.That(refunded.Status, Is.EqualTo(ArkadeSwapIntentStatus.Cancelled));
+        Assert.That(ctx.Emulator.ArkTx!.Outputs.Take(2).All(o => o.ScriptPubKey.ToBytes()
+            .SequenceEqual(ctx.Contract.NonInteractiveRefund!.SenderPkScript)), Is.True);
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
     public async Task BackgroundAdvance_OrdinaryReceiveRemainsCooperative(bool onchain)
     {
         using var ctx = new Harness(onchain);
@@ -162,7 +194,8 @@ public class NonInteractiveClientTests
         private readonly OnchainIntentsClient _onchain;
         private readonly bool _isOnchain;
 
-        internal Harness(bool onchain, long[]? amounts = null, bool outgoing = false, bool ninthLeaf = true)
+        internal Harness(bool onchain, long[]? amounts = null, bool outgoing = false, bool ninthLeaf = true,
+            bool signerlessFallback = false)
         {
             _isOnchain = onchain;
             Contract = NonInteractiveTestData.Contract(ninthLeaf: ninthLeaf);
@@ -189,10 +222,12 @@ public class NonInteractiveClientTests
             Blockchain.GetChainTime(default).ReturnsForAnyArgs(new TimeHeight(DateTimeOffset.FromUnixTimeSeconds(1_800_000_001), 200));
             var spending = NonInteractiveTestData.Spending(Wallet, funding, Emulator);
             var clock = new FixedClock();
+            var options = Microsoft.Extensions.Options.Options.Create(
+                new ArkadeIntentsOptions { SignerlessFallback = signerlessFallback });
             Lightning = new LightningIntentsClient(transport, Substitute.For<IContractService>(), spending, intents,
-                contracts, VtxoStorage, Wallet, blockchain: Blockchain, time: clock);
+                contracts, VtxoStorage, Wallet, blockchain: Blockchain, options: options, time: clock);
             _onchain = new OnchainIntentsClient(transport, Substitute.For<IContractService>(), spending, intents,
-                contracts, VtxoStorage, Wallet, Blockchain, time: clock);
+                contracts, VtxoStorage, Wallet, Blockchain, options: options, time: clock);
             Service = new ArkadeIntentsService(null!, Lightning, intents, VtxoStorage, transport, _onchain, time: clock);
         }
 

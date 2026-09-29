@@ -89,6 +89,12 @@ public static class LightningSendGates
     public const long MinHeadroomSeconds = 90 * 60;
 
     /// <summary>
+    /// How long after its invoice expires a send whose funding outcome is unknown, and whose lockup has
+    /// not appeared, is cancelled. Covers the lag between a spend landing and the wallet seeing it.
+    /// </summary>
+    public const long UnfundedAfterExpirySeconds = 10 * 60;
+
+    /// <summary>
     /// Refuse to fund unless every precondition still holds.
     /// </summary>
     /// <param name="quote">The solver's quote.</param>
