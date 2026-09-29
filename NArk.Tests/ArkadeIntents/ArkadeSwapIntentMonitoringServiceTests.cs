@@ -169,6 +169,7 @@ public class ArkadeSwapIntentMonitoringServiceTests
 
         var psbt = PSBT.FromTransaction(tx, Network.Main);
         if (preimage is not null) psbt.Inputs[0].SetArkFieldConditionWitness(new WitScript(Op.GetPushOp(preimage)));
+        else psbt.Inputs[0].FinalScriptWitness = new WitScript(Op.GetPushOp(new byte[32]).ToBytes());
         return psbt.ToBase64();
     }
 
