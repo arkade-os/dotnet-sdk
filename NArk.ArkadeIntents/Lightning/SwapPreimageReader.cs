@@ -42,11 +42,34 @@ public static class SwapPreimageReader
         OutPoint lockup,
         string spendingTxid,
         string paymentHashHex,
+        CancellationToken cancellationToken = default) =>
+        (await LookupAsync(transport, lockup, spendingTxid, paymentHashHex, cancellationToken)).Preimage;
+
+    /// <summary>What the spend could be made to say: the preimage, its absence, or neither.</summary>
+    internal enum PreimageEvidence
+    {
+        /// <summary>The spend carried a witness, and none of it hashes to this payment hash.</summary>
+        Absent,
+
+        /// <summary>A push hashes to this payment hash. Proof of a claim.</summary>
+        Found,
+
+        /// <summary>Nothing was readable — no witness published yet, or the fetch failed.</summary>
+        Unreadable,
+    }
+
+    /// <summary>As <see cref="FindAsync"/>, but says whether the spend could be read at all.</summary>
+    internal static async Task<(PreimageEvidence Evidence, byte[]? Preimage)> LookupAsync(
+        IClientTransport transport,
+        OutPoint lockup,
+        string spendingTxid,
+        string paymentHashHex,
         CancellationToken cancellationToken = default)
     {
+        var looked = false;
         if (string.IsNullOrWhiteSpace(spendingTxid) || string.IsNullOrWhiteSpace(paymentHashHex))
         {
-            return null;
+            return (PreimageEvidence.Unreadable, null);
         }
 
         IReadOnlyList<string> raw;
@@ -57,7 +80,7 @@ public static class SwapPreimageReader
         catch (Exception)
         {
             // Read lag and an outage look alike from here, and neither is proof of anything.
-            return null;
+            return (PreimageEvidence.Unreadable, null);
         }
 
         foreach (var psbtBase64 in raw)
@@ -77,15 +100,19 @@ public static class SwapPreimageReader
 
                 foreach (var candidate in Candidates(input))
                 {
+                    looked = true;
                     if (Matches(candidate, paymentHashHex))
                     {
-                        return candidate;
+                        return (PreimageEvidence.Found, candidate);
                     }
                 }
             }
         }
 
-        return null;
+        // Nothing to read is not the same as nothing to find. A spend whose witness has not been
+        // published yet carries no candidates at all, and calling that "no preimage" is how a claim
+        // gets recorded as a refund.
+        return (looked ? PreimageEvidence.Absent : PreimageEvidence.Unreadable, null);
     }
 
     /// <summary>

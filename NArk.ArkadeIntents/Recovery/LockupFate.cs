@@ -143,7 +143,7 @@ public static class LockupFateReader
         // Everything is spent. Whether that was a claim is decided by a preimage that hashes to this
         // swap's own payment hash — a witness of the right SHAPE is not proof, and reading it as one
         // would report a refunded swap as settled, which is the fact a trader relies on most.
-        var sawASpend = false;
+        var readASpend = false;
         foreach (var vtxo in vtxos)
         {
             var spender = SpenderOf(vtxo);
@@ -154,18 +154,24 @@ public static class LockupFateReader
             // preimage" and "could not be fetched" — fine for a status nudge, not fine for a
             // VERDICT, since `Returned` would then be pronounced over an indexer that was merely
             // down. Seeing the transaction at all is what earns the right to conclude anything.
-            var seen = await SpendIsVisibleAsync(transport, spender, cancellationToken);
-            if (!seen) continue;
-            sawASpend = true;
+            if (!await SpendIsVisibleAsync(transport, spender, cancellationToken)) continue;
 
-            var preimage = await SwapPreimageReader.FindAsync(
+            var (evidence, preimage) = await SwapPreimageReader.LookupAsync(
                 transport, Outpoint(vtxo), spender, paymentHashHex, cancellationToken);
-            if (preimage is not null) return new LockupFateResult(LockupFate.Claimed, preimage);
+            if (evidence == SwapPreimageReader.PreimageEvidence.Found && preimage is not null)
+            {
+                return new LockupFateResult(LockupFate.Claimed, preimage);
+            }
+
+            // Seeing the transaction is not the same as seeing its witness. A spend whose witness has
+            // not been published yet reads exactly like a refund, and this verdict is terminal, so it
+            // waits for something readable rather than calling a claim a refund.
+            if (evidence == SwapPreimageReader.PreimageEvidence.Absent) readASpend = true;
         }
 
-        // Spent by something we could actually read, and nothing proved a claim. Every non-claim
-        // leaf returns the money to us, so this is the refund.
-        return sawASpend
+        // Read, and nothing in it proved a claim. Every non-claim leaf returns the money to us, so
+        // this is the refund.
+        return readASpend
             ? new LockupFateResult(LockupFate.Returned)
             : new LockupFateResult(LockupFate.Unknown);
     }
