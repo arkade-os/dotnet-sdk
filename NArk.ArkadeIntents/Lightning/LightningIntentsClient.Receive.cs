@@ -198,8 +198,9 @@ public sealed partial class LightningIntentsClient
         // entirely rather than sealed to a key nobody holds: the solver treats the packet as opaque
         // either way, so a fake one buys nothing and advertises an offline claim path that does not
         // exist. The client's own claim still works — it holds the preimage.
-        var sealed_ = covclaimdPubKey is { Length: > 0 }
-            ? await ClaimPacket.SealAsync(preimage, covclaimdPubKey, _cipher, cancellationToken)
+        // Exact-in learns the lockup's amount only from the quote, too late to bind into the packet.
+        var sealed_ = covclaimdPubKey is { Length: > 0 } && amountSide == RfqAmountSide.To
+            ? await ClaimPacket.SealAsync(preimage, covclaimdPubKey, checked((ulong)amountSats), _cipher, cancellationToken)
             : null;
         var paymentHash = sealed_?.PaymentHash ?? ClaimPacket.PaymentHashOf(preimage);
 

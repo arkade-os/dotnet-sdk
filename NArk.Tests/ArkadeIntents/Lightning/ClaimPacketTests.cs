@@ -36,18 +36,20 @@ public class ClaimPacketTests
     }
 
     [Test]
-    public void Packet_CarriesTheEphemeralKeyAndNonceInTheClear()
+    public void Packet_FramesTheCiphertextKeyAndAmountAsCovclaimdTlvs()
     {
-        // covclaimd needs both to derive the same key, so they ride unencrypted ahead of the
-        // ciphertext: ephPub(33) || nonce(12) || ciphertext+tag.
-        var wire = Convert.FromBase64String(Seal().Packet);
+        // 0x02, the arkade script, is the solver's to append.
+        var packet = Convert.FromBase64String(Seal().Packet);
+        var ciphertext = Convert.FromBase64String(Fixture.Ciphertext);
 
         Assert.Multiple(() =>
         {
-            Assert.That(Hex(wire[..33]), Is.EqualTo(Fixture.Intermediates.EphemeralPublicKey));
-            Assert.That(Hex(wire[33..45]), Is.EqualTo(Fixture.Inputs.Nonce));
-            // 32-byte preimage plus GCM's 16-byte tag.
-            Assert.That(wire.Length, Is.EqualTo(33 + 12 + 32 + 16));
+            Assert.That(Hex(packet[..3]), Is.EqualTo("01005d"));
+            Assert.That(packet[3..96], Is.EqualTo(ciphertext));
+            Assert.That(Hex(ciphertext[..33]), Is.EqualTo(Fixture.Intermediates.EphemeralPublicKey));
+            Assert.That(Hex(ciphertext[33..45]), Is.EqualTo(Fixture.Inputs.Nonce));
+            Assert.That(Hex(packet[96..132]), Is.EqualTo("030021" + Fixture.Inputs.CovclaimdPublicKey));
+            Assert.That(Hex(packet[132..]), Is.EqualTo("040008" + Fixture.Inputs.MinAmount.ToString("x16")));
         });
     }
 
@@ -55,9 +57,16 @@ public class ClaimPacketTests
     public void Seal_RejectsAPreimageThatIsNotThirtyTwoBytes()
     {
         var ex = Assert.Throws<ArgumentException>(() =>
-            ClaimPacket.SealAsync(new byte[31], Fixture.Inputs.CovclaimdPublicKey, Ephemeral(), Nonce(), new AesGcmCipher()).GetAwaiter().GetResult());
+            ClaimPacket.SealAsync(new byte[31], Fixture.Inputs.CovclaimdPublicKey, Fixture.Inputs.MinAmount, Ephemeral(), Nonce(), new AesGcmCipher()).GetAwaiter().GetResult());
 
         Assert.That(ex!.Message, Does.Contain("32 bytes"));
+    }
+
+    [Test]
+    public void Seal_RejectsAZeroMinAmount()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            ClaimPacket.SealAsync(Convert.FromHexString(Fixture.Inputs.Preimage), Fixture.Inputs.CovclaimdPublicKey, 0, Ephemeral(), Nonce(), new AesGcmCipher()).GetAwaiter().GetResult());
     }
 
     [Test]
@@ -65,8 +74,8 @@ public class ClaimPacketTests
     {
         // The ephemeral key and nonce are per-packet. Reusing either would break GCM outright, so
         // two seals of the same secret must still differ.
-        var first = ClaimPacket.NewAsync(Fixture.Inputs.CovclaimdPublicKey).GetAwaiter().GetResult();
-        var second = ClaimPacket.NewAsync(Fixture.Inputs.CovclaimdPublicKey).GetAwaiter().GetResult();
+        var first = ClaimPacket.NewAsync(Fixture.Inputs.CovclaimdPublicKey, Fixture.Inputs.MinAmount).GetAwaiter().GetResult();
+        var second = ClaimPacket.NewAsync(Fixture.Inputs.CovclaimdPublicKey, Fixture.Inputs.MinAmount).GetAwaiter().GetResult();
 
         Assert.That(first.Packet, Is.Not.EqualTo(second.Packet));
     }
@@ -76,6 +85,7 @@ public class ClaimPacketTests
     private static Task<SealedClaimPacket> SealAsync() => ClaimPacket.SealAsync(
         Convert.FromHexString(Fixture.Inputs.Preimage),
         Fixture.Inputs.CovclaimdPublicKey,
+        Fixture.Inputs.MinAmount,
         Ephemeral(),
         Nonce(),
         new AesGcmCipher());
@@ -100,6 +110,7 @@ public class ClaimPacketTests
     public sealed record Vectors(
         VectorInputs Inputs,
         VectorIntermediates Intermediates,
+        string Ciphertext,
         string Packet,
         string PaymentHash);
 
@@ -107,7 +118,8 @@ public class ClaimPacketTests
         string Preimage,
         string EphemeralPrivateKey,
         string CovclaimdPublicKey,
-        string Nonce);
+        string Nonce,
+        ulong MinAmount);
 
     public sealed record VectorIntermediates(
         string EphemeralPublicKey,

@@ -6,7 +6,7 @@ namespace NArk.ArkadeIntents.Lightning;
 /// <summary>A sealed preimage and the two values that go with it.</summary>
 /// <param name="Packet">
 /// What travels as the receive profile's <c>claim_packet</c>: base64 of
-/// <c>ephPub(33) || nonce(12) || ciphertext</c>.
+/// TLVs 0x01 <c>ephPub(33) || nonce(12) || ciphertext</c>, 0x03 covclaimd's key, 0x04 the amount.
 /// </param>
 /// <param name="Preimage">The secret itself. Never leaves the client.</param>
 /// <param name="PaymentHash">
@@ -51,6 +51,9 @@ public static class ClaimPacket
     /// covclaimd's compressed secp256k1 key, from <c>GET /v1/preimage/covclaimd-pubkey</c>. Read it
     /// live — covclaimd generates its own, so a hardcoded value goes stale silently.
     /// </param>
+    /// <param name="minAmount">
+    /// Sats the lockup must carry for covclaimd to claim it; authenticated, so a solver cannot lower it.
+    /// </param>
     /// <returns>The packet, the preimage and its payment hash.</returns>
     /// <remarks>
     /// The ECDH shared secret is the 32-byte <b>X coordinate</b>, not the 33-byte compressed point.
@@ -65,13 +68,13 @@ public static class ClaimPacket
     /// </param>
     /// <param name="cancellationToken">Cancels the encryption.</param>
     public static Task<SealedClaimPacket> SealAsync(
-        byte[] preimage, string covclaimdPubKeyHex,
+        byte[] preimage, string covclaimdPubKeyHex, ulong minAmount,
         IAesGcmCipher? cipher = null, CancellationToken cancellationToken = default)
     {
         var ephemeral = new Key();
         var nonce = RandomNumberGenerator.GetBytes(NonceBytes);
         return SealAsync(
-            preimage, covclaimdPubKeyHex, ephemeral, nonce,
+            preimage, covclaimdPubKeyHex, minAmount, ephemeral, nonce,
             cipher ?? new AesGcmCipher(), cancellationToken);
     }
 
@@ -87,10 +90,12 @@ public static class ClaimPacket
 
     /// <summary>Generate a fresh 32-byte preimage and seal it — how a receive swap starts.</summary>
     /// <param name="covclaimdPubKeyHex">covclaimd's compressed secp256k1 key, hex.</param>
+    /// <param name="minAmount">Sats the funded lockup must carry; see <see cref="SealAsync(byte[], string, ulong, IAesGcmCipher?, CancellationToken)"/>.</param>
     /// <returns>The packet, the preimage and its payment hash.</returns>
     public static Task<SealedClaimPacket> NewAsync(
-        string covclaimdPubKeyHex, IAesGcmCipher? cipher = null, CancellationToken cancellationToken = default) =>
-        SealAsync(RandomNumberGenerator.GetBytes(32), covclaimdPubKeyHex, cipher, cancellationToken);
+        string covclaimdPubKeyHex, ulong minAmount,
+        IAesGcmCipher? cipher = null, CancellationToken cancellationToken = default) =>
+        SealAsync(RandomNumberGenerator.GetBytes(32), covclaimdPubKeyHex, minAmount, cipher, cancellationToken);
 
     /// <summary>
     /// The deterministic core, with the ephemeral key and nonce supplied rather than generated.
@@ -101,7 +106,7 @@ public static class ClaimPacket
     /// two packets breaks GCM outright.
     /// </remarks>
     internal static async Task<SealedClaimPacket> SealAsync(
-        byte[] preimage, string covclaimdPubKeyHex, Key ephemeral, byte[] nonce,
+        byte[] preimage, string covclaimdPubKeyHex, ulong minAmount, Key ephemeral, byte[] nonce,
         IAesGcmCipher cipher, CancellationToken cancellationToken = default)
     {
         if (preimage.Length != 32)
@@ -111,6 +116,10 @@ public static class ClaimPacket
         if (nonce.Length != NonceBytes)
         {
             throw new ArgumentException($"nonce must be {NonceBytes} bytes, got {nonce.Length}", nameof(nonce));
+        }
+        if (minAmount == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minAmount), "minAmount must be positive");
         }
 
         var ephemeralPub = ephemeral.PubKey.Compress().ToBytes();
@@ -130,17 +139,20 @@ public static class ClaimPacket
         // The tag trails the ciphertext — the usual ECIES convention, and the only reading under
         // which `ciphertext` is a single trailing field in the documented layout. The cipher
         // returns them already joined, which is also what WebCrypto and Go's Seal hand back.
+        var amount = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(amount, minAmount);
         var sealedBytes = await cipher.EncryptAsync(
-            key, nonce, preimage, associatedData: ephemeralPub, cancellationToken);
+            key, nonce, preimage, associatedData: [.. ephemeralPub, .. amount], cancellationToken);
 
-        var wire = new byte[ephemeralPub.Length + nonce.Length + sealedBytes.Length];
-        ephemeralPub.CopyTo(wire, 0);
-        nonce.CopyTo(wire, ephemeralPub.Length);
-        sealedBytes.CopyTo(wire, ephemeralPub.Length + nonce.Length);
+        byte[] wire = [.. ephemeralPub, .. nonce, .. sealedBytes];
+        byte[] packet = [.. Tlv(0x01, wire), .. Tlv(0x03, recipient.ToBytes()), .. Tlv(0x04, amount)];
 
         return new SealedClaimPacket(
-            Convert.ToBase64String(wire),
+            Convert.ToBase64String(packet),
             preimage,
             Convert.ToHexString(NBitcoin.Crypto.Hashes.SHA256(preimage)).ToLowerInvariant());
     }
+
+    private static byte[] Tlv(byte type, byte[] value) =>
+        [type, (byte)(value.Length >> 8), (byte)value.Length, .. value];
 }
