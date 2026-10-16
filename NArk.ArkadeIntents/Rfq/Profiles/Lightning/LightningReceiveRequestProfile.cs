@@ -24,7 +24,7 @@ public sealed class LightningReceiveRequestProfile
     public required string PayoutPubkey { get; init; }
 
     /// <summary>
-    /// The preimage, ECIES-sealed to covclaimd (<see cref="NArk.ArkadeIntents.Lightning.SealedClaimPacket.Packet"/>,
+    /// The preimage, ECIES-sealed to covclaimd (<see cref="NArk.ArkadeIntents.Lightning.SealedClaimPacket.Packet">covclaimd's TLV packet</see>,
     /// base64), so the claim can be pushed while the client is offline.
     /// </summary>
     /// <remarks>

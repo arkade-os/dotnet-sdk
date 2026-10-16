@@ -87,6 +87,16 @@ public class OnchainReceiveOrchestrationTests
     }
 
     [Test]
+    public void ANonPositiveAmount_IsRefusedBeforeTheSolverIsAsked()
+    {
+        var rfq = Substitute.For<IRfqTransport>();
+
+        Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            Ctx().Client.ReceiveFromOnchainAsync(WalletId, 0, rfq, CovclaimdPubKey, RefundAddress));
+        Assert.That(rfq.ReceivedCalls(), Is.Empty);
+    }
+
+    [Test]
     public void AQuoteWhoseTimelocksOpenInTheWrongOrder_FundsNothing()
     {
         // This corridor's central safety property, and one neither contract enforces. The solver's

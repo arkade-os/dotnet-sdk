@@ -210,6 +210,7 @@ public sealed partial class OnchainIntentsClient
         BitcoinAddress l1RefundAddress, RfqAmountSide amountSide, SolverCard? solverCard, ArkContract? payoutContract,
         SwapLinkSecret? linkedSecret, ArkAddress? linkedPayout, string? linkedRfqId, string? outgoingSwapId, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amountSats);
         var serverInfo = await transport.GetServerInfoAsync(cancellationToken);
 
         // A linked destination is L, while M's receiver and the source HTLC's refund key stay ours.

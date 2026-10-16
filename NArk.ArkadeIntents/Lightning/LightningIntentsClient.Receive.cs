@@ -169,6 +169,7 @@ public sealed partial class LightningIntentsClient
         string? outgoingSwapId,
         CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amountSats);
         var serverInfo = await _transport.GetServerInfoAsync(cancellationToken);
 
         // The payout contract is the client's own fresh receive address, and its key is what claims
