@@ -136,6 +136,13 @@ push the covenant's `nonInteractiveClaim` leaf on your behalf. That leaf is pinn
 `receiver_pk_script`, so the daemon can complete the claim and cannot redirect it — which is what
 makes handing a stranger your preimage a reasonable thing to do.
 
+Pinning the payout does not pin the amount, so the packet binds that too. Its `0x04` field carries
+the sats the lockup must hold, authenticated by the ciphertext, and covclaimd claims only an output
+carrying at least that much. Without it, a solver could fund the lockup with dust, let covclaimd
+claim it and reveal the preimage, then settle your payer's invoice in full. The amount is known
+before the quote only on an exact-out request (`RfqAmountSide.To`), so an exact-in request sends no
+packet and you claim the lockup yourself.
+
 It appears on this corridor only. On a send you never hold the preimage; the payee minted it and the
 solver learns it by paying, so there is nothing to seal and nothing for covclaimd to do.
 

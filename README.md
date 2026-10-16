@@ -1256,6 +1256,11 @@ wire entirely — which is the honest encoding of "nobody else can claim this", 
 throwaway key would advertise an offline claim path no daemon can walk. You keep the preimage and
 claim the lockup yourself.
 
+The packet also binds the amount the lockup must carry: covclaimd claims only an output holding at
+least that much, so a solver cannot fund the lockup with dust to learn the preimage. That amount is
+known before the quote only on an exact-out request (`RfqAmountSide.To`, the default here). An
+exact-in request sends no packet, and you claim the lockup yourself.
+
 Claiming publishes the preimage, which is also how the solver gets paid — an unclaimed swap is one
 where it reclaims its lockup and the payer's money was never earned. The preimage is persisted
 before the invoice goes out, since nothing can re-derive it afterwards.
@@ -1784,6 +1789,10 @@ Console.WriteLine($"send {pending.FundAmountSats} sats to {pending.HtlcAddress}"
 // Claimable; the advance loop claims it, or you can:
 await intents.ClaimOnchainReceiveAsync(pending.RfqId);
 ```
+
+`amountSide` defaults to `RfqAmountSide.From` here, and an exact-in request carries no covclaimd
+packet: the amount the lockup must carry is unknown until the quote, and an unbound packet would let
+covclaimd claim a dust lockup. Pass `amountSide: RfqAmountSide.To` for offline claiming.
 
 By default the payout is a freshly derived receive contract. If you already hold one — an invoice
 that derived an address to be paid to, say — pass it as `payoutContract` and the swap costs no HD

@@ -72,6 +72,31 @@ public class OnchainReceiveOrchestrationTests
     }
 
     [Test]
+    public void AnExactInRequest_CarriesNoClaimPacket()
+    {
+        Assert.That(RequestSent(RfqAmountSide.From).Profile.ClaimPacket, Is.Null);
+    }
+
+    [Test]
+    public void AnExactOutRequest_BindsItsAmountIntoTheClaimPacket()
+    {
+        var packet = Convert.FromBase64String(RequestSent(RfqAmountSide.To).Profile.ClaimPacket!);
+
+        Assert.That(Convert.ToHexString(packet[^11..]).ToLowerInvariant(),
+            Is.EqualTo("040008" + 50_000UL.ToString("x16")));
+    }
+
+    [Test]
+    public void ANonPositiveAmount_IsRefusedBeforeTheSolverIsAsked()
+    {
+        var rfq = Substitute.For<IRfqTransport>();
+
+        Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            Ctx().Client.ReceiveFromOnchainAsync(WalletId, 0, rfq, CovclaimdPubKey, RefundAddress));
+        Assert.That(rfq.ReceivedCalls(), Is.Empty);
+    }
+
+    [Test]
     public void AQuoteWhoseTimelocksOpenInTheWrongOrder_FundsNothing()
     {
         // This corridor's central safety property, and one neither contract enforces. The solver's
@@ -467,6 +492,19 @@ public class OnchainReceiveOrchestrationTests
 
         return ctx.Client.ReceiveFromOnchainAsync(
             WalletId, 50_000, rfq, CovclaimdPubKey, RefundAddress, payoutContract: payout);
+    }
+
+    private static RfqRequest<OnchainReceiveRequestProfile> RequestSent(RfqAmountSide side)
+    {
+        var ctx = Ctx();
+        var rfq = Substitute.For<IRfqTransport>();
+        rfq.RequestQuoteAsync<OnchainReceiveRequestProfile, OnchainReceiveQuoteProfile>(default!, default)
+            .ReturnsForAnyArgs(Quote(validUntil: Now));
+        Assert.CatchAsync(() => ctx.Client.ReceiveFromOnchainAsync(
+            WalletId, 50_000, rfq, CovclaimdPubKey, RefundAddress, side));
+
+        var call = rfq.ReceivedCalls().Single(c => c.GetMethodInfo().Name == nameof(IRfqTransport.RequestQuoteAsync));
+        return (RfqRequest<OnchainReceiveRequestProfile>)call.GetArguments()[0]!;
     }
 
     /// <summary>How many fresh HD indices a negotiation spent.</summary>

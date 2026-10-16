@@ -40,6 +40,7 @@ const PREIMAGE = hexToBytes('11'.repeat(32))
 const EPHEMERAL_PRIV = hexToBytes('2b'.repeat(32))
 const COVCLAIMD_PRIV = hexToBytes('5c'.repeat(32))
 const NONCE = hexToBytes('0102030405060708090a0b0c')
+const MIN_AMOUNT = 50_000n
 
 const HKDF_INFO = new TextEncoder().encode('covclaimd/preimage/v1')
 
@@ -50,10 +51,14 @@ const ephemeralPub = secp256k1.getPublicKey(EPHEMERAL_PRIV, true)
 const shared = secp256k1.getSharedSecret(EPHEMERAL_PRIV, covclaimdPub, true).slice(1)
 const key = hkdf(sha256, shared, ephemeralPub, HKDF_INFO, 32)
 
+const minAmount = Buffer.alloc(8)
+minAmount.writeBigUInt64BE(MIN_AMOUNT)
 const cipher = createCipheriv('aes-256-gcm', key, NONCE)
-cipher.setAAD(ephemeralPub)
+cipher.setAAD(Buffer.concat([Buffer.from(ephemeralPub), minAmount]))
 const sealed = Buffer.concat([cipher.update(PREIMAGE), cipher.final(), cipher.getAuthTag()])
 const wire = Buffer.concat([Buffer.from(ephemeralPub), Buffer.from(NONCE), sealed])
+const tlv = (type, value) => Buffer.concat([Buffer.from([type, value.length >> 8, value.length & 0xff]), value])
+const packet = Buffer.concat([tlv(0x01, wire), tlv(0x03, Buffer.from(covclaimdPub)), tlv(0x04, minAmount)])
 
 console.log(
   JSON.stringify(
@@ -66,13 +71,15 @@ console.log(
         ephemeralPrivateKey: toHex(EPHEMERAL_PRIV),
         covclaimdPublicKey: toHex(covclaimdPub),
         nonce: toHex(NONCE),
+        minAmount: Number(MIN_AMOUNT),
       },
       intermediates: {
         ephemeralPublicKey: toHex(ephemeralPub),
         sharedSecretX: toHex(shared),
         derivedKey: toHex(key),
       },
-      packet: wire.toString('base64'),
+      ciphertext: wire.toString('base64'),
+      packet: packet.toString('base64'),
       paymentHash: toHex(sha256(PREIMAGE)),
     },
     null,

@@ -187,6 +187,12 @@ cannot open. `payout_pubkey` is sent as well, so you can claim yourself: a coven
 can spend would make it a hard dependency of the corridor. Pass no covclaimd key and the packet is
 left off the wire entirely, which is exactly what it means.
 
+The packet carries the amount the lockup must hold, authenticated so the solver cannot lower or strip
+it. covclaimd claims only an output holding at least that much, so a dust lockup cannot buy your
+preimage and with it your L1 HTLC. Only an exact-out request (`RfqAmountSide.To`) knows that amount
+before the quote. This corridor defaults to exact-in, which sends no packet, so pass
+`amountSide: RfqAmountSide.To` for offline claiming.
+
 After `min_confirmations` the solver funds the lockup, the monitor moves the intent to `Claimable`,
 and the advance pass claims it:
 
