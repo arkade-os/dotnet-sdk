@@ -51,9 +51,7 @@ public static class ClaimPacket
     /// covclaimd's compressed secp256k1 key, from <c>GET /v1/preimage/covclaimd-pubkey</c>. Read it
     /// live — covclaimd generates its own, so a hardcoded value goes stale silently.
     /// </param>
-    /// <param name="minAmount">
-    /// Sats the lockup must carry for covclaimd to claim it; authenticated, so a solver cannot lower it.
-    /// </param>
+    /// <param name="minAmount">Sats the lockup must hold; authenticated, so a solver cannot lower it.</param>
     /// <returns>The packet, the preimage and its payment hash.</returns>
     /// <remarks>
     /// The ECDH shared secret is the 32-byte <b>X coordinate</b>, not the 33-byte compressed point.
