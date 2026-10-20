@@ -120,12 +120,46 @@ public class NBXplorerBlockchainTests
             Throws.InstanceOf<OperationCanceledException>());
         Assert.That(_server.RpcCalls, Does.Not.Contain("getblockheader"));
     }
+    
+    [Test]
+    public async Task GetUtxosAsync_TimedOut_During_BlockHash_LookUp()
+    {
+        _server.SetBlock(TipHeight, "ab", 1_600_000_004);
+        _server.Utxos.Add(NewUtxo(confirmations: 1));
+
+        _server.OnRpc = method =>
+        {
+            if (method == "getblockhash")
+                throw new TaskCanceledException("The internal RPC operation timed out.");
+        };
+
+        var utxo = (await _blockchain.GetUtxosAsync(_address)).Single();
+
+        Assert.That(utxo.BlockTime, Is.EqualTo(FirstSeen.ToUnixTimeSeconds()));
+    
+        Assert.That(_server.RpcCalls, Does.Not.Contain("getblockheader"));
+    }
 
     [Test]
-    public void GetUtxosAsync_TimedOut_During_Header_LookUp()
+    public async Task GetUtxosAsync_TimedOut_During_BlockHeader_LookUp()
     {
-        
+        _server.SetBlock(TipHeight, "ab", 1_600_000_004);
+        _server.Utxos.Add(NewUtxo(confirmations: 1));
+
+        _server.OnRpc = method =>
+        {
+            if (method == "getblockheader")
+                throw new TaskCanceledException("The internal RPC operation timed out.");
+        };
+
+        var utxo = (await _blockchain.GetUtxosAsync(_address)).Single();
+
+        Assert.That(utxo.BlockTime, Is.EqualTo(FirstSeen.ToUnixTimeSeconds()));
+    
+        Assert.That(_server.RpcCalls, Does.Contain("getblockhash"));
+        Assert.That(_server.RpcCalls, Does.Contain("getblockheader"));
     }
+
 
     private static UTXO NewUtxo(int confirmations) => new()
     {
