@@ -71,7 +71,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     public async Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
     {
-        var headerResponse = await GetBlockHeader(blockHeight);
+        var headerResponse = await GetBlockHeader(blockHeight, cancellationToken);
         if (headerResponse is null)
             return null;
         var medianTime = (long?)headerResponse.Result?["mediantime"];
@@ -92,7 +92,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         // GetUnspentUTXOs applies the spent filter across confirmed + unconfirmed deltas.
         var unspent = utxoChanges.GetUnspentUTXOs().ToList();
         
-        await FetchAndCacheBlockTimeByHeight(unspent, utxoChanges.CurrentHeight);
+        await FetchAndCacheBlockTimeByHeight(unspent, utxoChanges.CurrentHeight, cancellationToken);
         
         var results = new List<BoardingUtxo>(unspent.Count);
         foreach (var utxo in unspent)
@@ -101,7 +101,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             var blockHeight = confirmed
                 ? utxoChanges.CurrentHeight - (int)utxo.Confirmations + 1
                 : 0;
-            var blockTime = _blockTimeByHeight[blockHeight];
+            var (_, blockTime) = _blockTimeByHeight[blockHeight];
 
             results.Add(new BoardingUtxo(
                 Txid: utxo.Outpoint.Hash.ToString(),
@@ -115,7 +115,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         return results;
     }
     
-    private async Task FetchAndCacheBlockTimeByHeight(List<UTXO> utxos, int currentHeight)
+    private async Task FetchAndCacheBlockTimeByHeight(List<UTXO> utxos, int currentHeight, CancellationToken cancellationToken)
     {
         var uniqueBlockHeights = utxos.Where(utxo => utxo.Confirmations > 0)
             .Select(utxo =>  currentHeight - (int)utxo.Confirmations)
@@ -123,10 +123,10 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
         var tasks = uniqueBlockHeights.Select( async height =>
         {
-            await _rpcSemaphore.WaitAsync();
+            await _rpcSemaphore.WaitAsync(cancellationToken);
             try
             {
-                var headerResponse = await GetBlockHeader((uint)height);
+                var headerResponse = await GetBlockHeader((uint)height, cancellationToken);
                 var header = headerResponse?.Result;
                 if (header is null)
                 {
@@ -356,16 +356,16 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     }
     
     // ── Block data ──────────────────────────
-    private async Task<RPCResponse?> GetBlockHeader(uint height) 
+    private async Task<RPCResponse?> GetBlockHeader(uint height, CancellationToken cancellationToken) 
     {
         var rpc = _explorerClient.RPCClient;
-        var hashResponse = await rpc.SendCommandAsync("getblockhash", height);
+        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, height);
         if (hashResponse.Error is not null)
             return null;
         var blockHash = (string?)hashResponse.Result;
         if (blockHash is null) return null;
         
-        var headerResponse = await rpc.SendCommandAsync("getblockheader", blockHash, true); 
+        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, blockHash, true); 
         if (headerResponse.Error is not null) return null;
 
         return headerResponse;
