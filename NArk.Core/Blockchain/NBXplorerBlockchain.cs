@@ -150,23 +150,37 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     private async Task<(long?, long?)> GetBlockTime(uint height, CancellationToken cancellationToken)
     {
-        var rpc = _explorerClient.RPCClient;
-        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, height);
-        if (hashResponse.Error is not null || (string?)hashResponse.Result is not { } hashHex)
-            return (null, null);
-        var blockHash = uint256.Parse(hashHex);
-        if (_blockTimeByHash.TryGetValue(blockHash, out var cached))
-            return cached;
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var compoundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        try
+        {
+            var rpc = _explorerClient.RPCClient;
+            var hashResponse = await rpc.SendCommandAsync("getblockhash", compoundCts.Token, height);
+            if (hashResponse.Error is not null || (string?)hashResponse.Result is not { } hashHex)
+                return (null, null);
+            var blockHash = uint256.Parse(hashHex);
+            if (_blockTimeByHash.TryGetValue(blockHash, out var cached))
+                return cached;
 
-        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, hashHex, true);
-        if (
-            headerResponse.Error is not null || 
-            (long?)headerResponse.Result?["time"] is not { } blockTime||
-            (long?)headerResponse.Result?["mediantime"] is not { } medianTime
+            var headerResponse = await rpc.SendCommandAsync("getblockheader", compoundCts.Token, hashHex, true);
+            if (
+                headerResponse.Error is not null ||
+                (long?)headerResponse.Result?["time"] is not { } blockTime ||
+                (long?)headerResponse.Result?["mediantime"] is not { } medianTime
             )
+                return (null, null);
+            _blockTimeByHash[blockHash] = (blockTime, medianTime);
+            return (blockTime, medianTime);
+        }
+        catch (OperationCanceledException _) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException _)
+        {
+            _logger?.LogDebug("Failed to resolve block time at height {Height}; RPC request timed out", height);
             return (null, null);
-        _blockTimeByHash[blockHash] = (blockTime, medianTime);
-        return (blockTime, medianTime);
+        }
     }
 
     // ── Broadcast + package (NBXplorer BroadcastAsync + RPC submitpackage) ──

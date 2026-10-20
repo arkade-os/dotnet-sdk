@@ -121,6 +121,12 @@ public class NBXplorerBlockchainTests
         Assert.That(_server.RpcCalls, Does.Not.Contain("getblockheader"));
     }
 
+    [Test]
+    public void GetUtxosAsync_TimedOut_During_Header_LookUp()
+    {
+        
+    }
+
     private static UTXO NewUtxo(int confirmations) => new()
     {
         Outpoint = new OutPoint(RandomUtils.GetUInt256(), 0),
