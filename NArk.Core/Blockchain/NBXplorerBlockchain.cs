@@ -27,7 +27,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     private readonly ILogger? _logger;
     private TimeHeight? _lastSuccessfulChainTime;
     // Keyed by block hash, not height, so a reorged height is re-fetched instead of reusing the stale block's time.
-    private readonly ConcurrentDictionary<uint256, long> _blockTimeByHash = new();
+    private readonly ConcurrentDictionary<uint256, (long, long)> _blockTimeByHash = new();
     private readonly SemaphoreSlim _rpcSemaphore = new SemaphoreSlim(7, 7);
 
 
@@ -72,10 +72,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     public async Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
     {
-        var headerResponse = await GetBlockHeader(blockHeight, cancellationToken);
-        if (headerResponse is null)
-            return null;
-        var medianTime = (long?)headerResponse.Result?["mediantime"];
+        var (_, medianTime) = await GetBlockTime(blockHeight, cancellationToken);
         return medianTime is null ? null : DateTimeOffset.FromUnixTimeSeconds(medianTime.Value);
     }
 
@@ -132,7 +129,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             await _rpcSemaphore.WaitAsync(cancellationToken);
             try
             {
-                var blockTime = await GetBlockTime((uint)height, cancellationToken);
+                var (blockTime, _) = await GetBlockTime((uint)height, cancellationToken);
                 if (blockTime is not null)
                     blockTimes[height] = blockTime.Value;
             }
@@ -151,21 +148,25 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         return blockTimes;
     }
 
-    private async Task<long?> GetBlockTime(uint height, CancellationToken cancellationToken)
+    private async Task<(long?, long?)> GetBlockTime(uint height, CancellationToken cancellationToken)
     {
         var rpc = _explorerClient.RPCClient;
         var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, height);
         if (hashResponse.Error is not null || (string?)hashResponse.Result is not { } hashHex)
-            return null;
+            return (null, null);
         var blockHash = uint256.Parse(hashHex);
         if (_blockTimeByHash.TryGetValue(blockHash, out var cached))
             return cached;
 
         var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, hashHex, true);
-        if (headerResponse.Error is not null || (long?)headerResponse.Result?["time"] is not { } blockTime)
-            return null;
-        _blockTimeByHash[blockHash] = blockTime;
-        return blockTime;
+        if (
+            headerResponse.Error is not null || 
+            (long?)headerResponse.Result?["time"] is not { } blockTime||
+            (long?)headerResponse.Result?["mediantime"] is not { } medianTime
+            )
+            return (null, null);
+        _blockTimeByHash[blockHash] = (blockTime, medianTime);
+        return (blockTime, medianTime);
     }
 
     // ── Broadcast + package (NBXplorer BroadcastAsync + RPC submitpackage) ──
