@@ -368,22 +368,6 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         }
     }
     
-    // ── Block data ──────────────────────────
-    private async Task<RPCResponse?> GetBlockHeader(uint height, CancellationToken cancellationToken)
-    {
-        var rpc = _explorerClient.RPCClient;
-        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, height);
-        if (hashResponse.Error is not null)
-            return null;
-        var blockHash = (string?)hashResponse.Result;
-        if (blockHash is null) return null;
-        
-        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, blockHash, true);
-        if (headerResponse.Error is not null) return null;
-
-        return headerResponse;
-    }
-    
     private class GetBlockchainInfoResponse
     {
         [JsonProperty("blocks")] public uint Blocks { get; set; }
