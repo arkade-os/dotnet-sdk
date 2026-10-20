@@ -117,7 +117,8 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     
     private async Task FetchAndCacheBlockTimeByHeight(List<UTXO> utxos, int currentHeight)
     {
-        var uniqueBlockHeights = utxos.Select(utxo => utxo.Confirmations > 0 ? currentHeight - (int)utxo.Confirmations + 1 : 0)
+        var uniqueBlockHeights = utxos.Where(utxo => utxo.Confirmations > 0)
+            .Select(utxo =>  currentHeight - (int)utxo.Confirmations)
             .Distinct().Where(height => !_blockTimeByHeight.ContainsKey(height)).ToList();
 
         var tasks = uniqueBlockHeights.Select( async height =>
