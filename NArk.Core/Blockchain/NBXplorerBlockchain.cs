@@ -28,7 +28,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     private TimeHeight? _lastSuccessfulChainTime;
     // Keyed by block hash, not height, so a reorged height is re-fetched instead of reusing the stale block's time.
     private readonly ConcurrentDictionary<uint256, long> _blockTimeByHash = new();
-    private readonly SemaphoreSlim _rpcSemaphore = new SemaphoreSlim(7, 15);
+    private readonly SemaphoreSlim _rpcSemaphore = new SemaphoreSlim(7, 7);
 
 
     public NBXplorerBlockchain(ExplorerClient explorerClient, ILogger<NBXplorerBlockchain>? logger = null)
