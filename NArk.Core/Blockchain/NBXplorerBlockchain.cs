@@ -26,7 +26,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     private readonly ExplorerClient _explorerClient;
     private readonly ILogger? _logger;
     private TimeHeight? _lastSuccessfulChainTime;
-    private readonly ConcurrentDictionary<long, long> _blockTimeByHeight = [];
+    private readonly ConcurrentDictionary<long, (string, long)> _blockTimeByHeight = [];
     private readonly SemaphoreSlim _rpcSemaphore = new SemaphoreSlim(7, 15);
 
 
@@ -125,11 +125,26 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             await _rpcSemaphore.WaitAsync();
             try
             {
-                if (!_blockTimeByHeight.ContainsKey(height))
+                var headerResponse = await GetBlockHeader((uint)height);
+                var header = headerResponse?.Result;
+                if (header is null)
                 {
-                    var headerResponse = await GetBlockHeader((uint)height);
-                    var blockTime = headerResponse is not null ? Convert.ToInt64(headerResponse.Result["time"]) : 0;
-                    _blockTimeByHeight[height] = blockTime;
+                    return;
+                }
+
+                var blockHash = header["hash"]?.ToString();
+
+                if (blockHash is null)
+                {
+                    return;
+                }
+
+                var blockTime = Convert.ToInt64(header["time"]);
+                var (cachedBlockHash, _) = _blockTimeByHeight.GetOrAdd(height, (blockHash, blockTime));
+
+                if (blockHash != cachedBlockHash)
+                {
+                    _blockTimeByHeight[height] = (blockHash, blockTime);
                 }
             }
             finally
