@@ -172,11 +172,11 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             _blockTimeByHash[blockHash] = (blockTime, medianTime);
             return (blockTime, medianTime);
         }
-        catch (OperationCanceledException _) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException _)
+        catch (OperationCanceledException)
         {
             _logger?.LogDebug("Failed to resolve block time at height {Height}; RPC request timed out", height);
             return (null, null);
