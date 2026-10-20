@@ -108,6 +108,19 @@ public class NBXplorerBlockchainTests
             Throws.InstanceOf<OperationCanceledException>());
     }
 
+    [Test]
+    public void GetUtxosAsync_CancelledDuringHeaderLookup_Throws()
+    {
+        _server.SetBlock(TipHeight, "ab", 1_600_000_004);
+        _server.Utxos.Add(NewUtxo(confirmations: 1));
+        using var cts = new CancellationTokenSource();
+        _server.OnRpc = method => { if (method == "getblockhash") cts.Cancel(); };
+
+        Assert.That(() => _blockchain.GetUtxosAsync(_address, cts.Token),
+            Throws.InstanceOf<OperationCanceledException>());
+        Assert.That(_server.RpcCalls, Does.Not.Contain("getblockheader"));
+    }
+
     private static UTXO NewUtxo(int confirmations) => new()
     {
         Outpoint = new OutPoint(RandomUtils.GetUInt256(), 0),
@@ -123,6 +136,7 @@ public class NBXplorerBlockchainTests
 
         public List<UTXO> Utxos { get; } = [];
         public ConcurrentQueue<string> RpcCalls { get; } = new();
+        public Action<string>? OnRpc { get; set; }
 
         public void SetBlock(long height, string hashByte, long time) =>
             _blocks[height] = (string.Concat(Enumerable.Repeat(hashByte, 32)), time);
@@ -149,6 +163,7 @@ public class NBXplorerBlockchainTests
             var method = (string)rpc["method"]!;
             var param = rpc["params"]![0]!;
             RpcCalls.Enqueue(method);
+            OnRpc?.Invoke(method);
 
             JToken? result = method switch
             {
