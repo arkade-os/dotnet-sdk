@@ -26,9 +26,9 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     private readonly ExplorerClient _explorerClient;
     private readonly ILogger? _logger;
     private TimeHeight? _lastSuccessfulChainTime;
-    private readonly ConcurrentDictionary<long, (string, long)> _blockTimeByHeight = [];
-    private readonly SemaphoreSlim _rpcSemaphore = new SemaphoreSlim(7, 15);
-    private int _rpcRetries = 0;
+    // Keyed by block hash, not height, so a reorged height is re-fetched instead of reusing the stale block's time.
+    private readonly ConcurrentDictionary<uint256, long> _blockTimeByHash = new();
+    private readonly SemaphoreSlim _rpcSemaphore = new SemaphoreSlim(7, 7);
 
 
     public NBXplorerBlockchain(ExplorerClient explorerClient, ILogger<NBXplorerBlockchain>? logger = null)
@@ -52,7 +52,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             if (response is null)
                 throw new Exception("Bitcoin Core RPC returned null for getblockchaininfo");
             var info = JsonConvert.DeserializeObject<GetBlockchainInfoResponse>(response.ResultString)
-                       ?? throw new Exception("Bitcoin Core RPC returned invalid JSON for getblockchaininfo");
+                ?? throw new Exception("Bitcoin Core RPC returned invalid JSON for getblockchaininfo");
             var result = new TimeHeight(
                 DateTimeOffset.FromUnixTimeSeconds(info.MedianTime),
                 info.Blocks);
@@ -93,7 +93,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         // GetUnspentUTXOs applies the spent filter across confirmed + unconfirmed deltas.
         var unspent = utxoChanges.GetUnspentUTXOs().ToList();
         
-        await FetchAndCacheBlockTimeByHeight(unspent, utxoChanges.CurrentHeight, cancellationToken);
+        var blockTimes = await FetchBlockTimesByHeight(unspent, utxoChanges.CurrentHeight, cancellationToken);
         
         var results = new List<BoardingUtxo>(unspent.Count);
         foreach (var utxo in unspent)
@@ -102,7 +102,9 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             var blockHeight = confirmed
                 ? utxoChanges.CurrentHeight - (int)utxo.Confirmations + 1
                 : 0;
-            var (_, blockTime) = _blockTimeByHeight[blockHeight];
+            var blockTime = !confirmed ? 0
+                : blockTimes.TryGetValue(blockHeight, out var headerTime) ? headerTime
+                : utxo.Timestamp.ToUnixTimeSeconds();
 
             results.Add(new BoardingUtxo(
                 Txid: utxo.Outpoint.Hash.ToString(),
@@ -115,48 +117,57 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
         return results;
     }
-
-    private async Task FetchAndCacheBlockTimeByHeight(int height, CancellationToken cancellationToken)
-    {
-        var headerResponse = await GetBlockHeader((uint)height, cancellationToken);
-        var header = headerResponse?.Result;
-        if (header is null) return;
-            
-
-        var blockHash = header["hash"]?.ToString();
-
-        if (blockHash is null) return;
-
-        var blockTime = Convert.ToInt64(header["time"]);
-        var (cachedBlockHash, _) = _blockTimeByHeight.GetOrAdd(height, (blockHash, blockTime));
-
-        if (blockHash != cachedBlockHash)
-        {
-            _blockTimeByHeight[height] = (blockHash, blockTime);
-        }
-    }
     
-    private async Task FetchAndCacheBlockTimeByHeight(List<UTXO> utxos, int currentHeight, CancellationToken cancellationToken)
+    private async Task<IReadOnlyDictionary<int, long>> FetchBlockTimesByHeight(
+        List<UTXO> utxos, int currentHeight, CancellationToken cancellationToken)
     {
-        var uniqueBlockHeights = utxos.Where(utxo => utxo.Confirmations > 0)
-            .Select(utxo =>  currentHeight - (int)utxo.Confirmations)
-            .Distinct().Where(height => !_blockTimeByHeight.ContainsKey(height)).ToList();
-        
-        var tasks = uniqueBlockHeights.Select( async height =>
+        var heights = utxos
+            .Where(utxo => utxo.Confirmations > 0)
+            .Select(utxo => currentHeight - (int)utxo.Confirmations + 1)
+            .Distinct();
+
+        var blockTimes = new ConcurrentDictionary<int, long>();
+        var tasks = heights.Select(async height =>
         {
             await _rpcSemaphore.WaitAsync(cancellationToken);
             try
-            { 
-                await FetchAndCacheBlockTimeByHeight(height, cancellationToken);
+            {
+                var blockTime = await GetBlockTime((uint)height, cancellationToken);
+                if (blockTime is not null)
+                    blockTimes[height] = blockTime.Value;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex,
+                    "Failed to resolve block time at height {Height}; falling back to NBXplorer's first-seen time",
+                    height);
             }
             finally
             {
                 _rpcSemaphore.Release();
             }
         });
-        await Task.WhenAll(tasks.ToArray());
+        await Task.WhenAll(tasks);
+        return blockTimes;
     }
-    
+
+    private async Task<long?> GetBlockTime(uint height, CancellationToken cancellationToken)
+    {
+        var rpc = _explorerClient.RPCClient;
+        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, height);
+        if (hashResponse.Error is not null || (string?)hashResponse.Result is not { } hashHex)
+            return null;
+        var blockHash = uint256.Parse(hashHex);
+        if (_blockTimeByHash.TryGetValue(blockHash, out var cached))
+            return cached;
+
+        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, hashHex, true);
+        if (headerResponse.Error is not null || (long?)headerResponse.Result?["time"] is not { } blockTime)
+            return null;
+        _blockTimeByHash[blockHash] = blockTime;
+        return blockTime;
+    }
+
     // ── Broadcast + package (NBXplorer BroadcastAsync + RPC submitpackage) ──
 
     public async Task<bool> BroadcastAsync(Transaction tx, CancellationToken cancellationToken = default)
@@ -357,46 +368,19 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     }
     
     // ── Block data ──────────────────────────
-    private async Task<RPCResponse?> GetBlockHeader(uint height, CancellationToken cancellationToken) 
-    {
-        var hashResponse = await SendRpcCommand("getblockhash", cancellationToken, height);
-        
-        if (hashResponse?.Error is not null)
-            return null;
-        var blockHash = (string?)hashResponse?.Result;
-        if (blockHash is null) return null;
-        
-        var headerResponse = await SendRpcCommand("getblockheader", cancellationToken, blockHash, true); 
-        if (headerResponse?.Error is not null) return null;
-
-        return headerResponse;
-    }
-
-    private async Task<RPCResponse?> SendRpcCommand(string command, CancellationToken cancellationToken,
-        params object[] args)
+    private async Task<RPCResponse?> GetBlockHeader(uint height, CancellationToken cancellationToken)
     {
         var rpc = _explorerClient.RPCClient;
-        RPCResponse? response = null;
-        try
-        {
-            _rpcRetries = 0;
-            response = await rpc.SendCommandAsync(command, cancellationToken, args);
-        }
-        catch
-        {
-            while (_rpcRetries <= 7)
-            {
-                response = await rpc.SendCommandAsync(command, cancellationToken, args);
-                if (response is not null)
-                {
-                    _rpcRetries = 0;
-                    break;
-                }
-                _rpcRetries++;
-            }
-        }
+        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, height);
+        if (hashResponse.Error is not null)
+            return null;
+        var blockHash = (string?)hashResponse.Result;
+        if (blockHash is null) return null;
+        
+        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, blockHash, true);
+        if (headerResponse.Error is not null) return null;
 
-        return response;
+        return headerResponse;
     }
     
     private class GetBlockchainInfoResponse
