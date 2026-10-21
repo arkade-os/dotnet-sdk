@@ -227,43 +227,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     // ── Tx status (RPC getrawtransaction) ────────────────────────────
 
-    public async Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var response = await _explorerClient.RPCClient.SendCommandAsync(
-                "getrawtransaction", cancellationToken, txid.ToString(), true);
-
-            if (response.Error is not null)
-                return new TxStatus(false, null, false);
-
-            var confirmations = (int?)response.Result?["confirmations"] ?? 0;
-            if (confirmations <= 0)
-                return new TxStatus(false, null, true); // In mempool
-
-            // Bitcoin Core's getrawtransaction does not return a "blockheight"
-            // field — only "blockhash" + "confirmations". Resolve the height
-            // via the block header rather than trusting a field that never
-            // populates (previously left BlockHeight permanently null, which
-            // stalls any caller — e.g. UnilateralExitService's CSV maturity
-            // check — that requires a non-null height to proceed).
-            var blockHash = (string?)response.Result?["blockhash"];
-            uint? blockHeight = null;
-            if (blockHash is not null)
-            {
-                var headerResponse = await _explorerClient.RPCClient.SendCommandAsync(
-                    "getblockheader", cancellationToken, blockHash, true);
-                if (headerResponse.Error is null)
-                    blockHeight = (uint?)(long?)headerResponse.Result?["height"];
-            }
-
-            return new TxStatus(true, blockHeight, false);
-        }
-        catch
-        {
-            return new TxStatus(false, null, false); // Unknown
-        }
-    }
+    public Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default) => RpcBlockchain.GetTxStatus(_explorerClient.RPCClient, txid, cancellationToken, _logger);
 
     // ── Raw transaction ──────────────────────────────────────────────
 
