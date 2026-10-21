@@ -200,7 +200,7 @@ public class RpcBlockchain : IBitcoinBlockchain
     }
     
     // ── Static methods ─────────────────────────────────────────────────
-    public static async Task<TxStatus> GetTxStatus(RPCClient rpcClient, uint256 txid, CancellationToken cancellationToken, ILogger? logger)
+    internal static async Task<TxStatus> GetTxStatus(RPCClient rpcClient, uint256 txid, CancellationToken cancellationToken, ILogger? logger)
     {
         try
         {
@@ -221,6 +221,7 @@ public class RpcBlockchain : IBitcoinBlockchain
             // stalls any caller — e.g. UnilateralExitService's CSV maturity
             // check — that requires a non-null height to proceed).
             var blockHash = (string?)response.Result?["blockhash"];
+            if (blockHash is null) return new TxStatus(true, null, false);
             uint? blockHeight = null;
 
             try
@@ -236,7 +237,7 @@ public class RpcBlockchain : IBitcoinBlockchain
             }
             catch
             {
-                logger?.LogWarning("Failed to get block height for {blockHash}; but transaction is confirmed", blockHash);
+                logger?.LogWarning("Failed to get block height for {BlockHash}; but transaction is confirmed", blockHash);
                 return new TxStatus(true, null, false);
             }
 
