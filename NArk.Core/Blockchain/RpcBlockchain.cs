@@ -147,7 +147,7 @@ public class RpcBlockchain : IBitcoinBlockchain
 
     public async Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default)
     {
-        return await GetTxStatus(_client, txid, cancellationToken);
+        return await GetTxStatus(_client, txid, cancellationToken, _logger);
     }
 
     // ── Raw transaction ──────────────────────────────────────────────
@@ -200,7 +200,7 @@ public class RpcBlockchain : IBitcoinBlockchain
     }
     
     // ── Static methods ─────────────────────────────────────────────────
-    public static async Task<TxStatus> GetTxStatus(RPCClient rpcClient, uint256 txid, CancellationToken cancellationToken, ILogger<IBitcoinBlockchain> logger)
+    public static async Task<TxStatus> GetTxStatus(RPCClient rpcClient, uint256 txid, CancellationToken cancellationToken, ILogger? logger)
     {
         try
         {
@@ -236,7 +236,7 @@ public class RpcBlockchain : IBitcoinBlockchain
             }
             catch
             {
-                logger.LogWarning("Failed to get block height for {blockHash}; but transaction is confirmed", blockHash);
+                logger?.LogWarning("Failed to get block height for {blockHash}; but transaction is confirmed", blockHash);
                 return new TxStatus(true, null, true);
             }
 
