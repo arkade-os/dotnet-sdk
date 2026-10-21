@@ -165,10 +165,15 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             var headerResponse = await rpc.SendCommandAsync("getblockheader", compoundCts.Token, hashHex, true);
             if (
                 headerResponse.Error is not null ||
-                (long?)headerResponse.Result?["time"] is not { } blockTime ||
-                (long?)headerResponse.Result?["mediantime"] is not { } medianTime
+                (long?)headerResponse.Result?["time"] is not { } blockTime 
             )
                 return (null, null);
+           
+            if ((long?)headerResponse.Result?["mediantime"] is not { } medianTime)
+            {
+                return (blockTime, null);
+            }
+            
             _blockTimeByHash[blockHash] = (blockTime, medianTime);
             return (blockTime, medianTime);
         }
