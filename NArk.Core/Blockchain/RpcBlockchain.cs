@@ -244,12 +244,7 @@ public class RpcBlockchain : IBitcoinBlockchain
 
             return new TxStatus(true, blockHeight, false);
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
-        {
+        catch (Exception ex) when (ex is not OperationCanceledException) {
             return new TxStatus(false, null, false); // Unknown
         }
     }
