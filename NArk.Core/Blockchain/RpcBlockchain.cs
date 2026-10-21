@@ -145,10 +145,7 @@ public class RpcBlockchain : IBitcoinBlockchain
 
     // ── Tx status ────────────────────────────────────────────────────
 
-    public async Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default)
-    {
-        return await GetTxStatus(_client, txid, cancellationToken, _logger);
-    }
+    public Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default) => GetTxStatus(_client, txid, cancellationToken, _logger);
 
     // ── Raw transaction ──────────────────────────────────────────────
 

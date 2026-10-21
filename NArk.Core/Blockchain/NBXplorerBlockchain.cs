@@ -227,10 +227,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     // ── Tx status (RPC getrawtransaction) ────────────────────────────
 
-    public async Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default)
-    {
-        return await RpcBlockchain.GetTxStatus(_explorerClient.RPCClient, txid, cancellationToken, _logger);
-    }
+    public Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default) => RpcBlockchain.GetTxStatus(_explorerClient.RPCClient, txid, cancellationToken, _logger);
 
     // ── Raw transaction ──────────────────────────────────────────────
 
