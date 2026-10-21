@@ -237,11 +237,16 @@ public class RpcBlockchain : IBitcoinBlockchain
             }
             catch
             {
-                logger?.LogWarning("Failed to get block height for {BlockHash}; but transaction is confirmed", blockHash);
+                logger?.LogWarning("Failed to get block height for {BlockHash}; but transaction is confirmed",
+                    blockHash);
                 return new TxStatus(true, null, false);
             }
 
             return new TxStatus(true, blockHeight, false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
