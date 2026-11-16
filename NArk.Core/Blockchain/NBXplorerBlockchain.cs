@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Blockchain;
 using NBitcoin;
+using NBitcoin.RPC;
 using NBXplorer;
 using NBXplorer.Models;
 using Newtonsoft.Json;
@@ -24,6 +26,10 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
     private readonly ExplorerClient _explorerClient;
     private readonly ILogger? _logger;
     private TimeHeight? _lastSuccessfulChainTime;
+    // Keyed by block hash, not height, so a reorged height is re-fetched instead of reusing the stale block's time.
+    private readonly ConcurrentDictionary<uint256, (long, long)> _blockTimeByHash = new();
+    private readonly SemaphoreSlim _rpcSemaphore = new SemaphoreSlim(7, 7);
+
 
     public NBXplorerBlockchain(ExplorerClient explorerClient, ILogger<NBXplorerBlockchain>? logger = null)
     {
@@ -66,18 +72,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
 
     public async Task<DateTimeOffset?> GetMedianTimePastAsync(uint blockHeight, CancellationToken cancellationToken = default)
     {
-        var rpc = _explorerClient.RPCClient;
-        var hashResponse = await rpc.SendCommandAsync("getblockhash", cancellationToken, blockHeight);
-        if (hashResponse.Error is not null)
-            return null;
-        var blockHash = (string?)hashResponse.Result;
-        if (blockHash is null)
-            return null;
-
-        var headerResponse = await rpc.SendCommandAsync("getblockheader", cancellationToken, blockHash, true);
-        if (headerResponse.Error is not null)
-            return null;
-        var medianTime = (long?)headerResponse.Result?["mediantime"];
+        var (_, medianTime) = await GetBlockTime(blockHeight, cancellationToken);
         return medianTime is null ? null : DateTimeOffset.FromUnixTimeSeconds(medianTime.Value);
     }
 
@@ -94,7 +89,9 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
         var utxoChanges = await _explorerClient.GetUTXOsAsync(trackedSource, cancellationToken);
         // GetUnspentUTXOs applies the spent filter across confirmed + unconfirmed deltas.
         var unspent = utxoChanges.GetUnspentUTXOs().ToList();
-
+        
+        var blockTimes = await FetchBlockTimesByHeight(unspent, utxoChanges.CurrentHeight, cancellationToken);
+        
         var results = new List<BoardingUtxo>(unspent.Count);
         foreach (var utxo in unspent)
         {
@@ -102,17 +99,93 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             var blockHeight = confirmed
                 ? utxoChanges.CurrentHeight - (int)utxo.Confirmations + 1
                 : 0;
+            var blockTime = !confirmed ? 0
+                : blockTimes.TryGetValue(blockHeight, out var headerTime) ? headerTime
+                : utxo.Timestamp.ToUnixTimeSeconds();
 
             results.Add(new BoardingUtxo(
                 Txid: utxo.Outpoint.Hash.ToString(),
-                Vout: (uint)utxo.Outpoint.N,
+                Vout: utxo.Outpoint.N,
                 Amount: ((Money)utxo.Value).Satoshi > 0 ? (ulong)((Money)utxo.Value).Satoshi : 0,
                 Confirmed: confirmed,
                 BlockHeight: blockHeight,
-                BlockTime: confirmed ? utxo.Timestamp.ToUnixTimeSeconds() : 0));
+                BlockTime: blockTime));
         }
 
         return results;
+    }
+    
+    private async Task<IReadOnlyDictionary<int, long>> FetchBlockTimesByHeight(
+        List<UTXO> utxos, int currentHeight, CancellationToken cancellationToken)
+    {
+        var heights = utxos
+            .Where(utxo => utxo.Confirmations > 0)
+            .Select(utxo => currentHeight - (int)utxo.Confirmations + 1)
+            .Distinct();
+
+        var blockTimes = new ConcurrentDictionary<int, long>();
+        var tasks = heights.Select(async height =>
+        {
+            await _rpcSemaphore.WaitAsync(cancellationToken);
+            try
+            {
+                var (blockTime, _) = await GetBlockTime((uint)height, cancellationToken);
+                if (blockTime is not null)
+                    blockTimes[height] = blockTime.Value;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex,
+                    "Failed to resolve block time at height {Height}; falling back to NBXplorer's first-seen time",
+                    height);
+            }
+            finally
+            {
+                _rpcSemaphore.Release();
+            }
+        });
+        await Task.WhenAll(tasks);
+        return blockTimes;
+    }
+
+    private async Task<(long?, long?)> GetBlockTime(uint height, CancellationToken cancellationToken)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var compoundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        try
+        {
+            var rpc = _explorerClient.RPCClient;
+            var hashResponse = await rpc.SendCommandAsync("getblockhash", compoundCts.Token, height);
+            if (hashResponse.Error is not null || (string?)hashResponse.Result is not { } hashHex)
+                return (null, null);
+            var blockHash = uint256.Parse(hashHex);
+            if (_blockTimeByHash.TryGetValue(blockHash, out var cached))
+                return cached;
+
+            var headerResponse = await rpc.SendCommandAsync("getblockheader", compoundCts.Token, hashHex, true);
+            if (
+                headerResponse.Error is not null ||
+                (long?)headerResponse.Result?["time"] is not { } blockTime 
+            )
+                return (null, null);
+           
+            if ((long?)headerResponse.Result?["mediantime"] is not { } medianTime)
+            {
+                return (blockTime, null);
+            }
+            
+            _blockTimeByHash[blockHash] = (blockTime, medianTime);
+            return (blockTime, medianTime);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger?.LogDebug("Failed to resolve block time at height {Height}; RPC request timed out", height);
+            return (null, null);
+        }
     }
 
     // ── Broadcast + package (NBXplorer BroadcastAsync + RPC submitpackage) ──
@@ -313,7 +386,7 @@ public class NBXplorerBlockchain : IBitcoinBlockchain
             return new FeeRate(Money.Satoshis(2));
         }
     }
-
+    
     private class GetBlockchainInfoResponse
     {
         [JsonProperty("blocks")] public uint Blocks { get; set; }
