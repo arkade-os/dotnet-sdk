@@ -145,29 +145,7 @@ public class RpcBlockchain : IBitcoinBlockchain
 
     // ── Tx status ────────────────────────────────────────────────────
 
-    public async Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var response = await _client.SendCommandAsync(
-                "getrawtransaction", cancellationToken, txid.ToString(), true);
-
-            if (response.Error is not null)
-                return new TxStatus(false, null, false);
-
-            var confirmations = (int?)response.Result?["confirmations"] ?? 0;
-            var blockHeight = (uint?)(long?)response.Result?["blockheight"];
-
-            if (confirmations > 0)
-                return new TxStatus(true, blockHeight, false);
-
-            return new TxStatus(false, null, true); // In mempool
-        }
-        catch
-        {
-            return new TxStatus(false, null, false); // Unknown
-        }
-    }
+    public Task<TxStatus> GetTxStatusAsync(uint256 txid, CancellationToken cancellationToken = default) => GetTxStatus(_client, txid, cancellationToken, _logger);
 
     // ── Raw transaction ──────────────────────────────────────────────
 
@@ -215,6 +193,56 @@ public class RpcBlockchain : IBitcoinBlockchain
         {
             _logger?.LogWarning(0, ex, "estimatesmartfee failed, using fallback");
             return new FeeRate(Money.Satoshis(2));
+        }
+    }
+    
+    // ── Static methods ─────────────────────────────────────────────────
+    internal static async Task<TxStatus> GetTxStatus(RPCClient rpcClient, uint256 txid, CancellationToken cancellationToken, ILogger? logger)
+    {
+        try
+        {
+            var response = await rpcClient.SendCommandAsync(
+                "getrawtransaction", cancellationToken, txid.ToString(), true);
+
+            if (response.Error is not null)
+                return new TxStatus(false, null, false);
+
+            var confirmations = (int?)response.Result?["confirmations"] ?? 0;
+            if (confirmations <= 0)
+                return new TxStatus(false, null, true); // In mempool
+
+            // Bitcoin Core's getrawtransaction does not return a "blockheight"
+            // field — only "blockhash" + "confirmations". Resolve the height
+            // via the block header rather than trusting a field that never
+            // populates (previously left BlockHeight permanently null, which
+            // stalls any caller — e.g. UnilateralExitService's CSV maturity
+            // check — that requires a non-null height to proceed).
+            var blockHash = (string?)response.Result?["blockhash"];
+            if (blockHash is null) return new TxStatus(true, null, false);
+            uint? blockHeight = null;
+
+            try
+            {
+                var headerResponse = await rpcClient.SendCommandAsync(
+                    "getblockheader", cancellationToken, blockHash, true);
+                if (headerResponse.Error is null)
+                    blockHeight = (uint?)(long?)headerResponse.Result?["height"];
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                logger?.LogWarning("Failed to get block height for {BlockHash}; but transaction is confirmed",
+                    blockHash);
+                return new TxStatus(true, null, false);
+            }
+
+            return new TxStatus(true, blockHeight, false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) {
+            return new TxStatus(false, null, false); // Unknown
         }
     }
 
